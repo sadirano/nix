@@ -1493,18 +1493,29 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     if (try clipboard.readFiles(app.arena, app.io)) |files| {
         return pasteFiles(app, target, files, name);
     }
-    if (try clipboard.readText(app.arena, app.io)) |text| {
-        const fname = try pasteFilename(app, name, ".md");
-        const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname }));
-        try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = text });
-        const out = try store.toSlash(app.arena, dest);
-        try app.out.print("{s}\n", .{out});
-        try app.out.flush();
-        clipboard.writeText(app.arena, app.io, out) catch {};
-        return 0;
+    // Content: image (.png) wins over text (.md) — it's the harder content to
+    // re-grab, matching onix's readClipboardContent ordering.
+    if (try clipboard.readImage(app.arena, app.io)) |img| {
+        return pasteContent(app, target, name, img, ".png");
     }
-    try app.err.writeAll("nix: clipboard holds no files or text to paste (image paste not yet ported)\n");
+    if (try clipboard.readText(app.arena, app.io)) |text| {
+        return pasteContent(app, target, name, text, ".md");
+    }
+    try app.err.writeAll("nix: clipboard holds no files, image, or text to paste\n");
     return 1;
+}
+
+/// pasteContent writes clipboard bytes to a uniquely-named file under target,
+/// prints the path, and copies it back to the clipboard.
+fn pasteContent(app: *App, target: []const u8, name: []const u8, data: []const u8, default_ext: []const u8) !u8 {
+    const fname = try pasteFilename(app, name, default_ext);
+    const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname }));
+    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = data });
+    const out = try store.toSlash(app.arena, dest);
+    try app.out.print("{s}\n", .{out});
+    try app.out.flush();
+    clipboard.writeText(app.arena, app.io, out) catch {};
+    return 0;
 }
 
 fn pasteFiles(app: *App, target: []const u8, files: [][]const u8, name: []const u8) !u8 {

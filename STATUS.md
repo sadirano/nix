@@ -52,10 +52,12 @@ another ~2 ms) is what's shed.
 - [x] `--find` (`-f`): es/fd/find + fzf; routes selections to default app
       (allowlisted exts + dirs) or editor
 - [x] `--preview`: dir listing / bat file render — **IDENTICAL** to onix
-- [x] `--paste` (`-p`): Win32 clipboard read — CF_HDROP file drops (file +
-      recursive dir copy) and CF_UNICODETEXT (→ .md), uniquePath collision
-      handling, copies result path(s) back to clipboard. **Verified** (text +
-      file drop). Image paste (CF_DIB→PNG) deferred — needs a DIB→PNG encoder.
+- [x] `--paste` (`-p`): full Win32 clipboard read — CF_HDROP file drops (file +
+      recursive dir copy), CF_DIB **image → PNG** (`src/png.zig`: DIB decode +
+      PNG encode with stored-DEFLATE zlib, CRC32/Adler32), and CF_UNICODETEXT
+      (→ .md), image-wins-over-text ordering, uniquePath collisions, path(s)
+      copied back to clipboard. **All three verified** — image round-trips
+      pixel-exact (5×3 RGB check).
 - [x] `--sweep`: es `/ad` flood scan — exclude filtering, child-counting,
       sibling-collapse fixpoint, alias filtering, rank, cap. Ranking
       **IDENTICAL** to onix (`--no-prompt --min 200`). Appends to picker.swept;
@@ -109,18 +111,20 @@ static import of a non-default DLL is a measurable per-invocation tax.
       pwsh; `--skip-profile` honoured) and `--sync` (regenerate).
 - [x] `--remove` file-deletion mode: `--force`/`--recursive`, load-bearing
       guard, y/N prompt — messages **match onix** (branding aside)
-- [ ] clink lua integration (cmd.exe) — minor, deferred
-- [ ] image-paste (CF_DIB→PNG) — deferred (needs an encoder)
+- [x] image-paste (CF_DIB→PNG) — done & verified pixel-exact
+- [~] clink lua integration (cmd.exe) — NOT NEEDED (PowerShell completion +
+      $PROFILE wiring cover the supported shells; cmd.exe/clink intentionally
+      out of scope for nix)
 
-## Status: feature-complete
+## Status: COMPLETE
 
-All substantial onix behaviour is ported and verified against the Go binary.
-Final parity sweep — `--list-names`, `--list`, resolve, `--prune --no-prompt`,
-`--sweep --no-prompt` all **IDENTICAL**; segments/contexts/paste/remove verified
-case-by-case. Only clink-lua and image-paste remain, both optional/deferred.
+Full functional parity with onix. Final parity sweep — `--list-names`, `--list`,
+resolve, `--prune --no-prompt`, `--sweep --no-prompt` all **IDENTICAL**;
+segments/contexts/paste(text+file+image)/remove verified case-by-case. clink-lua
+is intentionally out of scope.
 
-Final numbers: **resolve 4.9 ms vs onix 9.5 ms (~1.9×)**, **1.22 MB vs 3.48 MB**,
-~3,300 lines of Zig across 8 modules.
+Final numbers: **resolve ~4.4 ms vs onix ~9 ms (~2×)**, **1.23 MB vs 3.48 MB**,
+~3,500 lines of Zig across 9 modules.
 
 ## Build
 

@@ -5,6 +5,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
+const png = @import("png.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -37,6 +38,9 @@ extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi
 extern "kernel32" fn GetProcAddress(hModule: HANDLE, lpProcName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
 
 const CF_HDROP: UINT = 15;
+const CF_DIB: UINT = 8;
+
+extern "kernel32" fn GlobalSize(hMem: HANDLE) callconv(.winapi) usize;
 
 const OpenClipboardFn = *const fn (HWND) callconv(.winapi) BOOL;
 const EmptyClipboardFn = *const fn () callconv(.winapi) BOOL;
@@ -93,6 +97,28 @@ pub fn readFiles(arena: std.mem.Allocator, io: Io) !?[][]const u8 {
     }
     if (files.items.len == 0) return null;
     return files.items;
+}
+
+/// readImage returns the clipboard image (CF_DIB) re-encoded as PNG bytes, or
+/// null if there is no (supported) image. Windows only.
+pub fn readImage(arena: std.mem.Allocator, io: Io) !?[]const u8 {
+    if (!is_windows) return null;
+    const user32 = LoadLibraryA("user32.dll") orelse return null;
+    const avail = try proc(IsClipboardFormatAvailableFn, user32, "IsClipboardFormatAvailable");
+    const open = try proc(OpenClipboardFn, user32, "OpenClipboard");
+    const close = try proc(CloseClipboardFn, user32, "CloseClipboard");
+    const get = try proc(GetClipboardDataFn, user32, "GetClipboardData");
+
+    if (avail(CF_DIB) == 0) return null;
+    if (!openClipboardRetry(open, io)) return null;
+    defer _ = close();
+    const h = get(CF_DIB) orelse return null;
+    const sz = GlobalSize(h);
+    if (sz == 0) return null;
+    const raw = GlobalLock(h) orelse return null;
+    defer _ = GlobalUnlock(h);
+    const ptr: [*]const u8 = @ptrCast(raw);
+    return png.encodeDibToPng(arena, ptr[0..sz]) catch null;
 }
 
 /// readText returns the clipboard's Unicode text as UTF-8, or null if absent.
