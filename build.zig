@@ -115,6 +115,19 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // `zig build deploy` redeploys the freshly built binary into ~/.onix/bin.
+    // The catch when iterating on nix is that the commands on PATH (nix, plus
+    // the o/e/s/y/p/r/sg/ff wrappers) are INDEPENDENT COPIES of the binary, not
+    // symlinks — `zig build` only writes zig-out, so without this step a rebuild
+    // never reaches the binary you actually run. `--sync` copies the running
+    // exe over every wrapper name (snippet.installExeWrappers), so deploying via
+    // the just-built artifact updates all of them at once.
+    const deploy_cmd = b.addRunArtifact(exe);
+    deploy_cmd.addArg("--sync");
+    deploy_cmd.step.dependOn(b.getInstallStep());
+    const deploy_step = b.step("deploy", "Build, then sync the binary + wrappers into ~/.onix/bin");
+    deploy_step.dependOn(&deploy_cmd.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.

@@ -677,18 +677,24 @@ fn cmdContexts(app: *App) !u8 {
 }
 
 /// resolveEditor mirrors commands.resolveEditor: $EDITOR, $VISUAL, then the
-/// first of nvim/vim/code/nano/notepad found on PATH.
+/// first of nvim/vim/code/nano/notepad found on PATH. Returns the full resolved
+/// path (e.g. the actual `code.cmd`) rather than a bare name: this confirms the
+/// editor exists before we spawn, and hands std.process.spawn an explicit path
+/// it can recognize as a .bat/.cmd. Zig itself does the cmd.exe wrapping and
+/// argument escaping for batch scripts (CVE-2024-24576 mitigation) — we must
+/// NOT wrap with `cmd.exe /c` ourselves, as that double-escapes and breaks any
+/// path containing spaces (e.g. `...\Microsoft VS Code\bin\code.cmd`).
 fn resolveEditor(app: *App) ?[]const u8 {
     if (app.env.get("EDITOR")) |e| {
         const t = std.mem.trim(u8, e, " \t");
-        if (t.len > 0) return t;
+        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
     }
     if (app.env.get("VISUAL")) |e| {
         const t = std.mem.trim(u8, e, " \t");
-        if (t.len > 0) return t;
+        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
     }
     for ([_][]const u8{ "nvim", "vim", "code", "nano", "notepad" }) |cand| {
-        if (proc.findInPath(app.arena, app.io, app.env, cand) != null) return cand;
+        if (proc.findInPath(app.arena, app.io, app.env, cand)) |p| return p;
     }
     return null;
 }
@@ -1057,6 +1063,16 @@ fn opensWithDefaultApp(app: *App, abs: []const u8) bool {
     return false;
 }
 
+/// absUnder resolves a picker selection (relative to the search dir `target`)
+/// into an absolute path. We MUST hand the editor absolute paths: VS Code's CLI
+/// fails to resolve relative paths when opening multiple files with `--goto` on
+/// a cold start (no running instance), silently opening nothing. Absolute paths
+/// are also correct regardless of where the editor process ends up running.
+fn absUnder(app: *App, target: []const u8, file: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(file)) return file;
+    return std.fs.path.join(app.arena, &.{ target, file });
+}
+
 /// openSelectionsInEditor opens fzf selections in $EDITOR. grep lines are
 /// file:line:text; find lines are bare paths (has_lines=false).
 fn openSelectionsInEditor(app: *App, target: []const u8, selection: []const u8, has_lines: bool) !u8 {
@@ -1074,18 +1090,41 @@ fn openSelectionsInEditor(app: *App, target: []const u8, selection: []const u8, 
                 const rest = line[idx1 + 1 ..];
                 const idx2 = std.mem.indexOfScalar(u8, rest, ':');
                 const lineno = if (idx2) |j| rest[0..j] else rest;
-                try targets.append(app.arena, .{ .file = line[0..idx1], .line = lineno });
+                try targets.append(app.arena, .{ .file = try absUnder(app, target, line[0..idx1]), .line = lineno });
                 continue;
             }
         }
-        try targets.append(app.arena, .{ .file = line, .line = "" });
+        try targets.append(app.arena, .{ .file = try absUnder(app, target, line), .line = "" });
     }
     if (targets.items.len == 0) return 0;
-    const tail = try editor.editorArgs(app.arena, ed, targets.items);
+    // VS Code (goto family) only applies the line jump to the FIRST file when
+    // several are passed in one invocation — the rest land on line 1. So spawn
+    // once per file for that family: runInherit waits for each call to return,
+    // so the first brings the editor up and the rest reuse it, each landing on
+    // its own line. Other families (vim's buffer list, plus) open all at once.
+    if (editor.classify(ed) == .goto) {
+        for (targets.items) |t| {
+            const code = try spawnEditor(app, ed, &.{t}, target);
+            if (code != 0) return code;
+        }
+        return 0;
+    }
+    return spawnEditor(app, ed, targets.items, target);
+}
+
+/// spawnEditor builds the argv for `ed` opening `targets` and runs it in `cwd`,
+/// surfacing spawn failures rather than swallowing them: a silent `catch 1` is
+/// indistinguishable from "the editor opened in a background window" and makes
+/// editor problems nearly impossible to diagnose.
+fn spawnEditor(app: *App, ed: []const u8, targets: []const editor.Target, cwd: []const u8) !u8 {
+    const tail = try editor.editorArgs(app.arena, ed, targets);
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(app.arena, ed);
     for (tail) |a| try argv.append(app.arena, a);
-    return proc.runInherit(app.io, argv.items, target) catch 1;
+    return proc.runInherit(app.io, argv.items, cwd) catch |e| {
+        try app.err.print("nix: editor {s}: {s}\n", .{ ed, @errorName(e) });
+        return 1;
+    };
 }
 
 /// openFindSelections routes each find selection: allowlisted files and dirs
