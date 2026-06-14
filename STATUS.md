@@ -111,7 +111,9 @@ static import of a non-default DLL is a measurable per-invocation tax.
       pwsh; `--skip-profile` honoured) and `--sync` (regenerate).
 - [x] `--remove` file-deletion mode: `--force`/`--recursive`, load-bearing
       guard, y/N prompt — messages **match onix** (branding aside)
-- [x] image-paste (CF_DIB→PNG) — done & verified pixel-exact
+- [x] image-paste (CF_DIB→PNG) — done & verified pixel-exact; real DEFLATE
+      compression via std.compress.flate (200×150 solid → 447 B), stored-block
+      fallback retained
 - [~] clink lua integration (cmd.exe) — NOT NEEDED (PowerShell completion +
       $PROFILE wiring cover the supported shells; cmd.exe/clink intentionally
       out of scope for nix)

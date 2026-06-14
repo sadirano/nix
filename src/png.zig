@@ -9,6 +9,7 @@
 //! zero extra dependencies win.
 
 const std = @import("std");
+const flate = std.compress.flate;
 
 fn u16le(b: []const u8, o: usize) u16 {
     return @as(u16, b[o]) | (@as(u16, b[o + 1]) << 8);
@@ -74,8 +75,9 @@ pub fn encodeDibToPng(arena: std.mem.Allocator, dib: []const u8) !?[]u8 {
     ihdr[11] = 0; // filter
     ihdr[12] = 0; // interlace
     try writeChunk(arena, &buf, "IHDR", &ihdr);
-    // IDAT (zlib stream over raw scanlines)
-    const zlib = try zlibStored(arena, raw);
+    // IDAT: real DEFLATE compression, falling back to a stored (uncompressed)
+    // zlib stream if the compressor hits trouble — both are valid zlib.
+    const zlib = zlibDeflate(arena, raw) catch try zlibStored(arena, raw);
     try writeChunk(arena, &buf, "IDAT", zlib);
     // IEND
     try writeChunk(arena, &buf, "IEND", "");
@@ -101,6 +103,16 @@ fn writeChunk(arena: std.mem.Allocator, buf: *std.ArrayList(u8), typ: []const u8
     var crcb: [4]u8 = undefined;
     writeBe32(&crcb, crc.final());
     try buf.appendSlice(arena, &crcb);
+}
+
+/// zlibDeflate compresses data into a zlib stream via std.compress.flate.
+fn zlibDeflate(arena: std.mem.Allocator, data: []const u8) ![]u8 {
+    var aw = try std.Io.Writer.Allocating.initCapacity(arena, @max(@as(usize, 64), data.len / 2 + 64));
+    const window = try arena.alloc(u8, flate.max_window_len);
+    var c = try flate.Compress.init(&aw.writer, window, .zlib, .default);
+    try c.writer.writeAll(data);
+    try c.finish();
+    return aw.toArrayList().items;
 }
 
 /// zlibStored wraps data in a zlib stream using uncompressed DEFLATE blocks.
