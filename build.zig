@@ -16,6 +16,15 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+
+    // Version string: prefer `git describe` (so a tagged build reports e.g.
+    // "v0.7.1", an untagged one "v0.7.1-3-gabc123-dirty"), falling back to the
+    // .version in build.zig.zon, then "dev". Computed at configure time and
+    // baked in via a build-options module imported as `build_options`.
+    const version = gitDescribe(b) orelse @import("build.zig.zon").version;
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -79,6 +88,7 @@ pub fn build(b: *std.Build) void {
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
                 .{ .name = "nix", .module = mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
@@ -166,4 +176,21 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+}
+
+// gitDescribe returns `git describe --tags --always --dirty` for the build
+// tree, or null when git is unavailable, this isn't a checkout, or there are no
+// commits yet. The output is allocated from the build arena. Re-run on every
+// configure, so the baked version stays current without a manual bump; when the
+// string changes, the generated options file changes and the exe is rebuilt.
+fn gitDescribe(b: *std.Build) ?[]const u8 {
+    var code: u8 = undefined;
+    const stdout = b.runAllowFail(
+        &.{ "git", "describe", "--tags", "--always", "--dirty" },
+        &code,
+        .ignore,
+    ) catch return null;
+    const trimmed = std.mem.trim(u8, stdout, " \r\n\t");
+    if (trimmed.len == 0) return null;
+    return trimmed;
 }

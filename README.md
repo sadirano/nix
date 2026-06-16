@@ -1,0 +1,197 @@
+# nix
+
+A Zig rewrite of [onix](../onix) — the same fast directory alias resolver, with the Go runtime shed. Type `o acme` from any prompt; your shell jumps to the project root. One TOML file holds every alias, one binary serves every command, and the resolve hot path lands at **~4.4 ms vs onix's ~9 ms** — roughly **2× faster per invocation**, in a **1.23 MB** binary (onix is 3.48 MB).
+
+nix is a drop-in: it reads and writes the same `~/.onix` layout, the same `aliases.toml`, `config.toml`, `usage`, and segment files, in onix's exact byte-for-byte formats. It can share a home with onix or stand alone. Full functional parity is verified command-by-command against the Go reference.
+
+## Why
+
+onix is already fast — about 0.6 ms over the OS process-spawn floor. But every invocation still pays for the Go runtime bootstrap (~2 ms) and onix's linked dependency graph (go-toml/json/reflect, another ~2 ms). nix is the experiment: how much of that is sheddable with a hand-written hot path and no runtime?
+
+| Binary | Resolve time | Size |
+|--------|-------------|------|
+| **nix** (Zig, ReleaseFast) | **~4.4 ms** | 1.23 MB |
+| onix (Go, `-s -w`) | ~9 ms | 3.48 MB |
+| Zig no-op | 3.31 ms | 4.6 KB |
+
+The Zig no-op (a bare `CreateProcess` returning immediately) is the floor on this machine. nix's full hot path — resolve + mkdir + usage record — sits ~1 ms above it. The remainder is everything the Go runtime no longer has to do. ~3,500 lines of Zig across 9 modules.
+
+## Install
+
+### Windows (Scoop)
+
+```powershell
+scoop bucket add sadirano https://github.com/sadirano/bucket
+scoop install nix
+```
+
+The Scoop package pulls in the tools the interactive commands lean on (`bat`, `fzf`, `ripgrep`, `everything-cli`, `neovim`) and runs `nix --init` for you on install. `scoop update nix` tracks new releases.
+
+### Prebuilt binaries
+
+Each tagged release publishes a Windows `.zip` on the [Releases](https://github.com/sadirano/nix/releases) page — download, unpack, put `nix.exe` on your `PATH`, then run `nix --init`.
+
+### Build from source
+
+Requires [Zig 0.16+](https://ziglang.org/download/).
+
+```powershell
+zig build -Doptimize=ReleaseFast    # -> zig-out\bin\nix.exe
+zig-out\bin\nix.exe --init
+```
+
+On Windows, prefer the portable build helper — a native build bakes the dev machine's CPU extensions into the binary and crashes with an illegal instruction on any machine lacking them:
+
+```powershell
+.\nix-build.cmd        # zig build … -Dtarget=x86_64-windows -Dcpu=baseline, then --sync
+```
+
+`nix --init` creates `~/.onix/`, writes a shell snippet to `~/.onix/shell/`, installs the `.exe` command wrappers into `~/.onix/bin` (and adds it to your user PATH), and dot-sources the snippet from your shell profile (`$PROFILE` on Windows, `.bashrc`/`.zshrc`/`.profile` on Unix-likes). Restart your shell (or source your profile) once and the short commands below are live.
+
+Because nix writes nix-branded artifacts (`nix.ps1`, `nix.sh`, copied wrappers) into the shared home, it coexists with an existing onix install in the same `~/.onix` rather than clobbering it.
+
+## Use
+
+```powershell
+nix acme C:\Users\dev\projects\acme        # register an alias (auto-creates the dir if missing)
+o acme                                     # cd into it (in your current shell)
+o acme C:\Users\dev\projects\acme          # register + cd in one step (dir auto-created)
+o                                          # no args: open aliases.toml in your editor
+e acme                                     # open it in your editor
+s acme                                     # open it in Explorer
+s acme report.pdf                          # open a file with its default app (PDF→viewer, .zip→archiver…)
+y acme                                     # print the path and copy to clipboard
+p acme                                     # save clipboard content into the alias dir, copy the saved path back
+p acme shot                                # …with a name (image→shot.png, text→shot.md)
+r acme zig build test                      # run a command at that path
+o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
+nix --list                                 # show every alias
+nix --edit                                 # open ~/.onix in your editor
+nix acme --remove                          # forget the alias
+```
+
+The `o` command changes the **current** shell's working directory — it does not spawn a new shell. Three forms:
+
+- `o <alias>` — resolve and cd. If the alias is unknown, `o` prompts for a destination (or runs the directory picker), registers, and cds.
+- `o <alias> <path>` — register (or update) the alias to point at `<path>` and cd there. The directory is auto-created if it doesn't exist.
+- `o` (no args) — open `aliases.toml` in `$EDITOR`. Use `nix --list` if you want a tabular dump to stdout instead.
+
+Everything else (`e`, `s`, `y`, `p`, `r`) invokes `nix` directly, so those don't need shell integration to work.
+
+`s <alias> <file>` opens a single file with its registered default application instead of the file manager — a PDF in your viewer, a `.zip` in your archiver, and so on. The file is resolved against the alias directory and opened by the OS handler (`explorer.exe` / `xdg-open`).
+
+`p <alias> [name]` saves the current clipboard contents into the alias directory and copies the saved path(s) back to the clipboard. Files copied in Explorer (Ctrl+C) take priority — directories are copied recursively, turning the clipboard into a cross-folder copy channel from any prompt. Otherwise the content path applies, handy for parking a screenshot and pasting its path into an agent: an image saves as `.png` (decoded from the clipboard DIB and re-encoded with real DEFLATE compression), text as `.md`. An explicit extension on `<name>` is honoured; with no name, files keep their source name and content uses a timestamp. Collisions auto-increment (`shot.png`, `shot-1.png`) so nothing is ever clobbered.
+
+## Configuration
+
+Aliases live in `~/.onix/aliases.toml`. The format is one TOML table per alias:
+
+```toml
+[acme]
+path = "C:/Users/dev/projects/acme"
+```
+
+You can hand-edit the file (`nix --list` and resolve pick up changes immediately) or use `nix <name> <path>` to register and `nix <name> --remove` to forget. Alias lookups are case-insensitive.
+
+When the list grows crusty, `nix --prune` opens an fzf multi-select of every alias ranked prune-first: dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `nix --prune --no-prompt` just prints the ranking. The ranking comes from `~/.onix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour, so the hot path stays hot; delete it any time to start fresh). The ranking is byte-for-byte identical to onix's.
+
+Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$ONIX_HOME`.
+
+## Configuring shortcuts and search
+
+`~/.onix/config.toml` holds three optional sections.
+
+`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`); the value is the name you'd rather type:
+
+```toml
+[shortcuts]
+s = "show"     # type `show acme` instead of `s acme`
+ff = "fzf"
+```
+
+`[grep]` tunes the `sg` search UI — the fzf preview window and command, fzf colors, ripgrep `--colors`, and whether non-ASCII query characters are matched literally:
+
+```toml
+[grep]
+preview_window = "right:50%"
+rg_colors = ["match:fg:yellow", "path:fg:cyan"]
+```
+
+`[picker]` filters the unknown-alias directory picker (Everything `es` + fzf), which `o` runs in-process when you navigate to a name that isn't an alias yet. By default it excludes any path component starting with `.`, `_`, or `[`, plus dependency/build/cache trees (`node_modules`, `site-packages`, `cache`, `bin`, `obj`, `build`, `dist`, …), the Windows system trees (`C:\Windows\`, `C:\Program Files`, `AppData`, …), and store-owned install trees (`scoop\apps`, `steamapps`) — so the result cap is spent on directories worth picking.
+
+Setting `exclude` replaces the default list entirely (`exclude = []` turns filtering off); `exclude_extra` extends it — the place for machine-specific noise (TOML literal strings save the backslash-doubling):
+
+```toml
+[picker]
+exclude_extra = ['\XboxGames\', '\Engine\']
+```
+
+`nix --sweep` finds noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.onix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
+
+After editing, run `nix --sync` and `. $PROFILE` (or restart PowerShell) to pick up renamed shortcuts or picker changes.
+
+## Sub-aliases (`@`-segments)
+
+Append subdirectory shortcuts to any alias with `@`. Each segment is defined as a `[[contexts]]` entry, resolved by searching three places, first match wins:
+
+1. **Per-alias, local:** `<alias-path>/.onix/segments.toml`
+2. **Per-alias, central:** `~/.onix/segments/<alias>.toml`
+3. **Global:** `~/.onix/segments.toml` — but only entries marked `scope = "global"` are visible here.
+
+```powershell
+o docs@acme              # cd into <acme-path>/documentation
+e src@acme               # editor at <acme-path>/source
+o tasks:432@acme         # inline value: cd into <acme-path>/tickets/432
+o client:bob@projb       # multi-segment, innermost first
+```
+
+```toml
+# ~/.onix/segments.toml — entries in the global file must opt in with scope = "global"
+[[contexts]]
+segment = "docs"
+scope = "global"
+source-template = "/documentation"   # leading `/` makes it a subdirectory
+
+[[contexts]]
+segment = "tasks"
+scope = "global"
+source-template = "/tickets/${tasks}"   # ${tasks} binds to the inline value
+```
+
+Per-alias files need **no** `scope` — every entry there is implicitly scoped to that alias. Only the shared global file requires the opt-in.
+
+A segment resolves through its `source-template`: a string with `${VAR}` references. For each `${name}`, nix looks up, in order, (1) the segment's inline value (`seg:value`), bound under `${<segment>}` — or `${param}` if the context sets `param`; (2) the context's `env` map; (3) the process environment. Templates own their separators — `"/foo"` appends as a subdirectory, `"_${task}.md"` appends as a filename suffix.
+
+Encountering an unknown segment opens your editor on the central per-alias file seeded with a `[[contexts]]` skeleton. Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.onix/segments.toml`.
+
+## Tab completion
+
+Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated hot path that bypasses TOML parsing for sub-millisecond Tab response.
+
+cmd.exe via clink is intentionally out of scope for nix; PowerShell completion plus `$PROFILE` wiring cover the supported shells.
+
+## Commands
+
+`nix --init` initialises `~/.onix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.onix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
+
+## Architecture
+
+nix mirrors onix's module split, hand-written in Zig for the hot path:
+
+- **`src/store.zig`** — `aliases.toml`: byte-scan resolve, quote unescaping, `fromSlash` → host separators, atomic temp+rename writes, name validation.
+- **`src/segments.zig`** — `@`-segment grammar, `${VAR}` template expansion, `[[contexts]]` reading with local→central→global precedence and the traversal guard.
+- **`src/config.zig`** — `config.toml`: `[shortcuts]`, `[grep]`, `[picker]` (composed + deduped exclusion list shared by sweep/picker).
+- **`src/proc.zig`** — process spawning: `runInherit`/`runDetached`/`findInPath`/`runFilter`/`runPipeline`. Streams `rg | fzf` live by relaying bytes through the parent with `File.readStreaming`.
+- **`src/clipboard.zig`** — Win32 clipboard read/write (CF_UNICODETEXT, CF_HDROP file drops, CF_DIB images), lazy-loading `user32` only when needed so the resolve hot path never pulls it into the import table.
+- **`src/png.zig`** — DIB decode + PNG encode (real DEFLATE via `std.compress.flate`, stored-block fallback, CRC32/Adler32) for image paste.
+- **`src/snippet.zig`** — PowerShell (`nix.ps1`) and bash (`nix.sh`) shell glue with alias completers, honouring `[shortcuts]`.
+- **`src/usage.zig`** — the debounced usage recorder behind `--prune` ranking.
+- **`src/editor.zig`** — per-editor line-jump dialects (vim `+N`, VS Code `--goto`).
+
+Two Windows-specific lessons paid for the hot-path budget, both documented in [STATUS.md](STATUS.md): a single static import of a non-default DLL (USER32) is a measurable per-invocation tax, so clipboard functions are `LoadLibrary`'d on demand; and streaming a producer into fzf requires `readStreaming` (one OS read), not a buffered reader that blocks until its buffer fills.
+
+See [STATUS.md](STATUS.md) for the full parity checklist and benchmark notes.
+
+## License
+
+MIT.

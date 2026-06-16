@@ -16,7 +16,8 @@ const fzf_tokyonight_theme =
     "--color=marker:#ff5da0,spinner:#ff007c,header:#ff9e64,query:#c0caf5 " ++
     "--color=border:#27a1b9,separator:#ff9e64,gutter:#283457";
 
-const build_version = "dev";
+// Version is injected by build.zig (git describe → build.zig.zon .version → "dev").
+const build_version = @import("build_options").version;
 
 /// App bundles process-wide context handed to every command, mirroring the
 /// Go onix `env` struct.
