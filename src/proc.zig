@@ -6,6 +6,17 @@ const Io = std.Io;
 
 pub const is_windows = builtin.os.tag == .windows;
 
+/// enableUtf8Console switches the console's active output code page to UTF-8 so
+/// the program's UTF-8 text (em-dashes, the `->` arrows, etc.) renders as
+/// written instead of mojibake (`ΓÇö`) under the default OEM code page
+/// (437/850/...). No-op off Windows; harmless when stdout is redirected.
+pub fn enableUtf8Console() void {
+    if (!is_windows) return;
+    _ = SetConsoleOutputCP(65001); // CP_UTF8
+}
+
+extern "kernel32" fn SetConsoleOutputCP(wCodePageID: c_uint) callconv(.winapi) i32;
+
 /// runInherit spawns argv in cwd with inherited stdio, waits, and returns the
 /// child's exit code. argv[0] is resolved against the parent PATH.
 pub fn runInherit(io: Io, argv: []const []const u8, cwd: []const u8) !u8 {

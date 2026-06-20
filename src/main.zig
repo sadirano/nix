@@ -37,6 +37,10 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
 
+    // Render our UTF-8 output as-written on the Windows console instead of
+    // mojibake under the default OEM code page (no-op elsewhere).
+    proc.enableUtf8Console();
+
     var out_buf: [4096]u8 = undefined;
     var out_fw: Io.File.Writer = .init(.stdout(), io, &out_buf);
     var err_buf: [1024]u8 = undefined;
