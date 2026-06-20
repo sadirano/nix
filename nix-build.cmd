@@ -1,3 +1,4 @@
+@echo off
 cd /d C:\Sadirano\repo\owl\nix
   rem Portable build: -Dcpu=baseline avoids baking the dev machine's CPU
   rem extensions into the binary. A native build (the default) crashes with an
