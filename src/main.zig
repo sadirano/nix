@@ -142,11 +142,10 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         return cmdInit(app, skip_profile);
     }
     if (eql(verb, "preview")) {
-        if (rest.len != 1) {
-            try app.err.writeAll("usage: nix --preview <path>\n");
-            return 1;
-        }
-        return cmdPreview(app, rest[0]);
+        // Empty target (fzf has no current item) -> empty preview, not an error.
+        // Join multiple tokens so unquoted paths with spaces still resolve.
+        const path = try std.mem.join(app.arena, " ", rest);
+        return cmdPreview(app, path);
     }
     // Routed but not yet ported.
     return notYet(app, verb);
@@ -502,7 +501,7 @@ fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
     else
         "bat --style=numbers --color=always \"{}\" 2>/dev/null || ls -la \"{}\"";
     const res = try proc.runFilter(app.arena, app.io, &.{
-        "fzf", "--preview", preview, "--preview-window", "right:50%:border-left",
+        "fzf", "--preview", preview, "--preview-window", "up:40%:border-bottom",
     }, input.items, fzfEnv(app));
     if (res.code != 0) return null; // cancelled / nothing
 
