@@ -49,14 +49,13 @@ pub fn main(init: std.process.Init) !void {
     const raw_args = try init.minimal.args.toSlice(arena);
     const home = try store.resolveHome(arena, init.environ_map);
 
-    // Absolutise argv[0] for the find-preview indirection (`nix --preview`).
-    var exe_path: []const u8 = raw_args[0];
-    if (!std.fs.path.isAbsolute(exe_path)) {
-        var cwdbuf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.process.currentPath(io, &cwdbuf)) |n| {
-            exe_path = std.fs.path.join(arena, &.{ cwdbuf[0..n], exe_path }) catch raw_args[0];
-        } else |_| {}
-    }
+    // The find/picker preview indirection re-invokes this binary as
+    // `<exe> --preview <path>`, so exe_path must be the real on-disk image.
+    // Ask the OS (GetModuleFileNameW etc.) rather than reconstructing it from
+    // argv[0] + cwd: under a wrapper like `o`, argv[0] is the bare relative
+    // "o" and cwd is unrelated, which yielded a bogus "C:\…\o" that cmd.exe
+    // couldn't run in the fzf preview window.
+    const exe_path: []const u8 = std.process.executablePathAlloc(io, arena) catch raw_args[0];
 
     var app: App = .{
         .arena = arena,
