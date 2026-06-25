@@ -209,3 +209,107 @@ pub fn guardFragment(fragment: []const u8) bool {
     while (it.next()) |part| if (std.mem.eql(u8, part, "..")) return false;
     return true;
 }
+
+// ---- tests ------------------------------------------------------------------
+
+test "parseSegmentedAlias: no @ means whole input is the alias" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const r = try parseSegmentedAlias(a, "acme");
+    try std.testing.expectEqual(@as(usize, 0), r.segs.len);
+    try std.testing.expectEqualStrings("acme", r.alias);
+}
+
+test "parseSegmentedAlias: single and multi-segment, last @ splits alias" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const single = try parseSegmentedAlias(a, "docs@acme");
+    try std.testing.expectEqual(@as(usize, 1), single.segs.len);
+    try std.testing.expectEqualStrings("docs", single.segs[0].name);
+    try std.testing.expectEqualStrings("acme", single.alias);
+
+    // Innermost-first: segments keep input order; the final @ delimits the alias.
+    const multi = try parseSegmentedAlias(a, "client@bob@projb");
+    try std.testing.expectEqual(@as(usize, 2), multi.segs.len);
+    try std.testing.expectEqualStrings("client", multi.segs[0].name);
+    try std.testing.expectEqualStrings("bob", multi.segs[1].name);
+    try std.testing.expectEqualStrings("projb", multi.alias);
+}
+
+test "parseSegmentedAlias: inline value, empty value, and whitespace" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const withval = try parseSegmentedAlias(a, "tasks:432@acme");
+    try std.testing.expectEqualStrings("tasks", withval.segs[0].name);
+    try std.testing.expect(withval.segs[0].has_value);
+    try std.testing.expectEqualStrings("432", withval.segs[0].value);
+
+    const empty = try parseSegmentedAlias(a, "tasks:@acme");
+    try std.testing.expectEqualStrings("tasks", empty.segs[0].name);
+    try std.testing.expect(!empty.segs[0].has_value);
+
+    const spaced = try parseSegmentedAlias(a, "  docs  @acme");
+    try std.testing.expectEqual(@as(usize, 1), spaced.segs.len);
+    try std.testing.expectEqualStrings("docs", spaced.segs[0].name);
+}
+
+fn testLookup(map: []const EnvKV, name: []const u8) ?[]const u8 {
+    for (map) |kv| if (std.mem.eql(u8, kv.key, name)) return kv.value;
+    return null;
+}
+
+test "expandTemplate: passthrough, substitution, and errors" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const vars_arr = [_]EnvKV{ .{ .key = "tasks", .value = "432" }, .{ .key = "x", .value = "Y" } };
+    const vars: []const EnvKV = &vars_arr;
+
+    // No ${} → returned verbatim.
+    try std.testing.expectEqualStrings("/documentation", try expandTemplate(a, "/documentation", vars, testLookup));
+    // Single + multiple substitutions.
+    try std.testing.expectEqualStrings("/tickets/432", try expandTemplate(a, "/tickets/${tasks}", vars, testLookup));
+    try std.testing.expectEqualStrings("432-Y", try expandTemplate(a, "${tasks}-${x}", vars, testLookup));
+    // Error cases.
+    try std.testing.expectError(error.Unterminated, expandTemplate(a, "/a/${tasks", vars, testLookup));
+    try std.testing.expectError(error.EmptyVar, expandTemplate(a, "/a/${}", vars, testLookup));
+    try std.testing.expectError(error.Unresolved, expandTemplate(a, "/a/${missing}", vars, testLookup));
+}
+
+// guardFragment is the traversal guard: a malicious or careless source-template
+// must never resolve outside the alias directory. Reject everything escaping.
+test "guardFragment: accepts legitimate subdirectory and suffix fragments" {
+    try std.testing.expect(guardFragment("/sub"));
+    try std.testing.expect(guardFragment("/tickets/432"));
+    try std.testing.expect(guardFragment("_note.md"));
+    try std.testing.expect(guardFragment("foo/bar"));
+}
+
+test "guardFragment: rejects traversal and absolute escapes" {
+    try std.testing.expect(!guardFragment(".."));
+    try std.testing.expect(!guardFragment("a/../b"));
+    try std.testing.expect(!guardFragment("..\\b"));
+    try std.testing.expect(!guardFragment("\\\\server\\share")); // UNC
+    try std.testing.expect(!guardFragment("//x")); // double leading slash
+    try std.testing.expect(!guardFragment("/\\x"));
+    try std.testing.expect(!guardFragment("~"));
+    try std.testing.expect(!guardFragment("C:\\windows")); // drive-absolute
+    try std.testing.expect(!guardFragment("a\x00b")); // embedded NUL
+}
+
+test "lookupContext / lookupGlobalContext: fold match and global scope gate" {
+    const ctxs = [_]ContextDef{
+        .{ .segment = "Docs", .scope = "global" },
+        .{ .segment = "src", .scope = "" }, // not global
+    };
+    // Case-insensitive segment match.
+    try std.testing.expect(lookupContext(&ctxs, "docs") != null);
+    try std.testing.expect(lookupContext(&ctxs, "SRC") != null);
+    try std.testing.expect(lookupContext(&ctxs, "missing") == null);
+    // Global lookup additionally requires scope == "global".
+    try std.testing.expect(lookupGlobalContext(&ctxs, "docs") != null);
+    try std.testing.expect(lookupGlobalContext(&ctxs, "src") == null);
+}

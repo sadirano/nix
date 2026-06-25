@@ -10,7 +10,7 @@ const png = @import("png.zig");
 const is_windows = builtin.os.tag == .windows;
 
 pub fn writeText(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
-    if (is_windows) return writeTextWindows(arena, text);
+    if (is_windows) return writeTextWindows(arena, io, text);
     return writeTextUnix(arena, io, text);
 }
 
@@ -176,7 +176,7 @@ const SystemTime = extern struct {
 };
 extern "kernel32" fn GetLocalTime(lpSystemTime: *SystemTime) callconv(.winapi) void;
 
-fn writeTextWindows(arena: std.mem.Allocator, text: []const u8) !void {
+fn writeTextWindows(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
     const user32 = LoadLibraryA("user32.dll") orelse return error.NoUser32;
     const openClipboard = try proc(OpenClipboardFn, user32, "OpenClipboard");
     const emptyClipboard = try proc(EmptyClipboardFn, user32, "EmptyClipboard");
@@ -185,7 +185,9 @@ fn writeTextWindows(arena: std.mem.Allocator, text: []const u8) !void {
 
     const w16 = try std.unicode.utf8ToUtf16LeAllocZ(arena, text); // len excludes NUL
     const total = w16.len + 1; // include NUL terminator
-    if (openClipboard(null) == 0) return error.OpenClipboard;
+    // The clipboard is a global mutex; another app holding it makes OpenClipboard
+    // fail transiently — retry briefly, matching the read paths.
+    if (!openClipboardRetry(openClipboard, io)) return error.OpenClipboard;
     defer _ = closeClipboard();
     _ = emptyClipboard();
     const h = GlobalAlloc(GMEM_MOVEABLE, total * 2) orelse return error.GlobalAlloc;

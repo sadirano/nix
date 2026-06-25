@@ -14,7 +14,7 @@ pub const Config = struct {
     picker_exclude: ?[][]const u8 = null,
     picker_exclude_extra: [][]const u8 = &.{},
     /// [shortcuts] overrides: builtin slot name → custom command name.
-    shortcuts: []Shortcut = &.{},
+    shortcuts: []const Shortcut = &.{},
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -27,16 +27,19 @@ pub fn builtinShortcuts() []const Shortcut {
     };
 }
 
+/// shortcutFor returns the effective command name for a builtin slot, honouring
+/// any [shortcuts] override in config.toml (falls back to the slot name itself).
+pub fn shortcutFor(cfg: Config, slot: []const u8) []const u8 {
+    for (cfg.shortcuts) |sc| if (std.mem.eql(u8, sc.builtin, slot)) return sc.custom;
+    return slot;
+}
+
 /// resolvedShortcutNames returns the effective command names (defaults with any
 /// config overrides applied), sorted.
 pub fn resolvedShortcutNames(arena: std.mem.Allocator, cfg: Config) ![][]const u8 {
     var names: std.ArrayList([]const u8) = .empty;
     for (builtinShortcuts()) |b| {
-        var name = b.custom;
-        for (cfg.shortcuts) |s| if (std.mem.eql(u8, s.builtin, b.builtin)) {
-            name = s.custom;
-        };
-        try names.append(arena, name);
+        try names.append(arena, shortcutFor(cfg, b.builtin));
     }
     std.mem.sort([]const u8, names.items, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
@@ -241,4 +244,36 @@ fn lower(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
     const o = try arena.dupe(u8, s);
     for (o) |*c| c.* = std.ascii.toLower(c.*);
     return o;
+}
+
+// ---- tests ------------------------------------------------------------------
+
+test "parseStringArray: mixed quotes, empty, ignores bare tokens" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const arr = try parseStringArray(a, "[\"a\", 'b', bare, \"c\"]");
+    try std.testing.expectEqual(@as(usize, 3), arr.len);
+    try std.testing.expectEqualStrings("a", arr[0]);
+    try std.testing.expectEqualStrings("b", arr[1]);
+    try std.testing.expectEqualStrings("c", arr[2]);
+
+    const empty = try parseStringArray(a, "[]");
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "resolvedShortcutNames: defaults sorted; override replaces a slot" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Defaults are the identity names, sorted.
+    const def = try resolvedShortcutNames(a, .{});
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "r", "s", "sg", "y" }), def);
+
+    // Rename `s` -> `show`: it replaces s and the list stays sorted.
+    const shortcuts = [_]Shortcut{.{ .builtin = "s", .custom = "show" }};
+    const got = try resolvedShortcutNames(a, .{ .shortcuts = &shortcuts });
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "r", "sg", "show", "y" }), got);
 }

@@ -76,14 +76,14 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     if (std.fs.path.dirname(path)) |d| try mkdirAll(io, d);
     const names = try config.resolvedShortcutNames(arena, cfg);
     // Resolve individual slot names for the function bodies.
-    const o = slot(cfg, "o");
-    const e = slot(cfg, "e");
-    const s = slot(cfg, "s");
-    const y = slot(cfg, "y");
-    const p = slot(cfg, "p");
-    const r = slot(cfg, "r");
-    const sg = slot(cfg, "sg");
-    const ff = slot(cfg, "ff");
+    const o = config.shortcutFor(cfg, "o");
+    const e = config.shortcutFor(cfg, "e");
+    const s = config.shortcutFor(cfg, "s");
+    const y = config.shortcutFor(cfg, "y");
+    const p = config.shortcutFor(cfg, "p");
+    const r = config.shortcutFor(cfg, "r");
+    const sg = config.shortcutFor(cfg, "sg");
+    const ff = config.shortcutFor(cfg, "ff");
 
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "# nix shell integration (generated; do not edit — run 'nix --sync')\n");
@@ -144,11 +144,6 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
         \\
     , .{ joined.items, joined.items });
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = b.items });
-}
-
-fn slot(cfg: config.Config, name: []const u8) []const u8 {
-    for (cfg.shortcuts) |sc| if (std.mem.eql(u8, sc.builtin, name)) return sc.custom;
-    return name;
 }
 
 /// installExeWrappers makes nix available under each command name in binDir by

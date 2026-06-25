@@ -101,12 +101,12 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
 
 fn dispatch(app: *App, args: [][]const u8) !u8 {
     if (args.len == 0) {
-        try printUsage(app.out);
+        try printUsage(app);
         return 0;
     }
     const first = args[0];
     if (eql(first, "--help") or eql(first, "-h")) {
-        try printUsage(app.out);
+        try printUsage(app);
         return 0;
     }
     if (startsWithDash(first)) {
@@ -124,8 +124,8 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "list-names")) return cmdListNames(app);
     if (eql(verb, "version")) return cmdVersion(app);
     if (eql(verb, "edit")) return cmdEdit(app, "", rest);
-    if (eql(verb, "remove")) return cmdRemove(app, "", rest);
     if (eql(verb, "prune")) return cmdPrune(app);
+    if (eql(verb, "picker-check")) return cmdPickerCheck(app, rest);
     if (eql(verb, "contexts")) return cmdContexts(app);
     if (eql(verb, "sweep")) return cmdSweep(app, rest);
     if (eql(verb, "sync")) return cmdSync(app);
@@ -147,8 +147,8 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         const path = try std.mem.join(app.arena, " ", rest);
         return cmdPreview(app, path);
     }
-    // Routed but not yet ported.
-    return notYet(app, verb);
+    try app.err.print("nix: unknown flag \"{s}\" (run `nix --help` for usage)\n", .{flag});
+    return 1;
 }
 
 fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
@@ -180,7 +180,8 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "grep")) return cmdGrep(app, alias, action_args);
     if (eql(act, "find")) return cmdFind(app, alias, action_args);
     if (eql(act, "paste")) return cmdPaste(app, alias, action_args);
-    return notYet(app, act);
+    try app.err.print("nix: unknown action \"--{s}\" (run `nix --help` for usage)\n", .{act});
+    return 1;
 }
 
 fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
@@ -265,33 +266,18 @@ fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 {
     return abs;
 }
 
-/// cmdRemove handles both forms: with no file args it removes the alias entry
-/// (or errors for the system form); with file args it deletes those paths
-/// relative to the alias dir (or ~/.onix). Mirrors RemoveCmd.
+/// cmdRemove forgets an alias entry. It takes no extra arguments — `nix
+/// <alias> --remove` (or `--rm`) drops the alias from aliases.toml and usage.
 fn cmdRemove(app: *App, alias: []const u8, args: [][]const u8) !u8 {
-    var files: std.ArrayList([]const u8) = .empty;
-    var force = false;
-    var recursive = false;
-    for (args) |a| {
-        if (eql(a, "--force") or eql(a, "-F")) {
-            force = true;
-        } else if (eql(a, "--recursive") or eql(a, "-R")) {
-            recursive = true;
-        } else if (startsWithDash(a)) {
-            try app.err.print("nix: unknown flag for --remove: \"{s}\"\n", .{a});
-            return 1;
-        } else {
-            try files.append(app.arena, a);
-        }
+    if (args.len > 0) {
+        try app.err.print("nix: --remove takes no arguments (it forgets the alias); got \"{s}\"\n", .{args[0]});
+        return 1;
     }
-    if (files.items.len == 0) {
-        if (alias.len == 0) {
-            try app.err.writeAll("nix: --remove requires an alias name or one or more files\n");
-            return 1;
-        }
-        return removeAliasEntry(app, alias);
+    if (alias.len == 0) {
+        try app.err.writeAll("nix: --remove requires an alias name (usage: nix <alias> --remove)\n");
+        return 1;
     }
-    return deleteFiles(app, alias, files.items, force, recursive);
+    return removeAliasEntry(app, alias);
 }
 
 fn removeAliasEntry(app: *App, alias: []const u8) !u8 {
@@ -315,81 +301,6 @@ fn removeAliasEntry(app: *App, alias: []const u8) !u8 {
     usage.remove(app.arena, app.io, app.home, &.{lower}) catch {};
     try app.err.print("removed {s}\n", .{lower});
     return 0;
-}
-
-const load_bearing = [_][]const u8{ "aliases.toml", "config.toml", "segments.toml" };
-
-fn isLoadBearing(arena: std.mem.Allocator, abs: []const u8) bool {
-    const base = std.fs.path.basename(abs);
-    var lb: [64]u8 = undefined;
-    if (base.len > lb.len) return false;
-    const lower = std.ascii.lowerString(lb[0..base.len], base);
-    _ = arena;
-    for (load_bearing) |f| if (std.mem.eql(u8, lower, f)) return true;
-    return false;
-}
-
-fn deleteFiles(app: *App, alias: []const u8, files: [][]const u8, force: bool, recursive: bool) !u8 {
-    var base = app.home;
-    if (alias.len > 0) base = (try resolveAliasPath(app, alias)) orelse return 1;
-
-    const Target = struct { display: []const u8, abs: []const u8, is_dir: bool };
-    var targets: std.ArrayList(Target) = .empty;
-    for (files) |f| {
-        const abs = if (std.fs.path.isAbsolute(f)) f else try std.fs.path.join(app.arena, &.{ base, f });
-        if (!proc.pathExists(app.io, abs)) {
-            try app.err.print("nix: delete {s}: not found\n", .{f});
-            return 1;
-        }
-        const dir = isDir(app, abs);
-        if (dir and !recursive) {
-            try app.err.print("nix: delete {s}: is a directory (pass --recursive to remove)\n", .{f});
-            return 1;
-        }
-        if (!force and alias.len == 0 and isLoadBearing(app.arena, abs)) {
-            try app.err.print("nix: delete {s}: refusing to delete load-bearing onix file without --force\n", .{f});
-            return 1;
-        }
-        try targets.append(app.arena, .{ .display = f, .abs = abs, .is_dir = dir });
-    }
-
-    if (!force) {
-        try app.err.print("Delete {d} item(s) from {s}? [y/N] ", .{ targets.items.len, base });
-        try app.err.flush();
-        const resp = readLineStdin(app);
-        const r = std.mem.trim(u8, resp, " \t\r\n");
-        var lb: [16]u8 = undefined;
-        const lr = if (r.len <= lb.len) std.ascii.lowerString(lb[0..r.len], r) else r;
-        if (!std.mem.eql(u8, lr, "y") and !std.mem.eql(u8, lr, "yes")) {
-            try app.err.writeAll("nix: aborted\n");
-            return 1;
-        }
-    }
-
-    for (targets.items) |t| {
-        if (t.is_dir) {
-            Io.Dir.cwd().deleteTree(app.io, t.abs) catch |e| {
-                try app.err.print("nix: delete {s}: {s}\n", .{ t.display, @errorName(e) });
-                return 1;
-            };
-        } else {
-            Io.Dir.cwd().deleteFile(app.io, t.abs) catch |e| {
-                try app.err.print("nix: delete {s}: {s}\n", .{ t.display, @errorName(e) });
-                return 1;
-            };
-        }
-        try app.err.print("deleted {s}\n", .{t.display});
-    }
-    return 0;
-}
-
-/// readLineStdin reads one chunk from stdin (enough for a y/N prompt).
-fn readLineStdin(app: *App) []const u8 {
-    const in = Io.File.stdin();
-    var buf: [256]u8 = undefined;
-    var iov = [_][]u8{buf[0..]};
-    const n = in.readStreaming(app.io, &iov) catch return "";
-    return app.arena.dupe(u8, buf[0..n]) catch "";
 }
 
 fn cmdList(app: *App) !u8 {
@@ -475,14 +386,10 @@ fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
     // Filter excluded dirs (case-insensitive substring), drop blanks.
     var cands: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, raw, '\n');
-    outer: while (lines.next()) |l0| {
+    while (lines.next()) |l0| {
         const l = std.mem.trim(u8, l0, " \t\r");
         if (l.len == 0) continue;
-        const ll = try lowerDup(app.arena, l);
-        for (excludes) |frag| {
-            const lf = try lowerDup(app.arena, frag);
-            if (std.mem.indexOf(u8, ll, lf) != null) continue :outer;
-        }
+        if (try excludedBy(app.arena, l, excludes) != null) continue;
         try cands.append(app.arena, l);
         if (cands.items.len >= 500) break;
     }
@@ -508,6 +415,78 @@ fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
     const pick = std.mem.trim(u8, res.output, " \t\r\n");
     if (pick.len == 0) return null;
     return try addAlias(app, name, pick);
+}
+
+/// excludedBy returns the first exclusion fragment that matches `path`
+/// (case-insensitive substring), or null if none. This is the picker's exact
+/// filter rule, shared by pickDirectory and the --picker-check diagnostic so
+/// the diagnostic can never disagree with the real picker.
+fn excludedBy(arena: std.mem.Allocator, path: []const u8, excludes: []const []const u8) !?[]const u8 {
+    const lp = try lowerDup(arena, path);
+    for (excludes) |frag| {
+        const lf = try lowerDup(arena, frag);
+        if (std.mem.indexOf(u8, lp, lf) != null) return frag;
+    }
+    return null;
+}
+
+/// cmdPickerCheck replays the `o <name>` picker pipeline (es → exclusion filter
+/// → 500-result cap) and prints, per Everything hit, whether it would appear in
+/// the picker or which exclusion fragment dropped it. Diagnoses "why isn't my
+/// directory offered?".
+fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
+    var name: ?[]const u8 = null;
+    for (rest) |a| {
+        if (eql(a, "--no-prompt") or eql(a, "-q") or eql(a, "--json") or eql(a, "-j")) continue;
+        if (startsWithDash(a)) {
+            try app.err.print("nix: unknown flag for --picker-check: \"{s}\"\n", .{a});
+            return 1;
+        }
+        if (name != null) {
+            try app.err.print("nix: --picker-check takes one name; got extra \"{s}\"\n", .{a});
+            return 1;
+        }
+        name = a;
+    }
+    const q = name orelse {
+        try app.err.writeAll("nix: --picker-check needs a name (usage: nix --picker-check <name>)\n");
+        return 1;
+    };
+    if (proc.findInPath(app.arena, app.io, app.env, "es") == null) {
+        try app.err.writeAll("nix: Everything 'es' CLI not found on PATH\n");
+        return 1;
+    }
+    const cfg = try config.loadConfig(app.arena, app.io, app.home);
+    const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
+
+    const raw = proc.captureOutput(app.arena, app.io, &.{ "es", q, "/ad", "-n", "5000" }, ".") catch "";
+
+    var total: usize = 0;
+    var shown: usize = 0;
+    var excluded: usize = 0;
+    var capped: usize = 0;
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |l0| {
+        const l = std.mem.trim(u8, l0, " \t\r");
+        if (l.len == 0) continue;
+        total += 1;
+        if (try excludedBy(app.arena, l, excludes)) |frag| {
+            excluded += 1;
+            try app.out.print("exclude  {s}  ({s})\n", .{ l, frag });
+        } else if (shown < 500) {
+            shown += 1;
+            try app.out.print("ok       {s}\n", .{l});
+        } else {
+            capped += 1;
+            try app.out.print("cap      {s}  (beyond the 500-result cap)\n", .{l});
+        }
+    }
+    try app.out.print("\n{d} Everything hit(s) for \"{s}\": {d} shown, {d} excluded, {d} past the cap\n", .{ total, q, shown, excluded, capped });
+    if (total == 0) {
+        try app.out.print("(none — check \"{s}\" is a substring of the path, the drive is indexed, and Everything is running)\n", .{q});
+    }
+    try app.out.flush();
+    return 0;
 }
 
 /// SegLookup is the variable-resolution context for a source-template:
@@ -1641,11 +1620,6 @@ fn interactiveShell(app: *App) []const u8 {
     return "/bin/sh";
 }
 
-fn notYet(app: *App, what: []const u8) !u8 {
-    try app.err.print("nix: \"{s}\" is not yet ported from onix (see STATUS.md)\n", .{what});
-    return 2;
-}
-
 // ---- helpers ----------------------------------------------------------------
 
 fn absPath(app: *App, p: []const u8) ![]const u8 {
@@ -1659,6 +1633,22 @@ fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
     try w.writeAll(s);
     var i: usize = s.len;
     while (i < width) : (i += 1) try w.writeByte(' ');
+}
+
+fn writeSpaces(w: *Io.Writer, n: usize) !void {
+    var i: usize = 0;
+    while (i < n) : (i += 1) try w.writeByte(' ');
+}
+
+/// dispWidth counts display columns of an ASCII/UTF-8 string by counting
+/// codepoints (UTF-8 continuation bytes don't add width). Good enough for the
+/// narrow glyphs used in help text (e.g. the `…` ellipsis is one column).
+fn dispWidth(s: []const u8) usize {
+    var n: usize = 0;
+    for (s) |b| {
+        if (b & 0xC0 != 0x80) n += 1;
+    }
+    return n;
 }
 
 fn lowerDup(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
@@ -1715,7 +1705,12 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
     if (startsWithDash(args[0])) return .{ .args = args, .nav_alias = "", .is_nav = false };
     const alias = args[0];
     const rest = args[1..];
-    if (eql(action, "navigate")) return .{ .args = &.{}, .nav_alias = alias, .is_nav = true };
+    if (eql(action, "navigate")) {
+        // `o <alias>` navigates; `o <alias> <path>` registers the alias to
+        // that path (relative paths included) via the canonical add form.
+        if (rest.len == 0) return .{ .args = &.{}, .nav_alias = alias, .is_nav = true };
+        return .{ .args = args, .nav_alias = "", .is_nav = false };
+    }
     const flag = actionFlag(action) orelse return .{ .args = args, .nav_alias = "", .is_nav = false };
     var out = try arena.alloc([]const u8, rest.len + 2);
     out[0] = alias;
@@ -1774,10 +1769,10 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
     const map = [_]struct { k: []const u8, v: []const u8 }{
         .{ .k = "--list", .v = "list" },         .{ .k = "--ls", .v = "list" },
         .{ .k = "-l", .v = "list" },             .{ .k = "--list-names", .v = "list-names" },
-        .{ .k = "--remove", .v = "remove" },     .{ .k = "--rm", .v = "remove" },
         .{ .k = "--edit", .v = "edit" },         .{ .k = "-e", .v = "edit" },
         .{ .k = "--contexts", .v = "contexts" }, .{ .k = "-c", .v = "contexts" },
         .{ .k = "--prune", .v = "prune" },       .{ .k = "--sweep", .v = "sweep" },
+        .{ .k = "--picker-check", .v = "picker-check" },
         .{ .k = "--init", .v = "init" },         .{ .k = "-I", .v = "init" },
         .{ .k = "--sync", .v = "sync" },         .{ .k = "-S", .v = "sync" },
         .{ .k = "--preview", .v = "preview" },   .{ .k = "--version", .v = "version" },
@@ -1787,17 +1782,207 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
     return null;
 }
 
-fn printUsage(w: *Io.Writer) !void {
+const ShortcutHelp = struct { slot: []const u8, args: []const u8, desc: []const u8 };
+
+const shortcut_help = [_]ShortcutHelp{
+    .{ .slot = "o", .args = "<alias> [path]", .desc = "cd into the alias dir; no path opens aliases.toml" },
+    .{ .slot = "e", .args = "<alias> [file]", .desc = "open the dir (or a file) in your editor" },
+    .{ .slot = "s", .args = "<alias> [file]", .desc = "open the dir in the file manager, or a file with its default app" },
+    .{ .slot = "y", .args = "<alias>", .desc = "print the path and copy it to the clipboard" },
+    .{ .slot = "p", .args = "<alias> [name]", .desc = "save clipboard contents into the alias dir" },
+    .{ .slot = "r", .args = "<alias> <cmd…>", .desc = "run a command at the alias dir" },
+    .{ .slot = "sg", .args = "<alias> <pat>", .desc = "ripgrep search under the alias dir (fzf UI)" },
+    .{ .slot = "ff", .args = "<alias> [pat]", .desc = "fuzzy-find files under the alias dir" },
+};
+
+fn printUsage(app: *App) !void {
+    const w = app.out;
+    // Best-effort: reflect the user's renamed shortcuts; defaults on any error.
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+
     try w.writeAll(
         \\nix — fast directory alias resolver (Zig port of onix)
         \\
-        \\USAGE:
-        \\  nix <alias>                       resolve to absolute path (hot path)
-        \\  nix <alias> <path>                register or update an alias
-        \\  nix <alias> --<action> [args...]  run an action against an alias
-        \\  nix --<verb> [args...]            system-wide command
+        \\USAGE
+        \\  nix <alias>                 resolve an alias to its absolute path
+        \\  nix <alias> <path>          register or update an alias (dir auto-created)
+        \\  nix <alias> --<action>      run an action against an alias
+        \\  nix --<command>             system-wide command
+        \\  nix <seg>@<alias>           resolve a sub-alias segment (see README)
         \\
-        \\See STATUS.md for the port's feature coverage.
+        \\SHORTCUTS  (installed by `nix --init`; rename in config.toml [shortcuts])
         \\
     );
+
+    // Names reflect config.toml [shortcuts] overrides; pad to a shared column
+    // so descriptions stay aligned whatever the (possibly renamed) names are.
+    // Widths are in display columns (UTF-8 aware) so the `…` glyph lines up.
+    var name_w: usize = 0;
+    var args_w: usize = 0;
+    for (shortcut_help) |sh| {
+        name_w = @max(name_w, dispWidth(config.shortcutFor(cfg, sh.slot)));
+        args_w = @max(args_w, dispWidth(sh.args));
+    }
+    for (shortcut_help) |sh| {
+        const name = config.shortcutFor(cfg, sh.slot);
+        try w.writeAll("  ");
+        try w.writeAll(name);
+        try writeSpaces(w, name_w + 1 - dispWidth(name));
+        try w.writeAll(sh.args);
+        try writeSpaces(w, args_w + 2 - dispWidth(sh.args));
+        try w.print("{s}\n", .{sh.desc});
+    }
+    try w.writeByte('\n');
+
+    try w.writeAll(
+        \\ACTIONS  (nix <alias> --<action> …)
+        \\  --resolve            print the resolved path
+        \\  --edit,    -e        open in your editor
+        \\  --explore, -x        open in the file manager
+        \\  --yank,    -y        copy the path to the clipboard
+        \\  --paste,   -p        save the clipboard into the dir
+        \\  --run,     -r <cmd>  run a command at the dir
+        \\  --grep,    -g <pat>  ripgrep search
+        \\  --find,    -f [pat]  fuzzy-find files
+        \\  --remove,  --rm      forget the alias
+        \\
+        \\COMMANDS
+        \\  --list,    -l        list every alias  (--list-names for bare names)
+        \\  --edit,    -e        open ~/.onix in your editor
+        \\  --prune              interactively remove stale aliases
+        \\  --sweep   [--min N]  find noisy dir trees to exclude from the picker
+        \\  --picker-check <name>   show why dirs are shown/hidden in the `o` picker
+        \\  --contexts, -c       list global @-segment contexts
+        \\  --init [--skip-profile]   set up ~/.onix, wrappers, and shell glue
+        \\  --sync,    -S        regenerate shell glue and wrappers
+        \\  --version, -v        print version and platform
+        \\  --help,    -h        show this help
+        \\
+    );
+}
+
+// Pull every module's test blocks into the exe test binary. Without these
+// references, `zig build test` would only run the tests defined in main.zig.
+test {
+    _ = store;
+    _ = usage;
+    _ = proc;
+    _ = clipboard;
+    _ = editor;
+    _ = config;
+    _ = segments;
+    _ = snippet;
+    _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
+}
+
+test "desugarMultiCall navigate: bare alias navigates" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var argv = [_][]const u8{"test"};
+    const d = try desugarMultiCall(a, "navigate", &argv);
+    try std.testing.expect(d.is_nav);
+    try std.testing.expectEqualStrings("test", d.nav_alias);
+}
+
+test "desugarMultiCall navigate: alias + path registers (relative)" {
+    // `o test .` must register `test` -> `.`, not navigate / trigger the picker.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var argv = [_][]const u8{ "test", "." };
+    const d = try desugarMultiCall(a, "navigate", &argv);
+    try std.testing.expect(!d.is_nav);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "test", "." }), d.args);
+}
+
+test "desugarMultiCall navigate: alias + absolute path registers" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var argv = [_][]const u8{ "test", "C:/work" };
+    const d = try desugarMultiCall(a, "navigate", &argv);
+    try std.testing.expect(!d.is_nav);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "test", "C:/work" }), d.args);
+}
+
+test "desugarMultiCall: action flag injected after alias" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // `e acme foo.txt` -> canonical `acme --edit foo.txt`.
+    var argv = [_][]const u8{ "acme", "foo.txt" };
+    const d = try desugarMultiCall(a, "edit", &argv);
+    try std.testing.expect(!d.is_nav);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "acme", "--edit", "foo.txt" }), d.args);
+}
+
+test "desugarMultiCall: leading-dash first arg passes through untouched" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var argv = [_][]const u8{ "--list", "x" };
+    const d = try desugarMultiCall(a, "explore", &argv);
+    try std.testing.expect(!d.is_nav);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--list", "x" }), d.args);
+}
+
+test "desugarMultiCall: navigate with no args opens the aliases file" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const d = try desugarMultiCall(a, "navigate", &.{});
+    try std.testing.expect(!d.is_nav);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"--edit"}), d.args);
+}
+
+test "multicallAction: wrapper-name mapping, .exe stripping, case-fold" {
+    try std.testing.expectEqualStrings("navigate", multicallAction("o").?);
+    try std.testing.expectEqualStrings("edit", multicallAction("e.exe").?);
+    try std.testing.expectEqualStrings("grep", multicallAction("SG").?);
+    try std.testing.expectEqualStrings("find", multicallAction("C:/bin/ff.exe").?);
+    // The canonical binary names are not multicall wrappers.
+    try std.testing.expect(multicallAction("nix") == null);
+    try std.testing.expect(multicallAction("onix.exe") == null);
+    try std.testing.expect(multicallAction("unknown") == null);
+}
+
+test "humanAge: never / today / 1d / Nd buckets" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const day = 86400;
+    const now: i64 = 10 * day;
+    try std.testing.expectEqualStrings("never", try humanAge(a, 0, now));
+    try std.testing.expectEqualStrings("today", try humanAge(a, now, now));
+    try std.testing.expectEqualStrings("1d ago", try humanAge(a, now - day, now));
+    try std.testing.expectEqualStrings("5d ago", try humanAge(a, now - 5 * day, now));
+}
+
+test "excludedBy: first matching fragment, case-insensitive, or null" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const ex = [_][]const u8{ "\\node_modules", "\\src\\", "\\." };
+    // Case-insensitive substring over the whole path; returns the original frag.
+    try std.testing.expectEqualStrings("\\src\\", (try excludedBy(a, "C:\\Dev\\Src\\proj", &ex)).?);
+    try std.testing.expectEqualStrings("\\node_modules", (try excludedBy(a, "C:\\app\\node_modules\\x", &ex)).?);
+    // No fragment matches → null (this path would be offered).
+    try std.testing.expect((try excludedBy(a, "C:\\work\\acme", &ex)) == null);
+}
+
+test "flag maps: systemVerb, aliasAction, actionFlag" {
+    try std.testing.expectEqualStrings("list", systemVerb("--list").?);
+    try std.testing.expectEqualStrings("prune", systemVerb("--prune").?);
+    try std.testing.expect(systemVerb("--bogus") == null);
+    // File deletion was removed: --remove/--rm are no longer system verbs.
+    try std.testing.expect(systemVerb("--remove") == null);
+    try std.testing.expect(systemVerb("--rm") == null);
+
+    try std.testing.expectEqualStrings("edit", aliasAction("-e").?);
+    try std.testing.expectEqualStrings("remove", aliasAction("--remove").?);
+    try std.testing.expect(aliasAction("acme") == null);
+
+    try std.testing.expectEqualStrings("--grep", actionFlag("grep").?);
+    try std.testing.expect(actionFlag("navigate") == null);
 }

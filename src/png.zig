@@ -40,13 +40,22 @@ pub fn encodeDibToPng(arena: std.mem.Allocator, dib: []const u8) !?[]u8 {
     const bpp: usize = bit_count / 8;
     // BI_BITFIELDS with a V40 header carries three DWORD masks after it.
     const mask_bytes: usize = if (compression == 3 and bi_size == 40) 12 else 0;
-    const pix_off: usize = bi_size + mask_bytes + clr_used * 4;
+    // Widen clr_used before *4: it's an attacker-controlled u32 header field, so
+    // `clr_used * 4` in u32 would overflow (panic in Debug, wrap in ReleaseFast)
+    // for clr_used ≥ 2^30. usize math keeps it safe.
+    const pix_off: usize = bi_size + mask_bytes + @as(usize, clr_used) * 4;
+    // width*bit_count fits usize (width ≤ 2^31, bit_count ≤ 32), but the products
+    // with `height` below can overflow on a hostile/garbage header. Compute them
+    // with overflow checks and bail (null) rather than wrapping past the bounds
+    // check into an undersized allocation and an out-of-bounds write.
     const stride: usize = ((width * bit_count + 31) / 32) * 4;
-    if (pix_off + stride * height > dib.len) return null;
+    const pixels = std.math.mul(usize, stride, height) catch return null;
+    const pix_end = std.math.add(usize, pix_off, pixels) catch return null;
+    if (pix_end > dib.len) return null;
 
     // Build PNG scanlines: each row = filter byte 0x00 + width*3 (RGB) bytes.
     const row_len = 1 + width * 3;
-    const raw = try arena.alloc(u8, row_len * height);
+    const raw = try arena.alloc(u8, std.math.mul(usize, row_len, height) catch return null);
     var y: usize = 0;
     while (y < height) : (y += 1) {
         const src_row = if (bottom_up) (height - 1 - y) else y;
@@ -137,4 +146,87 @@ fn zlibStored(arena: std.mem.Allocator, data: []const u8) ![]u8 {
     writeBe32(&ab, std.hash.Adler32.hash(data));
     try out.appendSlice(arena, &ab);
     return out.items;
+}
+
+// ---- tests ------------------------------------------------------------------
+
+const png_sig = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+
+test "encodeDibToPng: valid 1x1 24-bit produces a PNG" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var dib = [_]u8{0} ** 44;
+    dib[0] = 40; // biSize
+    dib[4] = 1; // biWidth = 1
+    dib[8] = 1; // biHeight = 1
+    dib[12] = 1; // biPlanes
+    dib[14] = 24; // biBitCount
+    dib[40] = 0x11; // B
+    dib[41] = 0x22; // G
+    dib[42] = 0x33; // R
+    const out = (try encodeDibToPng(a, &dib)).?;
+    try std.testing.expect(out.len > png_sig.len);
+    try std.testing.expectEqualSlices(u8, &png_sig, out[0..8]);
+}
+
+test "encodeDibToPng: rejects malformed and hostile headers" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Truncated header.
+    try std.testing.expect((try encodeDibToPng(a, &[_]u8{0} ** 10)) == null);
+
+    // Unsupported bit depth (8-bit palettized).
+    var d8 = [_]u8{0} ** 44;
+    d8[0] = 40;
+    d8[4] = 1;
+    d8[8] = 1;
+    d8[12] = 1;
+    d8[14] = 8;
+    try std.testing.expect((try encodeDibToPng(a, &d8)) == null);
+
+    // clr_used = 0xFFFFFFFF — `clr_used * 4` would overflow u32 (panic in Debug)
+    // before the widening fix. Must just return null now.
+    var dclr = [_]u8{0} ** 44;
+    dclr[0] = 40;
+    dclr[4] = 1;
+    dclr[8] = 1;
+    dclr[12] = 1;
+    dclr[14] = 24;
+    dclr[32] = 0xFF;
+    dclr[33] = 0xFF;
+    dclr[34] = 0xFF;
+    dclr[35] = 0xFF;
+    try std.testing.expect((try encodeDibToPng(a, &dclr)) == null);
+
+    // Huge 32-bit dimensions: the size math must not let a bad bounds check
+    // through to an undersized allocation.
+    var dbig = [_]u8{0} ** 44;
+    dbig[0] = 40;
+    dbig[4] = 0xFF;
+    dbig[5] = 0xFF;
+    dbig[6] = 0xFF;
+    dbig[7] = 0x7F; // biWidth = 0x7FFFFFFF
+    dbig[8] = 0xFF;
+    dbig[9] = 0xFF;
+    dbig[10] = 0xFF;
+    dbig[11] = 0x7F; // biHeight = 0x7FFFFFFF
+    dbig[12] = 1;
+    dbig[14] = 32;
+    try std.testing.expect((try encodeDibToPng(a, &dbig)) == null);
+
+    // biHeight = INT_MIN (0x80000000): @abs must not overflow i32. Returns null
+    // (no pixel data present), but must not panic.
+    var dmin = [_]u8{0} ** 44;
+    dmin[0] = 40;
+    dmin[4] = 1;
+    dmin[8] = 0x00;
+    dmin[9] = 0x00;
+    dmin[10] = 0x00;
+    dmin[11] = 0x80; // biHeight = -2147483648
+    dmin[12] = 1;
+    dmin[14] = 24;
+    try std.testing.expect((try encodeDibToPng(a, &dmin)) == null);
 }

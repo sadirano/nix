@@ -297,3 +297,144 @@ fn parsePathInner(arena: std.mem.Allocator, line: []const u8, host: bool) !?[]co
     }
     return null;
 }
+
+// ---- tests ------------------------------------------------------------------
+
+// scanForAlias is the resolve hot path: every `o <alias>` runs it. These pin
+// its contract — match, case-fold, slash→host conversion, and section bounds.
+test "scanForAlias: basic match returns host path" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const toml =
+        \\# onix aliases
+        \\
+        \\[acme]
+        \\path = 'C:/proj/acme'
+        \\
+        \\[other]
+        \\path = 'C:/proj/other'
+        \\
+    ;
+    const got = (try scanForAlias(a, toml, "acme")).?;
+    try std.testing.expectEqualStrings(try fromSlash(a, "C:/proj/acme"), got);
+}
+
+test "scanForAlias: case-insensitive section header" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const got = (try scanForAlias(a, "[ACME]\npath = 'x/y'\n", "acme")).?;
+    try std.testing.expectEqualStrings(try fromSlash(a, "x/y"), got);
+}
+
+test "scanForAlias: unknown alias returns null" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expect((try scanForAlias(a, "[acme]\npath = 'x'\n", "nope")) == null);
+}
+
+test "scanForAlias: section isolation — no path bleed from next section" {
+    // [acme] has no path of its own; the next section's path must not leak in.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const toml = "[acme]\n[other]\npath = 'x'\n";
+    try std.testing.expect((try scanForAlias(a, toml, "acme")) == null);
+}
+
+test "scanForAlias: double-quoted path decodes escapes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const got = (try scanForAlias(a, "[acme]\npath = \"C:\\\\proj\\\\acme\"\n", "acme")).?;
+    try std.testing.expectEqualStrings(try fromSlash(a, "C:\\proj\\acme"), got);
+}
+
+test "loadAliases: lowercased names, first path wins, multi-target skipped" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const toml =
+        \\[Acme]
+        \\path = 'C:/a'
+        \\path = 'C:/ignored'
+        \\
+        \\[Multi]
+        \\paths = ['C:/x', 'C:/y']
+        \\
+        \\[zeta]
+        \\path = 'C:/z'
+        \\
+    ;
+    const list = try loadAliases(a, toml);
+    try std.testing.expectEqual(@as(usize, 2), list.items.len);
+    try std.testing.expectEqualStrings("acme", list.items[0].name);
+    try std.testing.expectEqualStrings("C:/a", list.items[0].path); // storage form (slashes kept)
+    try std.testing.expectEqualStrings("zeta", list.items[1].name);
+    try std.testing.expectEqualStrings("C:/z", list.items[1].path);
+}
+
+test "validateAliasName: rejects separators, @, control chars, empty" {
+    try validateAliasName("acme");
+    try std.testing.expectError(error.EmptyName, validateAliasName("   "));
+    try std.testing.expectError(error.PathSeparatorInName, validateAliasName("a/b"));
+    try std.testing.expectError(error.PathSeparatorInName, validateAliasName("a\\b"));
+    try std.testing.expectError(error.AtInName, validateAliasName("a@b"));
+    try std.testing.expectError(error.ControlInName, validateAliasName("a b"));
+}
+
+test "listNames: sorted, skips non-section lines and empty brackets" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const toml = "[zeta]\npath='x'\n[acme]\npath='y'\n[]\nrandom = 1\n";
+    const names = try listNames(a, toml);
+    try std.testing.expectEqual(@as(usize, 2), names.items.len);
+    try std.testing.expectEqualStrings("acme", names.items[0]);
+    try std.testing.expectEqualStrings("zeta", names.items[1]);
+}
+
+test "parsePathLine: quote styles and malformed input" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings(try fromSlash(a, "a/b"), (try parsePathLine(a, "path = 'a/b'")).?);
+    try std.testing.expectEqualStrings(try fromSlash(a, "a/b"), (try parsePathLine(a, "path = \"a/b\"")).?);
+    try std.testing.expectEqualStrings("a\"b", (try parsePathLine(a, "path = \"a\\\"b\"")).?);
+    try std.testing.expect((try parsePathLine(a, "path 'x'")) == null); // no '='
+    try std.testing.expect((try parsePathLine(a, "path = x")) == null); // unquoted
+    try std.testing.expect((try parsePathLine(a, "path = 'unterminated")) == null);
+}
+
+test "eqlFoldAscii: case-insensitive equality and length mismatch" {
+    try std.testing.expect(eqlFoldAscii("Acme", "aCMe"));
+    try std.testing.expect(!eqlFoldAscii("acme", "acme2"));
+    try std.testing.expect(!eqlFoldAscii("ab", "ac"));
+}
+
+test "fromSlash/toSlash are inverse; toSlash yields storage form" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const host = try fromSlash(a, "a/b/c");
+    try std.testing.expectEqualStrings("a/b/c", try toSlash(a, host));
+    if (sep == '\\') {
+        try std.testing.expectEqualStrings("a\\b\\c", host);
+    } else {
+        try std.testing.expectEqualStrings("a/b/c", host);
+    }
+}
+
+test "expandTilde: bare, prefixed, and passthrough" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:/home/dev");
+    try std.testing.expectEqualStrings("C:/home/dev", try expandTilde(a, &env, "~"));
+    try std.testing.expectEqualStrings("C:/home/dev/proj", try expandTilde(a, &env, "~/proj"));
+    try std.testing.expectEqualStrings("plain/path", try expandTilde(a, &env, "plain/path"));
+}

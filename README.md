@@ -188,9 +188,7 @@ nix mirrors onix's module split, hand-written in Zig for the hot path:
 - **`src/usage.zig`** — the debounced usage recorder behind `--prune` ranking.
 - **`src/editor.zig`** — per-editor line-jump dialects (vim `+N`, VS Code `--goto`).
 
-Two Windows-specific lessons paid for the hot-path budget, both documented in [STATUS.md](STATUS.md): a single static import of a non-default DLL (USER32) is a measurable per-invocation tax, so clipboard functions are `LoadLibrary`'d on demand; and streaming a producer into fzf requires `readStreaming` (one OS read), not a buffered reader that blocks until its buffer fills.
-
-See [STATUS.md](STATUS.md) for the full parity checklist and benchmark notes.
+Two Windows-specific lessons paid for the hot-path budget: a single static import of a non-default DLL (USER32) is a measurable per-invocation tax, so clipboard functions are `LoadLibrary`'d on demand; and streaming a producer into fzf requires `readStreaming` (one OS read), not a buffered reader that blocks until its buffer fills.
 
 ## License
 
