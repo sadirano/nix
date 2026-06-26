@@ -24,6 +24,10 @@ pub fn build(b: *std.Build) void {
     const version = gitDescribe(b) orelse @import("build.zig.zon").version;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
+    // Commit date of HEAD ("YYYY-MM-DD") so `--version` reports source freshness
+    // alongside the git-describe version. Only changes when HEAD does, so it
+    // doesn't force a rebuild on every configure.
+    build_options.addOption([]const u8, "commit_date", commitDate(b) orelse "unknown");
 
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
@@ -187,6 +191,22 @@ fn gitDescribe(b: *std.Build) ?[]const u8 {
     var code: u8 = undefined;
     const stdout = b.runAllowFail(
         &.{ "git", "describe", "--tags", "--always", "--dirty" },
+        &code,
+        .ignore,
+    ) catch return null;
+    const trimmed = std.mem.trim(u8, stdout, " \r\n\t");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
+// commitDate returns the committer date of HEAD as "YYYY-MM-DD" (git's %cs),
+// or null when git is unavailable, this isn't a checkout, or there are no
+// commits yet. Allocated from the build arena; re-run on every configure so the
+// baked date stays current with HEAD.
+fn commitDate(b: *std.Build) ?[]const u8 {
+    var code: u8 = undefined;
+    const stdout = b.runAllowFail(
+        &.{ "git", "log", "-1", "--format=%cs" },
         &code,
         .ignore,
     ) catch return null;

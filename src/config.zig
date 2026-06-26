@@ -15,6 +15,9 @@ pub const Config = struct {
     picker_exclude_extra: [][]const u8 = &.{},
     /// [shortcuts] overrides: builtin slot name → custom command name.
     shortcuts: []const Shortcut = &.{},
+    /// [grep] all = true makes `sg` search with ripgrep-all (rga) by default,
+    /// as if `--all` were always passed. The per-search flag still works too.
+    grep_all: bool = false,
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -114,6 +117,10 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
                 try sc.append(arena, .{ .builtin = try arena.dupe(u8, key), .custom = try arena.dupe(u8, custom) });
                 cfg.shortcuts = sc.items;
             }
+            continue;
+        }
+        if (std.mem.eql(u8, section, "grep")) {
+            if (std.mem.eql(u8, key, "all")) cfg.grep_all = parseBool(stripQuotes(val_start));
             continue;
         }
         if (!std.mem.eql(u8, section, "picker")) continue;
@@ -240,6 +247,13 @@ fn stripQuotes(s: []const u8) []const u8 {
     return s;
 }
 
+/// parseBool reads a TOML-ish boolean: true/1/yes/on (case-insensitive) → true;
+/// anything else → false.
+fn parseBool(s: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(s, "true") or std.mem.eql(u8, s, "1") or
+        std.ascii.eqlIgnoreCase(s, "yes") or std.ascii.eqlIgnoreCase(s, "on");
+}
+
 fn lower(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
     const o = try arena.dupe(u8, s);
     for (o) |*c| c.* = std.ascii.toLower(c.*);
@@ -261,6 +275,17 @@ test "parseStringArray: mixed quotes, empty, ignores bare tokens" {
 
     const empty = try parseStringArray(a, "[]");
     try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "parseBool: truthy spellings, everything else false" {
+    try std.testing.expect(parseBool("true"));
+    try std.testing.expect(parseBool("TRUE"));
+    try std.testing.expect(parseBool("1"));
+    try std.testing.expect(parseBool("yes"));
+    try std.testing.expect(parseBool("on"));
+    try std.testing.expect(!parseBool("false"));
+    try std.testing.expect(!parseBool("0"));
+    try std.testing.expect(!parseBool(""));
 }
 
 test "resolvedShortcutNames: defaults sorted; override replaces a slot" {

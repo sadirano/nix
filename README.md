@@ -109,13 +109,16 @@ s = "show"     # type `show acme` instead of `s acme`
 ff = "fzf"
 ```
 
-`[grep]` tunes the `sg` search UI — the fzf preview window and command, fzf colors, ripgrep `--colors`, and whether non-ASCII query characters are matched literally:
+`[grep]` tunes the `sg` search UI — the fzf preview window and command, fzf colors, ripgrep `--colors`, and whether non-ASCII query characters are matched literally. `all = true` makes `sg` search with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) by default, reaching into PDFs, office docs, archives, and more:
 
 ```toml
 [grep]
 preview_window = "right:50%"
 rg_colors = ["match:fg:yellow", "path:fg:cyan"]
+all = true
 ```
+
+Per search, `sg <alias> <pat> --all` (or `-a`) switches that one run to `rga` without changing the config default.
 
 `[picker]` filters the unknown-alias directory picker (Everything `es` + fzf), which `o` runs in-process when you navigate to a name that isn't an alias yet. By default it excludes any path component starting with `.`, `_`, or `[`, plus dependency/build/cache trees (`node_modules`, `site-packages`, `cache`, `bin`, `obj`, `build`, `dist`, …), the Windows system trees (`C:\Windows\`, `C:\Program Files`, `AppData`, …), and store-owned install trees (`scoop\apps`, `steamapps`) — so the result cap is spent on directories worth picking.
 
