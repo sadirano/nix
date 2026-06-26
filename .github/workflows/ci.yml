@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so build.zig's `git describe` bakes a real
+          # version rather than falling back to "0.0.0".
+          fetch-depth: 0
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Test
+        run: zig build test
+
+      # Make sure the portable release build (baseline CPU, Windows target) still
+      # compiles — the artifact shipped to users.
+      - name: Build (release, portable)
+        run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
