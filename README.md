@@ -4,6 +4,16 @@ A Zig rewrite of [onix](../onix) — the same fast directory alias resolver, wit
 
 nix is a drop-in: it reads and writes the same `~/.onix` layout, the same `aliases.toml`, `config.toml`, `usage`, and segment files, in onix's exact byte-for-byte formats. It can share a home with onix or stand alone. Full functional parity is verified command-by-command against the Go reference.
 
+## Demos
+
+**Jump to any project.** `o acme` stacks a shell rooted at the alias directory; `o newproj C:\path` registers a new alias and jumps there in one step (the directory is auto-created).
+
+![o navigation](assets/navigate.gif)
+
+**Search inside PDFs, office docs and archives.** `sg <alias> <pat> --all` runs the search with [ripgrep-all](https://github.com/phiresky/ripgrep-all) — matches found *inside* documents become individual, content-filterable fzf rows; pick one and it opens in your editor (text) or its default app (PDF).
+
+![sg --all (ripgrep-all document search)](assets/sg-all.gif)
+
 ## Why
 
 onix is already fast — about 0.6 ms over the OS process-spawn floor. But every invocation still pays for the Go runtime bootstrap (~2 ms) and onix's linked dependency graph (go-toml/json/reflect, another ~2 ms). nix is the experiment: how much of that is sheddable with a hand-written hot path and no runtime?
