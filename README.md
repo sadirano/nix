@@ -14,6 +14,10 @@ nix is a drop-in: it reads and writes the same `~/.onix` layout, the same `alias
 
 ![sg --all (ripgrep-all document search)](assets/sg-all.gif)
 
+**Clipboard → file from any prompt.** `p <alias> [name]` drops the clipboard into the alias directory — a screenshot saves as `.png`, text as `.md`, Explorer-copied files/folders copy in recursively — and copies the saved path back out.
+
+![p paste (clipboard to file)](assets/paste.gif)
+
 ## Why
 
 onix is already fast — about 0.6 ms over the OS process-spawn floor. But every invocation still pays for the Go runtime bootstrap (~2 ms) and onix's linked dependency graph (go-toml/json/reflect, another ~2 ms). nix is the experiment: how much of that is sheddable with a hand-written hot path and no runtime?
