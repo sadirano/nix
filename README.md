@@ -64,6 +64,9 @@ y acme                                     # print the path and copy to clipboar
 p acme                                     # save clipboard content into the alias dir, copy the saved path back
 p acme shot                                # …with a name (image→shot.png, text→shot.md)
 r acme zig build test                      # run a command at that path
+sg acme TODO                               # ripgrep search under the dir → fzf → open the hit in your editor
+sg acme invoice --all                      # search inside PDFs/office docs/archives too (ripgrep-all)
+ff acme config                             # fuzzy-find files under the dir → fzf → open the selection
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
 nix --list                                 # show every alias
 nix --edit                                 # open ~/.onix in your editor
@@ -76,11 +79,19 @@ The `o` command changes the **current** shell's working directory — it does no
 - `o <alias> <path>` — register (or update) the alias to point at `<path>` and cd there. The directory is auto-created if it doesn't exist.
 - `o` (no args) — open `aliases.toml` in `$EDITOR`. Use `nix --list` if you want a tabular dump to stdout instead.
 
-Everything else (`e`, `s`, `y`, `p`, `r`) invokes `nix` directly, so those don't need shell integration to work.
+Everything else (`e`, `s`, `y`, `p`, `r`, `sg`, `ff`) invokes `nix` directly, so those don't need shell integration to work.
 
 `s <alias> <file>` opens a single file with its registered default application instead of the file manager — a PDF in your viewer, a `.zip` in your archiver, and so on. The file is resolved against the alias directory and opened by the OS handler (`explorer.exe` / `xdg-open`).
 
 `p <alias> [name]` saves the current clipboard contents into the alias directory and copies the saved path(s) back to the clipboard. Files copied in Explorer (Ctrl+C) take priority — directories are copied recursively, turning the clipboard into a cross-folder copy channel from any prompt. Otherwise the content path applies, handy for parking a screenshot and pasting its path into an agent: an image saves as `.png` (decoded from the clipboard DIB and re-encoded with real DEFLATE compression), text as `.md`. An explicit extension on `<name>` is honoured; with no name, files keep their source name and content uses a timestamp. Collisions auto-increment (`shot.png`, `shot-1.png`) so nothing is ever clobbered.
+
+## Search and find
+
+`sg <alias> <pat>` runs a ripgrep search rooted at the alias directory and streams the matches into an fzf picker with a live `bat` preview. Each match line is its own row, so you narrow by content as you type; Tab marks several, Enter opens the selection(s) in your editor at the matched line.
+
+`sg <alias> <pat> --all` (or `-a`) searches with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) instead, so matches reach **inside PDFs, office documents, archives, ebooks, and more** — not just plain text. Each hit is still an individual, content-filterable fzf row. The preview adapts to what you land on: a directory lists its entries, a text file renders in `bat` with the matched line highlighted, and a document shows the extracted text trimmed to the selected match. Opening adapts the same way — a text hit opens in your editor at the line, while a PDF/office hit opens in its default app (its "line" is really a page, not an editor position). Set `[grep] all = true` in `config.toml` (see below) to make `rga` the default for every `sg`.
+
+`ff <alias> [pat]` fuzzy-finds files under the alias directory — using Everything's `es` on Windows, else `fd`, else `find` — into the same fzf-with-preview picker. Enter opens the selection: directories and registered default-app file types (PDF, images, archives, …) open with the OS handler, everything else in your editor.
 
 ## Configuration
 
