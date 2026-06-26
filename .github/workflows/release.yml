@@ -49,9 +49,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          # Draft so notes can be reviewed/edited before publishing; the zip is
-          # already attached and auto-notes give a starting point. Flip to
-          # `draft: false` for fully hands-off publishing.
-          draft: true
+          # Publish immediately (hands-off); auto-generated notes from commits.
+          draft: false
           generate_release_notes: true
           files: nix-${{ github.ref_name }}-windows-amd64.zip
