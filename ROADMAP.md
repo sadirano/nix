@@ -115,11 +115,8 @@ a grace/migration note when implementing the validator change.
   requires the config). `member+group` adds then navigates. New `[nav] terminal`
   config (reported by `--doctor`). Builds/tests green; `buildTerminalArgv`/
   `rowPath` unit-tested. The interactive fzf+subshell path can't be driven
-  headless (verified by code review + config/argv tests).
-  - Follow-up: POSIX `o +group` currently lists (the shell-function model needs a
-    navigate verb to pick+cd); group nav is Windows-effective today.
-  - Follow-up: `o pa+group` with an unregistered `pa` adds it as a (dead) member
-    rather than routing through the unknown-alias picker first.
+  headless (verified by code review + config/argv tests). Two follow-ups tracked
+  in the Backlog (POSIX group nav, picker-route for an unregistered add member).
 
 ---
 
@@ -172,6 +169,14 @@ recovery need).
 
 ## Backlog
 
+- ⬜ **POSIX `o +group` navigation.** Group nav is Windows-effective today; on
+  POSIX `o` is a shell function that cd's the exe's stdout, so `o +group`
+  currently routes to `--list`. Needs a navigate verb the function calls for
+  `+`-tokens (run the picker on the tty, launch the extra terminals, print the
+  first selection's path for the function to `cd`).
+- ⬜ **Picker-route for `o pa+group` with an unregistered `pa`.** Today it adds
+  `pa` as a (dead) member; the design wants it to route through the unknown-alias
+  es/fd picker to register `pa` first, then add + navigate.
 - ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
   `--json`/`-q` (so scripts don't break) but emits only the human-readable
   report. Implement a structured JSON form for tooling.
