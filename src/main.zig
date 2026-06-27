@@ -93,6 +93,14 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     if (multicallAction(argv0)) |action| {
         const d = desugarMultiCall(app.arena, action, args) catch |e| return e;
         if (d.is_nav) return navigate(app, d.nav_alias);
+        if (d.nav_after) {
+            // `o <alias> <path>`: register first, then navigate into the alias
+            // dir exactly like bare `o <alias>` (the wrapper exe can't cd its
+            // parent, so navigate stacks a subshell there).
+            const code = try dispatch(app, d.args);
+            if (code != 0) return code;
+            return navigate(app, d.nav_alias);
+        }
         args = d.args;
     }
 
@@ -2361,7 +2369,7 @@ fn preprocessArgs(arena: std.mem.Allocator, args: []const [:0]const u8) ![][]con
     return out;
 }
 
-const MultiCall = struct { args: [][]const u8, nav_alias: []const u8, is_nav: bool };
+const MultiCall = struct { args: [][]const u8, nav_alias: []const u8, is_nav: bool, nav_after: bool = false };
 
 /// desugarMultiCall turns a wrapper invocation into canonical grammar argv.
 fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]const u8) !MultiCall {
@@ -2378,9 +2386,10 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
     const rest = args[1..];
     if (eql(action, "navigate")) {
         // `o <alias>` navigates; `o <alias> <path>` registers the alias to
-        // that path (relative paths included) via the canonical add form.
+        // that path (relative paths included) via the canonical add form, then
+        // navigates into it (nav_after) so registering also lands you there.
         if (rest.len == 0) return .{ .args = &.{}, .nav_alias = alias, .is_nav = true };
-        return .{ .args = args, .nav_alias = "", .is_nav = false };
+        return .{ .args = args, .nav_alias = alias, .is_nav = false, .nav_after = true };
     }
     const flag = actionFlag(action) orelse return .{ .args = args, .nav_alias = "", .is_nav = false };
     var out = try arena.alloc([]const u8, rest.len + 2);
@@ -2558,24 +2567,29 @@ test "desugarMultiCall navigate: bare alias navigates" {
     try std.testing.expectEqualStrings("test", d.nav_alias);
 }
 
-test "desugarMultiCall navigate: alias + path registers (relative)" {
-    // `o test .` must register `test` -> `.`, not navigate / trigger the picker.
+test "desugarMultiCall navigate: alias + path registers then navigates (relative)" {
+    // `o test .` must register `test` -> `.` (not trigger the picker) and then
+    // navigate into the alias dir so registering also lands you there.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var argv = [_][]const u8{ "test", "." };
     const d = try desugarMultiCall(a, "navigate", &argv);
     try std.testing.expect(!d.is_nav);
+    try std.testing.expect(d.nav_after);
+    try std.testing.expectEqualStrings("test", d.nav_alias);
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "test", "." }), d.args);
 }
 
-test "desugarMultiCall navigate: alias + absolute path registers" {
+test "desugarMultiCall navigate: alias + absolute path registers then navigates" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var argv = [_][]const u8{ "test", "C:/work" };
     const d = try desugarMultiCall(a, "navigate", &argv);
     try std.testing.expect(!d.is_nav);
+    try std.testing.expect(d.nav_after);
+    try std.testing.expectEqualStrings("test", d.nav_alias);
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "test", "C:/work" }), d.args);
 }
 
