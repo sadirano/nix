@@ -2011,10 +2011,13 @@ fn interactiveShell(app: *App) []const u8 {
 // ---- helpers ----------------------------------------------------------------
 
 fn absPath(app: *App, p: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(p)) return p;
+    // resolve (not join) so "." / ".." segments collapse — `o test .` must store
+    // the cwd, not "<cwd>/.". For an already-absolute path resolve still
+    // normalizes embedded "."/".." without needing the cwd.
+    if (std.fs.path.isAbsolute(p)) return std.fs.path.resolve(app.arena, &.{p});
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = try std.process.currentPath(app.io, &buf);
-    return std.fs.path.join(app.arena, &.{ buf[0..n], p });
+    return std.fs.path.resolve(app.arena, &.{ buf[0..n], p });
 }
 
 fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
