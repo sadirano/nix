@@ -94,9 +94,10 @@ a grace/migration note when implementing the validator change.
   group, cascade-strip). Added `+` to `store.validateAliasName` and exposed
   `store.appendTomlString`. Module tests pass; not yet wired into any command
   (that's 1b–1d). Committed as `58f6622`.
-- ⬜ **1b — management commands.** `nix --groups`, `nix +g --list`,
-  `nix pa+g --remove`, `nix +g --remove`. Cascade-strip in `nix <alias>
-  --remove`.
+- ✅ **1b — management commands.** `nix --groups`, `nix +g --list`,
+  `nix pa+g --remove`, `nix +g --remove`, and the add form `nix pa+g`. `dispatch`
+  routes any `+`-bearing first token through the group grammar; `nix <alias>
+  --remove` cascade-strips the alias from every group. Verified end-to-end.
 - ⬜ **1c — fan-out.** Wire `+group` into `sg`/`ff`/`r`/`y` (multi-root /
   per-dir / multi-path).
 - ⬜ **1d — navigation + launcher.** `o +group` fzf-multi picker

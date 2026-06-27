@@ -9,6 +9,7 @@ const editor = @import("editor.zig");
 const config = @import("config.zig");
 const segments = @import("segments.zig");
 const snippet = @import("snippet.zig");
+const groups = @import("groups.zig");
 
 const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -122,6 +123,16 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
     if (startsWithDash(first)) {
         return dispatchSystem(app, first, args[1..]);
     }
+    // Group grammar (`+group …` / `member+group …`) — `+` is reserved in names,
+    // so any `+` in the first token means a group operation, not an alias.
+    switch (groups.parseRef(first) catch |e| {
+        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ first, @errorName(e) });
+        return 1;
+    }) {
+        .none => {},
+        .reference => |g| return dispatchGroupRef(app, g, args[1..]),
+        .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, args[1..]),
+    }
     return dispatchAlias(app, first, args[1..]);
 }
 
@@ -137,6 +148,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "prune")) return cmdPrune(app);
     if (eql(verb, "picker-check")) return cmdPickerCheck(app, rest);
     if (eql(verb, "doctor")) return cmdDoctor(app, rest);
+    if (eql(verb, "groups")) return cmdGroups(app);
     if (eql(verb, "contexts")) return cmdContexts(app);
     if (eql(verb, "sweep")) return cmdSweep(app, rest);
     if (eql(verb, "sync")) return cmdSync(app);
@@ -215,6 +227,160 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     }
     if (path) |p| return cmdAdd(app, alias, p);
     return cmdResolve(app, alias);
+}
+
+// ---- groups (ROADMAP §1b) ---------------------------------------------------
+
+/// isGlobalFlag reports the process-wide flags any sub-parser silently accepts
+/// (parsed up front into app.json / app.no_prompt) so they don't read as an
+/// unexpected argument to a group command.
+fn isGlobalFlag(a: []const u8) bool {
+    return eql(a, "--no-prompt") or eql(a, "-q") or eql(a, "--json") or eql(a, "-j");
+}
+
+/// validateGroupMember validates a member token: a `+sub` member references
+/// another group (validate the subgroup name), otherwise it is an alias name.
+fn validateGroupMember(member: []const u8) !void {
+    if (member.len > 0 and member[0] == '+') return store.validateAliasName(member[1..]);
+    return store.validateAliasName(member);
+}
+
+/// cmdGroups lists every group and its members (`nix --groups`).
+fn cmdGroups(app: *App) !u8 {
+    const data = try groups.readGroupsFile(app.arena, app.io, app.home);
+    const gs = try groups.loadGroups(app.arena, data);
+    std.mem.sort(groups.Group, gs.items, {}, struct {
+        fn lt(_: void, a: groups.Group, b: groups.Group) bool {
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lt);
+    var width: usize = "GROUP".len;
+    var any = false;
+    for (gs.items) |g| if (g.members.len > 0) {
+        width = @max(width, g.name.len);
+        any = true;
+    };
+    if (!any) {
+        try app.out.writeAll("no groups defined (create one: nix <member>+<group>)\n");
+        return 0;
+    }
+    try padPrint(app.out, "GROUP", width + 2);
+    try app.out.writeAll("MEMBERS\n");
+    for (gs.items) |g| {
+        if (g.members.len == 0) continue;
+        try padPrint(app.out, g.name, width + 2);
+        for (g.members, 0..) |m, i| {
+            if (i > 0) try app.out.writeAll(", ");
+            try app.out.writeAll(m);
+        }
+        try app.out.writeByte('\n');
+    }
+    return 0;
+}
+
+/// dispatchGroupRef handles `+group [--list|--remove]`. Bare `+group` lists.
+fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
+    var action: []const u8 = "list";
+    for (rest) |a| {
+        if (isGlobalFlag(a)) continue;
+        if (eql(a, "--list") or eql(a, "-l")) {
+            action = "list";
+        } else if (eql(a, "--remove") or eql(a, "--rm")) {
+            action = "remove";
+        } else {
+            try app.err.print("nix: unexpected argument \"{s}\" for group \"+{s}\"\n", .{ a, group });
+            return 1;
+        }
+    }
+    if (eql(action, "remove")) return cmdGroupDelete(app, group);
+    return cmdGroupList(app, group);
+}
+
+/// cmdGroupList prints a group's members with each alias resolved to its path
+/// (subgroup members show "(group)", unregistered aliases "(unregistered)").
+fn cmdGroupList(app: *App, group: []const u8) !u8 {
+    const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
+    const gs = try groups.loadGroups(app.arena, gdata);
+    const idx = groups.findGroup(gs.items, group) orelse {
+        try app.err.print("nix: unknown group \"+{s}\"\n", .{group});
+        return 1;
+    };
+    const members = gs.items[idx].members;
+    if (members.len == 0) {
+        try app.out.print("group +{s} is empty\n", .{group});
+        return 0;
+    }
+    const adata = try store.readAliasesFile(app.arena, app.io, app.home);
+    var width: usize = "MEMBER".len;
+    for (members) |m| width = @max(width, m.len);
+    try padPrint(app.out, "MEMBER", width + 2);
+    try app.out.writeAll("PATH\n");
+    for (members) |m| {
+        try padPrint(app.out, m, width + 2);
+        if (m.len > 0 and m[0] == '+') {
+            try app.out.writeAll("(group)\n");
+        } else if (try store.scanForAlias(app.arena, adata, m)) |p| {
+            try app.out.print("{s}\n", .{p});
+        } else {
+            try app.out.writeAll("(unregistered)\n");
+        }
+    }
+    return 0;
+}
+
+/// cmdGroupDelete removes an entire group (`+group --remove`).
+fn cmdGroupDelete(app: *App, group: []const u8) !u8 {
+    const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
+    var gs = try groups.loadGroups(app.arena, gdata);
+    if (!groups.removeGroup(&gs, group)) {
+        try app.err.print("nix: unknown group \"+{s}\"\n", .{group});
+        return 1;
+    }
+    try groups.saveGroups(app.arena, app.io, app.home, gs.items);
+    try app.err.print("removed group +{s}\n", .{group});
+    return 0;
+}
+
+/// dispatchGroupAdd handles `member+group` (add, idempotent) and
+/// `member+group --remove` (drop a member).
+fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: [][]const u8) !u8 {
+    var remove = false;
+    for (rest) |a| {
+        if (isGlobalFlag(a)) continue;
+        if (eql(a, "--remove") or eql(a, "--rm")) {
+            remove = true;
+        } else {
+            try app.err.print("nix: unexpected argument \"{s}\" for group token \"{s}+{s}\"\n", .{ a, member, group });
+            return 1;
+        }
+    }
+    validateGroupMember(member) catch |e| {
+        try app.err.print("nix: invalid member \"{s}\" ({s})\n", .{ member, @errorName(e) });
+        return 1;
+    };
+    store.validateAliasName(group) catch |e| {
+        try app.err.print("nix: invalid group name \"{s}\" ({s})\n", .{ group, @errorName(e) });
+        return 1;
+    };
+
+    const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
+    var gs = try groups.loadGroups(app.arena, gdata);
+    if (remove) {
+        if (!try groups.removeMember(app.arena, &gs, group, member)) {
+            try app.err.print("nix: group \"+{s}\" has no member \"{s}\"\n", .{ group, member });
+            return 1;
+        }
+        try groups.saveGroups(app.arena, app.io, app.home, gs.items);
+        try app.err.print("removed {s} from group +{s}\n", .{ member, group });
+        return 0;
+    }
+    if (!try groups.addMember(app.arena, &gs, group, member)) {
+        try app.err.print("{s} already in group +{s}\n", .{ member, group });
+        return 0;
+    }
+    try groups.saveGroups(app.arena, app.io, app.home, gs.items);
+    try app.err.print("added {s} to group +{s}\n", .{ member, group });
+    return 0;
 }
 
 // ---- Tier 1 commands --------------------------------------------------------
@@ -315,7 +481,21 @@ fn removeAliasEntry(app: *App, alias: []const u8) !u8 {
     try store.saveAliases(app.arena, app.io, app.home, kept.items);
     usage.remove(app.arena, app.io, app.home, &.{lower}) catch {};
     try app.err.print("removed {s}\n", .{lower});
+    // Cascade: strip the alias from every group it belonged to (best-effort —
+    // the alias is already gone; a groups.toml hiccup shouldn't fail the remove).
+    cascadeStripFromGroups(app, lower) catch {};
     return 0;
+}
+
+/// cascadeStripFromGroups removes a just-deleted alias from every group, saving
+/// groups.toml only if something changed and reporting the count.
+fn cascadeStripFromGroups(app: *App, alias_lower: []const u8) !void {
+    const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
+    var gs = try groups.loadGroups(app.arena, gdata);
+    const n = try groups.stripMemberEverywhere(app.arena, &gs, alias_lower);
+    if (n == 0) return;
+    try groups.saveGroups(app.arena, app.io, app.home, gs.items);
+    try app.err.print("removed {s} from {d} group(s)\n", .{ alias_lower, n });
 }
 
 fn cmdList(app: *App) !u8 {
@@ -2454,6 +2634,7 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
         .{ .k = "--prune", .v = "prune" },       .{ .k = "--sweep", .v = "sweep" },
         .{ .k = "--picker-check", .v = "picker-check" },
         .{ .k = "--doctor", .v = "doctor" },     .{ .k = "-D", .v = "doctor" },
+        .{ .k = "--groups", .v = "groups" },     .{ .k = "-G", .v = "groups" },
         .{ .k = "--init", .v = "init" },         .{ .k = "-I", .v = "init" },
         .{ .k = "--sync", .v = "sync" },         .{ .k = "-S", .v = "sync" },
         .{ .k = "--preview", .v = "preview" },   .{ .k = "--version", .v = "version" },
@@ -2534,11 +2715,18 @@ fn printUsage(app: *App) !void {
         \\  --sweep   [--min N]  find noisy dir trees to exclude from the picker
         \\  --picker-check <name>   show why dirs are shown/hidden in the `o` picker
         \\  --doctor,  -D        check tools/config and what the picker will use
+        \\  --groups,  -G        list alias groups  (+<group> --list shows members)
         \\  --contexts, -c       list global @-segment contexts
         \\  --init [--skip-profile]   set up ~/.onix, wrappers, and shell glue
         \\  --sync,    -S        regenerate shell glue and wrappers
         \\  --version, -v        print version and platform
         \\  --help,    -h        show this help
+        \\
+        \\GROUPS  (multi-alias sets in ~/.onix/groups.toml)
+        \\  nix <member>+<group>        add an alias to a group (creates it)
+        \\  nix <member>+<group> --rm   remove a member
+        \\  nix +<group> [--list]       list a group's members
+        \\  nix +<group> --remove       delete the group
         \\
     );
 }
@@ -2676,6 +2864,8 @@ test "flag maps: systemVerb, aliasAction, actionFlag" {
 
     try std.testing.expectEqualStrings("doctor", systemVerb("--doctor").?);
     try std.testing.expectEqualStrings("doctor", systemVerb("-D").?);
+    try std.testing.expectEqualStrings("groups", systemVerb("--groups").?);
+    try std.testing.expectEqualStrings("groups", systemVerb("-G").?);
 }
 
 test "isScriptShim: scripts vs real executables" {
