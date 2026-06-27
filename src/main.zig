@@ -315,10 +315,8 @@ fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "remove")) return cmdGroupDelete(app, group);
     if (eql(act, "run")) return cmdGroupRun(app, group, aargs);
     if (eql(act, "yank")) return cmdGroupYank(app, group);
-    if (eql(act, "grep") or eql(act, "find")) {
-        try app.err.print("nix: group search fan-out (sg/ff on +{s}) is not implemented yet — see ROADMAP §1c\n", .{group});
-        return 1;
-    }
+    if (eql(act, "grep")) return cmdGroupGrep(app, group, aargs);
+    if (eql(act, "find")) return cmdGroupFind(app, group, aargs);
     try app.err.print("nix: --{s} is a single-alias action, not supported on group +{s}\n", .{ act, group });
     return 1;
 }
@@ -488,6 +486,26 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
         if (code != 0) rc = code;
     }
     return rc;
+}
+
+/// groupRoots resolves a group to the host paths of its existing members (the
+/// fan-out input for sg/ff). null = unknown/empty group (message already printed).
+fn groupRoots(app: *App, group: []const u8) !?[]const []const u8 {
+    const targets = (try resolveGroupTargets(app, group)) orelse return null;
+    var roots: std.ArrayList([]const u8) = .empty;
+    for (targets) |t| try roots.append(app.arena, t.path);
+    return roots.items;
+}
+
+/// cmdGroupGrep / cmdGroupFind fan `sg` / `ff` across a group's member dirs as a
+/// single multi-root search (one unified fzf picker).
+fn cmdGroupGrep(app: *App, group: []const u8, args: [][]const u8) !u8 {
+    const roots = (try groupRoots(app, group)) orelse return 1;
+    return grepIn(app, roots, args);
+}
+fn cmdGroupFind(app: *App, group: []const u8, args: [][]const u8) !u8 {
+    const roots = (try groupRoots(app, group)) orelse return 1;
+    return findIn(app, roots, args);
 }
 
 // ---- Tier 1 commands --------------------------------------------------------
@@ -1620,12 +1638,16 @@ fn relaxNonASCII(arena: std.mem.Allocator, query: []const u8) !?[]const u8 {
 
 fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
+    return grepIn(app, &.{target}, args);
+}
 
-    // `--all`/`-a` (or `[grep] all = true` in config) routes to ripgrep-all
-    // (rga), a fundamentally different search: matches live inside PDFs, office
-    // docs, archives, etc., where line numbers and a bat/editor open make no
-    // sense. So rga gets its own pipeline (grepRga); plain rg keeps grepRg. The
-    // toggle is stripped before the remaining args drive whichever runs.
+/// grepIn runs `sg` over one or more root dirs (one alias dir, or a group's
+/// member dirs). `--all`/`-a` (or `[grep] all = true` in config) routes to
+/// ripgrep-all (rga), a fundamentally different search: matches live inside PDFs,
+/// office docs, archives, etc., where line numbers and a bat/editor open make no
+/// sense. So rga gets its own pipeline (grepRga); plain rg keeps grepRg. The
+/// toggle is stripped before the remaining args drive whichever runs.
+fn grepIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     var use_all = cfg.grep_all;
     var filtered: std.ArrayList([]const u8) = .empty;
@@ -1636,13 +1658,13 @@ fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
         }
         try filtered.append(app.arena, a);
     }
-    if (use_all) return grepRga(app, target, filtered.items);
-    return grepRg(app, target, filtered.items);
+    if (use_all) return grepRga(app, roots, filtered.items);
+    return grepRg(app, roots, filtered.items);
 }
 
 /// grepRg is the classic `sg`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
-fn grepRg(app: *App, target: []const u8, gargs: [][]const u8) !u8 {
+fn grepRg(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "rg") == null) {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
@@ -1670,6 +1692,11 @@ fn grepRg(app: *App, target: []const u8, gargs: [][]const u8) !u8 {
     }
     for (extras) |x| try rg.append(app.arena, x);
     if (query.len > 0) try rg.append(app.arena, query);
+    // Multi-root (a group): pass the member dirs as explicit, absolute search
+    // paths so rg emits absolute file paths — the fzf preview (bat {1}) and the
+    // open path (absUnder) already accept absolute paths. A single root keeps the
+    // cwd-relative form (no path arg), preserving the existing single-alias UX.
+    if (roots.len > 1) for (roots) |r| try rg.append(app.arena, r);
 
     const fzf = [_][]const u8{
         "fzf",            "--ansi",
@@ -1680,9 +1707,10 @@ fn grepRg(app: *App, target: []const u8, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const res = try proc.runPipeline(app.arena, app.io, rg.items, &fzf, target, fzfEnv(app));
+    const cwd = roots[0];
+    const res = try proc.runPipeline(app.arena, app.io, rg.items, &fzf, cwd, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled / nothing selected
-    return openSelectionsInEditor(app, target, res.output, true);
+    return openSelectionsInEditor(app, cwd, res.output, true);
 }
 
 /// grepRga is `sg --all`: like grepRg but with ripgrep-all, so each fzf row is
@@ -1693,7 +1721,7 @@ fn grepRg(app: *App, target: []const u8, gargs: [][]const u8) !u8 {
 /// "line" inside a PDF is really `Page N`, not an editor line — so openRgaSelections
 /// sends default-app files (PDF/docx/…) to the OS handler and only text hits to
 /// the editor at their line.
-fn grepRga(app: *App, target: []const u8, gargs: [][]const u8) !u8 {
+fn grepRga(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "rga") == null) {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
@@ -1724,6 +1752,9 @@ fn grepRga(app: *App, target: []const u8, gargs: [][]const u8) !u8 {
     for (extras) |x| try rga.append(app.arena, x);
     try rga.append(app.arena, "-e");
     try rga.append(app.arena, query);
+    // Multi-root (a group): explicit absolute search paths → absolute output rows,
+    // which openRgaSelections and the --rga-preview verb already handle.
+    if (roots.len > 1) for (roots) |r| try rga.append(app.arena, r);
 
     // Preview gets the whole highlighted row ({}) and parses file:line itself,
     // via our `--rga-preview` verb. Passing the full row (rather than separate
@@ -1739,9 +1770,10 @@ fn grepRga(app: *App, target: []const u8, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const res = try proc.runPipeline(app.arena, app.io, rga.items, &fzf, target, fzfEnv(app));
+    const cwd = roots[0];
+    const res = try proc.runPipeline(app.arena, app.io, rga.items, &fzf, cwd, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled / nothing selected
-    return openRgaSelections(app, target, res.output);
+    return openRgaSelections(app, cwd, res.output);
 }
 
 /// openRgaSelections routes rga match rows (`file:line:text`). A file that opens
@@ -1900,34 +1932,50 @@ fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
 
 fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
+    return findIn(app, &.{target}, args);
+}
+
+/// findIn runs `ff` over one or more root dirs (one alias dir, or a group's
+/// member dirs). fd leads (portable, instant on a subtree); a single-alias
+/// Windows box without fd uses es; POSIX find is the last resort. Multi-root (a
+/// group) needs fd or POSIX find — both take several roots and emit absolute
+/// paths, which the preview/open paths accept.
+fn findIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return 1;
     }
     const query: []const u8 = if (args.len > 0) args[0] else "";
     const extras = if (args.len > 1) args[1..] else args[0..0];
+    const multi = roots.len > 1;
 
     var prod: std.ArrayList([]const u8) = .empty;
     if (proc.findInPath(app.arena, app.io, app.env, "fd") != null) {
-        // fd leads for ff: the search is bounded to the alias dir, where fd is a
-        // peer of es (instant enough on a subtree) and portable across platforms.
         try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", "always" });
         for (extras) |x| try prod.append(app.arena, x);
         if (query.len > 0) try prod.append(app.arena, query);
-    } else if (proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "es") != null) {
+        // Multi-root: fd takes trailing search paths; with absolute roots it
+        // emits absolute paths. Single root keeps cwd-relative (no path arg).
+        if (multi) for (roots) |r| try prod.append(app.arena, r);
+    } else if (!multi and proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "es") != null) {
         try prod.appendSlice(app.arena, &.{ "es", "-path", "./" });
         if (query.len > 0) try prod.append(app.arena, query);
         for (extras) |x| try prod.append(app.arena, x);
-    } else {
-        try prod.appendSlice(app.arena, &.{ ".", "-type", "f" });
-        // Note: this branch uses POSIX find; on bare Windows neither es nor fd
-        // means no finder — but es/fd are the realistic case.
+    } else if (!proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "find") != null) {
+        try prod.append(app.arena, "find");
+        if (multi) for (roots) |r| try prod.append(app.arena, r);
+        try prod.appendSlice(app.arena, &.{ "-type", "f" });
         if (query.len > 0) {
             try prod.append(app.arena, "-name");
             try prod.append(app.arena, try std.fmt.allocPrint(app.arena, "*{s}*", .{query}));
         }
         for (extras) |x| try prod.append(app.arena, x);
-        prod.items[0] = "find";
+    } else {
+        if (multi)
+            try app.err.writeAll("nix: ff on a group needs fd (or POSIX find)\n")
+        else
+            try app.err.writeAll("nix: no file finder found (install fd)\n");
+        return 1;
     }
 
     const preview = if (proc.is_windows)
@@ -1941,9 +1989,10 @@ fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const res = try proc.runPipeline(app.arena, app.io, prod.items, &fzf, target, fzfEnv(app));
+    const cwd = roots[0];
+    const res = try proc.runPipeline(app.arena, app.io, prod.items, &fzf, cwd, fzfEnv(app));
     if (res.code != 0) return 0;
-    return openFindSelections(app, target, res.output);
+    return openFindSelections(app, cwd, res.output);
 }
 
 /// cmdPreview renders one fzf preview row (find's --preview target): a dir

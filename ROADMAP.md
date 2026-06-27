@@ -98,13 +98,16 @@ a grace/migration note when implementing the validator change.
   `nix pa+g --remove`, `nix +g --remove`, and the add form `nix pa+g`. `dispatch`
   routes any `+`-bearing first token through the group grammar; `nix <alias>
   --remove` cascade-strips the alias from every group. Verified end-to-end.
-- 🚧 **1c — fan-out.** Wire `+group` into `sg`/`ff`/`r`/`y`.
-  - ✅ `r +g <cmd>` (run in each member dir, sequential, per-dir header) and
-    `y +g` (yank all member paths, newline-separated) via `resolveGroupTargets`
-    (dead members skipped with a note). `dispatchGroupRef` scans for the first
-    action flag (reusing `aliasAction`) so group actions parse like alias ones.
-  - ⬜ `sg`/`ff` multi-root: needs the grep/find pipeline reworked from
-    cwd-relative to absolute paths (rg/fd output + fzf preview + open).
+- ✅ **1c — fan-out.** `+group` wired into `sg`/`ff`/`r`/`y`.
+  - `r +g <cmd>` (run in each member dir, sequential, per-dir header) and `y +g`
+    (yank all member paths) via `resolveGroupTargets` (dead members skipped with
+    a note); `dispatchGroupRef` scans for the first action flag (reusing
+    `aliasAction`) so group actions parse like alias ones.
+  - `sg`/`ff +g` multi-root: grep/find refactored to take a roots list
+    (`grepIn`/`findIn`); for a group the member dirs are passed to rg/rga/fd as
+    absolute search paths, so they emit absolute file paths into one unified fzf
+    picker (preview + open already accept absolute paths). Single-alias mode is
+    gated unchanged (`roots.len == 1` → cwd-relative, no path args).
 - ⬜ **1d — navigation + launcher.** `o +group` fzf-multi picker
   (`name -> path` rows), topmost-keeps-shell, `[nav] terminal` launcher with the
   Windows defaults and Unix require-config behavior. Trickiest piece; do last.
