@@ -278,22 +278,49 @@ fn cmdGroups(app: *App) !u8 {
     return 0;
 }
 
-/// dispatchGroupRef handles `+group [--list|--remove]`. Bare `+group` lists.
+/// groupAction maps a flag to a group action verb: `--list` plus the alias
+/// action flags (run/yank/grep/find/remove/…) reused via aliasAction.
+fn groupAction(flag: []const u8) ?[]const u8 {
+    if (eql(flag, "--list") or eql(flag, "-l")) return "list";
+    return aliasAction(flag);
+}
+
+/// dispatchGroupRef handles `+group <action> …`. Bare `+group` lists members.
+/// Fan-out actions: --run (in each member dir), --yank (all member paths).
+/// --grep/--find fan-out lands in a later step; per-alias-only actions error.
 fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
-    var action: []const u8 = "list";
-    for (rest) |a| {
-        if (isGlobalFlag(a)) continue;
-        if (eql(a, "--list") or eql(a, "-l")) {
-            action = "list";
-        } else if (eql(a, "--remove") or eql(a, "--rm")) {
-            action = "remove";
-        } else {
-            try app.err.print("nix: unexpected argument \"{s}\" for group \"+{s}\"\n", .{ a, group });
-            return 1;
+    var action: ?[]const u8 = null;
+    var idx: usize = 0;
+    for (rest, 0..) |a, i| {
+        if (groupAction(a)) |v| {
+            action = v;
+            idx = i;
+            break;
         }
     }
-    if (eql(action, "remove")) return cmdGroupDelete(app, group);
-    return cmdGroupList(app, group);
+    if (action == null) {
+        for (rest) |a| if (!isGlobalFlag(a)) {
+            try app.err.print("nix: unexpected argument \"{s}\" for group \"+{s}\"\n", .{ a, group });
+            return 1;
+        };
+        return cmdGroupList(app, group);
+    }
+    for (rest[0..idx]) |a| if (!isGlobalFlag(a)) {
+        try app.err.print("nix: unexpected argument \"{s}\" before --{s}\n", .{ a, action.? });
+        return 1;
+    };
+    const aargs = rest[idx + 1 ..];
+    const act = action.?;
+    if (eql(act, "list")) return cmdGroupList(app, group);
+    if (eql(act, "remove")) return cmdGroupDelete(app, group);
+    if (eql(act, "run")) return cmdGroupRun(app, group, aargs);
+    if (eql(act, "yank")) return cmdGroupYank(app, group);
+    if (eql(act, "grep") or eql(act, "find")) {
+        try app.err.print("nix: group search fan-out (sg/ff on +{s}) is not implemented yet — see ROADMAP §1c\n", .{group});
+        return 1;
+    }
+    try app.err.print("nix: --{s} is a single-alias action, not supported on group +{s}\n", .{ act, group });
+    return 1;
 }
 
 /// cmdGroupList prints a group's members with each alias resolved to its path
@@ -381,6 +408,86 @@ fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: [][]
     try groups.saveGroups(app.arena, app.io, app.home, gs.items);
     try app.err.print("added {s} to group +{s}\n", .{ member, group });
     return 0;
+}
+
+/// GroupTarget is one resolved, existing member: alias name + host path.
+const GroupTarget = struct { name: []const u8, path: []const u8 };
+
+/// resolveGroupTargets expands a group to its existing alias members as
+/// (name, host-path) pairs — creating each dir and recording usage — applying the
+/// dead-member policy: a member alias that's no longer registered is skipped with
+/// a note. Returns null (after a message) on unknown group / cycle / depth, or
+/// when no member resolves.
+fn resolveGroupTargets(app: *App, group: []const u8) !?[]GroupTarget {
+    const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
+    const gs = try groups.loadGroups(app.arena, gdata);
+    const names = groups.expandMembers(app.arena, gs.items, group) catch |e| {
+        switch (e) {
+            error.UnknownGroup => try app.err.print("nix: unknown group \"+{s}\"\n", .{group}),
+            error.GroupCycle => try app.err.print("nix: group \"+{s}\" has a cycle\n", .{group}),
+            error.GroupTooDeep => try app.err.print("nix: group \"+{s}\" nests too deeply\n", .{group}),
+            else => return e,
+        }
+        return null;
+    };
+    const adata = try store.readAliasesFile(app.arena, app.io, app.home);
+    var out: std.ArrayList(GroupTarget) = .empty;
+    for (names) |n| {
+        if (try store.scanForAlias(app.arena, adata, n)) |p| {
+            store.mkdirAll(app.io, p) catch {};
+            usage.record(app.arena, app.io, app.home, n) catch {};
+            try out.append(app.arena, .{ .name = n, .path = p });
+        } else {
+            try app.err.print("nix: group \"+{s}\": skipping dead member \"{s}\" (no such alias)\n", .{ group, n });
+        }
+    }
+    if (out.items.len == 0) {
+        try app.err.print("nix: group \"+{s}\" has no resolvable members\n", .{group});
+        return null;
+    }
+    return out.items;
+}
+
+/// cmdGroupYank copies every member path (newline-separated) to the clipboard and
+/// echoes them — the group form of `y`.
+fn cmdGroupYank(app: *App, group: []const u8) !u8 {
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    var buf: std.ArrayList(u8) = .empty;
+    for (targets, 0..) |t, i| {
+        if (i > 0) try buf.append(app.arena, '\n');
+        try buf.appendSlice(app.arena, t.path);
+    }
+    try app.out.print("{s}\n", .{buf.items});
+    try app.out.flush();
+    clipboard.writeText(app.arena, app.io, buf.items) catch |e| {
+        try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
+    };
+    return 0;
+}
+
+/// cmdGroupRun runs <cmd> in each member dir, sequentially, with a per-dir header
+/// — the group form of `r`, no confirm prompt (you named the group). Exit code is
+/// the last non-zero member's, else 0.
+fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
+    var argv = action_args;
+    if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
+    if (argv.len == 0) {
+        try app.err.writeAll("usage: r +<group> <cmd> [args...]\n");
+        return 1;
+    }
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    var rc: u8 = 0;
+    for (targets) |t| {
+        try app.out.flush();
+        try app.err.print("== {s}  ({s}) ==\n", .{ t.name, t.path });
+        try app.err.flush();
+        const code = proc.runInherit(app.io, argv, t.path) catch |e| blk: {
+            try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });
+            break :blk @as(u8, 1);
+        };
+        if (code != 0) rc = code;
+    }
+    return rc;
 }
 
 // ---- Tier 1 commands --------------------------------------------------------

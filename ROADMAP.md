@@ -98,8 +98,13 @@ a grace/migration note when implementing the validator change.
   `nix pa+g --remove`, `nix +g --remove`, and the add form `nix pa+g`. `dispatch`
   routes any `+`-bearing first token through the group grammar; `nix <alias>
   --remove` cascade-strips the alias from every group. Verified end-to-end.
-- ⬜ **1c — fan-out.** Wire `+group` into `sg`/`ff`/`r`/`y` (multi-root /
-  per-dir / multi-path).
+- 🚧 **1c — fan-out.** Wire `+group` into `sg`/`ff`/`r`/`y`.
+  - ✅ `r +g <cmd>` (run in each member dir, sequential, per-dir header) and
+    `y +g` (yank all member paths, newline-separated) via `resolveGroupTargets`
+    (dead members skipped with a note). `dispatchGroupRef` scans for the first
+    action flag (reusing `aliasAction`) so group actions parse like alias ones.
+  - ⬜ `sg`/`ff` multi-root: needs the grep/find pipeline reworked from
+    cwd-relative to absolute paths (rg/fd output + fzf preview + open).
 - ⬜ **1d — navigation + launcher.** `o +group` fzf-multi picker
   (`name -> path` rows), topmost-keeps-shell, `[nav] terminal` launcher with the
   Windows defaults and Unix require-config behavior. Trickiest piece; do last.
