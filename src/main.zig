@@ -368,7 +368,7 @@ fn cmdGroupDelete(app: *App, group: []const u8) !u8 {
 
 /// dispatchGroupAdd handles `member+group` (add, idempotent) and
 /// `member+group --remove` (drop a member).
-fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: [][]const u8) !u8 {
+fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: []const []const u8) !u8 {
     var remove = false;
     for (rest) |a| {
         if (isGlobalFlag(a)) continue;
@@ -1203,6 +1203,13 @@ fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             try d.cont(try std.fmt.allocPrint(app.arena, "grep_all={}, shortcut overrides={d}, search_roots={d}", .{ cfg.grep_all, cfg.shortcuts.len, cfg.picker_search_roots.len }));
         } else {
             try d.row(.note, "config.toml", "none — using built-in defaults");
+        }
+        if (cfg.nav_terminal.len > 0) {
+            try d.row(.ok, "nav terminal", cfg.nav_terminal);
+        } else if (proc.is_windows) {
+            try d.row(.note, "nav terminal", "unset — `o +group` extras use `wt -d`, else `start`");
+        } else {
+            try d.row(.note, "nav terminal", "unset — set [nav] terminal for `o +group` extra windows");
         }
 
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);
@@ -2601,14 +2608,117 @@ fn cmdYank(app: *App, alias: []const u8) !u8 {
 /// navigate resolves the alias and opens a fresh interactive shell rooted in
 /// the target dir. A child can't relocate its parent shell, so onix-as-an-exe
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
+/// A `+group` token routes to navigateGroup; `member+group` adds then navigates.
 fn navigate(app: *App, alias: []const u8) !u8 {
+    switch (groups.parseRef(alias) catch .none) {
+        .none => {},
+        .reference => |g| return navigateGroup(app, g),
+        .add => |ad| {
+            // `o pa+group`: register the membership (idempotent), then navigate
+            // the group — parallels `o <alias> <path>` = register + navigate.
+            const code = try dispatchGroupAdd(app, ad.member, ad.group, &.{});
+            if (code != 0) return code;
+            return navigateGroup(app, ad.group);
+        },
+    }
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
+    return enterDir(app, dir);
+}
+
+/// enterDir stacks an interactive shell rooted at dir in the current shell — the
+/// single-target navigation primitive shared by alias and group navigation.
+fn enterDir(app: *App, dir: []const u8) !u8 {
     const shell = interactiveShell(app);
     try app.out.flush();
     return proc.runInherit(app.io, &.{shell}, dir) catch |e| {
         try app.err.print("nix: open subshell {s}: {s}\n", .{ shell, @errorName(e) });
         return 1;
     };
+}
+
+/// navigateGroup handles `o +group`: resolve the members, and with more than one,
+/// present an fzf multi-select (rows `name -> path`). The topmost selected row
+/// takes the current shell (a subshell stacked there); each additional selection
+/// opens a new terminal via launchTerminal. A single live member just navigates.
+fn navigateGroup(app: *App, group: []const u8) !u8 {
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    if (targets.len == 1) return enterDir(app, targets[0].path);
+    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+        try app.err.print("nix: install fzf to pick among +{s}'s members (or `o <member>`)\n", .{group});
+        return 1;
+    }
+    var input: std.ArrayList(u8) = .empty;
+    for (targets) |t| try input.print(app.arena, "{s} -> {s}\n", .{ t.name, t.path });
+    const fzf_argv = [_][]const u8{ "fzf", "--multi", "--prompt", "go> " };
+    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
+    if (res.code != 0) return 0; // cancelled
+    const sel = std.mem.trim(u8, res.output, " \t\r\n");
+    if (sel.len == 0) return 0;
+
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    var first_path: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, sel, '\n');
+    while (lines.next()) |ln| {
+        const row = std.mem.trim(u8, ln, " \t\r");
+        if (row.len == 0) continue;
+        const path = rowPath(row);
+        if (first_path == null) {
+            first_path = path; // topmost selection → current shell (entered last)
+        } else if (!launchTerminal(app, cfg, path)) {
+            try app.err.print("nix: could not open a new terminal for {s} (set [nav] terminal)\n", .{path});
+        }
+    }
+    // Enter the first selection in THIS shell last: it blocks (stacks a subshell),
+    // so the extra terminals must already have been launched above.
+    if (first_path) |p| return enterDir(app, p);
+    return 0;
+}
+
+/// rowPath extracts the path from a `name -> path` picker row (after the last
+/// " -> "), falling back to the whole row if the separator is absent.
+fn rowPath(row: []const u8) []const u8 {
+    if (std.mem.lastIndexOf(u8, row, " -> ")) |i| return row[i + 4 ..];
+    return row;
+}
+
+/// buildTerminalArgv splits a `[nav] terminal` template into argv, substituting
+/// `{dir}` in each token. Tokens split on whitespace, so `{dir}` should be its
+/// own token (or embedded, e.g. `--cwd={dir}`); a dir with spaces stays one arg.
+fn buildTerminalArgv(arena: std.mem.Allocator, template: []const u8, dir: []const u8) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.tokenizeAny(u8, template, " \t");
+    while (it.next()) |tok| {
+        if (std.mem.indexOf(u8, tok, "{dir}") != null) {
+            try argv.append(arena, try std.mem.replaceOwned(u8, arena, tok, "{dir}", dir));
+        } else {
+            try argv.append(arena, tok);
+        }
+    }
+    if (argv.items.len == 0) return error.EmptyTerminalTemplate;
+    return argv.items;
+}
+
+/// launchTerminal opens a new terminal rooted at `dir` (the extra selections of a
+/// group navigation). Uses `[nav] terminal` if set; else per-OS defaults: Windows
+/// tries `wt -d <dir>` then `start` a console window; Unix requires the config (no
+/// probing). Returns false if nothing could be launched (caller notes it).
+fn launchTerminal(app: *App, cfg: config.Config, dir: []const u8) bool {
+    if (cfg.nav_terminal.len > 0) {
+        const argv = buildTerminalArgv(app.arena, cfg.nav_terminal, dir) catch return false;
+        proc.runDetached(app.io, argv, dir, false) catch return false;
+        return true;
+    }
+    if (proc.is_windows) {
+        if (proc.findInPath(app.arena, app.io, app.env, "wt") != null) {
+            proc.runDetached(app.io, &.{ "wt", "-d", dir }, null, false) catch return false;
+            return true;
+        }
+        const comspec = app.env.get("COMSPEC") orelse "cmd.exe";
+        // `cmd /c start "" /D <dir> <shell>` opens a fresh console window there.
+        proc.runDetached(app.io, &.{ "cmd.exe", "/c", "start", "", "/D", dir, comspec }, null, false) catch return false;
+        return true;
+    }
+    return false; // Unix: no [nav] terminal configured → can't open extras
 }
 
 /// interactiveShell picks the shell for navigation: ONIX_SHELL wins, else
@@ -2883,6 +2993,8 @@ fn printUsage(app: *App) !void {
         \\  nix <member>+<group> --rm   remove a member
         \\  nix +<group> [--list]       list a group's members
         \\  nix +<group> --remove       delete the group
+        \\  o  +<group>                 pick members (fzf): first cd's here, rest open windows
+        \\  sg/ff/r/y +<group> …        search / run / yank across every member
         \\
     );
 }
@@ -3032,6 +3144,28 @@ test "isScriptShim: scripts vs real executables" {
     // Genuine executables (and the bare POSIX name) are fine to probe.
     try std.testing.expect(!isScriptShim("C:\\scoop\\shims\\fd.exe"));
     try std.testing.expect(!isScriptShim("/usr/bin/fd"));
+}
+
+test "buildTerminalArgv: {dir} substitution, tokenization, spaces in dir" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualDeep(
+        @as([]const []const u8, &.{ "wt", "-d", "C:/work/proj" }),
+        try buildTerminalArgv(a, "wt -d {dir}", "C:/work/proj"),
+    );
+    // {dir} embedded in a token; a dir with spaces stays a single arg.
+    try std.testing.expectEqualDeep(
+        @as([]const []const u8, &.{ "term", "--cwd=/x y", "--new" }),
+        try buildTerminalArgv(a, "term --cwd={dir} --new", "/x y"),
+    );
+    try std.testing.expectError(error.EmptyTerminalTemplate, buildTerminalArgv(a, "   ", "/x"));
+}
+
+test "rowPath: path after the last ' -> ', else whole row" {
+    try std.testing.expectEqualStrings("C:/a/b", rowPath("pa -> C:/a/b"));
+    try std.testing.expectEqualStrings("/x", rowPath("name -> /x"));
+    try std.testing.expectEqualStrings("noseparator", rowPath("noseparator"));
 }
 
 test "firstLine: up to first newline, else whole string" {

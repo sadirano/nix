@@ -201,6 +201,38 @@ A segment resolves through its `source-template`: a string with `${VAR}` referen
 
 Encountering an unknown segment opens your editor on the central per-alias file seeded with a `[[contexts]]` skeleton. Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.onix/segments.toml`.
 
+## Groups (`+` multi-alias)
+
+A **group** is a named set of aliases, kept in `~/.onix/groups.toml`. Use it to jump to several projects at once, or to fan a search/run/yank across all of them. Groups are referenced with the `+` sigil — and because of that, `+` is not allowed in alias names.
+
+```powershell
+o pa+work                # add alias `pa` to group `work` (creates it), then navigate
+o +work                  # pick members in fzf: the first selection cd's the current
+                         #   shell, each additional selection opens a new terminal
+sg +work TODO            # ripgrep across every member's dir, into one fzf picker
+ff +work config          # fuzzy-find files across every member
+r  +work git pull        # run a command in each member dir (per-dir header)
+y  +work                 # copy every member path to the clipboard
+nix --groups             # list all groups
+nix +work --list         # list a group's members (each resolved to its path)
+nix pa+work --remove     # drop a member
+nix +work --remove       # delete the group
+```
+
+Members are **alias names**, resolved on use — move an alias and its groups follow; a member whose alias was removed is skipped with a note (and `nix <alias> --remove` strips it from every group). A group may contain another group as a `+other` member, expanded recursively (cycles and runaway nesting are guarded). The file is flat and hand-editable:
+
+```toml
+work = ["pa", "pb"]
+all  = ["+work", "pc"]   # nested
+```
+
+When `o +group` opens more than one selection, the **first** keeps the current shell and the rest each launch a new terminal via `[nav] terminal` in `config.toml` — a command template with a `{dir}` placeholder. On Windows this defaults to `wt -d {dir}` (falling back to a `start` console window); elsewhere set it explicitly:
+
+```toml
+[nav]
+terminal = "wezterm start --cwd {dir}"
+```
+
 ## Tab completion
 
 Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated hot path that bypasses TOML parsing for sub-millisecond Tab response.

@@ -108,9 +108,18 @@ a grace/migration note when implementing the validator change.
     absolute search paths, so they emit absolute file paths into one unified fzf
     picker (preview + open already accept absolute paths). Single-alias mode is
     gated unchanged (`roots.len == 1` → cwd-relative, no path args).
-- ⬜ **1d — navigation + launcher.** `o +group` fzf-multi picker
-  (`name -> path` rows), topmost-keeps-shell, `[nav] terminal` launcher with the
-  Windows defaults and Unix require-config behavior. Trickiest piece; do last.
+- ✅ **1d — navigation + launcher.** `o +group` resolves members → `fzf --multi`
+  (`name -> path` rows); the topmost selection keeps the current shell (stacks a
+  subshell), each other selection opens a new terminal via `launchTerminal`
+  (`[nav] terminal` template + `{dir}`; Windows defaults to `wt -d`/`start`, Unix
+  requires the config). `member+group` adds then navigates. New `[nav] terminal`
+  config (reported by `--doctor`). Builds/tests green; `buildTerminalArgv`/
+  `rowPath` unit-tested. The interactive fzf+subshell path can't be driven
+  headless (verified by code review + config/argv tests).
+  - Follow-up: POSIX `o +group` currently lists (the shell-function model needs a
+    navigate verb to pick+cd); group nav is Windows-effective today.
+  - Follow-up: `o pa+group` with an unregistered `pa` adds it as a (dead) member
+    rather than routing through the unknown-alias picker first.
 
 ---
 

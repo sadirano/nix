@@ -23,6 +23,11 @@ pub const Config = struct {
     /// [grep] all = true makes `sg` search with ripgrep-all (rga) by default,
     /// as if `--all` were always passed. The per-search flag still works too.
     grep_all: bool = false,
+    /// [nav] terminal: command template (with a `{dir}` placeholder) used to open
+    /// a new terminal at a dir — the extra selections when navigating a group
+    /// (`o +group`). Empty → per-OS defaults on Windows (wt/start), required on
+    /// Unix (no probing).
+    nav_terminal: []const u8 = "",
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -126,6 +131,11 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         }
         if (std.mem.eql(u8, section, "grep")) {
             if (std.mem.eql(u8, key, "all")) cfg.grep_all = parseBool(stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "nav")) {
+            // value is a command template; may contain spaces (wt -d {dir}).
+            if (std.mem.eql(u8, key, "terminal")) cfg.nav_terminal = try arena.dupe(u8, stripQuotes(val_start));
             continue;
         }
         if (!std.mem.eql(u8, section, "picker")) continue;
