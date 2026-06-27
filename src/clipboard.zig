@@ -14,6 +14,15 @@ pub fn writeText(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
     return writeTextUnix(arena, io, text);
 }
 
+/// writeFiles puts a list of absolute file/dir paths on the clipboard as a
+/// CF_HDROP file drop (Windows), so pasting in Explorer drops the real files —
+/// the inverse of readFiles. Returns error.Unsupported off Windows (the caller
+/// falls back to copying the paths as text).
+pub fn writeFiles(arena: std.mem.Allocator, io: Io, paths: []const []const u8) !void {
+    if (!is_windows) return error.Unsupported;
+    return writeFilesWindows(arena, io, paths);
+}
+
 // ---- Windows ----------------------------------------------------------------
 
 const HANDLE = *anyopaque;
@@ -198,6 +207,75 @@ fn writeTextWindows(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
     _ = GlobalUnlock(h);
     // On success the clipboard owns the global memory; we must not free it.
     if (setClipboardData(CF_UNICODETEXT, h) == null) return error.SetClipboardData;
+}
+
+// sizeof(DROPFILES): pFiles(DWORD,4) + pt(POINT,8) + fNC(BOOL,4) + fWide(BOOL,4).
+const dropfiles_header = 20;
+
+/// dropfilesBuffer builds a CF_HDROP payload: a DROPFILES header (pFiles=20 so the
+/// path list begins right after it; fWide=1 for UTF-16 paths) followed by each
+/// path as UTF-16LE NUL-terminated, then a final extra NUL ending the list. Pure
+/// and byte-explicit (no struct cast), so it's unit-tested without touching the
+/// real clipboard.
+fn dropfilesBuffer(arena: std.mem.Allocator, paths: []const []const u8) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    var hdr = [_]u8{0} ** dropfiles_header;
+    std.mem.writeInt(u32, hdr[0..4], dropfiles_header, .little); // pFiles = offset to list
+    std.mem.writeInt(i32, hdr[16..20], 1, .little); // fWide = TRUE
+    try buf.appendSlice(arena, &hdr);
+    for (paths) |p| {
+        const w16 = try std.unicode.utf8ToUtf16LeAlloc(arena, p);
+        for (w16) |u| try appendU16Le(arena, &buf, u);
+        try appendU16Le(arena, &buf, 0); // terminate this path
+    }
+    try appendU16Le(arena, &buf, 0); // double-NUL terminates the list
+    return buf.items;
+}
+
+fn appendU16Le(arena: std.mem.Allocator, buf: *std.ArrayList(u8), v: u16) !void {
+    var b: [2]u8 = undefined;
+    std.mem.writeInt(u16, &b, v, .little);
+    try buf.appendSlice(arena, &b);
+}
+
+fn writeFilesWindows(arena: std.mem.Allocator, io: Io, paths: []const []const u8) !void {
+    const user32 = LoadLibraryA("user32.dll") orelse return error.NoUser32;
+    const openClipboard = try proc(OpenClipboardFn, user32, "OpenClipboard");
+    const emptyClipboard = try proc(EmptyClipboardFn, user32, "EmptyClipboard");
+    const setClipboardData = try proc(SetClipboardDataFn, user32, "SetClipboardData");
+    const closeClipboard = try proc(CloseClipboardFn, user32, "CloseClipboard");
+
+    const buf = try dropfilesBuffer(arena, paths);
+    if (!openClipboardRetry(openClipboard, io)) return error.OpenClipboard;
+    defer _ = closeClipboard();
+    _ = emptyClipboard();
+    const h = GlobalAlloc(GMEM_MOVEABLE, buf.len) orelse return error.GlobalAlloc;
+    const raw = GlobalLock(h) orelse return error.GlobalLock;
+    const dst: [*]u8 = @ptrCast(raw);
+    @memcpy(dst[0..buf.len], buf);
+    _ = GlobalUnlock(h);
+    // On success the clipboard owns the global memory; we must not free it.
+    if (setClipboardData(CF_HDROP, h) == null) return error.SetClipboardData;
+}
+
+test "dropfilesBuffer: DROPFILES header + double-NUL-terminated wide list" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const p0 = "C:\\a.txt";
+    const p1 = "C:\\bb.txt";
+    const buf = try dropfilesBuffer(a, &.{ p0, p1 });
+    // Header: pFiles == 20, fWide == 1 (at offset 16).
+    try std.testing.expectEqual(@as(u32, 20), std.mem.readInt(u32, buf[0..4], .little));
+    try std.testing.expectEqual(@as(i32, 1), std.mem.readInt(i32, buf[16..20], .little));
+    // Length: header + ((len0+1) + (len1+1) + 1) wchars (ASCII → 1 wchar/byte) * 2.
+    const expected = dropfiles_header + ((p0.len + 1) + (p1.len + 1) + 1) * 2;
+    try std.testing.expectEqual(expected, buf.len);
+    // First path's first wide char is 'C' little-endian.
+    try std.testing.expectEqual(@as(u8, 'C'), buf[dropfiles_header]);
+    try std.testing.expectEqual(@as(u8, 0), buf[dropfiles_header + 1]);
+    // Ends with the path's NUL and the extra list NUL (4 zero bytes).
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, buf[buf.len - 4 ..]);
 }
 
 // ---- Unix -------------------------------------------------------------------

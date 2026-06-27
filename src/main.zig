@@ -204,7 +204,7 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "edit")) return cmdEdit(app, alias, action_args);
     if (eql(act, "explore")) return cmdExplore(app, alias, action_args);
     if (eql(act, "run")) return cmdRun(app, alias, action_args);
-    if (eql(act, "yank")) return cmdYank(app, alias);
+    if (eql(act, "yank")) return cmdYank(app, alias, action_args);
     if (eql(act, "grep")) return cmdGrep(app, alias, action_args);
     if (eql(act, "find")) return cmdFind(app, alias, action_args);
     if (eql(act, "paste")) return cmdPaste(app, alias, action_args);
@@ -2076,9 +2076,25 @@ fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
 /// group) needs fd or POSIX find — both take several roots and emit absolute
 /// paths, which the preview/open paths accept.
 fn findIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
+    return switch (try findPick(app, roots, args)) {
+        .selected => |sel| openFindSelections(app, roots[0], sel),
+        .cancelled => 0,
+        .failed => 1,
+    };
+}
+
+/// FindPick is the outcome of running the `ff` picker: a selection (newline-
+/// separated paths, relative to roots[0] unless absolute), a clean cancel, or a
+/// setup failure (message already printed).
+const FindPick = union(enum) { selected: []const u8, cancelled, failed };
+
+/// findPick runs the fuzzy file picker over one or more roots and returns the
+/// selection without acting on it — shared by `ff` (which opens) and `y <alias>
+/// <pat>` (which copies the files to the clipboard).
+fn findPick(app: *App, roots: []const []const u8, args: [][]const u8) !FindPick {
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
-        return 1;
+        return .failed;
     }
     const query: []const u8 = if (args.len > 0) args[0] else "";
     const extras = if (args.len > 1) args[1..] else args[0..0];
@@ -2110,7 +2126,7 @@ fn findIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
             try app.err.writeAll("nix: ff on a group needs fd (or POSIX find)\n")
         else
             try app.err.writeAll("nix: no file finder found (install fd)\n");
-        return 1;
+        return .failed;
     }
 
     const preview = if (proc.is_windows)
@@ -2124,10 +2140,9 @@ fn findIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const cwd = roots[0];
-    const res = try proc.runPipeline(app.arena, app.io, prod.items, &fzf, cwd, fzfEnv(app));
-    if (res.code != 0) return 0;
-    return openFindSelections(app, cwd, res.output);
+    const res = try proc.runPipeline(app.arena, app.io, prod.items, &fzf, roots[0], fzfEnv(app));
+    if (res.code != 0) return .cancelled;
+    return .{ .selected = res.output };
 }
 
 /// cmdPreview renders one fzf preview row (find's --preview target): a dir
@@ -2723,13 +2738,67 @@ fn pasteFiles(app: *App, target: []const u8, files: [][]const u8, name: []const 
     return 0;
 }
 
-fn cmdYank(app: *App, alias: []const u8) !u8 {
+fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
+    // `y <alias> <pat>`: ff-style picker → copy the selected FILES to the
+    // clipboard as an OS file drop (paste in Explorer drops them). Bare
+    // `y <alias>`: copy the path text (the original behavior).
+    var has_pat = false;
+    for (action_args) |a| if (!isGlobalFlag(a)) {
+        has_pat = true;
+        break;
+    };
+    if (has_pat) return cmdYankFiles(app, alias, action_args);
+
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     try app.out.print("{s}\n", .{target});
     try app.out.flush();
     clipboard.writeText(app.arena, app.io, target) catch |e| {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
     };
+    return 0;
+}
+
+/// cmdYankFiles runs the file picker under the alias dir and copies the selected
+/// files to the clipboard as a real OS file drop (CF_HDROP on Windows; elsewhere
+/// it falls back to copying the paths as text).
+fn cmdYankFiles(app: *App, alias: []const u8, args: [][]const u8) !u8 {
+    const target = (try resolveAliasPath(app, alias)) orelse return 1;
+    return switch (try findPick(app, &.{target}, args)) {
+        .selected => |sel| yankSelectionFiles(app, target, sel),
+        .cancelled => 0,
+        .failed => 1,
+    };
+}
+
+fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8) !u8 {
+    var paths: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
+    while (lines.next()) |ln| {
+        const s = std.mem.trim(u8, ln, " \t\r");
+        if (s.len == 0) continue;
+        // Picker rows are relative to the alias dir (or absolute for a group);
+        // the clipboard needs absolute, host-separator paths.
+        const abs = if (std.fs.path.isAbsolute(s)) s else try std.fs.path.join(app.arena, &.{ target, s });
+        try paths.append(app.arena, try store.fromSlash(app.arena, abs));
+    }
+    if (paths.items.len == 0) return 0;
+
+    clipboard.writeFiles(app.arena, app.io, paths.items) catch |e| {
+        if (e == error.Unsupported) {
+            // Non-Windows: no file-drop format — copy the paths as text instead.
+            var buf: std.ArrayList(u8) = .empty;
+            for (paths.items, 0..) |p, i| {
+                if (i > 0) try buf.append(app.arena, '\n');
+                try buf.appendSlice(app.arena, p);
+            }
+            clipboard.writeText(app.arena, app.io, buf.items) catch {};
+            try app.err.writeAll("note: file-drop clipboard is Windows-only — copied the paths as text\n");
+        } else {
+            try app.err.print("nix: clipboard file copy failed: {s}\n", .{@errorName(e)});
+            return 1;
+        }
+    };
+    for (paths.items) |p| try app.out.print("{s}\n", .{p});
     return 0;
 }
 
@@ -3044,7 +3113,7 @@ const shortcut_help = [_]ShortcutHelp{
     .{ .slot = "o", .args = "<alias> [path]", .desc = "cd into the alias dir; no path opens aliases.toml" },
     .{ .slot = "e", .args = "<alias> [file]", .desc = "open the dir (or a file) in your editor" },
     .{ .slot = "s", .args = "<alias> [file]", .desc = "open the dir in the file manager, or a file with its default app" },
-    .{ .slot = "y", .args = "<alias>", .desc = "print the path and copy it to the clipboard" },
+    .{ .slot = "y", .args = "<alias> [pat]", .desc = "copy the path; with a pattern, pick files and copy the files" },
     .{ .slot = "p", .args = "<alias> [name]", .desc = "save clipboard contents into the alias dir" },
     .{ .slot = "r", .args = "<alias> <cmd…>", .desc = "run a command at the alias dir" },
     .{ .slot = "sg", .args = "<alias> <pat>", .desc = "ripgrep search under the alias dir (fzf UI)" },
@@ -3095,7 +3164,7 @@ fn printUsage(app: *App) !void {
         \\  --resolve            print the resolved path
         \\  --edit,    -e        open in your editor
         \\  --explore, -x        open in the file manager
-        \\  --yank,    -y        copy the path to the clipboard
+        \\  --yank,    -y [pat]  copy the path; with a pattern, pick files → copy the files
         \\  --paste,   -p        save the clipboard into the dir
         \\  --run,     -r <cmd>  run a command at the dir (`:name` runs a saved action)
         \\  --grep,    -g <pat>  ripgrep search (add --all/-a to search via rga)

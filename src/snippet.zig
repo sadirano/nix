@@ -124,7 +124,7 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     , .{o});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --edit \"$@\"; }}\n", .{e});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --explore \"$@\"; }}\n", .{s});
-    try b.print(arena, "{s}() {{ \"$ONIX_EXE\" \"$1\" --yank; }}\n", .{y});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --yank \"$@\"; }}\n", .{y});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --paste \"$@\"; }}\n", .{p});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --run \"$@\"; }}\n", .{r});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --grep \"$@\"; }}\n", .{sg});

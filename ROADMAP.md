@@ -183,10 +183,10 @@ recovery need).
 - ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
   `--json`/`-q` (so scripts don't break) but emits only the human-readable
   report. Implement a structured JSON form for tooling.
-- ⬜ **`y` file-copy mode.** `y <alias> <pat>` works like `ff` (es/fd → fzf,
-  multi-select) but copies the selected **files** to the clipboard as a
-  system-level file drop (Windows `CF_HDROP` / `DROPFILES`), so a paste in
-  Explorer drops the real files. Inverse of `p`. `clipboard.zig` already *reads*
-  CF_HDROP; this needs the *write* side. Windows first; Mac/Linux can fall back
-  to copying paths as text. Final `y` modes: `y alias` (path text) ·
-  `y +group` (all member paths) · `y alias [pat]` (pick files → copy files).
+- ✅ **`y` file-copy mode.** `y <alias> <pat>` runs the `ff` picker
+  (`findPick`) and copies the selected **files** to the clipboard as a system
+  file drop — `clipboard.writeFiles` builds a `DROPFILES`/CF_HDROP payload
+  (`dropfilesBuffer`, unit-tested; round-trip verified against Explorer's
+  FileDropList). Non-Windows falls back to copying paths as text. `y` modes:
+  `y alias` (path text) · `y +group` (all member paths) · `y alias [pat]`
+  (pick files → copy files). POSIX `y` snippet now forwards the pattern arg.
