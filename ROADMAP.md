@@ -120,30 +120,26 @@ a grace/migration note when implementing the validator change.
 
 ---
 
-## 2. Per-alias actions  ⬜  (design sketch — open decisions remain)
+## 2. Per-alias actions  ✅
 
-Project-local, tool-agnostic named commands (like `package.json` scripts but
-language-agnostic), runnable from anywhere.
+Named shell commands per alias, run with `r <alias> :<name>` — like
+`package.json` scripts but language-agnostic. `src/actions.zig` +
+`cmdRun`/`cmdGroupRun`.
 
-### Sketch
+- **Invocation:** `r <alias> :<name>` — a leading `:` on the run argument marks a
+  named action vs a literal command; `r <alias> :` lists them. `:` doesn't
+  collide with the segment inline-value `:` (different position) or `@` segments
+  (which `test@alias` would have hit).
+- **Storage:** project-local `<alias-dir>/.onix/actions.toml` (committed, travels
+  with the repo) wins over central `~/.onix/actions/<alias>.toml` (private) — a
+  `[actions]` table of `name = "command"`.
+- **Execution:** the command is a shell string run via `cmd /c` (Windows) or
+  `sh -c`, in the alias dir, so `&&`/pipes/redirects work. `-o` runs it detached.
+- **Group fan-out:** `r +<group> :<name>` runs each member's OWN action; a member
+  without it is skipped with a note.
 
-- Storage parallels segments: project-local `<alias>/.onix/actions.toml` (travels
-  with the repo) and central `~/.onix/actions/<alias>.toml` (private).
-  ```toml
-  [actions]
-  test = "zig build test"
-  serve = "npm run dev"
-  ```
-- Invocation must be explicit (silently treating a literal `r alias cmd` arg as
-  an action name would be intent-guessing). Leading candidates: `r alias :test`
-  vs `r test@alias`. Leaning `:test` since `@alias` reads as a *location*
-  everywhere else.
-
-### Open decisions (resolve before building)
-
-- Invocation syntax (`:test` vs `test@alias` vs other).
-- Storage location precedence (project-local vs central, and which wins).
-- Whether actions participate in fan-out (`r +group :test`).
+Verified end-to-end (project-over-central, listing, `&&`, unknown action, group
+fan-out). `actions.parse`/`find`/path helpers unit-tested.
 
 ---
 

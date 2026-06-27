@@ -233,6 +233,27 @@ When `o +group` opens more than one selection, the **first** keeps the current s
 terminal = "wezterm start --cwd {dir}"
 ```
 
+## Per-alias actions
+
+Save named commands per alias and run them from anywhere with `r <alias> :<name>` — like `package.json` scripts, but language-agnostic. Actions are plain shell strings (so `&&`, pipes, and redirects work), run in the alias directory.
+
+```toml
+# <alias-dir>/.onix/actions.toml   (commit it with the project)
+[actions]
+test   = "zig build test"
+serve  = "npm run dev"
+deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
+```
+
+```powershell
+r acme :test         # run acme's `test` action in acme's dir
+r acme :             # list acme's actions
+r acme -o :serve     # run the action detached, in a new window
+r +work :test        # run each member's own `test` action (members without it are skipped)
+```
+
+Actions resolve from two places, **project-local winning**: `<alias-dir>/.onix/actions.toml` (travels with the repo) overrides `~/.onix/actions/<alias>.toml` (private, per-machine). A leading `:` is what marks a saved action — without it, `r <alias> <cmd>` still runs `<cmd>` literally.
+
 ## Tab completion
 
 Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated hot path that bypasses TOML parsing for sub-millisecond Tab response.

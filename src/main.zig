@@ -10,6 +10,7 @@ const config = @import("config.zig");
 const segments = @import("segments.zig");
 const snippet = @import("snippet.zig");
 const groups = @import("groups.zig");
+const actions = @import("actions.zig");
 
 const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -470,8 +471,21 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
     var argv = action_args;
     if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
     if (argv.len == 0) {
-        try app.err.writeAll("usage: r +<group> <cmd> [args...]\n");
+        try app.err.writeAll("usage: r +<group> <cmd> [args...]   (or :<action>)\n");
         return 1;
+    }
+    // Named action (`r +<group> :test`): each member runs its OWN action; a member
+    // lacking it is skipped with a note. Otherwise a literal command in each dir.
+    const action_name: ?[]const u8 = if (argv[0].len > 0 and argv[0][0] == ':') argv[0][1..] else null;
+    if (action_name) |n| {
+        if (n.len == 0) {
+            try app.err.writeAll("nix: name the action after ':' (e.g. r +group :test)\n");
+            return 1;
+        }
+        if (argv.len > 1) {
+            try app.err.print("nix: a named action (:{s}) takes no extra args\n", .{n});
+            return 1;
+        }
     }
     const targets = (try resolveGroupTargets(app, group)) orelse return 1;
     var rc: u8 = 0;
@@ -479,11 +493,20 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
         try app.out.flush();
         try app.err.print("== {s}  ({s}) ==\n", .{ t.name, t.path });
         try app.err.flush();
-        const code = proc.runInherit(app.io, argv, t.path) catch |e| blk: {
-            try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });
-            break :blk @as(u8, 1);
-        };
-        if (code != 0) rc = code;
+        if (action_name) |n| {
+            const cmd = (try resolveAction(app, t.name, t.path, n)) orelse {
+                try app.err.print("   (no action :{s} — skipped)\n", .{n});
+                continue;
+            };
+            const code = try runShellString(app, cmd, t.path, false);
+            if (code != 0) rc = code;
+        } else {
+            const code = proc.runInherit(app.io, argv, t.path) catch |e| blk: {
+                try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });
+                break :blk @as(u8, 1);
+            };
+            if (code != 0) rc = code;
+        }
     }
     return rc;
 }
@@ -1477,8 +1500,23 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     }
     if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
     if (argv.len == 0) {
-        try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]\n");
+        try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `r <alias> :`)\n");
         return 1;
+    }
+    // Named action: a leading ':' on the first token (`r <alias> :test`). A bare
+    // ':' lists the alias's actions. Runs as a shell string in the alias dir.
+    if (argv[0].len > 0 and argv[0][0] == ':') {
+        const name = argv[0][1..];
+        if (name.len == 0) return listActions(app, alias, target);
+        if (argv.len > 1) {
+            try app.err.print("nix: a named action (:{s}) takes no extra args\n", .{name});
+            return 1;
+        }
+        const cmd = (try resolveAction(app, alias, target, name)) orelse {
+            try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `r {s} :`)\n", .{ alias, name, alias });
+            return 1;
+        };
+        return runShellString(app, cmd, target, outside);
     }
     // On Windows, probe the alias dir for a bare-name executable before
     // falling back to PATH resolution (mirrors RunCmd's Go-1.19 workaround).
@@ -1503,6 +1541,64 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     }
     return proc.runInherit(app.io, resolved, target) catch |e| {
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
+        return 1;
+    };
+}
+
+/// resolveAction looks up a named action for an alias: project-local
+/// `<dir>/.onix/actions.toml` first (wins), then central
+/// `~/.onix/actions/<alias>.toml`. Returns the command string, or null if absent.
+fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?[]const u8 {
+    const pp = try actions.projectPath(app.arena, dir);
+    if (actions.find(try actions.loadFile(app.arena, app.io, pp), name)) |c| return c;
+    const cp = try actions.centralPath(app.arena, app.home, alias);
+    return actions.find(try actions.loadFile(app.arena, app.io, cp), name);
+}
+
+/// listActions prints an alias's actions (project-local merged over central) as a
+/// padded NAME/COMMAND table — the `r <alias> :` form.
+fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
+    const pp = try actions.projectPath(app.arena, dir);
+    const cp = try actions.centralPath(app.arena, app.home, alias);
+    var merged: std.ArrayList(actions.Action) = .empty;
+    for (try actions.loadFile(app.arena, app.io, pp)) |a| try merged.append(app.arena, a);
+    outer: for (try actions.loadFile(app.arena, app.io, cp)) |a| {
+        for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // project wins
+        try merged.append(app.arena, a);
+    }
+    if (merged.items.len == 0) {
+        try app.out.print("no actions for \"{s}\" — define them in {s}\n", .{ alias, pp });
+        return 0;
+    }
+    var width: usize = "ACTION".len;
+    for (merged.items) |a| width = @max(width, a.name.len);
+    try padPrint(app.out, "ACTION", width + 2);
+    try app.out.writeAll("COMMAND\n");
+    for (merged.items) |a| {
+        try padPrint(app.out, a.name, width + 2);
+        try app.out.print("{s}\n", .{a.command});
+    }
+    return 0;
+}
+
+/// runShellString runs an action's command through the shell (cmd /c on Windows,
+/// sh -c elsewhere) in `dir`, so `&&`, pipes, and redirects work. `outside` runs
+/// it detached (a new window), mirroring `r --outside`.
+fn runShellString(app: *App, command: []const u8, dir: []const u8, outside: bool) !u8 {
+    const shell_argv: []const []const u8 = if (proc.is_windows)
+        &.{ app.env.get("COMSPEC") orelse "cmd.exe", "/c", command }
+    else
+        &.{ "/bin/sh", "-c", command };
+    try app.out.flush();
+    if (outside) {
+        proc.runDetached(app.io, shell_argv, dir, false) catch |e| {
+            try app.err.print("nix: start action: {s}\n", .{@errorName(e)});
+            return 1;
+        };
+        return 0;
+    }
+    return proc.runInherit(app.io, shell_argv, dir) catch |e| {
+        try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
         return 1;
     };
 }
@@ -2969,7 +3065,7 @@ fn printUsage(app: *App) !void {
         \\  --explore, -x        open in the file manager
         \\  --yank,    -y        copy the path to the clipboard
         \\  --paste,   -p        save the clipboard into the dir
-        \\  --run,     -r <cmd>  run a command at the dir
+        \\  --run,     -r <cmd>  run a command at the dir (`:name` runs a saved action)
         \\  --grep,    -g <pat>  ripgrep search (add --all/-a to search via rga)
         \\  --find,    -f [pat]  fuzzy-find files
         \\  --remove,  --rm      forget the alias
@@ -3010,8 +3106,9 @@ test {
     _ = config;
     _ = segments;
     _ = snippet;
+    _ = groups;
+    _ = actions;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
-    _ = @import("groups.zig"); // ditto: groups store/resolver tests (ROADMAP §1a)
 }
 
 test "desugarMultiCall navigate: bare alias navigates" {
