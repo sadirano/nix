@@ -2555,6 +2555,7 @@ test {
     _ = segments;
     _ = snippet;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
+    _ = @import("groups.zig"); // ditto: groups store/resolver tests (ROADMAP §1a)
 }
 
 test "desugarMultiCall navigate: bare alias navigates" {

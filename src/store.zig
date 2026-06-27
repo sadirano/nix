@@ -128,7 +128,7 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
 /// appendTomlString emits a TOML string value: a literal single-quoted string
 /// (go-toml's default) unless the value contains a single quote, in which case
 /// a basic double-quoted string with escapes is used.
-fn appendTomlString(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []const u8) !void {
+pub fn appendTomlString(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []const u8) !void {
     if (std.mem.indexOfScalar(u8, s, '\'') == null) {
         try b.append(arena, '\'');
         try b.appendSlice(arena, s);
@@ -238,6 +238,9 @@ pub fn validateAliasName(name: []const u8) !void {
     for (name) |c| {
         if (c == '/' or c == '\\') return error.PathSeparatorInName;
         if (c == '@') return error.AtInName;
+        // `+` is the group sigil (`pa+projects`); reserve it like `@` so member
+        // names can never be confused with the member+group split. See groups.zig.
+        if (c == '+') return error.PlusInName;
         if (c <= ' ' or c == 0x7f) return error.ControlInName;
     }
 }
@@ -382,6 +385,7 @@ test "validateAliasName: rejects separators, @, control chars, empty" {
     try std.testing.expectError(error.PathSeparatorInName, validateAliasName("a/b"));
     try std.testing.expectError(error.PathSeparatorInName, validateAliasName("a\\b"));
     try std.testing.expectError(error.AtInName, validateAliasName("a@b"));
+    try std.testing.expectError(error.PlusInName, validateAliasName("a+b"));
     try std.testing.expectError(error.ControlInName, validateAliasName("a b"));
 }
 
