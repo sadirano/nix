@@ -24,10 +24,10 @@ pub fn build(b: *std.Build) void {
     const version = gitDescribe(b) orelse @import("build.zig.zon").version;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
-    // Commit date of HEAD ("YYYY-MM-DD") so `--version` reports source freshness
-    // alongside the git-describe version. Only changes when HEAD does, so it
-    // doesn't force a rebuild on every configure.
-    build_options.addOption([]const u8, "commit_date", commitDate(b) orelse "unknown");
+    // Wall-clock build date+time (UTC) so `--version` reports when this binary
+    // was actually built. Changes every configure, so it forces the exe to be
+    // rebuilt on each `zig build` (the point: the reported date stays current).
+    build_options.addOption([]const u8, "build_date", buildDate(b));
 
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
@@ -199,18 +199,19 @@ fn gitDescribe(b: *std.Build) ?[]const u8 {
     return trimmed;
 }
 
-// commitDate returns the committer date of HEAD as "YYYY-MM-DD" (git's %cs),
-// or null when git is unavailable, this isn't a checkout, or there are no
-// commits yet. Allocated from the build arena; re-run on every configure so the
-// baked date stays current with HEAD.
-fn commitDate(b: *std.Build) ?[]const u8 {
+// buildDate returns the current local wall-clock time as "YYYY-MM-DD HH:MM:SS",
+// or "unknown" if the system clock can't be queried. Shelled out (the std time
+// API moved behind Io in 0.16, so it's not available in the build runner),
+// branching on the host OS so it works on Windows and Unix alike. Re-run on
+// every configure so the baked timestamp reflects when the binary was built.
+fn buildDate(b: *std.Build) []const u8 {
     var code: u8 = undefined;
-    const stdout = b.runAllowFail(
-        &.{ "git", "log", "-1", "--format=%cs" },
-        &code,
-        .ignore,
-    ) catch return null;
+    const argv: []const []const u8 = if (@import("builtin").os.tag == .windows)
+        &.{ "powershell", "-NoProfile", "-Command", "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'" }
+    else
+        &.{ "date", "+%Y-%m-%d %H:%M:%S" };
+    const stdout = b.runAllowFail(argv, &code, .ignore) catch return "unknown";
     const trimmed = std.mem.trim(u8, stdout, " \r\n\t");
-    if (trimmed.len == 0) return null;
+    if (trimmed.len == 0) return "unknown";
     return trimmed;
 }

@@ -18,8 +18,8 @@ const fzf_tokyonight_theme =
 
 // Version is injected by build.zig (git describe → build.zig.zon .version → "dev").
 const build_version = @import("build_options").version;
-// Committer date of HEAD ("YYYY-MM-DD"), also injected by build.zig.
-const commit_date = @import("build_options").commit_date;
+// Local wall-clock build date+time ("YYYY-MM-DD HH:MM:SS"), injected by build.zig.
+const build_date = @import("build_options").build_date;
 
 /// App bundles process-wide context handed to every command, mirroring the
 /// Go onix `env` struct.
@@ -343,7 +343,7 @@ fn cmdListNames(app: *App) !u8 {
 
 fn cmdVersion(app: *App) !u8 {
     try app.out.print("nix:     {s}\n", .{build_version});
-    try app.out.print("date:    {s}\n", .{commit_date});
+    try app.out.print("date:    {s}\n", .{build_date});
     try app.out.print("zig:     {s}\n", .{builtin.zig_version_string});
     try app.out.print("os/arch: {s}/{s}\n", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
     return 0;
