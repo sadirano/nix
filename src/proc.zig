@@ -18,6 +18,16 @@ pub fn enableUtf8Console() void {
 extern "kernel32" fn SetConsoleOutputCP(wCodePageID: c_uint) callconv(.winapi) i32;
 extern "kernel32" fn GetLogicalDrives() callconv(.winapi) u32;
 extern "kernel32" fn GetDriveTypeA(lpRootPathName: ?[*:0]const u8) callconv(.winapi) c_uint;
+extern "kernel32" fn GetVolumeInformationA(
+    lpRootPathName: ?[*:0]const u8,
+    lpVolumeNameBuffer: ?[*]u8,
+    nVolumeNameSize: u32,
+    lpVolumeSerialNumber: ?*u32,
+    lpMaximumComponentLength: ?*u32,
+    lpFileSystemFlags: ?*u32,
+    lpFileSystemNameBuffer: ?[*]u8,
+    nFileSystemNameSize: u32,
+) callconv(.winapi) i32;
 
 /// fixedDriveRoots returns the roots of all fixed (non-removable, non-network,
 /// non-optical) drives on Windows — "C:\\", "D:\\", … — used as the es-less
@@ -35,6 +45,11 @@ pub fn fixedDriveRoots(arena: std.mem.Allocator) ![]const []const u8 {
         if (mask & (@as(u32, 1) << i) == 0) continue;
         var root = [_:0]u8{ 'A' + @as(u8, i), ':', '\\' };
         if (GetDriveTypeA(&root) != DRIVE_FIXED) continue;
+        // Skip not-ready / inaccessible fixed volumes — notably BitLocker-locked
+        // drives, which are DRIVE_FIXED but error (FVE_LOCKED_VOLUME) on access.
+        // GetVolumeInformation returns 0 for them without raising, so we exclude
+        // them here rather than tripping an unexpected-NTSTATUS probe downstream.
+        if (GetVolumeInformationA(&root, null, 0, null, null, null, null, 0) == 0) continue;
         try roots.append(arena, try arena.dupe(u8, root[0..]));
     }
     return roots.items;
@@ -179,6 +194,28 @@ fn captureOutputImpl(arena: std.mem.Allocator, io: Io, argv: []const []const u8,
         .stdin = .inherit,
         .stdout = .pipe,
         .stderr = if (quiet) .ignore else .inherit,
+    });
+    var buf: [4096]u8 = undefined;
+    var r = child.stdout.?.reader(io, &buf);
+    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
+    _ = child.wait(io) catch {};
+    return out;
+}
+
+/// probeOutput runs argv with stdin AND stderr discarded (only stdout captured)
+/// — for `--doctor` health probes that must never block on input or leak a
+/// tool's error text. With stdin ignored, a tool that tries to read input gets
+/// EOF immediately instead of hanging the diagnostic. NOTE: callers must still
+/// not invoke an interactive shim here (e.g. a fd.cmd that launches fzf, which
+/// reads the console directly); detect such shims by path first, then probe only
+/// genuine executables.
+pub fn probeOutput(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8) ![]const u8 {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
     });
     var buf: [4096]u8 = undefined;
     var r = child.stdout.?.reader(io, &buf);

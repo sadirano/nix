@@ -211,6 +211,8 @@ cmd.exe via clink is intentionally out of scope for nix; PowerShell completion p
 
 `nix --init` initialises `~/.onix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.onix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
 
+`nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves. It reports the build and wrapper state (flagging a stale wrapper or a `~/.onix/bin` that isn't on PATH), which finder the picker will actually use — distinguishing a working `es` from one that's installed but whose Everything service isn't running, and **real `fd` from a same-named `.cmd`/`.bat` shim that shadows it** — the resolved search roots (skipping BitLocker-locked drives), the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. Every probe is non-interactive and safe to run on locked-down machines; it exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
+
 ## Architecture
 
 nix mirrors onix's module split, hand-written in Zig for the hot path:
