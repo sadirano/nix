@@ -13,6 +13,11 @@ pub const Config = struct {
     /// "no filtering".
     picker_exclude: ?[][]const u8 = null,
     picker_exclude_extra: [][]const u8 = &.{},
+    /// [picker] search_roots: directory trees the unknown-alias picker walks
+    /// (fd/find) when Everything's `es` is unavailable or non-functional. Empty →
+    /// default to every fixed drive root on Windows (home directory elsewhere).
+    /// Unused when a working `es` is present (it indexes all drives instantly).
+    picker_search_roots: [][]const u8 = &.{},
     /// [shortcuts] overrides: builtin slot name → custom command name.
     shortcuts: []const Shortcut = &.{},
     /// [grep] all = true makes `sg` search with ripgrep-all (rga) by default,
@@ -124,7 +129,9 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             continue;
         }
         if (!std.mem.eql(u8, section, "picker")) continue;
-        if (std.mem.eql(u8, key, "exclude") or std.mem.eql(u8, key, "exclude_extra")) {
+        if (std.mem.eql(u8, key, "exclude") or std.mem.eql(u8, key, "exclude_extra") or
+            std.mem.eql(u8, key, "search_roots"))
+        {
             // Gather text until the array's closing ']' (may span lines).
             var buf: std.ArrayList(u8) = .empty;
             try buf.appendSlice(arena, val_start);
@@ -136,8 +143,10 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             const arr = try parseStringArray(arena, buf.items);
             if (std.mem.eql(u8, key, "exclude")) {
                 cfg.picker_exclude = arr;
-            } else {
+            } else if (std.mem.eql(u8, key, "exclude_extra")) {
                 cfg.picker_exclude_extra = arr;
+            } else {
+                cfg.picker_search_roots = arr;
             }
         }
     }

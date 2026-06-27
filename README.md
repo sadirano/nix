@@ -39,7 +39,9 @@ scoop bucket add sadirano https://github.com/sadirano/bucket
 scoop install nix
 ```
 
-The Scoop package pulls in the tools the interactive commands lean on (`bat`, `fzf`, `ripgrep`, `everything-cli`, `neovim`) and runs `nix --init` for you on install. `scoop update nix` tracks new releases.
+The Scoop package pulls in the tools the interactive commands lean on (`bat`, `fzf`, `ripgrep`, `fd`, `neovim`) and runs `nix --init` for you on install. `scoop update nix` tracks new releases.
+
+[Everything](https://www.voidtools.com/)'s `es` CLI is an optional extra (`scoop install everything-cli`): when present and running it gives the `o <name>` picker instant, whole-system reach across every drive. It is **not required** — `es` needs the Everything app/service, which some environments can't install, so the picker falls back to walking your drives with `fd`. See the `[picker]` configuration section to tune that fallback.
 
 ### Prebuilt binaries
 
@@ -152,6 +154,13 @@ Setting `exclude` replaces the default list entirely (`exclude = []` turns filte
 ```toml
 [picker]
 exclude_extra = ['\XboxGames\', '\Engine\']
+```
+
+Everything's `es` indexes every drive instantly, which is what makes the picker feel instant. Where `es` isn't available — any non-Windows host, a Windows box without Everything, or one where `es.exe` is installed but the Everything service can't run (e.g. locked-down corporate machines) — the picker falls back to walking a set of roots with `fd` (then POSIX `find`), listing directories whose path contains the typed name. A present-but-non-functional `es` (returns nothing) transparently falls through to this walk, so the picker never dead-ends on a dead `es`. `search_roots` lists those roots (`~` is expanded); unset, it defaults to **every fixed drive** on Windows (your home directory elsewhere), pruning the OS trees (`Windows`, `Program Files`, …) so a whole-drive walk stays quick. Point `search_roots` at the trees your projects actually live in to narrow and speed it up:
+
+```toml
+[picker]
+search_roots = ['~/projects', 'D:\work']
 ```
 
 `nix --sweep` finds noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.onix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
