@@ -137,9 +137,16 @@ Named shell commands per alias, run with `r <alias> :<name>` — like
   `sh -c`, in the alias dir, so `&&`/pipes/redirects work. `-o` runs it detached.
 - **Group fan-out:** `r +<group> :<name>` runs each member's OWN action; a member
   without it is skipped with a note.
+- **Local functions (scripts):** `r <alias> <cmd>` resolves a script in the
+  alias's `.onix/cmd` (then central `~/.onix/cmd`) **before** PATH —
+  `r acme clean` runs `.onix/cmd/clean.cmd` (extension-probed on Windows, since
+  CreateProcess won't find a bare `clean` → `clean.cmd` on PATH). Fans out per
+  member too (`r +group clean`). `resolveLocalCmd`; `:` stays explicit for
+  actions, this is plain command resolution.
 
 Verified end-to-end (project-over-central, listing, `&&`, unknown action, group
-fan-out). `actions.parse`/`find`/path helpers unit-tested.
+fan-out; local-function resolution project/central/PATH + group). `actions.parse`/
+`find`/path helpers unit-tested.
 
 ---
 

@@ -501,7 +501,10 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
             const code = try runShellString(app, cmd, t.path, false);
             if (code != 0) rc = code;
         } else {
-            const code = proc.runInherit(app.io, argv, t.path) catch |e| blk: {
+            // Each member resolves its own `.onix/cmd` local function first.
+            var rargv = try app.arena.dupe([]const u8, argv);
+            if (resolveLocalCmd(app, t.path, argv[0])) |local| rargv[0] = local;
+            const code = proc.runInherit(app.io, rargv, t.path) catch |e| blk: {
                 try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });
                 break :blk @as(u8, 1);
             };
@@ -1518,11 +1521,16 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         };
         return runShellString(app, cmd, target, outside);
     }
-    // On Windows, probe the alias dir for a bare-name executable before
-    // falling back to PATH resolution (mirrors RunCmd's Go-1.19 workaround).
+    // Resolve the command. A project "local function" — a script in the alias's
+    // `.onix/cmd` (then the central `~/.onix/cmd`) — wins, so `r <alias> clean`
+    // runs `.onix/cmd/clean.*`. Else the legacy alias-root bare-exe probe
+    // (Windows), else PATH. Extension probing is required because Windows
+    // CreateProcess won't find a bare `clean` -> `clean.cmd` on PATH.
     var resolved = try app.arena.dupe([]const u8, argv);
     const exe = argv[0];
-    if (proc.is_windows and std.mem.indexOfAny(u8, exe, "/\\") == null) {
+    if (resolveLocalCmd(app, target, exe)) |local| {
+        resolved[0] = local;
+    } else if (proc.is_windows and std.mem.indexOfAny(u8, exe, "/\\") == null) {
         for ([_][]const u8{ ".cmd", ".bat", ".exe", ".ps1" }) |ext| {
             const cand = try std.fmt.allocPrint(app.arena, "{s}{c}{s}{s}", .{ target, store.sep, exe, ext });
             if (proc.fileExists(app.io, cand)) {
@@ -1543,6 +1551,30 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
         return 1;
     };
+}
+
+/// resolveLocalCmd resolves a bare `--run` command to a project "local function":
+/// a script in the alias's `<dir>/.onix/cmd` (checked first, so local wins), then
+/// the central `~/.onix/cmd`. Returns the absolute script path (extension probed —
+/// `.cmd`/`.bat`/`.exe`/`.ps1` on Windows, bare or `.sh` elsewhere), or null. A
+/// command that already contains a path separator is left untouched.
+fn resolveLocalCmd(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
+    if (cmd.len == 0 or std.mem.indexOfAny(u8, cmd, "/\\") != null) return null;
+    const dirs = [_][]const u8{
+        std.fs.path.join(app.arena, &.{ dir, ".onix", "cmd" }) catch return null,
+        std.fs.path.join(app.arena, &.{ app.home, "cmd" }) catch return null,
+    };
+    const exts: []const []const u8 = if (proc.is_windows)
+        &.{ ".cmd", ".bat", ".exe", ".ps1" }
+    else
+        &.{ "", ".sh" };
+    for (dirs) |d| {
+        for (exts) |ext| {
+            const cand = std.fmt.allocPrint(app.arena, "{s}{c}{s}{s}", .{ d, store.sep, cmd, ext }) catch continue;
+            if (proc.fileExists(app.io, cand)) return cand;
+        }
+    }
+    return null;
 }
 
 /// resolveAction looks up a named action for an alias: project-local

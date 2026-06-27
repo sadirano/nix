@@ -254,6 +254,8 @@ r +work :test        # run each member's own `test` action (members without it a
 
 Actions resolve from two places, **project-local winning**: `<alias-dir>/.onix/actions.toml` (travels with the repo) overrides `~/.onix/actions/<alias>.toml` (private, per-machine). A leading `:` is what marks a saved action — without it, `r <alias> <cmd>` still runs `<cmd>` literally.
 
+For full scripts rather than one-liners, drop an executable in the alias's `.onix/cmd/` (or the central `~/.onix/cmd/`) and run it by bare name — `r acme clean` runs `<acme>/.onix/cmd/clean.cmd`. These project "local functions" resolve **before** PATH (so a local `clean` shadows a global one), project-local first, then central, then PATH; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is probed for you. It fans out too: `r +work clean` runs each member's own `.onix/cmd/clean`.
+
 ## Tab completion
 
 Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated hot path that bypasses TOML parsing for sub-millisecond Tab response.
