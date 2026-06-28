@@ -35,9 +35,10 @@ const App = struct {
     exe_path: []const u8,
     json: bool,
     no_prompt: bool,
-    /// PATH as the process started, captured before any per-alias augmentation —
-    /// aliasRunEnv rebuilds from this each time so scripts dirs never accumulate.
-    orig_path: []const u8,
+    /// PATH as the process started, captured *lazily* on first aliasRunEnv use
+    /// (the run/navigate paths only) so the resolve hot path does zero extra work.
+    /// aliasRunEnv rebuilds from this each call, so scripts dirs never accumulate.
+    orig_path: ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -78,7 +79,6 @@ pub fn main(init: std.process.Init) !void {
         .exe_path = exe_path,
         .json = hasFlag(raw_args[1..], &.{ "--json", "-j" }),
         .no_prompt = hasFlag(raw_args[1..], &.{ "--no-prompt", "-q" }),
-        .orig_path = try arena.dupe(u8, init.environ_map.get("PATH") orelse ""),
     };
 
     const code = run(&app, raw_args) catch |e| blk: {
@@ -1565,10 +1565,18 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// and scripts can call siblings by bare name). Rebuilt from orig_path each call,
 /// so repeated runs (a group) never stack dirs. Returns app.env (mutated in place).
 fn aliasRunEnv(app: *App, dir: []const u8) !*std.process.Environ.Map {
+    // Capture the original PATH lazily (and dupe it — the env.put below may free
+    // the map's value). This runs only here, on the run/navigate paths, so the
+    // resolve hot path pays nothing.
+    const orig = app.orig_path orelse blk: {
+        const dup = try app.arena.dupe(u8, app.env.get("PATH") orelse "");
+        app.orig_path = dup;
+        break :blk dup;
+    };
     const sep = if (proc.is_windows) ";" else ":";
     const local = try std.fs.path.join(app.arena, &.{ dir, ".onix", "scripts" });
     const central = try std.fs.path.join(app.arena, &.{ app.home, "scripts" });
-    const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, app.orig_path });
+    const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, orig });
     try app.env.put("PATH", newpath);
     return app.env;
 }
