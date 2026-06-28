@@ -1,6 +1,6 @@
 # nix
 
-A Zig rewrite of [onix](../onix) — the same fast directory alias resolver, with the Go runtime shed. Type `o acme` from any prompt; your shell jumps to the project root. One TOML file holds every alias, one binary serves every command, and the resolve hot path lands at **~4.4 ms vs onix's ~9 ms** — roughly **2× faster per invocation**, in a **1.23 MB** binary (onix is 3.48 MB).
+A Zig rewrite of [onix](../onix) — the same fast directory alias resolver, with the Go runtime shed. Type `o acme` from any prompt; your shell jumps to the project root. One TOML file holds every alias, one binary serves every command, and the resolve hot path lands at **~4.4 ms vs onix's ~9 ms** — roughly **2× faster per invocation**, in a **1.32 MB** binary (onix is 3.48 MB).
 
 nix is a drop-in: it reads and writes the same `~/.onix` layout, the same `aliases.toml`, `config.toml`, `usage`, and segment files, in onix's exact byte-for-byte formats. It can share a home with onix or stand alone. Full functional parity is verified command-by-command against the Go reference.
 
@@ -24,11 +24,11 @@ onix is already fast — about 0.6 ms over the OS process-spawn floor. But every
 
 | Binary | Resolve time | Size |
 |--------|-------------|------|
-| **nix** (Zig, ReleaseFast) | **~4.4 ms** | 1.23 MB |
+| **nix** (Zig, ReleaseFast) | **~4.4 ms** | 1.32 MB |
 | onix (Go, `-s -w`) | ~9 ms | 3.48 MB |
 | Zig no-op | 3.31 ms | 4.6 KB |
 
-The Zig no-op (a bare `CreateProcess` returning immediately) is the floor on this machine. nix's full hot path — resolve + mkdir + usage record — sits ~1 ms above it. The remainder is everything the Go runtime no longer has to do. ~3,500 lines of Zig across 9 modules.
+The Zig no-op (a bare `CreateProcess` returning immediately) is the floor on this machine. nix's full hot path — resolve + mkdir + usage record — sits ~1 ms above it. The remainder is everything the Go runtime no longer has to do. ~5,900 lines of Zig across 11 modules.
 
 ## Install
 
@@ -277,7 +277,9 @@ nix mirrors onix's module split, hand-written in Zig for the hot path:
 
 - **`src/store.zig`** — `aliases.toml`: byte-scan resolve, quote unescaping, `fromSlash` → host separators, atomic temp+rename writes, name validation.
 - **`src/segments.zig`** — `@`-segment grammar, `${VAR}` template expansion, `[[contexts]]` reading with local→central→global precedence and the traversal guard.
-- **`src/config.zig`** — `config.toml`: `[shortcuts]`, `[grep]`, `[picker]` (composed + deduped exclusion list shared by sweep/picker).
+- **`src/groups.zig`** — `groups.toml`: the `+` multi-alias store, the `member+group` grammar, recursive member expansion (cycle/depth-guarded, deduped), and the mutation helpers behind the group commands.
+- **`src/actions.zig`** — `[actions]` per-alias named shell commands (`r <alias> :name`), parsed project-local over central.
+- **`src/config.zig`** — `config.toml`: `[shortcuts]`, `[grep]`, `[picker]`, `[nav]` (composed + deduped exclusion list shared by sweep/picker).
 - **`src/proc.zig`** — process spawning: `runInherit`/`runDetached`/`findInPath`/`runFilter`/`runPipeline`. Streams `rg | fzf` live by relaying bytes through the parent with `File.readStreaming`.
 - **`src/clipboard.zig`** — Win32 clipboard read/write (CF_UNICODETEXT, CF_HDROP file drops, CF_DIB images), lazy-loading `user32` only when needed so the resolve hot path never pulls it into the import table.
 - **`src/png.zig`** — DIB decode + PNG encode (real DEFLATE via `std.compress.flate`, stored-block fallback, CRC32/Adler32) for image paste.
