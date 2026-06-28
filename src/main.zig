@@ -32,7 +32,11 @@ const App = struct {
     err: *Io.Writer,
     env: *std.process.Environ.Map,
     home: []const u8,
-    exe_path: []const u8,
+    /// argv[0] as received — the exePath() fallback.
+    argv0: []const u8,
+    /// Real on-disk image path; computed lazily by exePath() (only the preview/
+    /// picker/init/sync paths need it) so resolve never pays GetModuleFileNameW.
+    exe_path: ?[]const u8 = null,
     json: bool,
     no_prompt: bool,
     /// PATH as the process started, captured *lazily* on first aliasRunEnv use
@@ -61,14 +65,6 @@ pub fn main(init: std.process.Init) !void {
     const raw_args = try init.minimal.args.toSlice(arena);
     const home = try store.resolveHome(arena, init.environ_map);
 
-    // The find/picker preview indirection re-invokes this binary as
-    // `<exe> --preview <path>`, so exe_path must be the real on-disk image.
-    // Ask the OS (GetModuleFileNameW etc.) rather than reconstructing it from
-    // argv[0] + cwd: under a wrapper like `o`, argv[0] is the bare relative
-    // "o" and cwd is unrelated, which yielded a bogus "C:\…\o" that cmd.exe
-    // couldn't run in the fzf preview window.
-    const exe_path: []const u8 = std.process.executablePathAlloc(io, arena) catch raw_args[0];
-
     var app: App = .{
         .arena = arena,
         .io = io,
@@ -76,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
         .err = err,
         .env = init.environ_map,
         .home = home,
-        .exe_path = exe_path,
+        .argv0 = raw_args[0],
         .json = hasFlag(raw_args[1..], &.{ "--json", "-j" }),
         .no_prompt = hasFlag(raw_args[1..], &.{ "--no-prompt", "-q" }),
     };
@@ -851,7 +847,7 @@ fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
     const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
 
     const preview = if (proc.is_windows)
-        try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{app.exe_path})
+        try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})
     else
         "bat --style=numbers --color=always \"{}\" 2>/dev/null || ls -la \"{}\"";
     const fzf_argv = [_][]const u8{
@@ -1075,7 +1071,7 @@ fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     try app.out.print("nix --doctor   ({s}, built {s})\n", .{ build_version, build_date });
 
     try d.section("Build");
-    try d.row(.info, "binary", app.exe_path);
+    try d.row(.info, "binary", exePath(app));
     // Wrappers: o/e/s/... are copies of nix.exe in ~/.onix/bin. installExeWrappers
     // skips any wrapper that's running (can't replace an open exe on Windows), so
     // one can drift stale relative to the canonical nix.exe after a --sync.
@@ -1928,7 +1924,7 @@ fn grepRga(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     // {1}/{2} fields) sidesteps cross-shell field-quoting; the pattern travels in
     // the environment so fzf's preview shell needs no quoting of query text.
     app.env.put("NIX_RGA_QUERY", query) catch {};
-    const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{app.exe_path});
+    const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)});
     const fzf = [_][]const u8{
         "fzf",            "--ansi",
         "--multi",        "--preview",
@@ -2162,7 +2158,7 @@ fn findPick(app: *App, roots: []const []const u8, args: [][]const u8) !FindPick 
     }
 
     const preview = if (proc.is_windows)
-        try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{app.exe_path})
+        try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})
     else
         "bat --style=numbers --color=always \"{}\" 2>/dev/null || ls -la \"{}\"";
     const fzf = [_][]const u8{
@@ -2353,7 +2349,7 @@ const starter_config =
 ;
 
 fn cmdSync(app: *App) !u8 {
-    snippet.regenerate(app.arena, app.io, app.home, app.exe_path) catch |e| {
+    snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
         try app.err.print("nix: regenerate snippet: {s}\n", .{@errorName(e)});
         return 1;
     };
@@ -2385,7 +2381,7 @@ fn cmdInit(app: *App, skip_profile: bool) !u8 {
     }
 
     // 3. snippet + wrappers
-    snippet.regenerate(app.arena, app.io, app.home, app.exe_path) catch |e| {
+    snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
         try app.err.print("nix: regenerate snippet: {s}\n", .{@errorName(e)});
         return 1;
     };
@@ -2852,6 +2848,19 @@ fn navigate(app: *App, alias: []const u8) !u8 {
     }
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
     return enterDir(app, dir);
+}
+
+/// exePath returns the real on-disk image path, computed lazily and cached. The
+/// find/picker preview indirection re-invokes the binary as `<exe> --preview
+/// <path>`, so this must be the actual image — ask the OS (GetModuleFileNameW)
+/// rather than argv[0]+cwd (under a wrapper like `o`, argv[0] is the bare
+/// relative "o" and cwd is unrelated, yielding a bogus path cmd.exe can't run).
+/// Only preview/picker/init/sync need it, so resolve never pays the syscall.
+fn exePath(app: *App) []const u8 {
+    if (app.exe_path) |p| return p;
+    const p = std.process.executablePathAlloc(app.io, app.arena) catch app.argv0;
+    app.exe_path = p;
+    return p;
 }
 
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
