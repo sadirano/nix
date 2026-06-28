@@ -176,11 +176,12 @@ recovery need).
 
 ## Backlog
 
-- ⬜ **POSIX `o +group` navigation.** Group nav is Windows-effective today; on
-  POSIX `o` is a shell function that cd's the exe's stdout, so `o +group`
-  currently routes to `--list`. Needs a navigate verb the function calls for
-  `+`-tokens (run the picker on the tty, launch the extra terminals, print the
-  first selection's path for the function to `cd`).
+- 💤 **POSIX shell-function parity (low priority — nix is Windows-first).**
+  Two `o`-on-POSIX gaps share one root cause: POSIX `o` is a shell function that
+  cd's the exe's stdout (no subshell), so (a) `o +group` routes to `--list`
+  instead of navigating, and (b) `o <alias>` can't get `.onix/scripts` scoped on
+  PATH. Both need a navigate verb the function calls for these cases. Deferred —
+  revisit only if non-Windows use becomes important.
 - ⬜ **Picker-route for `o pa+group` with an unregistered `pa`.** Today it adds
   `pa` as a (dead) member; the design wants it to route through the unknown-alias
   es/fd picker to register `pa` first, then add + navigate.
