@@ -35,6 +35,9 @@ const App = struct {
     exe_path: []const u8,
     json: bool,
     no_prompt: bool,
+    /// PATH as the process started, captured before any per-alias augmentation —
+    /// aliasRunEnv rebuilds from this each time so scripts dirs never accumulate.
+    orig_path: []const u8,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -75,6 +78,7 @@ pub fn main(init: std.process.Init) !void {
         .exe_path = exe_path,
         .json = hasFlag(raw_args[1..], &.{ "--json", "-j" }),
         .no_prompt = hasFlag(raw_args[1..], &.{ "--no-prompt", "-q" }),
+        .orig_path = try arena.dupe(u8, init.environ_map.get("PATH") orelse ""),
     };
 
     const code = run(&app, raw_args) catch |e| blk: {
@@ -501,10 +505,12 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
             const code = try runShellString(app, cmd, t.path, false);
             if (code != 0) rc = code;
         } else {
-            // Each member resolves its own `.onix/cmd` local function first.
+            // Each member resolves its own `.onix/scripts` command and runs with
+            // that dir on PATH.
             var rargv = try app.arena.dupe([]const u8, argv);
-            if (resolveLocalCmd(app, t.path, argv[0])) |local| rargv[0] = local;
-            const code = proc.runInherit(app.io, rargv, t.path) catch |e| blk: {
+            if (resolveScript(app, t.path, argv[0])) |s| rargv[0] = s;
+            const env = try aliasRunEnv(app, t.path);
+            const code = proc.runInheritEnv(app.io, rargv, t.path, env) catch |e| blk: {
                 try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });
                 break :blk @as(u8, 1);
             };
@@ -1521,15 +1527,13 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         };
         return runShellString(app, cmd, target, outside);
     }
-    // Resolve the command. A project "local function" — a script in the alias's
-    // `.onix/cmd` (then the central `~/.onix/cmd`) — wins, so `r <alias> clean`
-    // runs `.onix/cmd/clean.*`. Else the legacy alias-root bare-exe probe
-    // (Windows), else PATH. Extension probing is required because Windows
-    // CreateProcess won't find a bare `clean` -> `clean.cmd` on PATH.
+    // Resolve the command: a project script in `.onix/scripts` (then central
+    // `~/.onix/scripts`) wins, so `r <alias> build` runs the project's build;
+    // else the legacy alias-root bare-exe probe (Windows); else PATH.
     var resolved = try app.arena.dupe([]const u8, argv);
     const exe = argv[0];
-    if (resolveLocalCmd(app, target, exe)) |local| {
-        resolved[0] = local;
+    if (resolveScript(app, target, exe)) |s| {
+        resolved[0] = s;
     } else if (proc.is_windows and std.mem.indexOfAny(u8, exe, "/\\") == null) {
         for ([_][]const u8{ ".cmd", ".bat", ".exe", ".ps1" }) |ext| {
             const cand = try std.fmt.allocPrint(app.arena, "{s}{c}{s}{s}", .{ target, store.sep, exe, ext });
@@ -1539,30 +1543,49 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
             }
         }
     }
+    const env = try aliasRunEnv(app, target);
     try app.out.flush();
     if (outside) {
-        proc.runDetached(app.io, resolved, target, false) catch |e| {
+        proc.runDetachedEnv(app.io, resolved, target, false, env) catch |e| {
             try app.err.print("nix: start {s}: {s}\n", .{ exe, @errorName(e) });
             return 1;
         };
         return 0;
     }
-    return proc.runInherit(app.io, resolved, target) catch |e| {
+    return proc.runInheritEnv(app.io, resolved, target, env) catch |e| {
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
         return 1;
     };
 }
 
-/// resolveLocalCmd resolves a bare `--run` command to a project "local function":
-/// a script in the alias's `<dir>/.onix/cmd` (checked first, so local wins), then
-/// the central `~/.onix/cmd`. Returns the absolute script path (extension probed —
-/// `.cmd`/`.bat`/`.exe`/`.ps1` on Windows, bare or `.sh` elsewhere), or null. A
-/// command that already contains a path separator is left untouched.
-fn resolveLocalCmd(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
+/// aliasRunEnv returns the environment for running in an alias context — the
+/// process env with the alias's project scripts dir `<dir>/.onix/scripts` and the
+/// central `~/.onix/scripts` prepended to PATH (so `r <alias> build` and the
+/// `o <alias>` subshell both resolve the project's own `build`, shadowing globals,
+/// and scripts can call siblings by bare name). Rebuilt from orig_path each call,
+/// so repeated runs (a group) never stack dirs. Returns app.env (mutated in place).
+fn aliasRunEnv(app: *App, dir: []const u8) !*std.process.Environ.Map {
+    const sep = if (proc.is_windows) ";" else ":";
+    const local = try std.fs.path.join(app.arena, &.{ dir, ".onix", "scripts" });
+    const central = try std.fs.path.join(app.arena, &.{ app.home, "scripts" });
+    const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, app.orig_path });
+    try app.env.put("PATH", newpath);
+    return app.env;
+}
+
+/// resolveScript resolves a bare command to a project script in the alias's
+/// `<dir>/.onix/scripts` (checked first, so local wins) or the central
+/// `~/.onix/scripts`, returning its absolute path. Needed for a *direct* run:
+/// spawn looks argv[0] up against the real PATH, not aliasRunEnv's injected one,
+/// so the script dir must be searched explicitly here. (The `o` subshell still
+/// resolves scripts via the injected PATH, since the shell does its own lookup.)
+/// Extension-probed (.cmd/.bat/.exe/.ps1 on Windows, bare/.sh else); a command
+/// with a path separator is left as-is.
+fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
     if (cmd.len == 0 or std.mem.indexOfAny(u8, cmd, "/\\") != null) return null;
     const dirs = [_][]const u8{
-        std.fs.path.join(app.arena, &.{ dir, ".onix", "cmd" }) catch return null,
-        std.fs.path.join(app.arena, &.{ app.home, "cmd" }) catch return null,
+        std.fs.path.join(app.arena, &.{ dir, ".onix", "scripts" }) catch return null,
+        std.fs.path.join(app.arena, &.{ app.home, "scripts" }) catch return null,
     };
     const exts: []const []const u8 = if (proc.is_windows)
         &.{ ".cmd", ".bat", ".exe", ".ps1" }
@@ -1621,15 +1644,16 @@ fn runShellString(app: *App, command: []const u8, dir: []const u8, outside: bool
         &.{ app.env.get("COMSPEC") orelse "cmd.exe", "/c", command }
     else
         &.{ "/bin/sh", "-c", command };
+    const env = try aliasRunEnv(app, dir);
     try app.out.flush();
     if (outside) {
-        proc.runDetached(app.io, shell_argv, dir, false) catch |e| {
+        proc.runDetachedEnv(app.io, shell_argv, dir, false, env) catch |e| {
             try app.err.print("nix: start action: {s}\n", .{@errorName(e)});
             return 1;
         };
         return 0;
     }
-    return proc.runInherit(app.io, shell_argv, dir) catch |e| {
+    return proc.runInheritEnv(app.io, shell_argv, dir, env) catch |e| {
         try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
         return 1;
     };
@@ -2823,11 +2847,14 @@ fn navigate(app: *App, alias: []const u8) !u8 {
 }
 
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
-/// single-target navigation primitive shared by alias and group navigation.
+/// single-target navigation primitive shared by alias and group navigation. The
+/// shell gets the alias's `.onix/scripts` on PATH (scoped to the subshell), so
+/// inside an `o <alias>` session the project's own `build`/`clean`/… just work.
 fn enterDir(app: *App, dir: []const u8) !u8 {
     const shell = interactiveShell(app);
+    const env = try aliasRunEnv(app, dir);
     try app.out.flush();
-    return proc.runInherit(app.io, &.{shell}, dir) catch |e| {
+    return proc.runInheritEnv(app.io, &.{shell}, dir, env) catch |e| {
         try app.err.print("nix: open subshell {s}: {s}\n", .{ shell, @errorName(e) });
         return 1;
     };

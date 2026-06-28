@@ -58,12 +58,19 @@ pub fn fixedDriveRoots(arena: std.mem.Allocator) ![]const []const u8 {
 /// runInherit spawns argv in cwd with inherited stdio, waits, and returns the
 /// child's exit code. argv[0] is resolved against the parent PATH.
 pub fn runInherit(io: Io, argv: []const []const u8, cwd: []const u8) !u8 {
+    return runInheritEnv(io, argv, cwd, null);
+}
+
+/// runInheritEnv is runInherit with an explicit environment (e.g. a PATH that
+/// includes the alias's `.onix/scripts` dir). A null env inherits the parent's.
+pub fn runInheritEnv(io: Io, argv: []const []const u8, cwd: []const u8, env: ?*const std.process.Environ.Map) !u8 {
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
+        .environ_map = env,
     });
     const term = try child.wait(io);
     return switch (term) {
@@ -76,6 +83,11 @@ pub fn runInherit(io: Io, argv: []const []const u8, cwd: []const u8) !u8 {
 /// explorer.exe and `--run --outside`. create_no_window suppresses the console
 /// flash when launched from a GUI context.
 pub fn runDetached(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_window: bool) !void {
+    return runDetachedEnv(io, argv, cwd, no_window, null);
+}
+
+/// runDetachedEnv is runDetached with an explicit environment.
+pub fn runDetachedEnv(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_window: bool, env: ?*const std.process.Environ.Map) !void {
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .cwd = if (cwd) |d| .{ .path = d } else .inherit,
@@ -83,6 +95,7 @@ pub fn runDetached(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_window
         .stdout = .ignore,
         .stderr = .ignore,
         .create_no_window = no_window,
+        .environ_map = env,
     });
     // Detach: don't wait. The OS reaps it. We still must release our handle —
     // on Windows wait() closes it, but for fire-and-forget we accept the leak
