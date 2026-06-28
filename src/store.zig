@@ -1,4 +1,4 @@
-//! Alias store: byte-level reading and writing of ~/.onix/aliases.toml,
+//! Alias store: byte-level reading and writing of ~/.nix/aliases.toml,
 //! plus home resolution and path helpers. Mirrors internal/store + internal/
 //! resolver (fast path) and paths.go from the Go onix.
 

@@ -62,7 +62,7 @@ pub fn runInherit(io: Io, argv: []const []const u8, cwd: []const u8) !u8 {
 }
 
 /// runInheritEnv is runInherit with an explicit environment (e.g. a PATH that
-/// includes the alias's `.onix/scripts` dir). A null env inherits the parent's.
+/// includes the alias's `.nix/scripts` dir). A null env inherits the parent's.
 pub fn runInheritEnv(io: Io, argv: []const []const u8, cwd: []const u8, env: ?*const std.process.Environ.Map) !u8 {
     var child = try std.process.spawn(io, .{
         .argv = argv,

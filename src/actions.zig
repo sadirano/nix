@@ -1,8 +1,8 @@
 //! Per-alias named actions (ROADMAP §2): a small `[actions]` TOML table mapping
 //! action names to shell-command strings, run as `r <alias> :<name>` (and across
 //! a group with `r +<group> :<name>`). Loaded from two places — project-local
-//! `<alias-dir>/.onix/actions.toml` (travels with the repo) overriding central
-//! `~/.onix/actions/<alias>.toml` (private) — mirroring the segments precedence.
+//! `<alias-dir>/.nix/actions.toml` (travels with the repo) overriding central
+//! `~/.nix/actions/<alias>.toml` (private) — mirroring the segments precedence.
 
 const std = @import("std");
 const Io = std.Io;
@@ -10,7 +10,7 @@ const store = @import("store.zig");
 
 pub const Action = struct { name: []const u8, command: []const u8 };
 
-/// projectPath: <alias-dir>/.onix/actions.toml — committed alongside the project.
+/// projectPath: <alias-dir>/.nix/actions.toml — committed alongside the project.
 pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ alias_dir, ".nix", "actions.toml" });
 }

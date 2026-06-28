@@ -1,5 +1,5 @@
 //! Alias groups: the `+` multi-alias store and resolver. A group is a named set
-//! of alias names held in ~/.onix/groups.toml (a flat `name = [members]` file,
+//! of alias names held in ~/.nix/groups.toml (a flat `name = [members]` file,
 //! no section headers). Members are alias names; a `+name` member references
 //! another group, expanded recursively (with cycle detection, a depth guard, and
 //! dedupe). aliases.toml stays byte-for-byte onix-compatible — groups live in

@@ -2,7 +2,7 @@
 
 A Zig rewrite of [onix](../onix) — the same fast directory alias resolver, with the Go runtime shed. Type `o acme` from any prompt; your shell jumps to the project root. One TOML file holds every alias, one binary serves every command, and the resolve hot path lands at **~4.4 ms vs onix's ~9 ms** — roughly **2× faster per invocation**, in a **1.32 MB** binary (onix is 3.48 MB).
 
-nix is a drop-in: it reads and writes the same `~/.onix` layout, the same `aliases.toml`, `config.toml`, `usage`, and segment files, in onix's exact byte-for-byte formats. It can share a home with onix or stand alone. Full functional parity is verified command-by-command against the Go reference.
+nix keeps all its state in `~/.nix` — `aliases.toml`, `groups.toml`, `config.toml`, `usage`, and the segment / action / script files. It began as a Zig rewrite of the Go [onix](../onix) and still reads onix's TOML formats; the first run after upgrading **auto-migrates a legacy `~/.onix` to `~/.nix`** (override the location with `$NIX_HOME`).
 
 ## Demos
 
@@ -62,9 +62,9 @@ On Windows, prefer the portable build helper — a native build bakes the dev ma
 .\nix-build.cmd        # zig build … -Dtarget=x86_64-windows -Dcpu=baseline, then --sync
 ```
 
-`nix --init` creates `~/.onix/`, writes a shell snippet to `~/.onix/shell/`, installs the `.exe` command wrappers into `~/.onix/bin` (and adds it to your user PATH), and dot-sources the snippet from your shell profile (`$PROFILE` on Windows, `.bashrc`/`.zshrc`/`.profile` on Unix-likes). Restart your shell (or source your profile) once and the short commands below are live.
+`nix --init` creates `~/.nix/`, writes a shell snippet to `~/.nix/shell/`, installs the `.exe` command wrappers into `~/.nix/bin` (and adds it to your user PATH), and dot-sources the snippet from your shell profile (`$PROFILE` on Windows, `.bashrc`/`.zshrc`/`.profile` on Unix-likes). Restart your shell (or source your profile) once and the short commands below are live.
 
-Because nix writes nix-branded artifacts (`nix.ps1`, `nix.sh`, copied wrappers) into the shared home, it coexists with an existing onix install in the same `~/.onix` rather than clobbering it.
+Upgrading from a pre-rename install? The first run **moves a legacy `~/.onix` to `~/.nix`** automatically (a rename — your data isn't duplicated; the `~/.onix-backups` snapshots stay put), then nudges you to re-run `nix --init` so the shell integration points at the new home. Setting `$NIX_HOME` (or the legacy `$ONIX_HOME`) skips this. The onix fallback and migration are **deprecated and removed at 1.0**.
 
 ## Use
 
@@ -86,7 +86,7 @@ sg acme invoice --all                      # search inside PDFs/office docs/arch
 ff acme config                             # fuzzy-find files under the dir → fzf → open the selection
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
 nix --list                                 # show every alias
-nix --edit                                 # open ~/.onix in your editor
+nix --edit                                 # open ~/.nix in your editor
 nix acme --remove                          # forget the alias
 ```
 
@@ -114,7 +114,7 @@ Everything else (`e`, `s`, `y`, `p`, `r`, `sg`, `ff`) invokes `nix` directly, so
 
 ## Configuration
 
-Aliases live in `~/.onix/aliases.toml`. The format is one TOML table per alias:
+Aliases live in `~/.nix/aliases.toml`. The format is one TOML table per alias:
 
 ```toml
 [acme]
@@ -123,13 +123,13 @@ path = "C:/Users/dev/projects/acme"
 
 You can hand-edit the file (`nix --list` and resolve pick up changes immediately) or use `nix <name> <path>` to register and `nix <name> --remove` to forget. Alias lookups are case-insensitive.
 
-When the list grows crusty, `nix --prune` opens an fzf multi-select of every alias ranked prune-first: dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `nix --prune --no-prompt` just prints the ranking. The ranking comes from `~/.onix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour, so the hot path stays hot; delete it any time to start fresh). The ranking is byte-for-byte identical to onix's.
+When the list grows crusty, `nix --prune` opens an fzf multi-select of every alias ranked prune-first: dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `nix --prune --no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour, so the hot path stays hot; delete it any time to start fresh). The ranking is byte-for-byte identical to onix's.
 
-Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$ONIX_HOME`.
+Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$NIX_HOME` (the legacy `$ONIX_HOME` is still read).
 
 ## Configuring shortcuts and search
 
-`~/.onix/config.toml` holds three optional sections.
+`~/.nix/config.toml` holds three optional sections.
 
 `[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`); the value is the name you'd rather type:
 
@@ -166,7 +166,7 @@ Everything's `es` indexes every drive instantly, which is what makes the picker 
 search_roots = ['~/projects', 'D:\work']
 ```
 
-`nix --sweep` finds noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.onix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
+`nix --sweep` finds noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.nix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
 
 After editing, run `nix --sync` and `. $PROFILE` (or restart PowerShell) to pick up renamed shortcuts or picker changes.
 
@@ -174,9 +174,9 @@ After editing, run `nix --sync` and `. $PROFILE` (or restart PowerShell) to pick
 
 Append subdirectory shortcuts to any alias with `@`. Each segment is defined as a `[[contexts]]` entry, resolved by searching three places, first match wins:
 
-1. **Per-alias, local:** `<alias-path>/.onix/segments.toml`
-2. **Per-alias, central:** `~/.onix/segments/<alias>.toml`
-3. **Global:** `~/.onix/segments.toml` — but only entries marked `scope = "global"` are visible here.
+1. **Per-alias, local:** `<alias-path>/.nix/segments.toml`
+2. **Per-alias, central:** `~/.nix/segments/<alias>.toml`
+3. **Global:** `~/.nix/segments.toml` — but only entries marked `scope = "global"` are visible here.
 
 ```powershell
 o docs@acme              # cd into <acme-path>/documentation
@@ -186,7 +186,7 @@ o client:bob@projb       # multi-segment, innermost first
 ```
 
 ```toml
-# ~/.onix/segments.toml — entries in the global file must opt in with scope = "global"
+# ~/.nix/segments.toml — entries in the global file must opt in with scope = "global"
 [[contexts]]
 segment = "docs"
 scope = "global"
@@ -202,11 +202,11 @@ Per-alias files need **no** `scope` — every entry there is implicitly scoped t
 
 A segment resolves through its `source-template`: a string with `${VAR}` references. For each `${name}`, nix looks up, in order, (1) the segment's inline value (`seg:value`), bound under `${<segment>}` — or `${param}` if the context sets `param`; (2) the context's `env` map; (3) the process environment. Templates own their separators — `"/foo"` appends as a subdirectory, `"_${task}.md"` appends as a filename suffix.
 
-Encountering an unknown segment opens your editor on the central per-alias file seeded with a `[[contexts]]` skeleton. Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.onix/segments.toml`.
+Encountering an unknown segment opens your editor on the central per-alias file seeded with a `[[contexts]]` skeleton. Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.nix/segments.toml`.
 
 ## Groups (`+` multi-alias)
 
-A **group** is a named set of aliases, kept in `~/.onix/groups.toml`. Use it to jump to several projects at once, or to fan a search/run/yank across all of them. Groups are referenced with the `+` sigil — and because of that, `+` is not allowed in alias names.
+A **group** is a named set of aliases, kept in `~/.nix/groups.toml`. Use it to jump to several projects at once, or to fan a search/run/yank across all of them. Groups are referenced with the `+` sigil — and because of that, `+` is not allowed in alias names.
 
 ```powershell
 o pa+work                # add alias `pa` to group `work` (creates it), then navigate
@@ -241,7 +241,7 @@ terminal = "wezterm start --cwd {dir}"
 Save named commands per alias and run them from anywhere with `r <alias> :<name>` — like `package.json` scripts, but language-agnostic. Actions are plain shell strings (so `&&`, pipes, and redirects work), run in the alias directory.
 
 ```toml
-# <alias-dir>/.onix/actions.toml   (commit it with the project)
+# <alias-dir>/.nix/actions.toml   (commit it with the project)
 [actions]
 test   = "zig build test"
 serve  = "npm run dev"
@@ -255,9 +255,9 @@ r acme -o :serve     # run the action detached, in a new window
 r +work :test        # run each member's own `test` action (members without it are skipped)
 ```
 
-Actions resolve from two places, **project-local winning**: `<alias-dir>/.onix/actions.toml` (travels with the repo) overrides `~/.onix/actions/<alias>.toml` (private, per-machine). A leading `:` is what marks a saved action — without it, `r <alias> <cmd>` still runs `<cmd>` literally.
+Actions resolve from two places, **project-local winning**: `<alias-dir>/.nix/actions.toml` (travels with the repo) overrides `~/.nix/actions/<alias>.toml` (private, per-machine). A leading `:` is what marks a saved action — without it, `r <alias> <cmd>` still runs `<cmd>` literally.
 
-For full scripts rather than one-liners, drop an executable in the alias's `.onix/scripts/` (or the central `~/.onix/scripts/`) and run it by bare name — `r acme build` runs `<acme>/.onix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). It fans out too: `r +work build` runs each member's own script. Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
+For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `r acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). It fans out too: `r +work build` runs each member's own script. Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
 
 ## Tab completion
 
@@ -267,9 +267,9 @@ cmd.exe via clink is intentionally out of scope for nix; PowerShell completion p
 
 ## Commands
 
-`nix --init` initialises `~/.onix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.onix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
+`nix --init` initialises `~/.nix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.nix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
 
-`nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves. It reports the build and wrapper state (flagging a stale wrapper or a `~/.onix/bin` that isn't on PATH), which finder the picker will actually use — distinguishing a working `es` from one that's installed but whose Everything service isn't running, and **real `fd` from a same-named `.cmd`/`.bat` shim that shadows it** — the resolved search roots (skipping BitLocker-locked drives), the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. Every probe is non-interactive and safe to run on locked-down machines; it exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
+`nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves. It reports the build and wrapper state (flagging a stale wrapper or a `~/.nix/bin` that isn't on PATH), which finder the picker will actually use — distinguishing a working `es` from one that's installed but whose Everything service isn't running, and **real `fd` from a same-named `.cmd`/`.bat` shim that shadows it** — the resolved search roots (skipping BitLocker-locked drives), the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. Every probe is non-interactive and safe to run on locked-down machines; it exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
 ## Architecture
 

@@ -503,7 +503,7 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
             const code = try runShellString(app, cmd, t.path, false);
             if (code != 0) rc = code;
         } else {
-            // Each member resolves its own `.onix/scripts` command and runs with
+            // Each member resolves its own `.nix/scripts` command and runs with
             // that dir on PATH.
             var rargv = try app.arena.dupe([]const u8, argv);
             if (resolveScript(app, t.path, argv[0])) |s| rargv[0] = s;
@@ -1074,7 +1074,7 @@ fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
 
     try d.section("Build");
     try d.row(.info, "binary", exePath(app));
-    // Wrappers: o/e/s/... are copies of nix.exe in ~/.onix/bin. installExeWrappers
+    // Wrappers: o/e/s/... are copies of nix.exe in ~/.nix/bin. installExeWrappers
     // skips any wrapper that's running (can't replace an open exe on Windows), so
     // one can drift stale relative to the canonical nix.exe after a --sync.
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
@@ -1539,8 +1539,8 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         };
         return runShellString(app, cmd, target, outside);
     }
-    // Resolve the command: a project script in `.onix/scripts` (then central
-    // `~/.onix/scripts`) wins, so `r <alias> build` runs the project's build;
+    // Resolve the command: a project script in `.nix/scripts` (then central
+    // `~/.nix/scripts`) wins, so `r <alias> build` runs the project's build;
     // else the legacy alias-root bare-exe probe (Windows); else PATH.
     var resolved = try app.arena.dupe([]const u8, argv);
     const exe = argv[0];
@@ -1571,8 +1571,8 @@ fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 }
 
 /// aliasRunEnv returns the environment for running in an alias context — the
-/// process env with the alias's project scripts dir `<dir>/.onix/scripts` and the
-/// central `~/.onix/scripts` prepended to PATH (so `r <alias> build` and the
+/// process env with the alias's project scripts dir `<dir>/.nix/scripts` and the
+/// central `~/.nix/scripts` prepended to PATH (so `r <alias> build` and the
 /// `o <alias>` subshell both resolve the project's own `build`, shadowing globals,
 /// and scripts can call siblings by bare name). Rebuilt from orig_path each call,
 /// so repeated runs (a group) never stack dirs. Returns app.env (mutated in place).
@@ -1594,8 +1594,8 @@ fn aliasRunEnv(app: *App, dir: []const u8) !*std.process.Environ.Map {
 }
 
 /// resolveScript resolves a bare command to a project script in the alias's
-/// `<dir>/.onix/scripts` (checked first, so local wins) or the central
-/// `~/.onix/scripts`, returning its absolute path. Needed for a *direct* run:
+/// `<dir>/.nix/scripts` (checked first, so local wins) or the central
+/// `~/.nix/scripts`, returning its absolute path. Needed for a *direct* run:
 /// spawn looks argv[0] up against the real PATH, not aliasRunEnv's injected one,
 /// so the script dir must be searched explicitly here. (The `o` subshell still
 /// resolves scripts via the injected PATH, since the shell does its own lookup.)
@@ -1621,8 +1621,8 @@ fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
 }
 
 /// resolveAction looks up a named action for an alias: project-local
-/// `<dir>/.onix/actions.toml` first (wins), then central
-/// `~/.onix/actions/<alias>.toml`. Returns the command string, or null if absent.
+/// `<dir>/.nix/actions.toml` first (wins), then central
+/// `~/.nix/actions/<alias>.toml`. Returns the command string, or null if absent.
 fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?[]const u8 {
     const pp = try actions.projectPath(app.arena, dir);
     if (actions.find(try actions.loadFile(app.arena, app.io, pp), name)) |c| return c;
@@ -2898,7 +2898,7 @@ fn migrateLegacyHome(app: *App) void {
 
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
 /// single-target navigation primitive shared by alias and group navigation. The
-/// shell gets the alias's `.onix/scripts` on PATH (scoped to the subshell), so
+/// shell gets the alias's `.nix/scripts` on PATH (scoped to the subshell), so
 /// inside an `o <alias>` session the project's own `build`/`clean`/… just work.
 fn enterDir(app: *App, dir: []const u8) !u8 {
     // A subshell whose cwd doesn't exist fails to spawn with a bare "FileNotFound"

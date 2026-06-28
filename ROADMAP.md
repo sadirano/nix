@@ -12,9 +12,11 @@ made so we can build without re-litigating them.
   aliases.
 - **Combining explicit targets is welcome** (groups, fan-out); guessing intent
   is not.
-- **onix byte-compatibility.** `aliases.toml` / `config.toml` / `usage` /
-  segment files stay byte-for-byte compatible with onix. New state lives in new
-  files (e.g. `groups.toml`), never by adding shapes onix's loader can't read.
+- **Simple, onix-derived formats.** `aliases.toml` / `config.toml` / `usage` /
+  segment files keep onix's simple TOML shapes, so a legacy `~/.onix` migrates
+  cleanly. New state lives in new files (e.g. `groups.toml`), never by adding
+  shapes the simple readers can't handle. nix now homes at `~/.nix` (auto-migrated
+  from the legacy `~/.onix`; fallback removed at 1.0).
 
 Status legend: ✅ done · 🚧 in progress · ⬜ not started
 
@@ -43,7 +45,7 @@ multi-target navigation and for fanning out search/run/yank across projects.
   - `+projects` — reference a group.
   - `pa+projects` — add alias `pa` to group `projects` (create if new), then run
     the action (parallels `o <alias> <path>` = register + navigate).
-- **Storage:** new `~/.onix/groups.toml`. Members are **alias names**
+- **Storage:** new `~/.nix/groups.toml`. Members are **alias names**
   (resolve-on-use → single source of truth in `aliases.toml`, auto-follows
   moves, dead members detectable). Format: `projects = ["pa", "pb"]`.
 - **Nesting:** allowed. A member may be `+othergroup`; resolution expands
@@ -130,15 +132,15 @@ Named shell commands per alias, run with `r <alias> :<name>` — like
   named action vs a literal command; `r <alias> :` lists them. `:` doesn't
   collide with the segment inline-value `:` (different position) or `@` segments
   (which `test@alias` would have hit).
-- **Storage:** project-local `<alias-dir>/.onix/actions.toml` (committed, travels
-  with the repo) wins over central `~/.onix/actions/<alias>.toml` (private) — a
+- **Storage:** project-local `<alias-dir>/.nix/actions.toml` (committed, travels
+  with the repo) wins over central `~/.nix/actions/<alias>.toml` (private) — a
   `[actions]` table of `name = "command"`.
 - **Execution:** the command is a shell string run via `cmd /c` (Windows) or
   `sh -c`, in the alias dir, so `&&`/pipes/redirects work. `-o` runs it detached.
 - **Group fan-out:** `r +<group> :<name>` runs each member's OWN action; a member
   without it is skipped with a note.
-- **Project scripts (`.onix/scripts`):** the alias's `.onix/scripts` dir (then
-  central `~/.onix/scripts`) is prepended to `PATH` in any alias context
+- **Project scripts (`.nix/scripts`):** the alias's `.nix/scripts` dir (then
+  central `~/.nix/scripts`) is prepended to `PATH` in any alias context
   (`aliasRunEnv`, via env-aware `runInheritEnv`/`runDetachedEnv`). `r <alias>
   build` runs the project's `build` (resolved by `resolveScript` — a direct spawn
   looks argv[0] up against the *real* PATH, not the injected env, so the dir is
@@ -156,7 +158,7 @@ accumulation). `actions.parse`/`find`/path helpers unit-tested.
 
 ## 3. Export / import  ⬜  (design sketch — open decisions remain)
 
-Portable backup/restore for the alias DB (also serves the `~/.onix` data-loss
+Portable backup/restore for the alias DB (also serves the `~/.nix` data-loss
 recovery need).
 
 ### Sketch
@@ -179,7 +181,7 @@ recovery need).
 - 💤 **POSIX shell-function parity (low priority — nix is Windows-first).**
   Two `o`-on-POSIX gaps share one root cause: POSIX `o` is a shell function that
   cd's the exe's stdout (no subshell), so (a) `o +group` routes to `--list`
-  instead of navigating, and (b) `o <alias>` can't get `.onix/scripts` scoped on
+  instead of navigating, and (b) `o <alias>` can't get `.nix/scripts` scoped on
   PATH. Both need a navigate verb the function calls for these cases. Deferred —
   revisit only if non-Windows use becomes important.
 - ⬜ **Picker-route for `o pa+group` with an unregistered `pa`.** Today it adds
