@@ -2868,13 +2868,44 @@ fn exePath(app: *App) []const u8 {
 /// shell gets the alias's `.onix/scripts` on PATH (scoped to the subshell), so
 /// inside an `o <alias>` session the project's own `build`/`clean`/… just work.
 fn enterDir(app: *App, dir: []const u8) !u8 {
+    // A subshell whose cwd doesn't exist fails to spawn with a bare "FileNotFound"
+    // that reads as if the shell itself is missing. Check the dir first and say
+    // what's actually wrong — typically a deleted/moved dir, or an incomplete or
+    // offline network path (e.g. `\\server\` with no share).
+    if (!proc.pathExists(app.io, dir)) {
+        try app.err.print("nix: directory not found: {s}\n", .{dir});
+        try app.err.writeAll("  (deleted/moved, or an incomplete/offline network path? re-register with `nix <alias> <path>`)\n");
+        return 1;
+    }
     const shell = interactiveShell(app);
     const env = try aliasRunEnv(app, dir);
     try app.out.flush();
+    // cmd.exe rejects a UNC path as its working directory ("UNC paths are not
+    // supported. Defaulting to Windows directory."). `pushd` maps the share to a
+    // temp drive and cd's there, so under cmd enter a UNC dir via `cmd /k pushd`
+    // (started from a normal cwd) instead of handing CreateProcess the UNC cwd.
+    if (proc.is_windows and isUncPath(dir) and isCmdShell(shell)) {
+        return proc.runInheritEnv(app.io, &.{ shell, "/k", "pushd", dir }, ".", env) catch |e| {
+            try app.err.print("nix: open a shell ({s}) in \"{s}\": {s}\n", .{ shell, dir, @errorName(e) });
+            return 1;
+        };
+    }
     return proc.runInheritEnv(app.io, &.{shell}, dir, env) catch |e| {
-        try app.err.print("nix: open subshell {s}: {s}\n", .{ shell, @errorName(e) });
+        try app.err.print("nix: open a shell ({s}) in \"{s}\": {s}\n", .{ shell, dir, @errorName(e) });
         return 1;
     };
+}
+
+/// isUncPath reports whether `path` is a Windows UNC path (`\\server\share`).
+fn isUncPath(path: []const u8) bool {
+    return path.len >= 2 and (path[0] == '\\' or path[0] == '/') and (path[1] == '\\' or path[1] == '/');
+}
+
+/// isCmdShell reports whether the interactive shell is cmd.exe — which can't use
+/// a UNC path as a working directory (PowerShell and POSIX shells can).
+fn isCmdShell(shell: []const u8) bool {
+    const base = std.fs.path.basename(shell);
+    return std.ascii.eqlIgnoreCase(base, "cmd.exe") or std.ascii.eqlIgnoreCase(base, "cmd");
 }
 
 /// navigateGroup handles `o +group`: resolve the members, and with more than one,
@@ -3408,6 +3439,18 @@ test "rowPath: path after the last ' -> ', else whole row" {
     try std.testing.expectEqualStrings("C:/a/b", rowPath("pa -> C:/a/b"));
     try std.testing.expectEqualStrings("/x", rowPath("name -> /x"));
     try std.testing.expectEqualStrings("noseparator", rowPath("noseparator"));
+}
+
+test "isUncPath / isCmdShell" {
+    try std.testing.expect(isUncPath("\\\\server\\share"));
+    try std.testing.expect(isUncPath("//server/share"));
+    try std.testing.expect(!isUncPath("C:\\local"));
+    try std.testing.expect(!isUncPath("/usr/local"));
+    try std.testing.expect(!isUncPath("x"));
+    try std.testing.expect(isCmdShell("C:\\WINDOWS\\system32\\cmd.exe"));
+    try std.testing.expect(isCmdShell("cmd"));
+    try std.testing.expect(!isCmdShell("powershell.exe"));
+    try std.testing.expect(!isCmdShell("/bin/sh"));
 }
 
 test "firstLine: up to first newline, else whole string" {
