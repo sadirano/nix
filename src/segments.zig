@@ -53,9 +53,9 @@ pub fn globalPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ home, "segments.toml" });
 }
 
-/// localPath: <aliasBase>/.onix/segments.toml (aliasBase is forward-slashed).
+/// localPath: <aliasBase>/.nix/segments.toml (aliasBase is forward-slashed).
 pub fn localPath(arena: std.mem.Allocator, alias_base: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, "{s}/.onix/segments.toml", .{std.mem.trimEnd(u8, alias_base, "/")});
+    return std.fmt.allocPrint(arena, "{s}/.nix/segments.toml", .{std.mem.trimEnd(u8, alias_base, "/")});
 }
 
 /// centralPath: <home>/segments/<lower alias>.toml

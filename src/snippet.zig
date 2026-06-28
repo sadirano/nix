@@ -87,21 +87,21 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
 
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "# nix shell integration (generated; do not edit — run 'nix --sync')\n");
-    try b.print(arena, "export ONIX_EXE='{s}'\n\n", .{exe});
+    try b.print(arena, "export NIX_EXE='{s}'\n\n", .{exe});
     try b.appendSlice(arena,
         \\if [ -n "$BASH_VERSION" ]; then
-        \\    _onix_completer() {
+        \\    _nix_completer() {
         \\        local cur=${COMP_WORDS[COMP_CWORD]}
         \\        local names
-        \\        mapfile -t names < <("$ONIX_EXE" --list-names 2>/dev/null)
+        \\        mapfile -t names < <("$NIX_EXE" --list-names 2>/dev/null)
         \\        COMPREPLY=( $(compgen -W "${names[*]}" -- "$cur") )
         \\    }
         \\elif [ -n "$ZSH_VERSION" ] && command -v compdef >/dev/null 2>&1; then
-        \\    _onix_zsh_completer() {
+        \\    _nix_zsh_completer() {
         \\        local line names=()
         \\        while IFS= read -r line; do
         \\            names+=("$line")
-        \\        done < <("$ONIX_EXE" --list-names 2>/dev/null)
+        \\        done < <("$NIX_EXE" --list-names 2>/dev/null)
         \\        compadd -- "${names[@]}"
         \\    }
         \\fi
@@ -111,24 +111,24 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     try b.print(arena,
         \\{s}() {{
         \\    if [ -z "$1" ]; then
-        \\        "$ONIX_EXE" --edit
+        \\        "$NIX_EXE" --edit
         \\        return
         \\    fi
         \\    local path
-        \\    path=$("$ONIX_EXE" "$@")
+        \\    path=$("$NIX_EXE" "$@")
         \\    if [ $? -eq 0 ]; then
         \\        cd "$path"
         \\    fi
         \\}}
         \\
     , .{o});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --edit \"$@\"; }}\n", .{e});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --explore \"$@\"; }}\n", .{s});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --yank \"$@\"; }}\n", .{y});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --paste \"$@\"; }}\n", .{p});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --run \"$@\"; }}\n", .{r});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --grep \"$@\"; }}\n", .{sg});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$ONIX_EXE\" \"$alias\" --find \"$@\"; }}\n\n", .{ff});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --edit \"$@\"; }}\n", .{e});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --explore \"$@\"; }}\n", .{s});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --yank \"$@\"; }}\n", .{y});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --paste \"$@\"; }}\n", .{p});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --run \"$@\"; }}\n", .{r});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --grep \"$@\"; }}\n", .{sg});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --find \"$@\"; }}\n\n", .{ff});
 
     var joined: std.ArrayList(u8) = .empty;
     for (names, 0..) |n, i| {
@@ -137,9 +137,9 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     }
     try b.print(arena,
         \\if [ -n "$BASH_VERSION" ]; then
-        \\    complete -F _onix_completer {s}
+        \\    complete -F _nix_completer {s}
         \\elif [ -n "$ZSH_VERSION" ] && command -v compdef >/dev/null 2>&1; then
-        \\    compdef _onix_zsh_completer {s}
+        \\    compdef _nix_zsh_completer {s}
         \\fi
         \\
     , .{ joined.items, joined.items });

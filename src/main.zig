@@ -77,6 +77,8 @@ pub fn main(init: std.process.Init) !void {
         .no_prompt = hasFlag(raw_args[1..], &.{ "--no-prompt", "-q" }),
     };
 
+    migrateLegacyHome(&app);
+
     const code = run(&app, raw_args) catch |e| blk: {
         err.print("nix: {s}\n", .{@errorName(e)}) catch {};
         break :blk 1;
@@ -1225,6 +1227,20 @@ fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
 
     try d.section("Config & data");
     {
+        // Home + the transitional onix→nix migration status.
+        const on_legacy = std.mem.endsWith(u8, app.home, ".onix");
+        if (on_legacy) {
+            try d.row(.warn, "home", app.home);
+            try d.cont("legacy onix home — migrate to ~/.nix; the onix fallback is REMOVED at 1.0");
+        } else {
+            try d.row(.ok, "home", app.home);
+            const legacy = store.legacyHome(app.arena, app.env);
+            if (legacy != null and proc.pathExists(app.io, legacy.?)) {
+                try d.row(.note, "legacy", try std.fmt.allocPrint(app.arena, "{s} still present", .{legacy.?}));
+                try d.cont("the onix→nix migration/fallback is deprecated and REMOVED at 1.0");
+            }
+        }
+
         const cfg_path = try std.fs.path.join(app.arena, &.{ app.home, "config.toml" });
         if (proc.pathExists(app.io, cfg_path)) {
             try d.row(.ok, "config.toml", cfg_path);
@@ -1379,7 +1395,7 @@ fn cmdContexts(app: *App) !u8 {
     const gpath = try segments.globalPath(app.arena, app.home);
     const contexts = try segments.loadSegmentsFile(app.arena, app.io, gpath);
     if (contexts.len == 0) {
-        try app.out.writeAll("(no contexts defined — add [[contexts]] blocks to ~/.onix/segments.toml)\n");
+        try app.out.writeAll("(no contexts defined — add [[contexts]] blocks to ~/.nix/segments.toml)\n");
         try app.out.writeAll("run: nix --edit segments.toml\n");
         return 0;
     }
@@ -1570,7 +1586,7 @@ fn aliasRunEnv(app: *App, dir: []const u8) !*std.process.Environ.Map {
         break :blk dup;
     };
     const sep = if (proc.is_windows) ";" else ":";
-    const local = try std.fs.path.join(app.arena, &.{ dir, ".onix", "scripts" });
+    const local = try std.fs.path.join(app.arena, &.{ dir, ".nix", "scripts" });
     const central = try std.fs.path.join(app.arena, &.{ app.home, "scripts" });
     const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, orig });
     try app.env.put("PATH", newpath);
@@ -1588,7 +1604,7 @@ fn aliasRunEnv(app: *App, dir: []const u8) !*std.process.Environ.Map {
 fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
     if (cmd.len == 0 or std.mem.indexOfAny(u8, cmd, "/\\") != null) return null;
     const dirs = [_][]const u8{
-        std.fs.path.join(app.arena, &.{ dir, ".onix", "scripts" }) catch return null,
+        std.fs.path.join(app.arena, &.{ dir, ".nix", "scripts" }) catch return null,
         std.fs.path.join(app.arena, &.{ app.home, "scripts" }) catch return null,
     };
     const exts: []const []const u8 = if (proc.is_windows)
@@ -2319,7 +2335,7 @@ fn openFindSelections(app: *App, target: []const u8, selection: []const u8) !u8 
 
 // ---- init / sync -------------------------------------------------------------
 
-const starter_aliases = "# onix aliases — edit with care, prefer 'nix <name> <path>' / 'nix <name> --remove'\n";
+const starter_aliases = "# nix aliases — edit with care, prefer 'nix <name> <path>' / 'nix <name> --remove'\n";
 const starter_config =
     \\# nix configuration.
     \\#
@@ -2863,6 +2879,23 @@ fn exePath(app: *App) []const u8 {
     return p;
 }
 
+/// migrateLegacyHome moves a pre-rename `~/.onix` to the default `~/.nix` on the
+/// first run after the `.onix`→`.nix` rename — only when there's no
+/// NIX_HOME/ONIX_HOME override, `~/.nix` doesn't exist yet, and `~/.onix` does.
+/// A rename (data isn't duplicated; the `~/.onix-backups` snapshots remain), then
+/// a one-line notice nudging `nix --init` to refresh shell integration.
+/// Best-effort. NOTE: the onix fallback/migration is transitional — removed at 1.0
+/// (which also drops the `pathExists` check this adds to startup).
+fn migrateLegacyHome(app: *App) void {
+    if (app.env.get("NIX_HOME") != null or app.env.get("ONIX_HOME") != null) return; // user-chosen home
+    if (proc.pathExists(app.io, app.home)) return; // ~/.nix already present
+    const legacy = store.legacyHome(app.arena, app.env) orelse return;
+    if (!proc.pathExists(app.io, legacy)) return;
+    Io.Dir.cwd().rename(legacy, Io.Dir.cwd(), app.home, app.io) catch return;
+    app.err.print("nix: migrated {s} -> {s}\n", .{ legacy, app.home }) catch {};
+    app.err.writeAll("  run `nix --init` to point your shell at the new home (onix fallback is deprecated, removed at 1.0)\n") catch {};
+}
+
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
 /// single-target navigation primitive shared by alias and group navigation. The
 /// shell gets the alias's `.onix/scripts` on PATH (scoped to the subshell), so
@@ -2993,12 +3026,14 @@ fn launchTerminal(app: *App, cfg: config.Config, dir: []const u8) bool {
     return false; // Unix: no [nav] terminal configured → can't open extras
 }
 
-/// interactiveShell picks the shell for navigation: ONIX_SHELL wins, else
-/// $COMSPEC/cmd.exe on Windows, else $SHELL//bin/sh.
+/// interactiveShell picks the shell for navigation: NIX_SHELL (then legacy
+/// ONIX_SHELL) wins, else $COMSPEC/cmd.exe on Windows, else $SHELL//bin/sh.
 fn interactiveShell(app: *App) []const u8 {
-    if (app.env.get("ONIX_SHELL")) |s| {
-        const t = std.mem.trim(u8, s, " \t");
-        if (t.len > 0) return t;
+    for ([_][]const u8{ "NIX_SHELL", "ONIX_SHELL" }) |key| {
+        if (app.env.get(key)) |s| {
+            const t = std.mem.trim(u8, s, " \t");
+            if (t.len > 0) return t;
+        }
     }
     if (proc.is_windows) {
         if (app.env.get("COMSPEC")) |c| {
@@ -3248,19 +3283,19 @@ fn printUsage(app: *App) !void {
         \\
         \\COMMANDS
         \\  --list,    -l        list every alias  (--list-names for bare names)
-        \\  --edit,    -e        open ~/.onix in your editor
+        \\  --edit,    -e        open ~/.nix in your editor
         \\  --prune              interactively remove stale aliases
         \\  --sweep   [--min N]  find noisy dir trees to exclude from the picker
         \\  --picker-check <name>   show why dirs are shown/hidden in the `o` picker
         \\  --doctor,  -D        check tools/config and what the picker will use
         \\  --groups,  -G        list alias groups  (+<group> --list shows members)
         \\  --contexts, -c       list global @-segment contexts
-        \\  --init [--skip-profile]   set up ~/.onix, wrappers, and shell glue
+        \\  --init [--skip-profile]   set up ~/.nix, wrappers, and shell glue
         \\  --sync,    -S        regenerate shell glue and wrappers
         \\  --version, -v        print version and platform
         \\  --help,    -h        show this help
         \\
-        \\GROUPS  (multi-alias sets in ~/.onix/groups.toml)
+        \\GROUPS  (multi-alias sets in ~/.nix/groups.toml)
         \\  nix <member>+<group>        add an alias to a group (creates it)
         \\  nix <member>+<group> --rm   remove a member
         \\  nix +<group> [--list]       list a group's members

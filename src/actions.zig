@@ -12,7 +12,7 @@ pub const Action = struct { name: []const u8, command: []const u8 };
 
 /// projectPath: <alias-dir>/.onix/actions.toml — committed alongside the project.
 pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 {
-    return std.fs.path.join(arena, &.{ alias_dir, ".onix", "actions.toml" });
+    return std.fs.path.join(arena, &.{ alias_dir, ".nix", "actions.toml" });
 }
 
 /// centralPath: <home>/actions/<alias>.toml — private, per-alias.
@@ -99,5 +99,5 @@ test "centralPath / projectPath shape" {
     try std.testing.expect(std.mem.indexOf(u8, cp, "actions") != null);
     const pp = try projectPath(a, "D");
     try std.testing.expect(std.mem.endsWith(u8, pp, "actions.toml"));
-    try std.testing.expect(std.mem.indexOf(u8, pp, ".onix") != null);
+    try std.testing.expect(std.mem.indexOf(u8, pp, ".nix") != null);
 }
