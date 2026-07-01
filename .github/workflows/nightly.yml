@@ -1,0 +1,69 @@
+name: Nightly
+
+on:
+  # One rolling build per day. Scoop's nightly channel only re-pulls once a day
+  # (it stamps installs as nightly-<date>), so a daily cadence matches how users
+  # actually receive it, without churning a release on every commit.
+  schedule:
+    - cron: '0 6 * * *'
+  # Allow manual runs (e.g. to seed the first nightly or force a refresh).
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Never run two nightly publishes at once (they share the rolling `nightly` tag).
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags + history are required: build.zig bakes the version from
+          # `git describe --tags`, and a shallow clone would report "0.0.0".
+          fetch-depth: 0
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Test
+        run: zig build test
+
+      # Drop the local rolling `nightly` tag before building so `git describe`
+      # reports the semver base (e.g. v0.9.0-pre-12-gABCDEF) rather than the
+      # stale `nightly` tag fetched from a previous run.
+      - name: Drop local nightly tag
+        shell: bash
+        run: git tag -d nightly 2>/dev/null || true
+
+      # Portable build: -Dcpu=baseline avoids baking the runner's CPU extensions
+      # into the binary. Mirrors ci.yml / nix-build.cmd, minus the --sync deploy.
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
+
+      # Constant asset name so the Scoop manifest URL never changes.
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path zig-out/bin/nix.exe `
+            -DestinationPath "nix-nightly-windows-amd64.zip" -Force
+
+      # Overwrite the single rolling `nightly` release: delete it (and its tag),
+      # then recreate it at the current commit with the fresh artifact.
+      - name: Publish rolling nightly release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          baked=$(./zig-out/bin/nix.exe --version | head -1 | awk '{print $2}')
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly nix-nightly-windows-amd64.zip \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "nightly" \
+            --notes "Rolling build of main — $baked ($GITHUB_SHA), $(date -u '+%Y-%m-%d %H:%M UTC')."
