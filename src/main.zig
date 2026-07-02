@@ -1877,12 +1877,25 @@ fn grepRg(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     // cwd-relative form (no path arg), preserving the existing single-alias UX.
     if (roots.len > 1) for (roots) |r| try rg.append(app.arena, r);
 
+    // Single root: rows are cwd-relative (`file:line:text`), so fzf's `:`-split
+    // fields feed bat directly. Multi root (a group): rows are absolute — on
+    // Windows the drive colon (`C:\...`) shifts every field, so parse the whole
+    // row ourselves via the --rga-preview verb (drive-letter aware) instead.
+    if (roots.len > 1 and query.len > 0) app.env.put("NIX_RGA_QUERY", query) catch {};
+    const preview: []const u8 = if (roots.len > 1)
+        try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)})
+    else
+        "bat --style=numbers,header,grid --color=always {1} --highlight-line {2}";
+    const preview_window: []const u8 = if (roots.len > 1)
+        "up:60%:border-bottom"
+    else
+        "up:60%:border-bottom:+{2}+3/3:~3";
     const fzf = [_][]const u8{
         "fzf",            "--ansi",
         "--multi",        "--delimiter",
         ":",              "--preview",
-        "bat --style=numbers,header,grid --color=always {1} --highlight-line {2}",
-        "--preview-window", "up:60%:border-bottom:+{2}+3/3:~3",
+        preview,          "--preview-window",
+        preview_window,
     };
 
     try app.out.flush();
@@ -1955,6 +1968,18 @@ fn grepRga(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     return openRgaSelections(app, cwd, res.output);
 }
 
+/// splitGrepRow splits a grep picker row `file[:line[:text]]` into file and
+/// line. A Windows drive prefix (`C:\` or `C:/`) is part of the file, not a
+/// field separator — group searches emit absolute rows, and splitting on the
+/// drive colon would hand `C` to bat/the editor as the "file".
+fn splitGrepRow(row: []const u8) struct { file: []const u8, line: []const u8 } {
+    const start: usize = if (row.len >= 3 and std.ascii.isAlphabetic(row[0]) and row[1] == ':' and (row[2] == '\\' or row[2] == '/')) 2 else 0;
+    const c1 = std.mem.indexOfScalarPos(u8, row, start, ':') orelse return .{ .file = row, .line = "" };
+    const after = row[c1 + 1 ..];
+    const c2 = std.mem.indexOfScalar(u8, after, ':') orelse after.len;
+    return .{ .file = row[0..c1], .line = after[0..c2] };
+}
+
 /// openRgaSelections routes rga match rows (`file:line:text`). A file that opens
 /// with the OS handler (PDF/docx/…) is launched once via the default app — the
 /// `line` there is a page/locator the editor can't use; everything else goes to
@@ -1966,8 +1991,7 @@ fn openRgaSelections(app: *App, target: []const u8, selection: []const u8) !u8 {
     var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
-        const idx1 = std.mem.indexOfScalar(u8, line, ':') orelse line.len;
-        const file = line[0..idx1];
+        const file = splitGrepRow(line).file;
         const abs = try absUnder(app, target, file);
         if (opensWithDefaultApp(app, abs)) {
             var seen = false;
@@ -2042,15 +2066,10 @@ fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
     // Empty selection (fzf has no current item) -> empty preview.
     if (row.len == 0) return 0;
 
-    // Parse file:line out of file:line:text.
-    const c1 = std.mem.indexOfScalar(u8, row, ':') orelse row.len;
-    const file = row[0..c1];
-    var line: []const u8 = "";
-    if (c1 < row.len) {
-        const after = row[c1 + 1 ..];
-        const c2 = std.mem.indexOfScalar(u8, after, ':') orelse after.len;
-        line = after[0..c2];
-    }
+    // Parse file:line out of file:line:text (drive-letter aware).
+    const fl = splitGrepRow(row);
+    const file = fl.file;
+    const line = fl.line;
 
     // Tier 1: a directory row -> our custom path preview (dir listing).
     if (Io.Dir.cwd().openDir(app.io, file, .{})) |dir| {
@@ -2263,12 +2282,10 @@ fn openSelectionsInEditor(app: *App, target: []const u8, selection: []const u8, 
     while (lines.next()) |line| {
         if (line.len == 0) continue;
         if (has_lines) {
-            // split into at most 3 parts on ':'
-            if (std.mem.indexOfScalar(u8, line, ':')) |idx1| {
-                const rest = line[idx1 + 1 ..];
-                const idx2 = std.mem.indexOfScalar(u8, rest, ':');
-                const lineno = if (idx2) |j| rest[0..j] else rest;
-                try targets.append(app.arena, .{ .file = try absUnder(app, target, line[0..idx1]), .line = lineno });
+            // split into at most 3 parts on ':', drive-letter aware
+            const fl = splitGrepRow(line);
+            if (fl.line.len > 0) {
+                try targets.append(app.arena, .{ .file = try absUnder(app, target, fl.file), .line = fl.line });
                 continue;
             }
         }
@@ -3446,6 +3463,25 @@ test "flag maps: systemVerb, aliasAction, actionFlag" {
     try std.testing.expectEqualStrings("doctor", systemVerb("-D").?);
     try std.testing.expectEqualStrings("groups", systemVerb("--groups").?);
     try std.testing.expectEqualStrings("groups", systemVerb("-G").?);
+}
+
+test "splitGrepRow: drive-letter prefix is part of the file, not a separator" {
+    // Group (multi-root) rows are absolute Windows paths.
+    const abs = splitGrepRow("C:\\repo\\src\\main.ts:604:function hitTest() {");
+    try std.testing.expectEqualStrings("C:\\repo\\src\\main.ts", abs.file);
+    try std.testing.expectEqualStrings("604", abs.line);
+    // Single-alias rows stay cwd-relative.
+    const rel = splitGrepRow("src/main.ts:12:text");
+    try std.testing.expectEqualStrings("src/main.ts", rel.file);
+    try std.testing.expectEqualStrings("12", rel.line);
+    // UNC paths have no drive colon — first colon is the line separator.
+    const unc = splitGrepRow("\\\\server\\share\\a.txt:7:x");
+    try std.testing.expectEqualStrings("\\\\server\\share\\a.txt", unc.file);
+    try std.testing.expectEqualStrings("7", unc.line);
+    // A bare absolute path (no :line) is all file.
+    const bare = splitGrepRow("C:\\repo\\a.txt");
+    try std.testing.expectEqualStrings("C:\\repo\\a.txt", bare.file);
+    try std.testing.expectEqualStrings("", bare.line);
 }
 
 test "isScriptShim: scripts vs real executables" {
