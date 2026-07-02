@@ -1497,29 +1497,54 @@ fn cmdEdit(app: *App, alias: []const u8, files: [][]const u8) !u8 {
     };
 }
 
+/// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it
+/// mirrors `y <alias> <pat>`: an exact existing file opens directly (the
+/// original `s <alias> <file>` form), anything else runs the ff picker and
+/// opens every selection with the OS handler — pick files to open instead of
+/// files to copy.
 fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
-    if (action_args.len > 1) {
-        try app.err.writeAll("usage: nix <alias> --explore [file]\n");
-        return 1;
-    }
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
-    var target = dir;
+    var has_pat = false;
+    for (action_args) |a| if (!isGlobalFlag(a)) {
+        has_pat = true;
+        break;
+    };
+    if (!has_pat) return exploreTarget(app, dir);
+
+    // Exact file wins over the picker: `s acme report.pdf` keeps opening that
+    // file directly when it exists.
     if (action_args.len == 1) {
         const f = action_args[0];
-        target = if (std.fs.path.isAbsolute(f)) f else try std.fs.path.join(app.arena, &.{ dir, f });
-        if (!proc.fileExists(app.io, target)) {
-            try app.err.print("nix: open \"{s}\": not found\n", .{f});
-            return 1;
-        }
+        const exact = if (std.fs.path.isAbsolute(f)) f else try std.fs.path.join(app.arena, &.{ dir, f });
+        if (proc.fileExists(app.io, exact)) return exploreTarget(app, exact);
     }
+    return switch (try findPick(app, &.{.{ .name = alias, .path = dir }}, action_args)) {
+        .selected => |sel| blk: {
+            var rc: u8 = 0;
+            var lines = std.mem.splitScalar(u8, std.mem.trim(u8, sel, " \t\r\n"), '\n');
+            while (lines.next()) |ln| {
+                const s = std.mem.trim(u8, ln, " \t\r");
+                if (s.len == 0) continue;
+                if (try exploreTarget(app, try absUnder(app, dir, s)) != 0) rc = 1;
+            }
+            break :blk rc;
+        },
+        .cancelled => 0,
+        .failed => 1,
+    };
+}
+
+/// exploreTarget opens one path with the OS handler: a dir lands in the file
+/// manager, a file in its registered default app.
+fn exploreTarget(app: *App, target: []const u8) !u8 {
     if (proc.is_windows) {
         proc.runDetached(app.io, &.{ "explorer.exe", target }, null, true) catch {};
-    } else {
-        proc.runDetached(app.io, &.{ "xdg-open", target }, null, false) catch |e| {
-            try app.err.print("nix: xdg-open: {s}\n", .{@errorName(e)});
-            return 1;
-        };
+        return 0;
     }
+    proc.runDetached(app.io, &.{ "xdg-open", target }, null, false) catch |e| {
+        try app.err.print("nix: xdg-open: {s}\n", .{@errorName(e)});
+        return 1;
+    };
     return 0;
 }
 
@@ -3362,7 +3387,7 @@ const ShortcutHelp = struct { slot: []const u8, args: []const u8, desc: []const 
 const shortcut_help = [_]ShortcutHelp{
     .{ .slot = "o", .args = "<alias> [path]", .desc = "cd into the alias dir; no path opens aliases.toml" },
     .{ .slot = "e", .args = "<alias> [file]", .desc = "open the dir (or a file) in your editor" },
-    .{ .slot = "s", .args = "<alias> [file]", .desc = "open the dir in the file manager, or a file with its default app" },
+    .{ .slot = "s", .args = "<alias> [pat]", .desc = "open the dir in the file manager; with a pattern, pick files to open" },
     .{ .slot = "y", .args = "<alias> [pat]", .desc = "copy the path; with a pattern, pick files and copy the files" },
     .{ .slot = "p", .args = "<alias> [name]", .desc = "save clipboard contents into the alias dir" },
     .{ .slot = "r", .args = "<alias> <cmd…>", .desc = "run a command at the alias dir" },
@@ -3413,7 +3438,7 @@ fn printUsage(app: *App) !void {
         \\ACTIONS  (nix <alias> --<action> …)
         \\  --resolve            print the resolved path
         \\  --edit,    -e        open in your editor
-        \\  --explore, -x        open in the file manager
+        \\  --explore, -x [pat]  open in the file manager; with a pattern, pick files → open them
         \\  --yank,    -y [pat]  copy the path; with a pattern, pick files → copy the files
         \\  --paste,   -p        save the clipboard into the dir
         \\  --run,     -r <cmd>  run a command at the dir (`:name` runs a saved action)

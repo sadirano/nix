@@ -64,6 +64,7 @@ o                                          # no args: open aliases.toml in your 
 e acme                                     # open it in your editor
 s acme                                     # open it in Explorer
 s acme report.pdf                          # open a file with its default app (PDF→viewer, .zip→archiver…)
+s acme invoice                             # pick files (fzf) → open each with its default app
 y acme                                     # print the path and copy it to the clipboard
 y acme invoice                             # pick files (fzf) → copy the FILES to the clipboard
 p acme                                     # save clipboard content into the alias dir, copy the saved path back
@@ -86,7 +87,7 @@ The `o` command changes the **current** shell's working directory — it does no
 
 Everything else (`e`, `s`, `y`, `p`, `r`, `sg`, `ff`) invokes `nix` directly, so those don't need shell integration to work.
 
-`s <alias> <file>` opens a single file with its registered default application instead of the file manager — a PDF in your viewer, a `.zip` in your archiver, and so on. The file is resolved against the alias directory and opened by the OS handler (`explorer.exe` / `xdg-open`).
+`s <alias> <file>` opens a single file with its registered default application instead of the file manager — a PDF in your viewer, a `.zip` in your archiver, and so on. The file is resolved against the alias directory and opened by the OS handler (`explorer.exe` / `xdg-open`). When the argument isn't an exact existing file, it's treated as a pattern: the `ff` picker runs under the alias dir and every selected file opens with its default app — the same shape as `y <alias> <pat>`, but opening instead of copying.
 
 `y <alias>` prints the alias path and copies it to the clipboard as text. Given a pattern — `y <alias> <pat>` — it instead runs the `ff` file picker under the alias dir and copies the **selected files themselves** to the clipboard as a system file drop (Windows `CF_HDROP`), so a paste in Explorer drops the real files (a `.png` lands as a file, not a path). It's the inverse of `p`. On non-Windows the file-drop format isn't available, so it falls back to copying the paths as text.
 
