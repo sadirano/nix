@@ -116,7 +116,7 @@ pub fn saveGroups(arena: std.mem.Allocator, io: Io, home: []const u8, groups: []
         else => return e,
     };
     const final = try groupsPath(arena, home);
-    const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{final});
+    const tmp = try store.uniqueTmpName(arena, final);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = b.items });
     try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), final, io);
 }

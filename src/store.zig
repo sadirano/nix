@@ -129,9 +129,18 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
         else => return e,
     };
     const final = try aliasesPath(arena, home);
-    const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{final});
+    const tmp = try uniqueTmpName(arena, final);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = b.items });
     try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), final, io);
+}
+
+/// uniqueTmpName returns "<path>.<random>.tmp" for atomic write+rename saves.
+/// A fixed ".tmp" would let two concurrent writers clobber each other's temp
+/// file mid-write (one renames the other's half-written bytes into place); a
+/// random suffix keeps each writer's temp private, and the final rename stays
+/// last-wins.
+pub fn uniqueTmpName(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}.{x}.tmp", .{ path, std.crypto.random.int(u64) });
 }
 
 /// appendTomlString emits a TOML string value: a literal single-quoted string
