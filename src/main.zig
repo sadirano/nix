@@ -2741,7 +2741,9 @@ fn pasteContent(app: *App, target: []const u8, name: []const u8, data: []const u
     const out = try store.toSlash(app.arena, dest);
     try app.out.print("{s}\n", .{out});
     try app.out.flush();
-    clipboard.writeText(app.arena, app.io, out) catch {};
+    // Clipboard gets the host-separator path: / is not always a valid
+    // separator on Windows (cmd.exe, some dialogs), \ always is.
+    clipboard.writeText(app.arena, app.io, dest) catch {};
     return 0;
 }
 
@@ -2773,10 +2775,12 @@ fn pasteFiles(app: *App, target: []const u8, files: [][]const u8, name: []const 
     }
     for (outs.items) |o| try app.out.print("{s}\n", .{o});
     try app.out.flush();
+    // Clipboard gets host-separator paths: / is not always a valid separator
+    // on Windows (cmd.exe, some dialogs), \ always is.
     var joined: std.ArrayList(u8) = .empty;
     for (outs.items, 0..) |o, i| {
         if (i > 0) try joined.append(app.arena, '\n');
-        try joined.appendSlice(app.arena, o);
+        try joined.appendSlice(app.arena, try store.fromSlash(app.arena, o));
     }
     clipboard.writeText(app.arena, app.io, joined.items) catch {};
     return 0;
