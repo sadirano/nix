@@ -312,8 +312,10 @@ fn groupAction(flag: []const u8) ?[]const u8 {
 
 /// dispatchGroupRef handles `+group <action> …`. Bare `+group` lists members.
 /// Fan-out actions: --run (in each member dir), --yank (member paths, or a
-/// file picker with a pattern), --explore (file manager / picker), and
-/// --grep/--find as one multi-root search. Per-alias-only actions error.
+/// file picker with a pattern), --explore (file manager / picker),
+/// --grep/--find as one multi-root search, --resolve (member paths), and
+/// --paste (member picker → paste there). Per-alias-only actions (--edit)
+/// error.
 fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
     var action: ?[]const u8 = null;
     var idx: usize = 0;
@@ -339,9 +341,11 @@ fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
     const act = action.?;
     if (eql(act, "list")) return cmdGroupList(app, group);
     if (eql(act, "remove")) return cmdGroupDelete(app, group);
+    if (eql(act, "resolve")) return cmdGroupResolve(app, group, aargs);
     if (eql(act, "run")) return cmdGroupRun(app, group, aargs);
     if (eql(act, "yank")) return cmdGroupYank(app, group, aargs);
     if (eql(act, "explore")) return cmdGroupExplore(app, group, aargs);
+    if (eql(act, "paste")) return cmdGroupPaste(app, group, aargs);
     if (eql(act, "grep")) return cmdGroupGrep(app, group, aargs);
     if (eql(act, "find")) return cmdGroupFind(app, group, aargs);
     try app.err.print("nix: --{s} is a single-alias action, not supported on group +{s}\n", .{ act, group });
@@ -502,6 +506,47 @@ fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
     };
     return 0;
+}
+
+/// cmdGroupResolve prints each member's absolute path, one per line — the
+/// script-friendly group form of `--resolve` (`--list` shows the name table).
+fn cmdGroupResolve(app: *App, group: []const u8, args: [][]const u8) !u8 {
+    for (args) |a| if (!isGlobalFlag(a)) {
+        try app.err.print("nix: --resolve takes no arguments; got \"{s}\"\n", .{a});
+        return 1;
+    };
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    for (targets) |t| try app.out.print("{s}\n", .{t.path});
+    return 0;
+}
+
+/// cmdGroupPaste: `p +group [name]` picks ONE member in fzf, then pastes the
+/// clipboard into it exactly like `p <member> [name]` — the group narrows the
+/// destination choice; nothing is duplicated across members.
+fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
+    var name: []const u8 = "";
+    for (args) |a| {
+        if (isGlobalFlag(a)) continue;
+        if (name.len > 0) {
+            try app.err.writeAll("usage: nix +<group> --paste [name]\n");
+            return 1;
+        }
+        name = a;
+    }
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    if (targets.len == 1) return pasteClipboardInto(app, targets[0].path, name);
+    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+        try app.err.print("nix: install fzf to pick +{s}'s paste destination (or `p <member>`)\n", .{group});
+        return 1;
+    }
+    var input: std.ArrayList(u8) = .empty;
+    for (targets) |t| try input.print(app.arena, "{s} -> {s}\n", .{ t.name, t.path });
+    const fzf_argv = [_][]const u8{ "fzf", "--prompt", "paste> " };
+    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
+    if (res.code != 0) return 0; // cancelled
+    const row = std.mem.trim(u8, res.output, " \t\r\n");
+    if (row.len == 0) return 0;
+    return pasteClipboardInto(app, rowPath(row), name);
 }
 
 /// cmdGroupExplore: bare `s +group` opens every member dir in the file manager
@@ -2918,12 +2963,16 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     }
     const name: []const u8 = if (action_args.len == 1) action_args[0] else "";
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
+    return pasteClipboardInto(app, target, name);
+}
 
+/// pasteClipboardInto lands the clipboard in `target`: Explorer-copied files
+/// win, then image (.png) over text (.md) — the harder content to re-grab
+/// first. Shared by the alias and group forms of `p`.
+fn pasteClipboardInto(app: *App, target: []const u8, name: []const u8) !u8 {
     if (try clipboard.readFiles(app.arena, app.io)) |files| {
         return pasteFiles(app, target, files, name);
     }
-    // Content: image (.png) wins over text (.md) — it's the harder content to
-    // re-grab, matching onix's readClipboardContent ordering.
     if (try clipboard.readImage(app.arena, app.io)) |img| {
         return pasteContent(app, target, name, img, ".png");
     }
@@ -3527,6 +3576,7 @@ fn printUsage(app: *App) !void {
         \\  o  +<group>                 pick members (fzf): first cd's here, rest open windows
         \\  sg/ff/r +<group> …          search / run across every member
         \\  s/y +<group> [pat]          open / copy member dirs; with a pattern, pick files
+        \\  p  +<group> [name]          pick ONE member, paste the clipboard there
         \\
     );
 }

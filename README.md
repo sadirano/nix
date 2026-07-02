@@ -207,6 +207,8 @@ s  +work                 # open every member dir in the file manager
 s  +work invoice         # pick files across every member → open with default apps
 y  +work                 # copy every member path to the clipboard
 y  +work invoice         # pick files across every member → copy the FILES
+p  +work                 # pick ONE member (fzf) → paste the clipboard there
+nix +work --resolve      # print every member path, one per line
 nix --groups             # list all groups
 nix +work --list         # list a group's members (each resolved to its path)
 nix pa+work --remove     # drop a member
