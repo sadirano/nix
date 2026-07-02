@@ -143,12 +143,16 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             std.mem.eql(u8, key, "search_roots"))
         {
             // Gather text until the array's closing ']' (may span lines).
+            // Comment lines inside the array are skipped — their quoted text
+            // must not parse as elements, nor a ']' in one end the array.
             var buf: std.ArrayList(u8) = .empty;
             try buf.appendSlice(arena, val_start);
             while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
                 i += 1;
+                const cont = std.mem.trim(u8, all.items[i], " \t\r");
+                if (cont.len > 0 and cont[0] == '#') continue;
                 try buf.append(arena, ' ');
-                try buf.appendSlice(arena, std.mem.trim(u8, all.items[i], " \t\r"));
+                try buf.appendSlice(arena, cont);
             }
             const arr = try parseStringArray(arena, buf.items);
             if (std.mem.eql(u8, key, "exclude")) {

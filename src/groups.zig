@@ -71,12 +71,16 @@ pub fn loadGroups(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Gro
         const key = std.mem.trim(u8, line[0..eq], " \t");
         if (key.len == 0) continue;
         // Gather the array body, which may span lines until its closing ']'.
+        // Comment lines inside the array are skipped — their quoted text must
+        // not parse as members, nor a ']' in one end the array.
         var buf: std.ArrayList(u8) = .empty;
         try buf.appendSlice(arena, std.mem.trim(u8, line[eq + 1 ..], " \t"));
         while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
             i += 1;
+            const cont = std.mem.trim(u8, all.items[i], " \t\r");
+            if (cont.len > 0 and cont[0] == '#') continue;
             try buf.append(arena, ' ');
-            try buf.appendSlice(arena, std.mem.trim(u8, all.items[i], " \t\r"));
+            try buf.appendSlice(arena, cont);
         }
         try out.append(arena, .{ .name = try lowerDup(arena, key), .members = try parseStringArray(arena, buf.items) });
     }
@@ -290,6 +294,23 @@ test "loadGroups: lowercased names, members verbatim, multi-line arrays" {
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "pa", "pb" }), groups.items[0].members);
     try std.testing.expectEqualStrings("all", groups.items[1].name);
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "+projects", "pc" }), groups.items[1].members);
+}
+
+test "loadGroups: comment lines inside a multi-line array are ignored" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const toml =
+        \\all = [
+        \\  "pa",
+        \\  # "commented-out" — must not become a member, nor its ] end things: ]
+        \\  "pb",
+        \\]
+        \\
+    ;
+    const groups = try loadGroups(a, toml);
+    try std.testing.expectEqual(@as(usize, 1), groups.items.len);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "pa", "pb" }), groups.items[0].members);
 }
 
 test "expandMembers: flat, nested, dedupe" {
