@@ -539,24 +539,15 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
     return rc;
 }
 
-/// groupRoots resolves a group to the host paths of its existing members (the
-/// fan-out input for sg/ff). null = unknown/empty group (message already printed).
-fn groupRoots(app: *App, group: []const u8) !?[]const []const u8 {
-    const targets = (try resolveGroupTargets(app, group)) orelse return null;
-    var roots: std.ArrayList([]const u8) = .empty;
-    for (targets) |t| try roots.append(app.arena, t.path);
-    return roots.items;
-}
-
 /// cmdGroupGrep / cmdGroupFind fan `sg` / `ff` across a group's member dirs as a
-/// single multi-root search (one unified fzf picker).
+/// single multi-root search (one unified fzf picker with `alias\rel` rows).
 fn cmdGroupGrep(app: *App, group: []const u8, args: [][]const u8) !u8 {
-    const roots = (try groupRoots(app, group)) orelse return 1;
-    return grepIn(app, roots, args);
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    return grepIn(app, targets, args);
 }
 fn cmdGroupFind(app: *App, group: []const u8, args: [][]const u8) !u8 {
-    const roots = (try groupRoots(app, group)) orelse return 1;
-    return findIn(app, roots, args);
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    return findIn(app, targets, args);
 }
 
 // ---- Tier 1 commands --------------------------------------------------------
@@ -1838,16 +1829,16 @@ fn relaxNonASCII(arena: std.mem.Allocator, query: []const u8) !?[]const u8 {
 
 fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return grepIn(app, &.{target}, args);
+    return grepIn(app, &.{.{ .name = alias, .path = target }}, args);
 }
 
-/// grepIn runs `sg` over one or more root dirs (one alias dir, or a group's
+/// grepIn runs `sg` over one or more targets (one alias dir, or a group's
 /// member dirs). `--all`/`-a` (or `[grep] all = true` in config) routes to
 /// ripgrep-all (rga), a fundamentally different search: matches live inside PDFs,
 /// office docs, archives, etc., where line numbers and a bat/editor open make no
 /// sense. So rga gets its own pipeline (grepRga); plain rg keeps grepRg. The
 /// toggle is stripped before the remaining args drive whichever runs.
-fn grepIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
+fn grepIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     var use_all = cfg.grep_all;
     var filtered: std.ArrayList([]const u8) = .empty;
@@ -1858,13 +1849,64 @@ fn grepIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
         }
         try filtered.append(app.arena, a);
     }
-    if (use_all) return grepRga(app, roots, filtered.items);
-    return grepRg(app, roots, filtered.items);
+    if (use_all) return grepRga(app, targets, filtered.items);
+    return grepRg(app, targets, filtered.items);
+}
+
+/// prefixedProducers builds one PrefixedProducer per group member: the same
+/// search argv run IN each member dir, rows prefixed `alias\` — so a group row
+/// reads `gw2\src\renderer.ts:604:…` instead of the member's absolute root.
+fn prefixedProducers(app: *App, targets: []const GroupTarget, argv: []const []const u8) ![]proc.PrefixedProducer {
+    var prods: std.ArrayList(proc.PrefixedProducer) = .empty;
+    for (targets) |t| try prods.append(app.arena, .{
+        .argv = argv,
+        .cwd = t.path,
+        .prefix = try std.fmt.allocPrint(app.arena, "{s}{c}", .{ t.name, store.sep }),
+    });
+    return prods.items;
+}
+
+/// expandPrefixedSelection maps multi-root picker rows (`alias\rel[:line:…]`)
+/// back to absolute rows using the resolved group targets. Absolute rows and
+/// rows whose first component isn't a known member pass through unchanged.
+fn expandPrefixedSelection(arena: std.mem.Allocator, targets: []const GroupTarget, selection: []const u8) ![]const u8 {
+    var b: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
+    while (lines.next()) |line0| {
+        const line = std.mem.trimEnd(u8, line0, "\r");
+        if (line.len == 0) continue;
+        var out: []const u8 = line;
+        if (!std.fs.path.isAbsolute(line)) {
+            if (std.mem.indexOfAny(u8, line, "/\\")) |si| {
+                for (targets) |t| if (store.eqlFoldAscii(t.name, line[0..si])) {
+                    out = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ t.path, store.sep, line[si + 1 ..] });
+                    break;
+                };
+            }
+        }
+        if (b.items.len > 0) try b.append(arena, '\n');
+        try b.appendSlice(arena, out);
+    }
+    return b.items;
+}
+
+/// expandAliasRowPath resolves a preview row path that may start with an alias
+/// token (`alias\rel\path`, the multi-root row form). The preview verbs run in
+/// a fresh process without the group's target list, so the alias is resolved
+/// against aliases.toml. A relative path that exists under the cwd (the
+/// single-root row form) is kept as-is and wins over an alias-name collision.
+fn expandAliasRowPath(app: *App, file: []const u8) []const u8 {
+    if (std.fs.path.isAbsolute(file)) return file;
+    if (proc.pathExists(app.io, file)) return file;
+    const si = std.mem.indexOfAny(u8, file, "/\\") orelse return file;
+    const data = store.readAliasesFile(app.arena, app.io, app.home) catch return file;
+    const root = (store.scanForAlias(app.arena, data, file[0..si]) catch null) orelse return file;
+    return std.fs.path.join(app.arena, &.{ root, file[si + 1 ..] }) catch file;
 }
 
 /// grepRg is the classic `sg`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
-fn grepRg(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
+fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "rg") == null) {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
@@ -1892,22 +1934,19 @@ fn grepRg(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     }
     for (extras) |x| try rg.append(app.arena, x);
     if (query.len > 0) try rg.append(app.arena, query);
-    // Multi-root (a group): pass the member dirs as explicit, absolute search
-    // paths so rg emits absolute file paths — the fzf preview (bat {1}) and the
-    // open path (absUnder) already accept absolute paths. A single root keeps the
-    // cwd-relative form (no path arg), preserving the existing single-alias UX.
-    if (roots.len > 1) for (roots) |r| try rg.append(app.arena, r);
 
     // Single root: rows are cwd-relative (`file:line:text`), so fzf's `:`-split
-    // fields feed bat directly. Multi root (a group): rows are absolute — on
-    // Windows the drive colon (`C:\...`) shifts every field, so parse the whole
-    // row ourselves via the --rga-preview verb (drive-letter aware) instead.
-    if (roots.len > 1 and query.len > 0) app.env.put("NIX_RGA_QUERY", query) catch {};
-    const preview: []const u8 = if (roots.len > 1)
+    // fields feed bat directly. Multi root (a group): each member's rg runs IN
+    // the member dir and rows arrive as `alias\rel:line:text` — short, and free
+    // of the drive colon that would shift fzf's fields. The preview goes
+    // through the --rga-preview verb, which rebases the alias token.
+    const multi = targets.len > 1;
+    if (multi and query.len > 0) app.env.put("NIX_RGA_QUERY", query) catch {};
+    const preview: []const u8 = if (multi)
         try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)})
     else
         "bat --style=numbers,header,grid --color=always {1} --highlight-line {2}";
-    const preview_window: []const u8 = if (roots.len > 1)
+    const preview_window: []const u8 = if (multi)
         "up:60%:border-bottom"
     else
         "up:60%:border-bottom:+{2}+3/3:~3";
@@ -1920,10 +1959,14 @@ fn grepRg(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const cwd = roots[0];
-    const res = try proc.runPipeline(app.arena, app.io, rg.items, &fzf, cwd, fzfEnv(app));
+    const cwd = targets[0].path;
+    const res = if (multi)
+        try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, rg.items), &fzf, cwd, fzfEnv(app))
+    else
+        try proc.runPipeline(app.arena, app.io, rg.items, &fzf, cwd, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled / nothing selected
-    return openSelectionsInEditor(app, cwd, res.output, true);
+    const sel = if (multi) try expandPrefixedSelection(app.arena, targets, res.output) else res.output;
+    return openSelectionsInEditor(app, cwd, sel, true);
 }
 
 /// grepRga is `sg --all`: like grepRg but with ripgrep-all, so each fzf row is
@@ -1934,7 +1977,7 @@ fn grepRg(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
 /// "line" inside a PDF is really `Page N`, not an editor line — so openRgaSelections
 /// sends default-app files (PDF/docx/…) to the OS handler and only text hits to
 /// the editor at their line.
-fn grepRga(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
+fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "rga") == null) {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
@@ -1965,14 +2008,13 @@ fn grepRga(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     for (extras) |x| try rga.append(app.arena, x);
     try rga.append(app.arena, "-e");
     try rga.append(app.arena, query);
-    // Multi-root (a group): explicit absolute search paths → absolute output rows,
-    // which openRgaSelections and the --rga-preview verb already handle.
-    if (roots.len > 1) for (roots) |r| try rga.append(app.arena, r);
 
     // Preview gets the whole highlighted row ({}) and parses file:line itself,
     // via our `--rga-preview` verb. Passing the full row (rather than separate
     // {1}/{2} fields) sidesteps cross-shell field-quoting; the pattern travels in
     // the environment so fzf's preview shell needs no quoting of query text.
+    // Multi root (a group): per-member producers → `alias\rel:line:text` rows,
+    // which the verb rebases and expandPrefixedSelection maps back for opening.
     app.env.put("NIX_RGA_QUERY", query) catch {};
     const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)});
     const fzf = [_][]const u8{
@@ -1983,10 +2025,15 @@ fn grepRga(app: *App, roots: []const []const u8, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const cwd = roots[0];
-    const res = try proc.runPipeline(app.arena, app.io, rga.items, &fzf, cwd, fzfEnv(app));
+    const multi = targets.len > 1;
+    const cwd = targets[0].path;
+    const res = if (multi)
+        try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, rga.items), &fzf, cwd, fzfEnv(app))
+    else
+        try proc.runPipeline(app.arena, app.io, rga.items, &fzf, cwd, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled / nothing selected
-    return openRgaSelections(app, cwd, res.output);
+    const sel = if (multi) try expandPrefixedSelection(app.arena, targets, res.output) else res.output;
+    return openRgaSelections(app, cwd, sel);
 }
 
 /// splitGrepRow splits a grep picker row `file[:line[:text]]` into file and
@@ -2085,9 +2132,10 @@ fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
     // Empty selection (fzf has no current item) -> empty preview.
     if (row.len == 0) return 0;
 
-    // Parse file:line out of file:line:text (drive-letter aware).
+    // Parse file:line out of file:line:text (drive-letter aware). Multi-root
+    // rows arrive alias-prefixed (`alias\rel`); rebase onto the alias dir.
     const fl = splitGrepRow(row);
-    const file = fl.file;
+    const file = expandAliasRowPath(app, fl.file);
     const line = fl.line;
 
     // Tier 1: a directory row -> our custom path preview (dir listing).
@@ -2149,17 +2197,20 @@ fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
 
 fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return findIn(app, &.{target}, args);
+    return findIn(app, &.{.{ .name = alias, .path = target }}, args);
 }
 
-/// findIn runs `ff` over one or more root dirs (one alias dir, or a group's
+/// findIn runs `ff` over one or more targets (one alias dir, or a group's
 /// member dirs). fd leads (portable, instant on a subtree); a single-alias
 /// Windows box without fd uses es; POSIX find is the last resort. Multi-root (a
-/// group) needs fd or POSIX find — both take several roots and emit absolute
-/// paths, which the preview/open paths accept.
-fn findIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
-    return switch (try findPick(app, roots, args)) {
-        .selected => |sel| openFindSelections(app, roots[0], sel),
+/// group) runs one producer per member so rows read `alias\rel\path`; the
+/// selection is mapped back to absolute paths before opening.
+fn findIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
+    return switch (try findPick(app, targets, args)) {
+        .selected => |sel| blk: {
+            const expanded = if (targets.len > 1) try expandPrefixedSelection(app.arena, targets, sel) else sel;
+            break :blk openFindSelections(app, targets[0].path, expanded);
+        },
         .cancelled => 0,
         .failed => 1,
     };
@@ -2170,34 +2221,32 @@ fn findIn(app: *App, roots: []const []const u8, args: [][]const u8) !u8 {
 /// setup failure (message already printed).
 const FindPick = union(enum) { selected: []const u8, cancelled, failed };
 
-/// findPick runs the fuzzy file picker over one or more roots and returns the
+/// findPick runs the fuzzy file picker over one or more targets and returns the
 /// selection without acting on it — shared by `ff` (which opens) and `y <alias>
-/// <pat>` (which copies the files to the clipboard).
-fn findPick(app: *App, roots: []const []const u8, args: [][]const u8) !FindPick {
+/// <pat>` (which copies the files to the clipboard). Multi-root rows come back
+/// alias-prefixed (`alias\rel`); callers expand them via expandPrefixedSelection.
+fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !FindPick {
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return .failed;
     }
     const query: []const u8 = if (args.len > 0) args[0] else "";
     const extras = if (args.len > 1) args[1..] else args[0..0];
-    const multi = roots.len > 1;
+    const multi = targets.len > 1;
 
     var prod: std.ArrayList([]const u8) = .empty;
     if (proc.findInPath(app.arena, app.io, app.env, "fd") != null) {
         try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", "always" });
         for (extras) |x| try prod.append(app.arena, x);
         if (query.len > 0) try prod.append(app.arena, query);
-        // Multi-root: fd takes trailing search paths; with absolute roots it
-        // emits absolute paths. Single root keeps cwd-relative (no path arg).
-        if (multi) for (roots) |r| try prod.append(app.arena, r);
+        // Rows stay cwd-relative (no path arg): single root runs in the alias
+        // dir; multi root runs one producer per member dir, alias-prefixed.
     } else if (!multi and proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "es") != null) {
         try prod.appendSlice(app.arena, &.{ "es", "-path", "./" });
         if (query.len > 0) try prod.append(app.arena, query);
         for (extras) |x| try prod.append(app.arena, x);
     } else if (!proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "find") != null) {
-        try prod.append(app.arena, "find");
-        if (multi) for (roots) |r| try prod.append(app.arena, r);
-        try prod.appendSlice(app.arena, &.{ "-type", "f" });
+        try prod.appendSlice(app.arena, &.{ "find", ".", "-type", "f" });
         if (query.len > 0) {
             try prod.append(app.arena, "-name");
             try prod.append(app.arena, try std.fmt.allocPrint(app.arena, "*{s}*", .{query}));
@@ -2222,7 +2271,10 @@ fn findPick(app: *App, roots: []const []const u8, args: [][]const u8) !FindPick 
     };
 
     try app.out.flush();
-    const res = try proc.runPipeline(app.arena, app.io, prod.items, &fzf, roots[0], fzfEnv(app));
+    const res = if (multi)
+        try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, prod.items), &fzf, targets[0].path, fzfEnv(app))
+    else
+        try proc.runPipeline(app.arena, app.io, prod.items, &fzf, targets[0].path, fzfEnv(app));
     if (res.code != 0) return .cancelled;
     return .{ .selected = res.output };
 }
@@ -2252,6 +2304,8 @@ fn cmdPreview(app: *App, raw: []const u8) !u8 {
         // fzf escapes {} with carets for cmd.exe on Windows; undo that.
         p = try stripCmdCarets(app.arena, raw);
     }
+    // Multi-root rows arrive alias-prefixed (`alias\rel`); rebase them.
+    p = expandAliasRowPath(app, p);
     // Directory? list entries.
     if (Io.Dir.cwd().openDir(app.io, p, .{ .iterate = true })) |dir| {
         var d = dir;
@@ -2875,7 +2929,7 @@ fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// it falls back to copying the paths as text).
 fn cmdYankFiles(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return switch (try findPick(app, &.{target}, args)) {
+    return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, args)) {
         .selected => |sel| yankSelectionFiles(app, target, sel),
         .cancelled => 0,
         .failed => 1,
@@ -3560,6 +3614,25 @@ test "setGlobalFlags: stops at the first action flag and at --" {
     // System command tails still count (no action flag involved).
     setGlobalFlags(&app, &.{ "--prune", "-q" });
     try std.testing.expect(app.no_prompt);
+}
+
+test "expandPrefixedSelection: alias token rebases onto the member dir" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const targets = [_]GroupTarget{
+        .{ .name = "gw2", .path = "C:\\repo\\gw2" },
+        .{ .name = "web", .path = "D:\\work\\web" },
+    };
+    const sel = "gw2\\src\\x.ts:604:hit\nWEB\\index.html\nC:\\abs\\kept.txt:1:x\nnomember.txt\n";
+    const got = try expandPrefixedSelection(a, &targets, sel);
+    const sep_str = comptime std.fmt.comptimePrint("{c}", .{store.sep});
+    const expected =
+        "C:\\repo\\gw2" ++ sep_str ++ "src\\x.ts:604:hit\n" ++
+        "D:\\work\\web" ++ sep_str ++ "index.html\n" ++
+        "C:\\abs\\kept.txt:1:x\n" ++
+        "nomember.txt";
+    try std.testing.expectEqualStrings(expected, got);
 }
 
 test "splitGrepRow: drive-letter prefix is part of the file, not a separator" {

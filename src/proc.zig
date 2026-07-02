@@ -317,6 +317,111 @@ pub fn runPipeline(
     } };
 }
 
+/// PrefixedProducer is one member of a multi-root pipeline: argv run in cwd,
+/// with `prefix` (e.g. `alias\`) prepended to every line it emits.
+pub const PrefixedProducer = struct {
+    argv: []const []const u8,
+    cwd: []const u8,
+    prefix: []const u8,
+};
+
+/// runPipelinePrefixed streams several producers sequentially into one fzf,
+/// prefixing each line with its producer's prefix — the multi-root (group)
+/// search pipeline, where each member's rg/fd runs IN the member dir so rows
+/// carry a short `alias\rel\path` instead of the absolute root. A leading
+/// "./" (POSIX find) is dropped so the prefix reads clean. A producer still
+/// running when fzf closes early is killed, not waited on (see runPipeline).
+pub fn runPipelinePrefixed(
+    arena: std.mem.Allocator,
+    io: Io,
+    producers: []const PrefixedProducer,
+    fzf_argv: []const []const u8,
+    fzf_cwd: []const u8,
+    env: ?*const std.process.Environ.Map,
+) !FilterResult {
+    var fzf = try std.process.spawn(io, .{
+        .argv = fzf_argv,
+        .cwd = .{ .path = fzf_cwd },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .inherit,
+        .environ_map = env,
+    });
+    const fin = fzf.stdin.?;
+    var fzf_closed = false;
+    for (producers) |p| {
+        if (fzf_closed) break;
+        // A member dir that fails to spawn (deleted mid-search) is skipped, not
+        // fatal — the other members' results still stream.
+        var prod = std.process.spawn(io, .{
+            .argv = p.argv,
+            .cwd = .{ .path = p.cwd },
+            .stdin = .inherit,
+            .stdout = .pipe,
+            .stderr = .inherit,
+        }) catch continue;
+        var eof = false;
+        var pending: std.ArrayList(u8) = .empty;
+        const src = prod.stdout.?;
+        var chunk: [16 * 1024]u8 = undefined;
+        pump: while (true) {
+            var iov = [_][]u8{chunk[0..]};
+            const n = src.readStreaming(io, &iov) catch break;
+            if (n == 0) {
+                eof = true;
+                break;
+            }
+            try pending.appendSlice(arena, chunk[0..n]);
+            var consumed: usize = 0;
+            while (std.mem.indexOfScalarPos(u8, pending.items, consumed, '\n')) |nl| {
+                const line = std.mem.trimEnd(u8, pending.items[consumed..nl], "\r");
+                consumed = nl + 1;
+                if (line.len == 0) continue;
+                writePrefixedLine(io, fin, p.prefix, line) catch {
+                    fzf_closed = true;
+                    break :pump;
+                };
+            }
+            if (consumed > 0) {
+                const rest = pending.items[consumed..];
+                std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
+                pending.shrinkRetainingCapacity(rest.len);
+            }
+        }
+        // Final line when the producer ended without a trailing newline.
+        if (!fzf_closed and pending.items.len > 0) {
+            const line = std.mem.trimEnd(u8, pending.items, "\r");
+            if (line.len > 0) writePrefixedLine(io, fin, p.prefix, line) catch {
+                fzf_closed = true;
+            };
+        }
+        if (eof) {
+            _ = prod.wait(io) catch {};
+        } else {
+            prod.kill(io);
+        }
+    }
+    fin.close(io);
+    fzf.stdin = null;
+
+    var obuf: [4096]u8 = undefined;
+    var r = fzf.stdout.?.reader(io, &obuf);
+    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
+    const term = try fzf.wait(io);
+    return .{ .output = out, .code = switch (term) {
+        .exited => |c| c,
+        else => 1,
+    } };
+}
+
+fn writePrefixedLine(io: Io, fin: Io.File, prefix: []const u8, line0: []const u8) !void {
+    var line = line0;
+    if (std.mem.startsWith(u8, line, "./")) line = line[2..];
+    try fin.writeStreamingAll(io, prefix);
+    try fin.writeStreamingAll(io, line);
+    try fin.writeStreamingAll(io, "\n");
+}
+
 /// runPipelineFiltered is runPipeline with a per-line filter and a forward cap.
 /// The producer's stdout is split into lines, each passed through `xf` (drop or
 /// rewrite), and forwarded to fzf as it arrives — so a slow producer (fd walking

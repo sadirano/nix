@@ -199,6 +199,7 @@ o pa+work                # add alias `pa` to group `work` (creates it), then nav
 o +work                  # pick members in fzf: the first selection cd's the current
                          #   shell, each additional selection opens a new terminal
 sg +work TODO            # ripgrep across every member's dir, into one fzf picker
+                         #   rows read `member\rel\path`, not the absolute root
 ff +work config          # fuzzy-find files across every member
 r  +work git pull        # run a command in each member dir (per-dir header)
 y  +work                 # copy every member path to the clipboard
