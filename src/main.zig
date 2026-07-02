@@ -2718,8 +2718,9 @@ fn uniquePath(app: *App, path: []const u8) ![]const u8 {
 }
 
 fn copyFile(app: *App, src: []const u8, dest: []const u8) !void {
-    const data = try Io.Dir.cwd().readFileAlloc(app.io, src, app.arena, .unlimited);
-    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = data });
+    // Streamed by std (atomic at dest) — never buffers the whole file, so
+    // pasting a copied video/ISO doesn't balloon memory with the file's size.
+    try Io.Dir.cwd().copyFile(src, Io.Dir.cwd(), dest, app.io, .{});
 }
 
 fn copyTree(app: *App, src: []const u8, dest: []const u8) !void {
