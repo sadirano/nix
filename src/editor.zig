@@ -78,7 +78,7 @@ pub fn editorArgs(arena: std.mem.Allocator, editor: []const u8, targets: []const
     return argv.items;
 }
 
-/// vimEscape prepares a path for embedding inside a vim ":tabedit" command
+/// vimEscape prepares a path for embedding inside a vim ":edit" command
 /// string (an argument vim parses, not a raw argv slot). On Windows the path's
 /// backslashes would be read as escapes, so we switch to forward slashes (vim
 /// accepts them there); on other platforms a literal backslash is doubled.
