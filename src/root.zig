@@ -12,6 +12,7 @@ pub const editor = @import("editor.zig");
 pub const snippet = @import("snippet.zig");
 pub const proc = @import("proc.zig");
 pub const png = @import("png.zig");
+pub const winpath = @import("winpath.zig");
 
 test {
     // Compile-check the whole library surface in the module test binary (the

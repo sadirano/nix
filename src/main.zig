@@ -11,6 +11,7 @@ const segments = @import("segments.zig");
 const snippet = @import("snippet.zig");
 const groups = @import("groups.zig");
 const actions = @import("actions.zig");
+const winpath = @import("winpath.zig");
 
 const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -2547,6 +2548,19 @@ fn cmdInit(app: *App, skip_profile: bool) !u8 {
     try app.err.print("shell snippet: {s}\n", .{ps});
     try warnStaleWrappers(app, stale);
 
+    // 3.5. persistent user PATH (Windows): the snippet only fixes PowerShell
+    // sessions; cmd.exe needs ~/.nix/bin in the registry user PATH. Without
+    // this, a fresh scoop install leaves cmd users editing PATH by hand.
+    if (proc.is_windows) {
+        const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
+        if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
+            .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),
+            .already => {},
+        } else |e| {
+            try app.err.print("nix: could not add {s} to the user PATH ({s}) — add it manually\n", .{ bin, @errorName(e) });
+        }
+    }
+
     // 4. $PROFILE wiring
     if (skip_profile) {
         try app.err.writeAll("skipped $PROFILE update (re-run without --skip-profile to enable)\n");
@@ -3484,6 +3498,7 @@ test {
     _ = snippet;
     _ = groups;
     _ = actions;
+    _ = winpath;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
 }
 
