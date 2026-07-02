@@ -2574,7 +2574,7 @@ fn cmdSweep(app: *App, rest: [][]const u8) !u8 {
         return 0;
     }
     const swept_path = try config.sweptPath(app.arena, app.home);
-    try app.err.print("swept {d} into {s} (run `nix --sync` to regenerate wrappers once ported):\n", .{ added.len, swept_path });
+    try app.err.print("swept {d} into {s}:\n", .{ added.len, swept_path });
     for (added) |f| try app.err.print("  {s}\n", .{f});
     return 0;
 }

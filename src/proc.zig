@@ -281,6 +281,7 @@ pub fn runPipeline(
     // the consumer at the producer's pace, not batched at EOF. If the user
     // selects before the producer finishes, the write fails (fzf closed stdin)
     // and we stop pumping and read the selection.
+    var producer_eof = false;
     {
         const src = prod.stdout.?;
         const fin = fzf.stdin.?;
@@ -288,13 +289,23 @@ pub fn runPipeline(
         while (true) {
             var iov = [_][]u8{chunk[0..]};
             const n = src.readStreaming(io, &iov) catch break;
-            if (n == 0) break;
+            if (n == 0) {
+                producer_eof = true;
+                break;
+            }
             fin.writeStreamingAll(io, chunk[0..n]) catch break; // fzf closed early
         }
         fin.close(io);
         fzf.stdin = null;
     }
-    _ = prod.wait(io) catch {};
+    // Reap the producer. If fzf closed early (user selected mid-walk) the
+    // producer may still be writing to a full pipe nobody drains — wait() would
+    // deadlock, so kill it instead (kill also reaps; see runPipelineFiltered).
+    if (producer_eof) {
+        _ = prod.wait(io) catch {};
+    } else {
+        prod.kill(io);
+    }
 
     var obuf: [4096]u8 = undefined;
     var r = fzf.stdout.?.reader(io, &obuf);
