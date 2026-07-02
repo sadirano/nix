@@ -2914,19 +2914,46 @@ fn exePath(app: *App) []const u8 {
 
 /// migrateLegacyHome moves a pre-rename `~/.onix` to the default `~/.nix` on the
 /// first run after the `.onix`→`.nix` rename — only when there's no
-/// NIX_HOME/ONIX_HOME override, `~/.nix` doesn't exist yet, and `~/.onix` does.
-/// A rename (data isn't duplicated; the `~/.onix-backups` snapshots remain), then
-/// a one-line notice nudging `nix --init` to refresh shell integration.
+/// NIX_HOME/ONIX_HOME override and `~/.onix` exists. When `~/.nix` is absent the
+/// whole dir is renamed (data isn't duplicated; the `~/.onix-backups` snapshots
+/// remain). When `~/.nix` already exists (e.g. an `--init` created bin/shell
+/// there before this migration could run), the DATA may still sit in `~/.onix`:
+/// move each data entry that's missing in the new home — never overwriting, and
+/// leaving the regenerable bin/ and shell/ (plus anything already migrated)
+/// behind. Then a one-line notice nudging `nix --init`.
 /// Best-effort. NOTE: the onix fallback/migration is transitional — removed at 1.0
-/// (which also drops the `pathExists` check this adds to startup).
+/// (which also drops the `pathExists` checks this adds to startup).
 fn migrateLegacyHome(app: *App) void {
     if (app.env.get("NIX_HOME") != null or app.env.get("ONIX_HOME") != null) return; // user-chosen home
-    if (proc.pathExists(app.io, app.home)) return; // ~/.nix already present
     const legacy = store.legacyHome(app.arena, app.env) orelse return;
     if (!proc.pathExists(app.io, legacy)) return;
-    Io.Dir.cwd().rename(legacy, Io.Dir.cwd(), app.home, app.io) catch return;
-    app.err.print("nix: migrated {s} -> {s}\n", .{ legacy, app.home }) catch {};
-    app.err.writeAll("  run `nix --init` to point your shell at the new home (onix fallback is deprecated, removed at 1.0)\n") catch {};
+    if (!proc.pathExists(app.io, app.home)) {
+        Io.Dir.cwd().rename(legacy, Io.Dir.cwd(), app.home, app.io) catch return;
+        app.err.print("nix: migrated {s} -> {s}\n", .{ legacy, app.home }) catch {};
+        app.err.writeAll("  run `nix --init` to point your shell at the new home (onix fallback is deprecated, removed at 1.0)\n") catch {};
+        return;
+    }
+    // Both homes exist: per-entry merge of the user's data (not bin/shell —
+    // those regenerate). Idempotent: an entry already in ~/.nix is never touched,
+    // and once everything has moved each startup pays one stat per entry.
+    const data_entries = [_][]const u8{
+        "aliases.toml", "groups.toml", "config.toml", "segments.toml",
+        "segments",     "usage",       "actions",     "scripts",
+        "picker.swept",
+    };
+    var moved = false;
+    for (data_entries) |name| {
+        const src = std.fs.path.join(app.arena, &.{ legacy, name }) catch return;
+        const dst = std.fs.path.join(app.arena, &.{ app.home, name }) catch return;
+        if (!proc.pathExists(app.io, src) or proc.pathExists(app.io, dst)) continue;
+        Io.Dir.cwd().rename(src, Io.Dir.cwd(), dst, app.io) catch continue;
+        if (!moved) app.err.print("nix: migrating data {s} -> {s}\n", .{ legacy, app.home }) catch {};
+        moved = true;
+        app.err.print("  moved {s}\n", .{name}) catch {};
+    }
+    if (moved) {
+        app.err.writeAll("  run `nix --init` to point your shell at the new home (onix fallback is deprecated, removed at 1.0)\n") catch {};
+    }
 }
 
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
