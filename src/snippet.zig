@@ -38,14 +38,18 @@ const pwsh_q = "function global:q { exit }\n";
 
 /// regenerate loads config and writes the host-platform snippet (+ installs the
 /// Windows wrappers). exe is the absolute path to the running nix binary.
-pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8) !void {
+/// Returns the wrapper names left STALE on disk (locked while an old version was
+/// running) — callers must surface these, or the old binary silently keeps
+/// answering to that name.
+pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8) ![]const []const u8 {
     const cfg = try config.loadConfig(arena, io, home);
     const names = try config.resolvedShortcutNames(arena, cfg);
     if (is_windows) return writePwsh(arena, io, home, exe, names);
-    return writeBash(arena, io, home, exe, cfg);
+    try writeBash(arena, io, home, exe, cfg);
+    return &.{};
 }
 
-fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, names: [][]const u8) !void {
+fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, names: [][]const u8) ![]const []const u8 {
     const path = try pwshPath(arena, home);
     if (std.fs.path.dirname(path)) |d| try mkdirAll(io, d);
     const bin = try std.fs.path.join(arena, &.{ home, "bin" });
@@ -68,7 +72,7 @@ fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     try b.appendSlice(arena, " -ScriptBlock $nixAliasCompleter\n");
 
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = b.items });
-    try installExeWrappers(arena, io, bin, exe, names);
+    return installExeWrappers(arena, io, bin, exe, names);
 }
 
 fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, cfg: config.Config) !void {
@@ -149,7 +153,10 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
 /// installExeWrappers makes nix available under each command name in binDir by
 /// copying the canonical nix exe to bin/nix.exe and to each wrapper name. (onix
 /// hardlinks; nix copies — simpler, functionally equivalent, just more disk.)
-fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []const u8, names: [][]const u8) !void {
+/// Returns the names whose wrapper could not be replaced (running exes are
+/// locked on Windows) AND whose on-disk copy differs from the new binary —
+/// those keep answering with the OLD version until updated.
+fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []const u8, names: [][]const u8) ![]const []const u8 {
     try mkdirAll(io, bin);
     const ext = if (is_windows) ".exe" else "";
     const canonical = try std.fmt.allocPrint(arena, "{s}{c}nix{s}", .{ bin, std.fs.path.sep, ext });
@@ -158,12 +165,19 @@ fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []
         try Io.Dir.cwd().writeFile(io, .{ .sub_path = canonical, .data = data });
     }
     const data = try Io.Dir.cwd().readFileAlloc(io, canonical, arena, .unlimited);
+    var stale: std.ArrayList([]const u8) = .empty;
     for (names) |name| {
         const dst = try std.fmt.allocPrint(arena, "{s}{c}{s}{s}", .{ bin, std.fs.path.sep, name, ext });
         if (samePath(dst, canonical)) continue;
-        // Best-effort: a running wrapper can't be replaced on Windows; skip it.
-        Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch {};
+        Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch {
+            // Locked (a running wrapper can't be replaced on Windows). If the
+            // bytes on disk already match, it's merely busy, not stale.
+            const existing = Io.Dir.cwd().readFileAlloc(io, dst, arena, .unlimited) catch "";
+            if (!std.mem.eql(u8, existing, data)) try stale.append(arena, name);
+            continue;
+        };
     }
+    return stale.items;
 }
 
 fn samePath(a: []const u8, b: []const u8) bool {

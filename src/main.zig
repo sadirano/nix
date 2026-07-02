@@ -2382,7 +2382,7 @@ const starter_config =
 ;
 
 fn cmdSync(app: *App) !u8 {
-    snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
+    const stale = snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
         try app.err.print("nix: regenerate snippet: {s}\n", .{@errorName(e)});
         return 1;
     };
@@ -2394,8 +2394,19 @@ fn cmdSync(app: *App) !u8 {
         const sh = try snippet.bashPath(app.arena, app.home);
         try app.err.print("regenerated {s}\n", .{sh});
     }
+    try warnStaleWrappers(app, stale);
     try app.err.writeAll("re-source $PROFILE (or restart your shell) to pick up changes\n");
     return 0;
+}
+
+/// warnStaleWrappers reports wrappers regenerate couldn't replace (locked by a
+/// running process) that still hold an OLD binary — silently skipping these is
+/// how a shim ends up answering with last week's version.
+fn warnStaleWrappers(app: *App, stale: []const []const u8) !void {
+    if (stale.len == 0) return;
+    try app.err.writeAll("warning: in use, still the OLD version:");
+    for (stale) |n| try app.err.print(" {s}", .{n});
+    try app.err.writeAll("\n  close the shells/processes using them and rerun `nix --sync`\n");
 }
 
 fn cmdInit(app: *App, skip_profile: bool) !u8 {
@@ -2414,13 +2425,14 @@ fn cmdInit(app: *App, skip_profile: bool) !u8 {
     }
 
     // 3. snippet + wrappers
-    snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
+    const stale = snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
         try app.err.print("nix: regenerate snippet: {s}\n", .{@errorName(e)});
         return 1;
     };
     const ps = try snippet.pwshPath(app.arena, app.home);
     try app.err.print("nix home: {s}\n", .{app.home});
     try app.err.print("shell snippet: {s}\n", .{ps});
+    try warnStaleWrappers(app, stale);
 
     // 4. $PROFILE wiring
     if (skip_profile) {
