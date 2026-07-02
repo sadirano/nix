@@ -129,7 +129,7 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
         else => return e,
     };
     const final = try aliasesPath(arena, home);
-    const tmp = try uniqueTmpName(arena, final);
+    const tmp = try uniqueTmpName(arena, io, final);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = b.items });
     try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), final, io);
 }
@@ -139,8 +139,21 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
 /// file mid-write (one renames the other's half-written bytes into place); a
 /// random suffix keeps each writer's temp private, and the final rename stays
 /// last-wins.
-pub fn uniqueTmpName(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, "{s}.{x}.tmp", .{ path, std.crypto.random.int(u64) });
+pub fn uniqueTmpName(arena: std.mem.Allocator, io: Io, path: []const u8) ![]const u8 {
+    var b: [8]u8 = undefined;
+    io.random(&b);
+    return std.fmt.allocPrint(arena, "{s}.{x}.tmp", .{ path, std.mem.readInt(u64, &b, .little) });
+}
+
+test uniqueTmpName {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const t1 = try uniqueTmpName(a, std.testing.io, "C:\\h\\aliases.toml");
+    const t2 = try uniqueTmpName(a, std.testing.io, "C:\\h\\aliases.toml");
+    try std.testing.expect(std.mem.startsWith(u8, t1, "C:\\h\\aliases.toml."));
+    try std.testing.expect(std.mem.endsWith(u8, t1, ".tmp"));
+    try std.testing.expect(!std.mem.eql(u8, t1, t2)); // private per writer
 }
 
 /// appendTomlString emits a TOML string value: a literal single-quoted string

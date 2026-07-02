@@ -101,7 +101,7 @@ fn save(arena: std.mem.Allocator, io: Io, home: []const u8, entries: []Named) !v
         try b.print(arena, "{s} {d} {d}\n", .{ e.name, e.count, e.last });
     }
     const p = try usagePath(arena, home);
-    const tmp = try store.uniqueTmpName(arena, p);
+    const tmp = try store.uniqueTmpName(arena, io, p);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = b.items });
     try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), p, io);
 }
