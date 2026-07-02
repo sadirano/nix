@@ -2057,10 +2057,8 @@ fn leadingLineNo(line: []const u8) ?usize {
 fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
     var p = raw;
     if (proc.is_windows) {
-        // fzf escapes {} with carets on Windows; strip them (mirrors cmdPreview).
-        var b: std.ArrayList(u8) = .empty;
-        for (raw) |c| if (c != '^') try b.append(app.arena, c);
-        p = b.items;
+        // fzf escapes {} with carets for cmd.exe on Windows; undo that.
+        p = try stripCmdCarets(app.arena, raw);
     }
     const row = std.mem.trim(u8, p, " \t\r\n");
     // Empty selection (fzf has no current item) -> empty preview.
@@ -2208,15 +2206,30 @@ fn findPick(app: *App, roots: []const []const u8, args: [][]const u8) !FindPick 
     return .{ .selected = res.output };
 }
 
+/// stripCmdCarets undoes fzf's cmd.exe caret-escaping of the {} substitution:
+/// `^X` becomes X (so `^^` is a literal caret); a trailing lone `^` is dropped.
+/// Deleting every caret outright would also destroy legitimate carets in the
+/// row (a path or match text containing `^` arrives as `^^`).
+fn stripCmdCarets(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    var b: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == '^') {
+            i += 1;
+            if (i >= raw.len) break;
+        }
+        try b.append(arena, raw[i]);
+    }
+    return b.items;
+}
+
 /// cmdPreview renders one fzf preview row (find's --preview target): a dir
 /// listing for directories, bat/raw contents for files. Never fails the picker.
 fn cmdPreview(app: *App, raw: []const u8) !u8 {
     var p = raw;
     if (proc.is_windows) {
-        // fzf escapes {} with carets on Windows; strip them.
-        var b: std.ArrayList(u8) = .empty;
-        for (raw) |c| if (c != '^') try b.append(app.arena, c);
-        p = b.items;
+        // fzf escapes {} with carets for cmd.exe on Windows; undo that.
+        p = try stripCmdCarets(app.arena, raw);
     }
     // Directory? list entries.
     if (Io.Dir.cwd().openDir(app.io, p, .{ .iterate = true })) |dir| {
