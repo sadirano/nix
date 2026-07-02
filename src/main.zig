@@ -311,8 +311,9 @@ fn groupAction(flag: []const u8) ?[]const u8 {
 }
 
 /// dispatchGroupRef handles `+group <action> …`. Bare `+group` lists members.
-/// Fan-out actions: --run (in each member dir), --yank (all member paths).
-/// --grep/--find fan-out lands in a later step; per-alias-only actions error.
+/// Fan-out actions: --run (in each member dir), --yank (member paths, or a
+/// file picker with a pattern), --explore (file manager / picker), and
+/// --grep/--find as one multi-root search. Per-alias-only actions error.
 fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
     var action: ?[]const u8 = null;
     var idx: usize = 0;
@@ -339,7 +340,8 @@ fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "list")) return cmdGroupList(app, group);
     if (eql(act, "remove")) return cmdGroupDelete(app, group);
     if (eql(act, "run")) return cmdGroupRun(app, group, aargs);
-    if (eql(act, "yank")) return cmdGroupYank(app, group);
+    if (eql(act, "yank")) return cmdGroupYank(app, group, aargs);
+    if (eql(act, "explore")) return cmdGroupExplore(app, group, aargs);
     if (eql(act, "grep")) return cmdGroupGrep(app, group, aargs);
     if (eql(act, "find")) return cmdGroupFind(app, group, aargs);
     try app.err.print("nix: --{s} is a single-alias action, not supported on group +{s}\n", .{ act, group });
@@ -471,10 +473,24 @@ fn resolveGroupTargets(app: *App, group: []const u8) !?[]GroupTarget {
     return out.items;
 }
 
-/// cmdGroupYank copies every member path (newline-separated) to the clipboard and
-/// echoes them — the group form of `y`.
-fn cmdGroupYank(app: *App, group: []const u8) !u8 {
+/// cmdGroupYank: bare `y +group` copies every member path (newline-separated)
+/// to the clipboard and echoes them. With a pattern it mirrors `y <alias>
+/// <pat>` across the group: one picker over all members (alias-prefixed rows),
+/// the selected FILES copied to the clipboard as an OS file drop.
+fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
     const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    var has_pat = false;
+    for (args) |a| if (!isGlobalFlag(a)) {
+        has_pat = true;
+        break;
+    };
+    if (has_pat) {
+        return switch (try findPick(app, targets, args)) {
+            .selected => |sel| yankSelectionFiles(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
+            .cancelled => 0,
+            .failed => 1,
+        };
+    }
     var buf: std.ArrayList(u8) = .empty;
     for (targets, 0..) |t, i| {
         if (i > 0) try buf.append(app.arena, '\n');
@@ -486,6 +502,31 @@ fn cmdGroupYank(app: *App, group: []const u8) !u8 {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
     };
     return 0;
+}
+
+/// cmdGroupExplore: bare `s +group` opens every member dir in the file manager
+/// (group actions fan out, like bare `y +group`). With a pattern it mirrors
+/// `s <alias> <pat>` across the group: one picker over all members, every
+/// selection opened with the OS handler.
+fn cmdGroupExplore(app: *App, group: []const u8, args: [][]const u8) !u8 {
+    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    var has_pat = false;
+    for (args) |a| if (!isGlobalFlag(a)) {
+        has_pat = true;
+        break;
+    };
+    if (!has_pat) {
+        var rc: u8 = 0;
+        for (targets) |t| {
+            if (try exploreTarget(app, t.path) != 0) rc = 1;
+        }
+        return rc;
+    }
+    return switch (try findPick(app, targets, args)) {
+        .selected => |sel| exploreSelections(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
+        .cancelled => 0,
+        .failed => 1,
+    };
 }
 
 /// cmdGroupRun runs <cmd> in each member dir, sequentially, with a per-dir header
@@ -1520,19 +1561,23 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         if (proc.fileExists(app.io, exact)) return exploreTarget(app, exact);
     }
     return switch (try findPick(app, &.{.{ .name = alias, .path = dir }}, action_args)) {
-        .selected => |sel| blk: {
-            var rc: u8 = 0;
-            var lines = std.mem.splitScalar(u8, std.mem.trim(u8, sel, " \t\r\n"), '\n');
-            while (lines.next()) |ln| {
-                const s = std.mem.trim(u8, ln, " \t\r");
-                if (s.len == 0) continue;
-                if (try exploreTarget(app, try absUnder(app, dir, s)) != 0) rc = 1;
-            }
-            break :blk rc;
-        },
+        .selected => |sel| exploreSelections(app, dir, sel),
         .cancelled => 0,
         .failed => 1,
     };
+}
+
+/// exploreSelections opens every picker selection with the OS handler,
+/// resolving relative rows against `base`.
+fn exploreSelections(app: *App, base: []const u8, selection: []const u8) !u8 {
+    var rc: u8 = 0;
+    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
+    while (lines.next()) |ln| {
+        const s = std.mem.trim(u8, ln, " \t\r");
+        if (s.len == 0) continue;
+        if (try exploreTarget(app, try absUnder(app, base, s)) != 0) rc = 1;
+    }
+    return rc;
 }
 
 /// exploreTarget opens one path with the OS handler: a dir lands in the file
@@ -3480,7 +3525,8 @@ fn printUsage(app: *App) !void {
         \\  nix +<group> [--list]       list a group's members
         \\  nix +<group> --remove       delete the group
         \\  o  +<group>                 pick members (fzf): first cd's here, rest open windows
-        \\  sg/ff/r/y +<group> …        search / run / yank across every member
+        \\  sg/ff/r +<group> …          search / run across every member
+        \\  s/y +<group> [pat]          open / copy member dirs; with a pattern, pick files
         \\
     );
 }

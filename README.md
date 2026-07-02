@@ -203,7 +203,10 @@ sg +work TODO            # ripgrep across every member's dir, into one fzf picke
                          #   rows read `member\rel\path`, not the absolute root
 ff +work config          # fuzzy-find files across every member
 r  +work git pull        # run a command in each member dir (per-dir header)
+s  +work                 # open every member dir in the file manager
+s  +work invoice         # pick files across every member → open with default apps
 y  +work                 # copy every member path to the clipboard
+y  +work invoice         # pick files across every member → copy the FILES
 nix --groups             # list all groups
 nix +work --list         # list a group's members (each resolved to its path)
 nix pa+work --remove     # drop a member
