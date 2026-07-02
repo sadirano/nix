@@ -73,8 +73,11 @@ pub fn main(init: std.process.Init) !void {
         .env = init.environ_map,
         .home = home,
         .argv0 = raw_args[0],
-        .json = hasFlag(raw_args[1..], &.{ "--json", "-j" }),
-        .no_prompt = hasFlag(raw_args[1..], &.{ "--no-prompt", "-q" }),
+        // json/no_prompt are set in run() once the args are in canonical form —
+        // scanning raw argv here would let a flag meant for an action's command
+        // (`r a build -q`) flip nix's own switches.
+        .json = false,
+        .no_prompt = false,
     };
 
     migrateLegacyHome(&app);
@@ -101,6 +104,7 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
             // `o <alias> <path>`: register first, then navigate into the alias
             // dir exactly like bare `o <alias>` (the wrapper exe can't cd its
             // parent, so navigate stacks a subshell there).
+            setGlobalFlags(app, d.args);
             const code = try dispatch(app, d.args);
             if (code != 0) return code;
             return navigate(app, d.nav_alias);
@@ -108,7 +112,22 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         args = d.args;
     }
 
+    setGlobalFlags(app, args);
     return dispatch(app, args);
+}
+
+/// setGlobalFlags scans the tokens nix itself consumes for the process-wide
+/// flags (--json/-j, --no-prompt/-q). The scan stops at `--` and at the first
+/// action flag: everything after `--run`/`--grep`/... belongs to that action's
+/// command or pattern and must not flip nix's own switches (`r a build -q`
+/// hands -q to build; `sg a pat --json` hands --json to rg).
+fn setGlobalFlags(app: *App, args: []const []const u8) void {
+    for (args) |a| {
+        if (eql(a, "--")) break;
+        if (aliasAction(a) != null) break;
+        if (eql(a, "--json") or eql(a, "-j")) app.json = true;
+        if (eql(a, "--no-prompt") or eql(a, "-q")) app.no_prompt = true;
+    }
 }
 
 // ---- grammar ----------------------------------------------------------------
@@ -196,10 +215,12 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
 
     const pre = rest[0..action_idx];
     const action_args = rest[action_idx + 1 ..];
-    if (pre.len > 0) {
-        try app.err.print("nix: unexpected positional \"{s}\" before --{s}\n", .{ pre[0], action.? });
+    // Global flags are legal before the action (`nix a -q --run cmd`); anything
+    // else there is a mistake. After the action, tokens belong to the action.
+    for (pre) |a| if (!isGlobalFlag(a)) {
+        try app.err.print("nix: unexpected positional \"{s}\" before --{s}\n", .{ a, action.? });
         return 1;
-    }
+    };
     const act = action.?;
     if (eql(act, "resolve")) return cmdResolve(app, alias);
     if (eql(act, "remove")) return cmdRemove(app, alias, action_args);
@@ -3171,15 +3192,6 @@ fn startsWithDash(s: []const u8) bool {
     return s.len > 0 and s[0] == '-';
 }
 
-fn hasFlag(args: []const [:0]const u8, names: []const []const u8) bool {
-    for (args) |a| {
-        for (names) |n| {
-            if (std.mem.eql(u8, a, n)) return true;
-        }
-    }
-    return false;
-}
-
 /// preprocessArgs rewrites multi-char short flags into long forms and widens
 /// the [:0]u8 args to plain []const u8 the dispatcher uses.
 fn preprocessArgs(arena: std.mem.Allocator, args: []const [:0]const u8) ![][]const u8 {
@@ -3516,6 +3528,38 @@ test "flag maps: systemVerb, aliasAction, actionFlag" {
     try std.testing.expectEqualStrings("doctor", systemVerb("-D").?);
     try std.testing.expectEqualStrings("groups", systemVerb("--groups").?);
     try std.testing.expectEqualStrings("groups", systemVerb("-G").?);
+}
+
+test "stripCmdCarets: unescapes ^X, keeps ^^ as a literal caret" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings("plain", try stripCmdCarets(a, "plain"));
+    try std.testing.expectEqualStrings("a&b", try stripCmdCarets(a, "a^&b"));
+    try std.testing.expectEqualStrings("a^b", try stripCmdCarets(a, "a^^b"));
+    // A trailing lone caret is dropped, not kept.
+    try std.testing.expectEqualStrings("ab", try stripCmdCarets(a, "ab^"));
+}
+
+test "setGlobalFlags: stops at the first action flag and at --" {
+    var app: App = undefined;
+    app.json = false;
+    app.no_prompt = false;
+    // Before the action flag: counted.
+    setGlobalFlags(&app, &.{ "myalias", "-q", "--run", "build", "--json" });
+    try std.testing.expect(app.no_prompt);
+    try std.testing.expect(!app.json); // --json belongs to the run command
+
+    app.json = false;
+    app.no_prompt = false;
+    // After `--`: not counted.
+    setGlobalFlags(&app, &.{ "--", "-q", "--json" });
+    try std.testing.expect(!app.no_prompt);
+    try std.testing.expect(!app.json);
+
+    // System command tails still count (no action flag involved).
+    setGlobalFlags(&app, &.{ "--prune", "-q" });
+    try std.testing.expect(app.no_prompt);
 }
 
 test "splitGrepRow: drive-letter prefix is part of the file, not a separator" {
