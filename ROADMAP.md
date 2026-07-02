@@ -30,7 +30,7 @@ Status legend: ✅ done · 🚧 in progress · ⬜ not started
 
 ---
 
-## 1. Alias groups (multi-alias)  ⬜
+## 1. Alias groups (multi-alias)  ✅
 
 A group is a named set of aliases, referenced with the `+` sigil, used for
 multi-target navigation and for fanning out search/run/yank across projects.
@@ -105,11 +105,19 @@ a grace/migration note when implementing the validator change.
     (yank all member paths) via `resolveGroupTargets` (dead members skipped with
     a note); `dispatchGroupRef` scans for the first action flag (reusing
     `aliasAction`) so group actions parse like alias ones.
-  - `sg`/`ff +g` multi-root: grep/find refactored to take a roots list
-    (`grepIn`/`findIn`); for a group the member dirs are passed to rg/rga/fd as
-    absolute search paths, so they emit absolute file paths into one unified fzf
-    picker (preview + open already accept absolute paths). Single-alias mode is
-    gated unchanged (`roots.len == 1` → cwd-relative, no path args).
+  - `sg`/`ff +g` multi-root: grep/find refactored to take a target list
+    (`grepIn`/`findIn`); for a group each member's rg/rga/fd runs IN the member
+    dir via a per-producer pipeline (`proc.runPipelinePrefixed`) that prefixes
+    every row with the member's alias, so rows read `alias\rel:line:` instead of
+    the absolute root. Selections map back via `expandPrefixedSelection`; the
+    preview verbs rebase the alias token (`expandAliasRowPath`). Single-alias
+    mode is gated unchanged (one target → cwd-relative, no prefix).
+- ✅ **1e — full action coverage (2026-07-02).** Every command except `e` has a
+  group form: `s +g [pat]` (fan-out file manager, or file picker → open with
+  default apps), `y +g [pat]` (member paths as text, or file picker → CF_HDROP
+  file copy), `p +g [name]` (fzf member picker → paste into the ONE chosen
+  member), `nix +g --resolve` (member paths one per line). `e +group` was
+  deliberately left single-alias.
 - ✅ **1d — navigation + launcher.** `o +group` resolves members → `fzf --multi`
   (`name -> path` rows); the topmost selection keeps the current shell (stacks a
   subshell), each other selection opens a new terminal via `launchTerminal`

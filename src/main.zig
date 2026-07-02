@@ -2599,6 +2599,16 @@ fn cmdSync(app: *App) !u8 {
         try app.err.print("regenerated {s}\n", .{sh});
     }
     try warnStaleWrappers(app, stale);
+    // Keep the persistent user PATH honest too — the doctor's fix-it advice for
+    // a missing ~/.nix/bin is "run `nix --sync`", so sync must actually fix it.
+    if (proc.is_windows) {
+        if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
+            .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),
+            .already => {},
+        } else |e| {
+            try app.err.print("nix: could not add {s} to the user PATH ({s}) — add it manually\n", .{ bin, @errorName(e) });
+        }
+    }
     try app.err.writeAll("re-source $PROFILE (or restart your shell) to pick up changes\n");
     return 0;
 }
