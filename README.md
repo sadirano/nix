@@ -1,8 +1,8 @@
 # nix
 
-A Zig rewrite of [onix](../onix) — the same fast directory alias resolver, with the Go runtime shed. Type `o acme` from any prompt; your shell jumps to the project root. One TOML file holds every alias, one binary serves every command, and the resolve hot path lands at **~4.4 ms vs onix's ~9 ms** — roughly **2× faster per invocation**, in a **1.32 MB** binary (onix is 3.48 MB).
+A directory alias manager for the command line. Give a project a short name once, then jump to it, search it, run commands in it, or move files in and out of it from any prompt — `o acme` and your shell is at the project root.
 
-nix keeps all its state in `~/.nix` — `aliases.toml`, `groups.toml`, `config.toml`, `usage`, and the segment / action / script files. It began as a Zig rewrite of the Go [onix](../onix) and still reads onix's TOML formats; the first run after upgrading **auto-migrates a legacy `~/.onix` to `~/.nix`** (override the location with `$NIX_HOME`).
+One TOML file holds every alias, one binary serves every command. State lives in `~/.nix` (`aliases.toml`, `groups.toml`, `config.toml`, usage data, and the segment / action / script files); override the location with `$NIX_HOME`.
 
 ## Demos
 
@@ -18,18 +18,6 @@ nix keeps all its state in `~/.nix` — `aliases.toml`, `groups.toml`, `config.t
 
 ![p paste (clipboard to file)](assets/paste.gif)
 
-## Why
-
-onix is already fast — about 0.6 ms over the OS process-spawn floor. But every invocation still pays for the Go runtime bootstrap (~2 ms) and onix's linked dependency graph (go-toml/json/reflect, another ~2 ms). nix is the experiment: how much of that is sheddable with a hand-written hot path and no runtime?
-
-| Binary | Resolve time | Size |
-|--------|-------------|------|
-| **nix** (Zig, ReleaseFast) | **~4.4 ms** | 1.32 MB |
-| onix (Go, `-s -w`) | ~9 ms | 3.48 MB |
-| Zig no-op | 3.31 ms | 4.6 KB |
-
-The Zig no-op (a bare `CreateProcess` returning immediately) is the floor on this machine. nix's full hot path — resolve + mkdir + usage record — sits ~1 ms above it. The remainder is everything the Go runtime no longer has to do. ~5,900 lines of Zig across 11 modules.
-
 ## Install
 
 ### Windows (Scoop)
@@ -39,7 +27,7 @@ scoop bucket add sadirano https://github.com/sadirano/bucket
 scoop install nix
 ```
 
-The Scoop package pulls in the tools the interactive commands lean on (`bat`, `fzf`, `ripgrep`, `fd`, `neovim`) and runs `nix --init` for you on install. `scoop update nix` tracks new releases.
+The Scoop package pulls in the tools the interactive commands lean on (`bat`, `fzf`, `ripgrep`, `fd`, `neovim`) and runs `nix --init` for you on install. `scoop update nix` tracks new releases; `scoop install sadirano/nix-nightly` tracks a daily build of `main` instead.
 
 [Everything](https://www.voidtools.com/)'s `es` CLI is an optional extra (`scoop install everything-cli`): when present and running it gives the `o <name>` picker instant, whole-system reach across every drive. It is **not required** — `es` needs the Everything app/service, which some environments can't install, so the picker falls back to walking your drives with `fd`. See the `[picker]` configuration section to tune that fallback.
 
@@ -64,7 +52,7 @@ On Windows, prefer the portable build helper — a native build bakes the dev ma
 
 `nix --init` creates `~/.nix/`, writes a shell snippet to `~/.nix/shell/`, installs the `.exe` command wrappers into `~/.nix/bin` (and adds it to your user PATH), and dot-sources the snippet from your shell profile (`$PROFILE` on Windows, `.bashrc`/`.zshrc`/`.profile` on Unix-likes). Restart your shell (or source your profile) once and the short commands below are live.
 
-Upgrading from a pre-rename install? The first run **moves a legacy `~/.onix` to `~/.nix`** automatically (a rename — your data isn't duplicated; the `~/.onix-backups` snapshots stay put), then nudges you to re-run `nix --init` so the shell integration points at the new home. Setting `$NIX_HOME` (or the legacy `$ONIX_HOME`) skips this. The onix fallback and migration are **deprecated and removed at 1.0**.
+Upgrading from an older install that used `~/.onix`? The first run migrates it to `~/.nix` automatically (a rename — your data isn't duplicated), then nudges you to re-run `nix --init` so the shell integration points at the new home. Setting `$NIX_HOME` skips this. The legacy fallback and migration are **removed at 1.0**.
 
 ## Use
 
@@ -102,7 +90,7 @@ Everything else (`e`, `s`, `y`, `p`, `r`, `sg`, `ff`) invokes `nix` directly, so
 
 `y <alias>` prints the alias path and copies it to the clipboard as text. Given a pattern — `y <alias> <pat>` — it instead runs the `ff` file picker under the alias dir and copies the **selected files themselves** to the clipboard as a system file drop (Windows `CF_HDROP`), so a paste in Explorer drops the real files (a `.png` lands as a file, not a path). It's the inverse of `p`. On non-Windows the file-drop format isn't available, so it falls back to copying the paths as text.
 
-`p <alias> [name]` saves the current clipboard contents into the alias directory and copies the saved path(s) back to the clipboard. Files copied in Explorer (Ctrl+C) take priority — directories are copied recursively, turning the clipboard into a cross-folder copy channel from any prompt. Otherwise the content path applies, handy for parking a screenshot and pasting its path into an agent: an image saves as `.png` (decoded from the clipboard DIB and re-encoded with real DEFLATE compression), text as `.md`. An explicit extension on `<name>` is honoured; with no name, files keep their source name and content uses a timestamp. Collisions auto-increment (`shot.png`, `shot-1.png`) so nothing is ever clobbered.
+`p <alias> [name]` saves the current clipboard contents into the alias directory and copies the saved path(s) back to the clipboard. Files copied in Explorer (Ctrl+C) take priority — directories are copied recursively, turning the clipboard into a cross-folder copy channel from any prompt. Otherwise the content path applies, handy for parking a screenshot and pasting its path into an agent: an image saves as `.png`, text as `.md`. An explicit extension on `<name>` is honoured; with no name, files keep their source name and content uses a timestamp. Collisions auto-increment (`shot.png`, `shot-1.png`) so nothing is ever clobbered.
 
 ## Search and find
 
@@ -123,13 +111,13 @@ path = "C:/Users/dev/projects/acme"
 
 You can hand-edit the file (`nix --list` and resolve pick up changes immediately) or use `nix <name> <path>` to register and `nix <name> --remove` to forget. Alias lookups are case-insensitive.
 
-When the list grows crusty, `nix --prune` opens an fzf multi-select of every alias ranked prune-first: dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `nix --prune --no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour, so the hot path stays hot; delete it any time to start fresh). The ranking is byte-for-byte identical to onix's.
+When the list grows crusty, `nix --prune` opens an fzf multi-select of every alias ranked prune-first: dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `nix --prune --no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh).
 
-Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$NIX_HOME` (the legacy `$ONIX_HOME` is still read).
+Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$NIX_HOME`.
 
 ## Configuring shortcuts and search
 
-`~/.nix/config.toml` holds three optional sections.
+`~/.nix/config.toml` holds the optional sections.
 
 `[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`); the value is the name you'd rather type:
 
@@ -139,12 +127,10 @@ s = "show"     # type `show acme` instead of `s acme`
 ff = "fzf"
 ```
 
-`[grep]` tunes the `sg` search UI — the fzf preview window and command, fzf colors, ripgrep `--colors`, and whether non-ASCII query characters are matched literally. `all = true` makes `sg` search with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) by default, reaching into PDFs, office docs, archives, and more:
+`[grep]` tunes the `sg` search. `all = true` makes `sg` search with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) by default, reaching into PDFs, office docs, archives, and more:
 
 ```toml
 [grep]
-preview_window = "right:50%"
-rg_colors = ["match:fg:yellow", "path:fg:cyan"]
 all = true
 ```
 
@@ -202,7 +188,7 @@ Per-alias files need **no** `scope` — every entry there is implicitly scoped t
 
 A segment resolves through its `source-template`: a string with `${VAR}` references. For each `${name}`, nix looks up, in order, (1) the segment's inline value (`seg:value`), bound under `${<segment>}` — or `${param}` if the context sets `param`; (2) the context's `env` map; (3) the process environment. Templates own their separators — `"/foo"` appends as a subdirectory, `"_${task}.md"` appends as a filename suffix.
 
-Encountering an unknown segment opens your editor on the central per-alias file seeded with a `[[contexts]]` skeleton. Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.nix/segments.toml`.
+Encountering an unknown segment defines it for you (seeded with a `[[contexts]]` skeleton in the central per-alias file). Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.nix/segments.toml`.
 
 ## Groups (`+` multi-alias)
 
@@ -261,7 +247,7 @@ For full scripts rather than one-liners, drop an executable in the alias's `.nix
 
 ## Tab completion
 
-Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated hot path that bypasses TOML parsing for sub-millisecond Tab response.
+Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated path that bypasses TOML parsing so Tab stays instant.
 
 cmd.exe via clink is intentionally out of scope for nix; PowerShell completion plus `$PROFILE` wiring cover the supported shells.
 
@@ -273,7 +259,7 @@ cmd.exe via clink is intentionally out of scope for nix; PowerShell completion p
 
 ## Architecture
 
-nix mirrors onix's module split, hand-written in Zig for the hot path:
+A single Zig binary, split by subsystem:
 
 - **`src/store.zig`** — `aliases.toml`: byte-scan resolve, quote unescaping, `fromSlash` → host separators, atomic temp+rename writes, name validation.
 - **`src/segments.zig`** — `@`-segment grammar, `${VAR}` template expansion, `[[contexts]]` reading with local→central→global precedence and the traversal guard.
@@ -282,12 +268,10 @@ nix mirrors onix's module split, hand-written in Zig for the hot path:
 - **`src/config.zig`** — `config.toml`: `[shortcuts]`, `[grep]`, `[picker]`, `[nav]` (composed + deduped exclusion list shared by sweep/picker).
 - **`src/proc.zig`** — process spawning: `runInherit`/`runDetached`/`findInPath`/`runFilter`/`runPipeline`. Streams `rg | fzf` live by relaying bytes through the parent with `File.readStreaming`.
 - **`src/clipboard.zig`** — Win32 clipboard read/write (CF_UNICODETEXT, CF_HDROP file drops, CF_DIB images), lazy-loading `user32` only when needed so the resolve hot path never pulls it into the import table.
-- **`src/png.zig`** — DIB decode + PNG encode (real DEFLATE via `std.compress.flate`, stored-block fallback, CRC32/Adler32) for image paste.
+- **`src/png.zig`** — DIB decode + PNG encode (DEFLATE via `std.compress.flate`, stored-block fallback, CRC32/Adler32) for image paste.
 - **`src/snippet.zig`** — PowerShell (`nix.ps1`) and bash (`nix.sh`) shell glue with alias completers, honouring `[shortcuts]`.
 - **`src/usage.zig`** — the debounced usage recorder behind `--prune` ranking.
 - **`src/editor.zig`** — per-editor line-jump dialects (vim `+N`, VS Code `--goto`).
-
-Two Windows-specific lessons paid for the hot-path budget: a single static import of a non-default DLL (USER32) is a measurable per-invocation tax, so clipboard functions are `LoadLibrary`'d on demand; and streaming a producer into fzf requires `readStreaming` (one OS read), not a buffered reader that blocks until its buffer fills.
 
 ## License
 
