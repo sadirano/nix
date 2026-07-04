@@ -186,23 +186,35 @@ written by `snippet.regenerate` (so both `--init` and `--sync` refresh it).
 
 ---
 
-## 3. Export / import  ⬜  (design sketch — open decisions remain)
+## 3. Export / import  ✅  (2026-07-04)
 
 Portable backup/restore for the alias DB (also serves the `~/.nix` data-loss
-recovery need).
+recovery need). `src/portable.zig` (`render`/`parse`) + `cmdExport`/`cmdImport`.
 
-### Sketch
+- `nix --export [file]` bundles aliases + groups + config + central per-alias
+  actions into one portable TOML (stdout if no file).
+- `nix --import <file>` **merges** by default (never clobbers); `--replace` for a
+  deliberate full restore.
 
-- `nix --export [file]` bundles aliases + groups + per-alias actions + config
-  into one portable TOML (stdout if no file).
-- `nix --import <file>` **merges** by default (never clobbers); `--replace` flag
-  for a deliberate full restore.
+### Locked decisions (resolved 2026-07-04)
 
-### Open decisions (resolve before building)
+- **Conflict: skip existing.** Merge only adds alias/group/action names not
+  already present and never overwrites a local `config.toml`; `--replace` does a
+  full restore (aliases/groups/config replaced, each alias's central actions file
+  overwritten). Both modes are non-interactive.
+- **`usage` excluded.** The ranking file is machine-local churn and non-portable;
+  export carries only aliases/groups/config/actions.
+- **Single TOML v1**, not an archive — matches nix's simple, onix-derived formats
+  and stays greppable/stdout-friendly. Flat sub-tables: `[aliases]` (`name =
+  'path'`, forward slashes), `[groups]` (groups.toml body verbatim), `[config]`/
+  `[config.*]` (the machine's config.toml re-sectioned, comments preserved
+  losslessly), `[actions.<alias>]` (central per-alias actions).
 
-- Exact merge semantics on conflict (skip / overwrite / prompt).
-- Whether export includes `usage` ranking data.
-- Bundle format (single concatenated TOML vs a small archive).
+Project-local `<alias>/.nix/actions.toml` files travel with their repos and are
+out of scope — only central `~/.nix/actions/*.toml` ship. `render`/`parse` and
+the flat-table dequoting are unit-tested; export→import round-trip (incl. escaped
+quotes, config comments, merge-skip, and `--replace`) verified end-to-end against
+a scratch `NIX_HOME`.
 
 ---
 

@@ -274,6 +274,8 @@ The guide is installed to your machine instead of shipped as a repo-level `AGENT
 
 `nix --init` initialises `~/.nix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.nix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
 
+`nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, and central per-alias actions as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap.
+
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves. It reports the build and wrapper state (flagging a stale wrapper or a `~/.nix/bin` that isn't on PATH), which finder the picker will actually use — distinguishing a working `es` from one that's installed but whose Everything service isn't running, and **real `fd` from a same-named `.cmd`/`.bat` shim that shadows it** — the resolved search roots (skipping BitLocker-locked drives), the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. Every probe is non-interactive and safe to run on locked-down machines; it exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
 ## Architecture
@@ -285,6 +287,7 @@ A single Zig binary, split by subsystem:
 - **`src/groups.zig`** — `groups.toml`: the `+` multi-alias store, the `member+group` grammar, recursive member expansion (cycle/depth-guarded, deduped), and the mutation helpers behind the group commands.
 - **`src/actions.zig`** — `[actions]` per-alias named shell commands (`r <alias> :name`), parsed project-local over central.
 - **`src/config.zig`** — `config.toml`: `[shortcuts]`, `[grep]`, `[picker]`, `[nav]` (composed + deduped exclusion list shared by sweep/picker).
+- **`src/portable.zig`** — `--export`/`--import`: renders the central stores (aliases/groups/config/actions) to one TOML document and parses one back for merge or `--replace` restore.
 - **`src/proc.zig`** — process spawning: `runInherit`/`runDetached`/`findInPath`/`runFilter`/`runPipeline`. Streams `rg | fzf` live by relaying bytes through the parent with `File.readStreaming`.
 - **`src/clipboard.zig`** — Win32 clipboard read/write (CF_UNICODETEXT, CF_HDROP file drops, CF_DIB images), lazy-loading `user32` only when needed so the resolve hot path never pulls it into the import table.
 - **`src/png.zig`** — DIB decode + PNG encode (DEFLATE via `std.compress.flate`, stored-block fallback, CRC32/Adler32) for image paste.
