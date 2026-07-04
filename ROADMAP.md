@@ -164,6 +164,28 @@ accumulation). `actions.parse`/`find`/path helpers unit-tested.
 
 ---
 
+## 2.5. Agent guide (`~/.nix/AGENTS.md`)  ✅
+
+An agent-facing guide to the installed command surface, so coding agents
+suggest `r acme :test` instead of absolute-path instructions. `src/agents.zig`,
+written by `snippet.regenerate` (so both `--init` and `--sync` refresh it).
+
+- **Installed artifact, not a repo `AGENTS.md` — locked.** Repo-level agent
+  files are auto-read the moment anyone clones, which is the wrong consent
+  model for machine-wide instructions (and reads as prompt injection). The
+  guide only exists where the owner ran `nix --init`.
+- **Generated from config:** the rendered names honour `[shortcuts]` renames
+  (unit-tested), so a `s = "show"` machine's agents are told `show acme`.
+- **Never auto-wired:** nix does not touch any agent's config. The README
+  documents the one-line import users add themselves (e.g. `@~/.nix/AGENTS.md`
+  in Claude Code's global `~/.claude/CLAUDE.md`).
+- **Content rules:** descriptive and conditional ("the user of this machine…"),
+  discover aliases via `nix --list` before suggesting, prefer `.nix/actions.toml`
+  actions for repeatable commands, resolve with `nix <alias>` instead of `o` in
+  non-interactive shells, never launch the fzf pickers headless.
+
+---
+
 ## 3. Export / import  ⬜  (design sketch — open decisions remain)
 
 Portable backup/restore for the alias DB (also serves the `~/.nix` data-loss

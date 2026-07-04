@@ -258,6 +258,18 @@ Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) sup
 
 cmd.exe via clink is intentionally out of scope for nix; PowerShell completion plus `$PROFILE` wiring cover the supported shells.
 
+## AI agents
+
+`nix --init` also writes `~/.nix/AGENTS.md`, a short guide that teaches coding agents your command surface — so they say "run it with `r acme :test`" instead of quoting absolute paths, register repeatable commands as actions, and know to resolve with `nix <alias>` rather than `o` in their own non-interactive shells. `nix --sync` regenerates it, so the guide always shows your effective `[shortcuts]` names.
+
+nix never registers the file with any agent itself — wiring it up is a deliberate, per-user step. For Claude Code, import it from your global memory file, `~/.claude/CLAUDE.md`:
+
+    @~/.nix/AGENTS.md
+
+Other tools can point at the same file wherever they take custom instructions.
+
+The guide is installed to your machine instead of shipped as a repo-level `AGENTS.md` on purpose: agent tools auto-read repo files the moment anyone clones, which is the wrong consent model for machine-wide instructions. Installed by `--init`, it exists only where you chose to install nix.
+
 ## Commands
 
 `nix --init` initialises `~/.nix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.nix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.

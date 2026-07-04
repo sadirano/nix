@@ -9,6 +9,7 @@ const editor = @import("editor.zig");
 const config = @import("config.zig");
 const segments = @import("segments.zig");
 const snippet = @import("snippet.zig");
+const agents = @import("agents.zig");
 const groups = @import("groups.zig");
 const actions = @import("actions.zig");
 const winpath = @import("winpath.zig");
@@ -2592,11 +2593,12 @@ fn cmdSync(app: *App) !u8 {
     };
     const ps = try snippet.pwshPath(app.arena, app.home);
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
+    const guide = try agents.path(app.arena, app.home);
     if (proc.is_windows) {
-        try app.err.print("regenerated {s} and wrappers in {s}\n", .{ ps, bin });
+        try app.err.print("regenerated {s}, {s}, and wrappers in {s}\n", .{ ps, guide, bin });
     } else {
         const sh = try snippet.bashPath(app.arena, app.home);
-        try app.err.print("regenerated {s}\n", .{sh});
+        try app.err.print("regenerated {s} and {s}\n", .{ sh, guide });
     }
     try warnStaleWrappers(app, stale);
     // Keep the persistent user PATH honest too — the doctor's fix-it advice for
@@ -2646,6 +2648,7 @@ fn cmdInit(app: *App, skip_profile: bool) !u8 {
     const ps = try snippet.pwshPath(app.arena, app.home);
     try app.err.print("nix home: {s}\n", .{app.home});
     try app.err.print("shell snippet: {s}\n", .{ps});
+    try app.err.print("agent guide: {s} (see README to wire it into your agent)\n", .{try agents.path(app.arena, app.home)});
     try warnStaleWrappers(app, stale);
 
     // 3.5. persistent user PATH (Windows): the snippet only fixes PowerShell

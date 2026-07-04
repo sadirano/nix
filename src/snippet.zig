@@ -11,6 +11,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const config = @import("config.zig");
+const agents = @import("agents.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -43,6 +44,7 @@ const pwsh_q = "function global:q { exit }\n";
 /// answering to that name.
 pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8) ![]const []const u8 {
     const cfg = try config.loadConfig(arena, io, home);
+    try agents.write(arena, io, home, cfg);
     const names = try config.resolvedShortcutNames(arena, cfg);
     if (is_windows) return writePwsh(arena, io, home, exe, names);
     try writeBash(arena, io, home, exe, cfg);
