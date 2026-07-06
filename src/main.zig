@@ -1383,6 +1383,28 @@ fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         const aliases = try store.loadAliases(app.arena, adata);
         try d.row(.ok, "aliases", try std.fmt.allocPrint(app.arena, "{d} registered  ({s})", .{ aliases.items.len, try store.aliasesPath(app.arena, app.home) }));
 
+        // Duplicate [sections] (hand-edits) silently shadow each other: resolve
+        // reads the first, the add form updates only the first. Surface them.
+        var dups: std.ArrayList([]const u8) = .empty;
+        for (aliases.items, 0..) |a1, i| {
+            var is_dup = false;
+            for (aliases.items[0..i]) |a0| if (std.mem.eql(u8, a0.name, a1.name)) {
+                is_dup = true;
+                break;
+            };
+            if (!is_dup) continue;
+            var noted = false;
+            for (dups.items) |n| if (std.mem.eql(u8, n, a1.name)) {
+                noted = true;
+                break;
+            };
+            if (!noted) try dups.append(app.arena, a1.name);
+        }
+        if (dups.items.len > 0) {
+            try d.row(.warn, "duplicates", try std.fmt.allocPrint(app.arena, "defined more than once: {s}", .{try std.mem.join(app.arena, ", ", dups.items)}));
+            try d.cont("hand-edited aliases.toml? the first entry wins — remove the extras");
+        }
+
         const snip = if (proc.is_windows) try snippet.pwshPath(app.arena, app.home) else try snippet.bashPath(app.arena, app.home);
         if (proc.pathExists(app.io, snip)) {
             try d.row(.ok, "shell", try std.fmt.allocPrint(app.arena, "integration snippet present  ({s})", .{snip}));
