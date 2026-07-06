@@ -145,7 +145,7 @@ test "editorArgs vim multi" {
         .{ .file = "c.zig", .line = "" },
     });
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{
-        "+10",       "a.zig",
+        "+10",          "a.zig",
         "+e +20 b.zig", "+e c.zig",
     }), args);
 }

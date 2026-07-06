@@ -282,7 +282,7 @@ test "dropfilesBuffer: DROPFILES header + double-NUL-terminated wide list" {
 
 fn writeTextUnix(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
     const tools = [_][]const []const u8{
-        &.{ "wl-copy" },
+        &.{"wl-copy"},
         &.{ "xclip", "-selection", "clipboard" },
         &.{ "xsel", "--clipboard", "--input" },
     };

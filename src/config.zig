@@ -67,18 +67,18 @@ pub fn resolvedShortcutNames(arena: std.mem.Allocator, cfg: Config) ![][]const u
 /// Ported verbatim from config.PickerExcludeDefaults.
 pub fn pickerExcludeDefaults() []const []const u8 {
     return &.{
-        "\\.",          "\\_",            "\\[",
-        "node_modules", "go\\pkg\\mod",   "site-packages",
-        "\\cache\\",    "\\caches\\",     "\\temp\\",
-        "\\lib\\",      "\\libs\\",       "\\libraries\\",
-        "\\src\\",      "\\bin\\",        "\\obj\\",
-        "\\build\\",    "\\dist\\",       "\\x64\\",
-        "\\x86\\",      "\\Debug\\",      "\\Release\\",
-        "\\modules\\",  "\\intermediates\\", "\\packages\\",
-        "\\versions\\", "\\test",         "\\share\\",
-        "\\locale\\",   "C:\\Windows\\",  "C:\\ProgramData\\",
+        "\\.",               "\\_",                       "\\[",
+        "node_modules",      "go\\pkg\\mod",              "site-packages",
+        "\\cache\\",         "\\caches\\",                "\\temp\\",
+        "\\lib\\",           "\\libs\\",                  "\\libraries\\",
+        "\\src\\",           "\\bin\\",                   "\\obj\\",
+        "\\build\\",         "\\dist\\",                  "\\x64\\",
+        "\\x86\\",           "\\Debug\\",                 "\\Release\\",
+        "\\modules\\",       "\\intermediates\\",         "\\packages\\",
+        "\\versions\\",      "\\test",                    "\\share\\",
+        "\\locale\\",        "C:\\Windows\\",             "C:\\ProgramData\\",
         "C:\\Program Files", "System Volume Information", "$RECYCLE.BIN",
-        "\\AppData\\",  "\\User Data",    "\\scoop\\apps\\",
+        "\\AppData\\",       "\\User Data",               "\\scoop\\apps\\",
         "\\steamapps\\",
     };
 }

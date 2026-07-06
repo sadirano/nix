@@ -1881,7 +1881,7 @@ fn cmdPrune(app: *App) !u8 {
         return 1;
     }
     const res = try proc.runFilter(app.arena, app.io, &.{
-        "fzf", "--multi", "--layout=reverse",
+        "fzf",      "--multi",                                                     "--layout=reverse",
         "--header", "prune: Tab marks, Enter removes marked aliases, Esc cancels",
     }, b.items, fzfEnv(app));
     if (res.code != 0) return 0; // Esc / no-match: remove nothing
@@ -2071,10 +2071,10 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     else
         "up:60%:border-bottom:+{2}+3/3:~3";
     const fzf = [_][]const u8{
-        "fzf",            "--ansi",
-        "--multi",        "--delimiter",
-        ":",              "--preview",
-        preview,          "--preview-window",
+        "fzf",          "--ansi",
+        "--multi",      "--delimiter",
+        ":",            "--preview",
+        preview,        "--preview-window",
         preview_window,
     };
 
@@ -2138,9 +2138,9 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     app.env.put("NIX_RGA_QUERY", query) catch {};
     const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)});
     const fzf = [_][]const u8{
-        "fzf",            "--ansi",
-        "--multi",        "--preview",
-        preview,          "--preview-window",
+        "fzf",                       "--ansi",
+        "--multi",                   "--preview",
+        preview,                     "--preview-window",
         "up:60%:border-bottom:wrap",
     };
 
@@ -2385,9 +2385,9 @@ fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !FindPi
     else
         "bat --style=numbers --color=always \"{}\" 2>/dev/null || ls -la \"{}\"";
     const fzf = [_][]const u8{
-        "fzf",              "--ansi", "--multi",
-        "--preview",        preview,
-        "--preview-window", "up:40%:border-bottom",
+        "fzf",                  "--ansi", "--multi",
+        "--preview",            preview,  "--preview-window",
+        "up:40%:border-bottom",
     };
 
     try app.out.flush();
@@ -2449,9 +2449,9 @@ fn cmdPreview(app: *App, raw: []const u8) !u8 {
 }
 
 const default_app_exts = [_][]const u8{
-    ".pdf",  ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".rtf",
-    ".png",  ".jpg", ".jpeg", ".gif", ".bmp",  ".svg", ".webp", ".zip", ".7z",
-    ".rar",  ".mp4", ".mkv",  ".mov", ".mp3",  ".wav", ".avi",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".rtf",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp",  ".svg", ".webp", ".zip", ".7z",
+    ".rar", ".mp4", ".mkv",  ".mov", ".mp3",  ".wav", ".avi",
 };
 
 fn opensWithDefaultApp(app: *App, abs: []const u8) bool {
@@ -2962,7 +2962,7 @@ fn cmdSweep(app: *App, rest: [][]const u8) !u8 {
         return 1;
     }
     const res = try proc.runFilter(app.arena, app.io, &.{
-        "fzf", "--multi", "--layout=reverse",
+        "fzf",      "--multi",                                                                    "--layout=reverse",
         "--header", "sweep: Tab marks, Enter hides marked subtrees from the picker, Esc cancels",
     }, b.items, fzfEnv(app));
     if (res.code != 0) return 0;
@@ -3630,9 +3630,9 @@ fn multicallAction(argv0: []const u8) ?[]const u8 {
     if (eql(name, "nix") or eql(name, "onix")) return null;
     const map = [_]struct { k: []const u8, v: []const u8 }{
         .{ .k = "o", .v = "navigate" }, .{ .k = "e", .v = "edit" },
-        .{ .k = "s", .v = "explore" }, .{ .k = "y", .v = "yank" },
-        .{ .k = "p", .v = "paste" },   .{ .k = "r", .v = "run" },
-        .{ .k = "sg", .v = "grep" },   .{ .k = "ff", .v = "find" },
+        .{ .k = "s", .v = "explore" },  .{ .k = "y", .v = "yank" },
+        .{ .k = "p", .v = "paste" },    .{ .k = "r", .v = "run" },
+        .{ .k = "sg", .v = "grep" },    .{ .k = "ff", .v = "find" },
     };
     for (map) |m| if (eql(name, m.k)) return m.v;
     return null;
@@ -3640,9 +3640,9 @@ fn multicallAction(argv0: []const u8) ?[]const u8 {
 
 fn actionFlag(action: []const u8) ?[]const u8 {
     const map = [_]struct { k: []const u8, v: []const u8 }{
-        .{ .k = "edit", .v = "--edit" },     .{ .k = "explore", .v = "--explore" },
-        .{ .k = "yank", .v = "--yank" },     .{ .k = "paste", .v = "--paste" },
-        .{ .k = "run", .v = "--run" },       .{ .k = "grep", .v = "--grep" },
+        .{ .k = "edit", .v = "--edit" }, .{ .k = "explore", .v = "--explore" },
+        .{ .k = "yank", .v = "--yank" }, .{ .k = "paste", .v = "--paste" },
+        .{ .k = "run", .v = "--run" },   .{ .k = "grep", .v = "--grep" },
         .{ .k = "find", .v = "--find" },
     };
     for (map) |m| if (eql(action, m.k)) return m.v;
@@ -3667,19 +3667,19 @@ fn aliasAction(flag: []const u8) ?[]const u8 {
 
 fn systemVerb(flag: []const u8) ?[]const u8 {
     const map = [_]struct { k: []const u8, v: []const u8 }{
-        .{ .k = "--list", .v = "list" },         .{ .k = "--ls", .v = "list" },
-        .{ .k = "-l", .v = "list" },             .{ .k = "--list-names", .v = "list-names" },
-        .{ .k = "--edit", .v = "edit" },         .{ .k = "-e", .v = "edit" },
-        .{ .k = "--contexts", .v = "contexts" }, .{ .k = "-c", .v = "contexts" },
-        .{ .k = "--prune", .v = "prune" },       .{ .k = "--sweep", .v = "sweep" },
-        .{ .k = "--picker-check", .v = "picker-check" },
-        .{ .k = "--doctor", .v = "doctor" },     .{ .k = "-D", .v = "doctor" },
-        .{ .k = "--groups", .v = "groups" },     .{ .k = "-G", .v = "groups" },
-        .{ .k = "--init", .v = "init" },         .{ .k = "-I", .v = "init" },
-        .{ .k = "--sync", .v = "sync" },         .{ .k = "-S", .v = "sync" },
-        .{ .k = "--preview", .v = "preview" },   .{ .k = "--version", .v = "version" },
-        .{ .k = "--export", .v = "export" },     .{ .k = "--import", .v = "import" },
-        .{ .k = "--rga-preview", .v = "rga-preview" }, .{ .k = "-v", .v = "version" },
+        .{ .k = "--list", .v = "list" },                 .{ .k = "--ls", .v = "list" },
+        .{ .k = "-l", .v = "list" },                     .{ .k = "--list-names", .v = "list-names" },
+        .{ .k = "--edit", .v = "edit" },                 .{ .k = "-e", .v = "edit" },
+        .{ .k = "--contexts", .v = "contexts" },         .{ .k = "-c", .v = "contexts" },
+        .{ .k = "--prune", .v = "prune" },               .{ .k = "--sweep", .v = "sweep" },
+        .{ .k = "--picker-check", .v = "picker-check" }, .{ .k = "--doctor", .v = "doctor" },
+        .{ .k = "-D", .v = "doctor" },                   .{ .k = "--groups", .v = "groups" },
+        .{ .k = "-G", .v = "groups" },                   .{ .k = "--init", .v = "init" },
+        .{ .k = "-I", .v = "init" },                     .{ .k = "--sync", .v = "sync" },
+        .{ .k = "-S", .v = "sync" },                     .{ .k = "--preview", .v = "preview" },
+        .{ .k = "--version", .v = "version" },           .{ .k = "--export", .v = "export" },
+        .{ .k = "--import", .v = "import" },             .{ .k = "--rga-preview", .v = "rga-preview" },
+        .{ .k = "-v", .v = "version" },
     };
     for (map) |m| if (eql(flag, m.k)) return m.v;
     return null;
