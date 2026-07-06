@@ -293,8 +293,8 @@ fn writeTextUnix(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
             .stdout = .ignore,
             .stderr = .ignore,
         }) catch continue;
-        if (child.stdin) |*in| {
-            in.writeAll(io, text) catch {};
+        if (child.stdin) |in| {
+            in.writeStreamingAll(io, text) catch {};
             in.close(io);
             child.stdin = null;
         }
