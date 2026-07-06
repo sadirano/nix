@@ -3676,7 +3676,7 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
 const ShortcutHelp = struct { slot: []const u8, args: []const u8, desc: []const u8 };
 
 const shortcut_help = [_]ShortcutHelp{
-    .{ .slot = "o", .args = "<alias> [path]", .desc = "cd into the alias dir; no path opens aliases.toml" },
+    .{ .slot = "o", .args = "<alias> [path]", .desc = "cd into the alias dir; bare `o` opens ~/.nix" },
     .{ .slot = "e", .args = "<alias> [file]", .desc = "open the dir (or a file) in your editor" },
     .{ .slot = "s", .args = "<alias> [pat]", .desc = "open the dir in the file manager; with a pattern, pick files to open" },
     .{ .slot = "y", .args = "<alias> [pat]", .desc = "copy the path; with a pattern, pick files and copy the files" },

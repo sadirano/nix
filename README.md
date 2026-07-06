@@ -56,9 +56,9 @@ On Windows, prefer the portable build helper — a native build bakes the dev ma
 
 ```powershell
 nix acme C:\Users\dev\projects\acme        # register an alias (auto-creates the dir if missing)
-o acme                                     # cd into it (in your current shell)
-o acme C:\Users\dev\projects\acme          # register + cd in one step (dir auto-created)
-o                                          # no args: open aliases.toml in your editor
+o acme                                     # jump to it
+o acme C:\Users\dev\projects\acme          # register + jump in one step (dir auto-created)
+o                                          # no args: open ~/.nix in your editor
 e acme                                     # open it in your editor
 s acme                                     # open it in Explorer
 s acme report.pdf                          # open a file with its default app (PDF→viewer, .zip→archiver…)
@@ -77,13 +77,13 @@ nix --edit                                 # open ~/.nix in your editor
 nix acme --remove                          # forget the alias
 ```
 
-The `o` command changes the **current** shell's working directory — it does not spawn a new shell. Three forms:
+Three `o` forms:
 
-- `o <alias>` — resolve and cd. If the alias is unknown, `o` prompts for a destination (or runs the directory picker), registers, and cds.
-- `o <alias> <path>` — register (or update) the alias to point at `<path>` and cd there. The directory is auto-created if it doesn't exist.
-- `o` (no args) — open `aliases.toml` in `$EDITOR`. Use `nix --list` if you want a tabular dump to stdout instead.
+- `o <alias>` — jump to the alias dir. An unknown name runs the directory picker (`es`/`fd` + fzf): pick a directory and it's registered and entered in one step.
+- `o <alias> <path>` — register (or update) the alias to point at `<path>` and jump there. The directory is auto-created if it doesn't exist.
+- `o` (no args) — open `~/.nix` in `$EDITOR`. Use `nix --list` for a tabular dump to stdout instead.
 
-Everything else (`e`, `s`, `y`, `p`, `r`, `sg`, `ff`) invokes `nix` directly, so those don't need shell integration to work.
+On Windows every command is a standalone `.exe` wrapper, so they all work from any prompt with no shell glue; `o` stacks a new shell rooted at the target (with the project's `.nix/scripts` on PATH — exit it to land back where you were). On Unix-likes `o` is a shell function that cd's your current shell in place.
 
 `s <alias> <file>` opens a single file with its registered default application instead of the file manager — a PDF in your viewer, a `.zip` in your archiver, and so on. The file is resolved against the alias directory and opened by the OS handler (`explorer.exe` / `xdg-open`). When the argument isn't an exact existing file, it's treated as a pattern: the `ff` picker runs under the alias dir and every selected file opens with its default app — the same shape as `y <alias> <pat>`, but opening instead of copying.
 
@@ -279,6 +279,7 @@ Other tools can point at the same file wherever they take custom instructions.
 A single Zig binary, split by subsystem:
 
 - **`src/store.zig`** — `aliases.toml`: byte-scan resolve, quote unescaping, `fromSlash` → host separators, atomic temp+rename writes, name validation.
+- **`src/util.zig`** — the shared helpers (case-fold/lowercase, quote stripping, TOML string arrays, `mkdirAll`, and the atomic `writeFileAtomic` every store saves through).
 - **`src/segments.zig`** — `@`-segment grammar, `${VAR}` template expansion, `[[contexts]]` reading with local→central→global precedence and the traversal guard.
 - **`src/groups.zig`** — `groups.toml`: the `+` multi-alias store, the `member+group` grammar, recursive member expansion (cycle/depth-guarded, deduped), and the mutation helpers behind the group commands.
 - **`src/actions.zig`** — `[actions]` per-alias named shell commands (`r <alias> :name`), parsed project-local over central.
@@ -288,6 +289,8 @@ A single Zig binary, split by subsystem:
 - **`src/clipboard.zig`** — Win32 clipboard read/write (CF_UNICODETEXT, CF_HDROP file drops, CF_DIB images), lazy-loading `user32` only when needed so the resolve hot path never pulls it into the import table.
 - **`src/png.zig`** — DIB decode + PNG encode (DEFLATE via `std.compress.flate`, stored-block fallback, CRC32/Adler32) for image paste.
 - **`src/snippet.zig`** — PowerShell (`nix.ps1`) and bash (`nix.sh`) shell glue with alias completers, honouring `[shortcuts]`.
+- **`src/agents.zig`** — renders `~/.nix/AGENTS.md`, the installed agent guide, with the effective `[shortcuts]` names.
+- **`src/winpath.zig`** — persistent user PATH editing via the registry (preserves `REG_EXPAND_SZ`; `setx` truncates at 1024 chars).
 - **`src/usage.zig`** — the debounced usage recorder behind `--prune` ranking.
 - **`src/editor.zig`** — per-editor line-jump dialects (vim `+N`, VS Code `--goto`).
 
