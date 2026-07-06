@@ -1,7 +1,8 @@
 # nix roadmap
 
-Planned work, in implementation order. Each item records the decisions already
-made so we can build without re-litigating them.
+Two things live here: the **locked design decisions** behind shipped features
+(so we can extend them without re-litigating) and the **backlog** of planned
+work. Fix history and implementation play-by-play live in `git log`, not here.
 
 ## Guiding principles
 
@@ -13,245 +14,98 @@ made so we can build without re-litigating them.
 - **Combining explicit targets is welcome** (groups, fan-out); guessing intent
   is not.
 - **Simple, onix-derived formats.** `aliases.toml` / `config.toml` / `usage` /
-  segment files keep onix's simple TOML shapes, so a legacy `~/.onix` migrates
-  cleanly. New state lives in new files (e.g. `groups.toml`), never by adding
-  shapes the simple readers can't handle. nix now homes at `~/.nix` (auto-migrated
-  from the legacy `~/.onix`; fallback removed at 1.0).
-
-Status legend: ✅ done · 🚧 in progress · ⬜ not started
-
----
-
-## 0. Fixes
-
-- ✅ **`absPath` normalizes `.`/`..`** — `o test .` stored `<cwd>/.` because
-  `std.fs.path.join` doesn't collapse `.`. Switched to `std.fs.path.resolve`.
-  (`src/main.zig`; committed as `52de9e1`.)
-- ✅ **`--init` no longer touches `$PROFILE` (2026-07-06).** The wrappers on the
-  user PATH are the integration; the PowerShell snippet only adds tab
-  completion, and `--init` now just prints the dot-source one-liner for users
-  who want it. `--skip-profile` is accepted as a deprecated no-op so old
-  install scripts don't break. Rationale: nix should never rewrite a file it
-  doesn't own (the append was also non-atomic).
-- ✅ **`--resolve` is read-only (2026-07-06).** `nix <alias> --resolve` and
-  `nix +g --resolve` print paths without creating the directories — scripts and
-  agents probe with resolve, and materializing dirs (a whole group's worth) as
-  a query side effect was surprising. Navigation and actions
-  (`resolveAliasPath`/group fan-out) still create missing dirs. POSIX caveat:
-  the `o` shell function cd's resolve's output, so on POSIX a registered-but-
-  deleted dir no longer reappears on `o` — folded into the existing POSIX
-  backlog item.
-- ✅ **Every store write is atomic (2026-07-06).** `picker.swept`, auto-defined
-  segments, and `--export` now go through the shared temp+rename
-  (`util.writeFileAtomic`) like aliases/groups/usage always did.
-- ✅ **Shared helpers dedup (2026-07-06).** `src/util.zig` owns
-  lowerDup/eqlFoldAscii/stripQuotes/parseStringArray/mkdirAll/uniqueTmpName/
-  writeFileAtomic; the five per-module copies are gone.
-- ✅ **POSIX clipboard bit-rot** — `writeTextUnix` used a nonexistent
-  `Io.File.writeAll`; caught by the new CI Linux compile check, fixed to
-  `writeStreamingAll`.
+  segment files keep onix's simple TOML shapes. New state lives in new files
+  (e.g. `groups.toml`), never by adding shapes the simple readers can't handle.
+  nix homes at `~/.nix` (auto-migrated from the legacy `~/.onix`; fallback
+  removed at 1.0).
+- **Read-only queries stay read-only.** `--resolve` (alias and group forms)
+  prints paths without creating directories; only navigation and actions
+  materialize missing dirs.
+- **nix never rewrites files it doesn't own.** `--init` prints the $PROFILE
+  one-liner instead of appending it; every store nix does own is written via
+  atomic temp+rename (`util.writeFileAtomic`).
 
 ---
 
-## 1. Alias groups (multi-alias)  ✅
+## Shipped — locked decisions
 
-A group is a named set of aliases, referenced with the `+` sigil, used for
-multi-target navigation and for fanning out search/run/yank across projects.
+### Alias groups (`+` multi-alias)
 
-### Locked decisions
-
-- **Sigil:** `+`. Forbidden in alias names (add to `store.validateAliasName`,
-  exactly like `@`) so `pa+projects` parses unambiguously. `+` is the only
-  candidate that is shell-safe in bash/zsh/PowerShell/cmd **and** doesn't
-  collide with nix's existing `@` (segment sigil) / `:` (segment inline value).
-- **Grammar:**
-  - `+projects` — reference a group.
-  - `pa+projects` — add alias `pa` to group `projects` (create if new), then run
-    the action (parallels `o <alias> <path>` = register + navigate).
-- **Storage:** new `~/.nix/groups.toml`. Members are **alias names**
-  (resolve-on-use → single source of truth in `aliases.toml`, auto-follows
-  moves, dead members detectable). Format: `projects = ["pa", "pb"]`.
-- **Nesting:** allowed. A member may be `+othergroup`; resolution expands
-  **recursively** with cycle detection, a depth guard, and dedupe.
-- **`o +projects`:** resolve members → `fzf --multi`, rows shown as
-  `name -> path`. **Topmost selected row** keeps the current shell (Windows:
-  stacked subshell via `runInherit`; POSIX: printed path → `cd`). Each
-  **additional** selected row opens a new terminal at its dir. (Topmost = fzf
-  list order = `groups.toml` add order; chosen as the easiest, deterministic
-  rule.)
-- **`o pa+projects`:** add `pa` (idempotent no-op if already a member), then
-  navigate the group. If `pa` is unknown, route through the existing es/fd
-  unknown-alias picker to register it first, then add + navigate.
-- **Dead member** (alias removed but still listed): skip with a note to stderr,
-  navigate the survivors.
-- **`nix pa --remove` cascade:** also strip `pa` from every group in
-  `groups.toml`.
-- **Fan-out** (no fzf-multi, no new shells):
-  - `sg +projects <pat>` / `ff +projects [pat]` — search across all member
-    roots (recursively expanded, deduped) into the existing fzf-preview
-    pipeline (`rg`/`rga`/`fd` accept multiple roots natively).
-  - `r +projects <cmd>` — run `<cmd>` in each member dir **sequentially, no
-    confirm prompt**, with a per-dir header.
-  - `y +projects` — yank all member paths (newline-separated) to the clipboard.
-- **Terminal launcher:** `[nav] terminal = "…{dir}…"` in `config.toml`
-  (`{dir}` placeholder).
-  - Windows default: `wt -d {dir}`, fallback `start "" <COMSPEC>` at the dir.
-  - Unix: **no probing/defaults** — require `[nav] terminal`; if unset, skip the
-    extra selections with a note.
-- **Management** (mirror the alias grammar):
-  - `nix --groups` — list all groups.
-  - `nix +projects --list` — list a group's members.
-  - `nix pa+projects --remove` — drop a member.
-  - `nix +projects --remove` — delete the group.
+- **Sigil:** `+`, forbidden in alias names (like `@`) so `pa+projects` parses
+  unambiguously. `+group` references a group; `member+group` adds a member
+  (creating the group), paralleling `o <alias> <path>` = register + navigate.
+- **Storage:** `~/.nix/groups.toml`, flat `projects = ["pa", "pb"]`. Members
+  are **alias names**, resolved on use — single source of truth in
+  aliases.toml, auto-follows moves, dead members detectable (skipped with a
+  stderr note). `nix <alias> --remove` cascade-strips the alias from every
+  group.
+- **Nesting:** a member may be `+othergroup`; expansion is recursive with
+  cycle detection, a depth guard, and dedupe.
+- **`o +group`:** fzf multi-select of members (`name -> path` rows). The
+  **topmost** selection keeps the current shell (stacked subshell); each
+  additional selection opens a new terminal via `[nav] terminal` in
+  config.toml (`{dir}` placeholder; Windows defaults `wt -d` then `start`,
+  Unix requires the config — no probing).
+- **Fan-out:** `sg`/`ff` search all member roots as one picker (rows read
+  `alias\rel`, mapped back on selection); `r` runs sequentially per member
+  with a per-dir header, no confirm; `s`/`y` open/copy all members (or run the
+  file picker with a pattern); `p` picks ONE member then pastes. `e` is
+  deliberately single-alias.
+- **Management:** `nix --groups`, `nix +g --list`, `nix pa+g --remove`,
+  `nix +g --remove`.
 - **Out of v1:** ad-hoc comma lists (`sg pa,pb`); named `+groups` only.
 
-### Known caveat
+### Per-alias actions (`r <alias> :<name>`)
 
-Forbidding `+` in names can reject *re-registering* a pre-existing alias whose
-name contains `+` (resolve still works; only the add path validates). Decide on
-a grace/migration note when implementing the validator change.
+- **Invocation:** a leading `:` marks a named action vs a literal command;
+  `r <alias> :` lists them. Runs as a shell string (`cmd /c` / `sh -c`) in the
+  alias dir so `&&`/pipes/redirects work; `-o` runs detached.
+- **Storage:** project-local `<alias-dir>/.nix/actions.toml` (committed,
+  travels with the repo) wins over central `~/.nix/actions/<alias>.toml`
+  (private) — a `[actions]` table of `name = "command"`.
+- **Group fan-out:** `r +<group> :<name>` runs each member's OWN action;
+  members without it are skipped with a note.
+- **Project scripts:** the alias's `.nix/scripts` (then central
+  `~/.nix/scripts`) is prepended to PATH in any alias context, so
+  `r <alias> build` and the `o <alias>` subshell resolve the project's own
+  scripts, shadowing globals. The env rebuilds from the original PATH each
+  run, so group fan-out never stacks dirs.
 
-### Implementation order
-
-- ✅ **1a — store + resolver.** `src/groups.zig`: read/write `groups.toml`,
-  recursive member expansion (cycle detection, depth guard, dedupe), `+`-prefix
-  grammar parsing (`parseRef`), and mutation helpers (add/remove member, remove
-  group, cascade-strip). Added `+` to `store.validateAliasName` and exposed
-  `store.appendTomlString`. Module tests pass; not yet wired into any command
-  (that's 1b–1d). Committed as `58f6622`.
-- ✅ **1b — management commands.** `nix --groups`, `nix +g --list`,
-  `nix pa+g --remove`, `nix +g --remove`, and the add form `nix pa+g`. `dispatch`
-  routes any `+`-bearing first token through the group grammar; `nix <alias>
-  --remove` cascade-strips the alias from every group. Verified end-to-end.
-- ✅ **1c — fan-out.** `+group` wired into `sg`/`ff`/`r`/`y`.
-  - `r +g <cmd>` (run in each member dir, sequential, per-dir header) and `y +g`
-    (yank all member paths) via `resolveGroupTargets` (dead members skipped with
-    a note); `dispatchGroupRef` scans for the first action flag (reusing
-    `aliasAction`) so group actions parse like alias ones.
-  - `sg`/`ff +g` multi-root: grep/find refactored to take a target list
-    (`grepIn`/`findIn`); for a group each member's rg/rga/fd runs IN the member
-    dir via a per-producer pipeline (`proc.runPipelinePrefixed`) that prefixes
-    every row with the member's alias, so rows read `alias\rel:line:` instead of
-    the absolute root. Selections map back via `expandPrefixedSelection`; the
-    preview verbs rebase the alias token (`expandAliasRowPath`). Single-alias
-    mode is gated unchanged (one target → cwd-relative, no prefix).
-- ✅ **1e — full action coverage (2026-07-02).** Every command except `e` has a
-  group form: `s +g [pat]` (fan-out file manager, or file picker → open with
-  default apps), `y +g [pat]` (member paths as text, or file picker → CF_HDROP
-  file copy), `p +g [name]` (fzf member picker → paste into the ONE chosen
-  member), `nix +g --resolve` (member paths one per line). `e +group` was
-  deliberately left single-alias.
-- ✅ **1d — navigation + launcher.** `o +group` resolves members → `fzf --multi`
-  (`name -> path` rows); the topmost selection keeps the current shell (stacks a
-  subshell), each other selection opens a new terminal via `launchTerminal`
-  (`[nav] terminal` template + `{dir}`; Windows defaults to `wt -d`/`start`, Unix
-  requires the config). `member+group` adds then navigates. New `[nav] terminal`
-  config (reported by `--doctor`). Builds/tests green; `buildTerminalArgv`/
-  `rowPath` unit-tested. The interactive fzf+subshell path can't be driven
-  headless (verified by code review + config/argv tests). Two follow-ups tracked
-  in the Backlog (POSIX group nav, picker-route for an unregistered add member).
-
----
-
-## 2. Per-alias actions  ✅
-
-Named shell commands per alias, run with `r <alias> :<name>` — like
-`package.json` scripts but language-agnostic. `src/actions.zig` +
-`cmdRun`/`cmdGroupRun`.
-
-- **Invocation:** `r <alias> :<name>` — a leading `:` on the run argument marks a
-  named action vs a literal command; `r <alias> :` lists them. `:` doesn't
-  collide with the segment inline-value `:` (different position) or `@` segments
-  (which `test@alias` would have hit).
-- **Storage:** project-local `<alias-dir>/.nix/actions.toml` (committed, travels
-  with the repo) wins over central `~/.nix/actions/<alias>.toml` (private) — a
-  `[actions]` table of `name = "command"`.
-- **Execution:** the command is a shell string run via `cmd /c` (Windows) or
-  `sh -c`, in the alias dir, so `&&`/pipes/redirects work. `-o` runs it detached.
-- **Group fan-out:** `r +<group> :<name>` runs each member's OWN action; a member
-  without it is skipped with a note.
-- **Project scripts (`.nix/scripts`):** the alias's `.nix/scripts` dir (then
-  central `~/.nix/scripts`) is prepended to `PATH` in any alias context
-  (`aliasRunEnv`, via env-aware `runInheritEnv`/`runDetachedEnv`). `r <alias>
-  build` runs the project's `build` (resolved by `resolveScript` — a direct spawn
-  looks argv[0] up against the *real* PATH, not the injected env, so the dir is
-  probed explicitly), and **`o <alias>` opens a subshell with the scripts dir on
-  PATH** (scoped to that shell), so a project's own `build`/`clean` work as bare
-  commands with no global versions. Fans out per member (`r +group build`); the
-  env rebuilds from `App.orig_path` each run so a group never stacks dirs. `:`
-  stays explicit for actions; this is plain command resolution.
-
-Verified end-to-end (project-over-central, listing, `&&`, unknown action, group
-fan-out; scripts resolution project/central/shadow-global + group + no PATH
-accumulation). `actions.parse`/`find`/path helpers unit-tested.
-
----
-
-## 2.5. Agent guide (`~/.nix/AGENTS.md`)  ✅
-
-An agent-facing guide to the installed command surface, so coding agents
-suggest `r acme :test` instead of absolute-path instructions. `src/agents.zig`,
-written by `snippet.regenerate` (so both `--init` and `--sync` refresh it).
+### Agent guide (`~/.nix/AGENTS.md`)
 
 - **Installed artifact, not a repo `AGENTS.md` — locked.** Repo-level agent
   files are auto-read the moment anyone clones, which is the wrong consent
-  model for machine-wide instructions (and reads as prompt injection). The
-  guide only exists where the owner ran `nix --init`.
-- **Generated from config:** the rendered names honour `[shortcuts]` renames
-  (unit-tested), so a `s = "show"` machine's agents are told `show acme`.
-- **Never auto-wired:** nix does not touch any agent's config. The README
-  documents the one-line import users add themselves (e.g. `@~/.nix/AGENTS.md`
-  in Claude Code's global `~/.claude/CLAUDE.md`).
-- **Content rules:** descriptive and conditional ("the user of this machine…"),
-  discover aliases via `nix --list` before suggesting, prefer `.nix/actions.toml`
-  actions for repeatable commands, resolve with `nix <alias>` instead of `o` in
-  non-interactive shells, never launch the fzf pickers headless.
+  model for machine-wide instructions. The guide only exists where the owner
+  ran `nix --init`; nix never wires it into any agent's config (the README
+  shows the one-line import).
+- **Generated from config** by `--init`/`--sync` (`src/agents.zig`), so the
+  rendered names honour `[shortcuts]` renames.
 
----
+### Export / import (`--export` / `--import`)
 
-## 3. Export / import  ✅  (2026-07-04)
-
-Portable backup/restore for the alias DB (also serves the `~/.nix` data-loss
-recovery need). `src/portable.zig` (`render`/`parse`) + `cmdExport`/`cmdImport`.
-
-- `nix --export [file]` bundles aliases + groups + config + central per-alias
-  actions into one portable TOML (stdout if no file).
-- `nix --import <file>` **merges** by default (never clobbers); `--replace` for a
-  deliberate full restore.
-
-### Locked decisions (resolved 2026-07-04)
-
-- **Conflict: skip existing.** Merge only adds alias/group/action names not
-  already present and never overwrites a local `config.toml`; `--replace` does a
-  full restore (aliases/groups/config replaced, each alias's central actions file
-  overwritten). Both modes are non-interactive.
-- **`usage` excluded.** The ranking file is machine-local churn and non-portable;
-  export carries only aliases/groups/config/actions.
-- **Single TOML v1**, not an archive — matches nix's simple, onix-derived formats
-  and stays greppable/stdout-friendly. Flat sub-tables: `[aliases]` (`name =
-  'path'`, forward slashes), `[groups]` (groups.toml body verbatim), `[config]`/
-  `[config.*]` (the machine's config.toml re-sectioned, comments preserved
-  losslessly), `[actions.<alias>]` (central per-alias actions).
-
-Project-local `<alias>/.nix/actions.toml` files travel with their repos and are
-out of scope — only central `~/.nix/actions/*.toml` ship. `render`/`parse` and
-the flat-table dequoting are unit-tested; export→import round-trip (incl. escaped
-quotes, config comments, merge-skip, and `--replace`) verified end-to-end against
-a scratch `NIX_HOME`.
+- **Single TOML v1**, not an archive — greppable and stdout-friendly. Flat
+  sub-tables: `[aliases]`, `[groups]`, `[config]`/`[config.*]` (comments
+  preserved losslessly), `[actions.<alias>]` (central per-alias actions).
+- **Merge by default, never clobbers:** only adds names not already present
+  and never overwrites a local config.toml; `--replace` does the deliberate
+  full restore. Both modes non-interactive.
+- **`usage` excluded** (machine-local churn); project-local
+  `.nix/actions.toml` files travel with their repos and are out of scope.
 
 ---
 
 ## Backlog
 
 - 💤 **POSIX shell-function parity (low priority — nix is Windows-first).**
-  Two `o`-on-POSIX gaps share one root cause: POSIX `o` is a shell function that
-  cd's the exe's stdout (no subshell), so (a) `o +group` routes to `--list`
-  instead of navigating, and (b) `o <alias>` can't get `.nix/scripts` scoped on
-  PATH. Both need a navigate verb the function calls for these cases. Deferred —
+  POSIX `o` is a shell function that cd's the exe's stdout (no subshell), so
+  (a) `o +group` routes to `--list` instead of navigating, (b) `o <alias>`
+  can't get `.nix/scripts` scoped on PATH, and (c) since `--resolve` went
+  read-only, a registered-but-deleted dir no longer reappears on `o`. All
+  need a navigate verb the function calls for these cases. Deferred —
   revisit only if non-Windows use becomes important.
 - ⬜ **Picker-route for `o pa+group` with an unregistered `pa`.** Today it adds
-  `pa` as a (dead) member; the design wants it to route through the unknown-alias
-  es/fd picker to register `pa` first, then add + navigate.
+  `pa` as a (dead) member; the design wants it to route through the
+  unknown-alias es/fd picker to register `pa` first, then add + navigate.
 - ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
   `--json`/`-q` (so scripts don't break) but emits only the human-readable
   report. Implement a structured JSON form for tooling.
@@ -261,20 +115,17 @@ a scratch `NIX_HOME`.
   `cmd_groups.zig`, `init.zig`, …) with `App` as the shared context.
   Deliberately deferred until v0.9.0 ships — a mechanical 4k-line move right
   before a release would reset the soak.
-- ⬜ **Scripted end-to-end harness.** The "verified end-to-end against a scratch
-  NIX_HOME" runs in the sections above are manual. A script that builds, points
+- ⬜ **Scripted end-to-end harness.** The historical "verified end-to-end
+  against a scratch NIX_HOME" runs were manual. A script that builds, points
   `NIX_HOME` at a temp dir, and drives the real exe through
-  add/resolve/remove/groups/actions/export→import would lock those behaviors in
-  CI — most historical bugs lived at the dispatch/IO seam the unit tests can't
-  reach.
+  add/resolve/remove/groups/actions/export→import would lock those behaviors
+  in CI — most historical bugs lived at the dispatch/IO seam the unit tests
+  can't reach.
 - ⬜ **Legacy `.onix/` project-dir nudge.** After the rename, a project with
-  `.onix/actions.toml` but no `.nix/` silently loses its actions (this repo had
-  exactly that). When the actions/scripts loader finds the legacy dir and no
-  new one, print a one-line warning.
-- ✅ **`y` file-copy mode.** `y <alias> <pat>` runs the `ff` picker
-  (`findPick`) and copies the selected **files** to the clipboard as a system
-  file drop — `clipboard.writeFiles` builds a `DROPFILES`/CF_HDROP payload
-  (`dropfilesBuffer`, unit-tested; round-trip verified against Explorer's
-  FileDropList). Non-Windows falls back to copying paths as text. `y` modes:
-  `y alias` (path text) · `y +group` (all member paths) · `y alias [pat]`
-  (pick files → copy files). POSIX `y` snippet now forwards the pattern arg.
+  `.onix/actions.toml` but no `.nix/` silently loses its actions (this repo
+  had exactly that). When the actions/scripts loader finds the legacy dir and
+  no new one, print a one-line warning.
+- ⬜ **Grace note for pre-existing `+` alias names.** Forbidding `+` in names
+  can reject *re-registering* an old alias whose name contains `+` (resolve
+  still works; only the add path validates). Decide whether that needs a
+  migration hint in the error message.
