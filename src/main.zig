@@ -414,11 +414,11 @@ fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: []co
         }
     }
     validateGroupMember(member) catch |e| {
-        try app.err.print("nix: invalid member \"{s}\" ({s})\n", .{ member, @errorName(e) });
+        try app.err.print("nix: invalid member \"{s}\" ({s})\n", .{ member, nameErrorText(e) orelse @errorName(e) });
         return 1;
     };
     store.validateAliasName(group) catch |e| {
-        try app.err.print("nix: invalid group name \"{s}\" ({s})\n", .{ group, @errorName(e) });
+        try app.err.print("nix: invalid group name \"{s}\" ({s})\n", .{ group, nameErrorText(e) orelse @errorName(e) });
         return 1;
     };
 
@@ -668,10 +668,29 @@ fn cmdResolve(app: *App, name: []const u8) !u8 {
 
 fn cmdAdd(app: *App, alias: []const u8, raw_path: []const u8) !u8 {
     _ = addAlias(app, alias, raw_path) catch |e| {
-        try app.err.print("nix: {s}\n", .{@errorName(e)});
+        if (nameErrorText(e)) |msg| {
+            try app.err.print("nix: invalid alias \"{s}\": {s}\n", .{ alias, msg });
+        } else {
+            try app.err.print("nix: {s}\n", .{@errorName(e)});
+        }
         return 1;
     };
     return 0;
+}
+
+/// nameErrorText renders validateAliasName errors as plain instructions —
+/// a bare `@errorName` prints "SpaceInName", which reads as gibberish for
+/// the most common typo.
+fn nameErrorText(e: anyerror) ?[]const u8 {
+    return switch (e) {
+        error.EmptyName => "the name is empty",
+        error.PathSeparatorInName => "names can't contain / or \\",
+        error.AtInName => "names can't contain @ (the segment sigil)",
+        error.PlusInName => "names can't contain + (the group sigil)",
+        error.SpaceInName => "names can't contain spaces",
+        error.ControlInName => "names can't contain control characters",
+        else => null,
+    };
 }
 
 /// addAlias registers (or updates) alias→path, creating the directory and

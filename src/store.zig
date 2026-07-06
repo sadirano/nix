@@ -219,7 +219,10 @@ pub fn validateAliasName(name: []const u8) !void {
         // `+` is the group sigil (`pa+projects`); reserve it like `@` so member
         // names can never be confused with the member+group split. See groups.zig.
         if (c == '+') return error.PlusInName;
-        if (c <= ' ' or c == 0x7f) return error.ControlInName;
+        // A space gets its own error: it's the most common typo (`nix my app …`)
+        // and "ControlInName" reads as gibberish for it.
+        if (c == ' ') return error.SpaceInName;
+        if (c < ' ' or c == 0x7f) return error.ControlInName;
     }
 }
 
@@ -357,14 +360,15 @@ test "loadAliases: lowercased names, first path wins, multi-target skipped" {
     try std.testing.expectEqualStrings("C:/z", list.items[1].path);
 }
 
-test "validateAliasName: rejects separators, @, control chars, empty" {
+test "validateAliasName: rejects separators, @, spaces, control chars, empty" {
     try validateAliasName("acme");
     try std.testing.expectError(error.EmptyName, validateAliasName("   "));
     try std.testing.expectError(error.PathSeparatorInName, validateAliasName("a/b"));
     try std.testing.expectError(error.PathSeparatorInName, validateAliasName("a\\b"));
     try std.testing.expectError(error.AtInName, validateAliasName("a@b"));
     try std.testing.expectError(error.PlusInName, validateAliasName("a+b"));
-    try std.testing.expectError(error.ControlInName, validateAliasName("a b"));
+    try std.testing.expectError(error.SpaceInName, validateAliasName("a b"));
+    try std.testing.expectError(error.ControlInName, validateAliasName("a\tb"));
 }
 
 test "listNames: sorted, skips non-section lines and empty brackets" {
