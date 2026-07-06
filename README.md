@@ -91,6 +91,8 @@ Everything else (`e`, `s`, `y`, `p`, `r`, `sg`, `ff`) invokes `nix` directly, so
 
 `y <alias>` prints the alias path and copies it to the clipboard as text. Given a pattern — `y <alias> <pat>` — it instead runs the `ff` file picker under the alias dir and copies the **selected files themselves** to the clipboard as a system file drop (Windows `CF_HDROP`), so a paste in Explorer drops the real files (a `.png` lands as a file, not a path). It's the inverse of `p`. On non-Windows the file-drop format isn't available, so it falls back to copying the paths as text.
 
+Add `--text`/`-t` to the pattern form — `y <alias> <pat> --text` — to copy the selected files' **content** instead of the files themselves, handy for pasting a snippet straight into a chat or editor. A single selected file copies its raw content untouched; multiple files are joined with a `-- <path> --` header per file. `--text` requires a pattern (aliases are directories, not files), so bare `y <alias> --text` is a usage error. Works the same way on `y +group <pat> --text`.
+
 `p <alias> [name]` saves the current clipboard contents into the alias directory and copies the saved path(s) back to the clipboard. Files copied in Explorer (Ctrl+C) take priority — directories are copied recursively, turning the clipboard into a cross-folder copy channel from any prompt. Otherwise the content path applies, handy for parking a screenshot and pasting its path into an agent: an image saves as `.png`, text as `.md`. An explicit extension on `<name>` is honoured; with no name, files keep their source name and content uses a timestamp. Collisions auto-increment (`shot.png`, `shot-1.png`) so nothing is ever clobbered.
 
 ## Search and find
