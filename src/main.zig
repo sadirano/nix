@@ -446,11 +446,12 @@ fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: []co
 const GroupTarget = struct { name: []const u8, path: []const u8 };
 
 /// resolveGroupTargets expands a group to its existing alias members as
-/// (name, host-path) pairs — creating each dir and recording usage — applying the
-/// dead-member policy: a member alias that's no longer registered is skipped with
-/// a note. Returns null (after a message) on unknown group / cycle / depth, or
-/// when no member resolves.
-fn resolveGroupTargets(app: *App, group: []const u8) !?[]GroupTarget {
+/// (name, host-path) pairs — creating each dir (unless `create_dirs` is false:
+/// the read-only `--resolve` form must not materialize directories) and
+/// recording usage — applying the dead-member policy: a member alias that's no
+/// longer registered is skipped with a note. Returns null (after a message) on
+/// unknown group / cycle / depth, or when no member resolves.
+fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]GroupTarget {
     const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
     const gs = try groups.loadGroups(app.arena, gdata);
     const names = groups.expandMembers(app.arena, gs.items, group) catch |e| {
@@ -466,7 +467,7 @@ fn resolveGroupTargets(app: *App, group: []const u8) !?[]GroupTarget {
     var out: std.ArrayList(GroupTarget) = .empty;
     for (names) |n| {
         if (try store.scanForAlias(app.arena, adata, n)) |p| {
-            store.mkdirAll(app.io, p) catch {};
+            if (create_dirs) store.mkdirAll(app.io, p) catch {};
             usage.record(app.arena, app.io, app.home, n) catch {};
             try out.append(app.arena, .{ .name = n, .path = p });
         } else {
@@ -485,7 +486,7 @@ fn resolveGroupTargets(app: *App, group: []const u8) !?[]GroupTarget {
 /// <pat>` across the group: one picker over all members (alias-prefixed rows),
 /// the selected FILES copied to the clipboard as an OS file drop.
 fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     var has_pat = false;
     for (args) |a| if (!isGlobalFlag(a)) {
         has_pat = true;
@@ -518,7 +519,7 @@ fn cmdGroupResolve(app: *App, group: []const u8, args: [][]const u8) !u8 {
         try app.err.print("nix: --resolve takes no arguments; got \"{s}\"\n", .{a});
         return 1;
     };
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, false)) orelse return 1;
     for (targets) |t| try app.out.print("{s}\n", .{t.path});
     return 0;
 }
@@ -536,7 +537,7 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
         }
         name = a;
     }
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     if (targets.len == 1) return pasteClipboardInto(app, targets[0].path, name);
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick +{s}'s paste destination (or `p <member>`)\n", .{group});
@@ -557,7 +558,7 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
 /// `s <alias> <pat>` across the group: one picker over all members, every
 /// selection opened with the OS handler.
 fn cmdGroupExplore(app: *App, group: []const u8, args: [][]const u8) !u8 {
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     var has_pat = false;
     for (args) |a| if (!isGlobalFlag(a)) {
         has_pat = true;
@@ -600,7 +601,7 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
             return 1;
         }
     }
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     var rc: u8 = 0;
     for (targets) |t| {
         try app.out.flush();
@@ -632,20 +633,22 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
 /// cmdGroupGrep / cmdGroupFind fan `sg` / `ff` across a group's member dirs as a
 /// single multi-root search (one unified fzf picker with `alias\rel` rows).
 fn cmdGroupGrep(app: *App, group: []const u8, args: [][]const u8) !u8 {
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     return grepIn(app, targets, args);
 }
 fn cmdGroupFind(app: *App, group: []const u8, args: [][]const u8) !u8 {
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     return findIn(app, targets, args);
 }
 
 // ---- Tier 1 commands --------------------------------------------------------
 
+// cmdResolve prints the alias's path WITHOUT creating the directory — resolve
+// is the read-only query form (scripts and agents probe with it); only the
+// navigation/action paths (resolveAliasPath) materialize missing dirs.
 fn cmdResolve(app: *App, name: []const u8) !u8 {
     if (std.mem.indexOfScalar(u8, name, '@') != null) {
         const path = (try resolveSegmented(app, name)) orelse return 1;
-        store.mkdirAll(app.io, path) catch {};
         try app.out.print("{s}\n", .{path});
         try app.out.flush();
         const parsed = try segments.parseSegmentedAlias(app.arena, name);
@@ -657,7 +660,6 @@ fn cmdResolve(app: *App, name: []const u8) !u8 {
         try app.err.print("nix: unknown alias \"{s}\"\n", .{name});
         return 1;
     };
-    store.mkdirAll(app.io, path) catch {};
     try app.out.print("{s}\n", .{path});
     try app.out.flush();
     usage.record(app.arena, app.io, app.home, name) catch {};
@@ -3371,7 +3373,7 @@ fn isCmdShell(shell: []const u8) bool {
 /// takes the current shell (a subshell stacked there); each additional selection
 /// opens a new terminal via launchTerminal. A single live member just navigates.
 fn navigateGroup(app: *App, group: []const u8) !u8 {
-    const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     if (targets.len == 1) return enterDir(app, targets[0].path);
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick among +{s}'s members (or `o <member>`)\n", .{group});
