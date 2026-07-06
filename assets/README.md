@@ -20,7 +20,7 @@ recommended tool is [ScreenToGif](https://www.screentogif.com/) on Windows.
 Set up a throwaway home first so nothing touches your real aliases:
 
 ```powershell
-$env:ONIX_HOME = "$env:TEMP\nix-demo"
+$env:NIX_HOME = "$env:TEMP\nix-demo"
 nix --init
 # register a couple of demo aliases pointing at a sample project + a docs folder
 nix acme  C:\demo\acme
@@ -32,32 +32,16 @@ fzf colors). Clear the screen before each take.
 
 ## Storyboard
 
-Capture these, in rough priority order. The first three are the hero clips.
+The hero clips (`navigate.gif`, `sg-all.gif`, `paste.gif`) are captured and
+embedded in the README's Demos section. Still to capture, in priority order:
 
 | File | Capability | What to show |
 |------|------------|--------------|
-| `navigate.gif` | `o` navigation | `o acme` cds in place; then `o newproj C:\demo\newproj` registers + cds in one step (dir auto-created); then `o somenoise` falls through to the directory picker. |
-| `sg-all.gif` | **`sg --all` (ripgrep-all)** | `sg docs invoice --all` — fzf rows are individual matches *from inside a PDF*; arrow through them and show the preview re-focusing per match; press Enter on a PDF hit and it opens in the default viewer; contrast with a plain-text hit opening in the editor at the line. |
-| `paste.gif` | `p` clipboard paste | Copy a screenshot (PrintScreen), run `p acme shot`; show `shot.png` written into the dir and its path copied back to the clipboard. Then copy a file in Explorer and `p acme` to show the cross-folder copy channel. |
 | `sg.gif` | `sg` plain search | `sg acme TODO` → ripgrep matches stream into fzf with the bat preview; narrow by typing; Enter opens the hit in `$EDITOR` at the line. |
 | `ff.gif` | `ff` fuzzy-find | `ff acme config` → es/fd into fzf; preview a file; Enter opens it. |
 | `prune.gif` | `nix --prune` | The fzf multi-select ranked dead → never-used → least-recent; Tab to mark, Enter to remove. |
 | `segments.gif` | sub-aliases | `o docs@acme` and `o tasks:432@acme` resolving `@`-segments. |
 | `yank.png` | `y` (still) | `y acme` printing the path + "copied to clipboard". |
 
-## Wiring into the README (do this once files exist)
-
-Add a **Demos** section just under the intro paragraph in the top-level
-`README.md`. Suggested embed (GitHub renders relative paths):
-
-```markdown
-## Demos
-
-| | |
-|---|---|
-| **Jump to any project** — `o acme` | ![o navigation](assets/navigate.gif) |
-| **Search inside PDFs & docs** — `sg docs invoice --all` | ![sg --all](assets/sg-all.gif) |
-| **Clipboard → file from any prompt** — `p acme shot` | ![p paste](assets/paste.gif) |
-```
-
-Keep alt text descriptive (accessibility + shows if the image fails to load).
+New clips embed in the README's Demos section with descriptive alt text
+(accessibility + shows if the image fails to load).
