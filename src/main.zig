@@ -480,20 +480,34 @@ fn resolveGroupTargets(app: *App, group: []const u8) !?[]GroupTarget {
 /// cmdGroupYank: bare `y +group` copies every member path (newline-separated)
 /// to the clipboard and echoes them. With a pattern it mirrors `y <alias>
 /// <pat>` across the group: one picker over all members (alias-prefixed rows),
-/// the selected FILES copied to the clipboard as an OS file drop.
+/// the selected FILES copied to the clipboard as an OS file drop. `--text`/`-t`
+/// copies the selected files' content instead (requires a pattern).
 fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
     const targets = (try resolveGroupTargets(app, group)) orelse return 1;
+    var want_text = false;
+    var filtered: std.ArrayList([]const u8) = .empty;
+    for (args) |a| {
+        if (isYankTextFlag(a)) {
+            want_text = true;
+            continue;
+        }
+        try filtered.append(app.arena, a);
+    }
     var has_pat = false;
-    for (args) |a| if (!isGlobalFlag(a)) {
+    for (filtered.items) |a| if (!isGlobalFlag(a)) {
         has_pat = true;
         break;
     };
     if (has_pat) {
-        return switch (try findPick(app, targets, args)) {
-            .selected => |sel| yankSelectionFiles(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
+        return switch (try findPick(app, targets, filtered.items)) {
+            .selected => |sel| yankSelectionFiles(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel), want_text),
             .cancelled => 0,
             .failed => 1,
         };
+    }
+    if (want_text) {
+        try app.err.writeAll("nix: --text needs a file pattern: y +group <pat> --text\n");
+        return 1;
     }
     var buf: std.ArrayList(u8) = .empty;
     for (targets, 0..) |t, i| {
@@ -3047,16 +3061,36 @@ fn pasteFiles(app: *App, target: []const u8, files: [][]const u8, name: []const 
     return 0;
 }
 
+/// isYankTextFlag reports the local `y`/yank flag that switches the pattern
+/// form from copying files (drop/paths) to copying their text content.
+fn isYankTextFlag(a: []const u8) bool {
+    return eql(a, "--text") or eql(a, "-t");
+}
+
 fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     // `y <alias> <pat>`: ff-style picker → copy the selected FILES to the
     // clipboard as an OS file drop (paste in Explorer drops them). Bare
-    // `y <alias>`: copy the path text (the original behavior).
+    // `y <alias>`: copy the path text (the original behavior). `--text`/`-t`
+    // switches the pattern form to copy the selected files' CONTENT instead.
+    var want_text = false;
+    var filtered: std.ArrayList([]const u8) = .empty;
+    for (action_args) |a| {
+        if (isYankTextFlag(a)) {
+            want_text = true;
+            continue;
+        }
+        try filtered.append(app.arena, a);
+    }
     var has_pat = false;
-    for (action_args) |a| if (!isGlobalFlag(a)) {
+    for (filtered.items) |a| if (!isGlobalFlag(a)) {
         has_pat = true;
         break;
     };
-    if (has_pat) return cmdYankFiles(app, alias, action_args);
+    if (has_pat) return cmdYankFiles(app, alias, filtered.items, want_text);
+    if (want_text) {
+        try app.err.writeAll("nix: --text needs a file pattern: y <alias> <pat> --text\n");
+        return 1;
+    }
 
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     try app.out.print("{s}\n", .{target});
@@ -3069,17 +3103,18 @@ fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 
 /// cmdYankFiles runs the file picker under the alias dir and copies the selected
 /// files to the clipboard as a real OS file drop (CF_HDROP on Windows; elsewhere
-/// it falls back to copying the paths as text).
-fn cmdYankFiles(app: *App, alias: []const u8, args: [][]const u8) !u8 {
+/// it falls back to copying the paths as text). `want_text` copies each
+/// selected file's content instead.
+fn cmdYankFiles(app: *App, alias: []const u8, args: [][]const u8, want_text: bool) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, args)) {
-        .selected => |sel| yankSelectionFiles(app, target, sel),
+        .selected => |sel| yankSelectionFiles(app, target, sel, want_text),
         .cancelled => 0,
         .failed => 1,
     };
 }
 
-fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8) !u8 {
+fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8, want_text: bool) !u8 {
     var paths: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
     while (lines.next()) |ln| {
@@ -3091,6 +3126,7 @@ fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8) !u8 
         try paths.append(app.arena, try store.fromSlash(app.arena, abs));
     }
     if (paths.items.len == 0) return 0;
+    if (want_text) return yankFilesText(app, paths.items);
 
     clipboard.writeFiles(app.arena, app.io, paths.items) catch |e| {
         if (e == error.Unsupported) {
@@ -3108,6 +3144,42 @@ fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8) !u8 
         }
     };
     for (paths.items) |p| try app.out.print("{s}\n", .{p});
+    return 0;
+}
+
+/// yankFilesText reads each selected file's bytes and copies them to the
+/// clipboard as text: a single file's raw content untouched, or multiple
+/// files joined with a `-- <path> --` header per file so a multi-file paste
+/// stays attributable.
+fn yankFilesText(app: *App, paths: []const []const u8) !u8 {
+    if (paths.len == 1) {
+        const data = Io.Dir.cwd().readFileAlloc(app.io, paths[0], app.arena, .unlimited) catch |e| {
+            try app.err.print("nix: read {s}: {s}\n", .{ paths[0], @errorName(e) });
+            return 1;
+        };
+        clipboard.writeText(app.arena, app.io, data) catch |e| {
+            try app.err.print("nix: clipboard copy failed: {s}\n", .{@errorName(e)});
+            return 1;
+        };
+        try app.out.print("{s}\n", .{paths[0]});
+        return 0;
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    for (paths) |p| {
+        const data = Io.Dir.cwd().readFileAlloc(app.io, p, app.arena, .unlimited) catch |e| {
+            try app.err.print("nix: read {s}: {s}\n", .{ p, @errorName(e) });
+            return 1;
+        };
+        try buf.appendSlice(app.arena, try std.fmt.allocPrint(app.arena, "-- {s} --\n", .{p}));
+        try buf.appendSlice(app.arena, data);
+        if (data.len == 0 or data[data.len - 1] != '\n') try buf.append(app.arena, '\n');
+    }
+    clipboard.writeText(app.arena, app.io, buf.items) catch |e| {
+        try app.err.print("nix: clipboard copy failed: {s}\n", .{@errorName(e)});
+        return 1;
+    };
+    for (paths) |p| try app.out.print("{s}\n", .{p});
     return 0;
 }
 
@@ -3506,7 +3578,7 @@ const shortcut_help = [_]ShortcutHelp{
     .{ .slot = "o", .args = "<alias> [path]", .desc = "cd into the alias dir; no path opens aliases.toml" },
     .{ .slot = "e", .args = "<alias> [file]", .desc = "open the dir (or a file) in your editor" },
     .{ .slot = "s", .args = "<alias> [pat]", .desc = "open the dir in the file manager; with a pattern, pick files to open" },
-    .{ .slot = "y", .args = "<alias> [pat]", .desc = "copy the path; with a pattern, pick files and copy the files" },
+    .{ .slot = "y", .args = "<alias> [pat]", .desc = "copy the path; with a pattern, pick files and copy the files (--text/-t copies content)" },
     .{ .slot = "p", .args = "<alias> [name]", .desc = "save clipboard contents into the alias dir" },
     .{ .slot = "r", .args = "<alias> <cmd…>", .desc = "run a command at the alias dir" },
     .{ .slot = "sg", .args = "<alias> <pat>", .desc = "ripgrep search under the alias dir (fzf UI)" },
