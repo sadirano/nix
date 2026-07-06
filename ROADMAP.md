@@ -27,6 +27,29 @@ Status legend: ✅ done · 🚧 in progress · ⬜ not started
 - ✅ **`absPath` normalizes `.`/`..`** — `o test .` stored `<cwd>/.` because
   `std.fs.path.join` doesn't collapse `.`. Switched to `std.fs.path.resolve`.
   (`src/main.zig`; committed as `52de9e1`.)
+- ✅ **`--init` no longer touches `$PROFILE` (2026-07-06).** The wrappers on the
+  user PATH are the integration; the PowerShell snippet only adds tab
+  completion, and `--init` now just prints the dot-source one-liner for users
+  who want it. `--skip-profile` is accepted as a deprecated no-op so old
+  install scripts don't break. Rationale: nix should never rewrite a file it
+  doesn't own (the append was also non-atomic).
+- ✅ **`--resolve` is read-only (2026-07-06).** `nix <alias> --resolve` and
+  `nix +g --resolve` print paths without creating the directories — scripts and
+  agents probe with resolve, and materializing dirs (a whole group's worth) as
+  a query side effect was surprising. Navigation and actions
+  (`resolveAliasPath`/group fan-out) still create missing dirs. POSIX caveat:
+  the `o` shell function cd's resolve's output, so on POSIX a registered-but-
+  deleted dir no longer reappears on `o` — folded into the existing POSIX
+  backlog item.
+- ✅ **Every store write is atomic (2026-07-06).** `picker.swept`, auto-defined
+  segments, and `--export` now go through the shared temp+rename
+  (`util.writeFileAtomic`) like aliases/groups/usage always did.
+- ✅ **Shared helpers dedup (2026-07-06).** `src/util.zig` owns
+  lowerDup/eqlFoldAscii/stripQuotes/parseStringArray/mkdirAll/uniqueTmpName/
+  writeFileAtomic; the five per-module copies are gone.
+- ✅ **POSIX clipboard bit-rot** — `writeTextUnix` used a nonexistent
+  `Io.File.writeAll`; caught by the new CI Linux compile check, fixed to
+  `writeStreamingAll`.
 
 ---
 
@@ -232,6 +255,22 @@ a scratch `NIX_HOME`.
 - ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
   `--json`/`-q` (so scripts don't break) but emits only the human-readable
   report. Implement a structured JSON form for tooling.
+- ⬜ **Split `src/main.zig` (post-0.9.0).** At ~4k lines it holds dispatch,
+  groups, doctor, picker, sweep, paste, init/sync, import/export, and
+  navigation. The section markers are the seams (`doctor.zig`, `picker.zig`,
+  `cmd_groups.zig`, `init.zig`, …) with `App` as the shared context.
+  Deliberately deferred until v0.9.0 ships — a mechanical 4k-line move right
+  before a release would reset the soak.
+- ⬜ **Scripted end-to-end harness.** The "verified end-to-end against a scratch
+  NIX_HOME" runs in the sections above are manual. A script that builds, points
+  `NIX_HOME` at a temp dir, and drives the real exe through
+  add/resolve/remove/groups/actions/export→import would lock those behaviors in
+  CI — most historical bugs lived at the dispatch/IO seam the unit tests can't
+  reach.
+- ⬜ **Legacy `.onix/` project-dir nudge.** After the rename, a project with
+  `.onix/actions.toml` but no `.nix/` silently loses its actions (this repo had
+  exactly that). When the actions/scripts loader finds the legacy dir and no
+  new one, print a one-line warning.
 - ✅ **`y` file-copy mode.** `y <alias> <pat>` runs the `ff` picker
   (`findPick`) and copies the selected **files** to the clipboard as a system
   file drop — `clipboard.writeFiles` builds a `DROPFILES`/CF_HDROP payload
