@@ -7,6 +7,7 @@
 const std = @import("std");
 const Io = std.Io;
 const store = @import("store.zig");
+const stripQuotes = @import("util.zig").stripQuotes;
 
 pub const Action = struct { name: []const u8, command: []const u8 };
 
@@ -61,11 +62,6 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) ![]Action {
 pub fn find(list: []const Action, name: []const u8) ?[]const u8 {
     for (list) |a| if (store.eqlFoldAscii(a.name, name)) return a.command;
     return null;
-}
-
-fn stripQuotes(s: []const u8) []const u8 {
-    if (s.len >= 2 and (s[0] == '"' or s[0] == '\'') and s[s.len - 1] == s[0]) return s[1 .. s.len - 1];
-    return s;
 }
 
 test "parse: [actions] table, quote styles, other sections ignored" {

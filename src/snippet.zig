@@ -12,6 +12,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const config = @import("config.zig");
 const agents = @import("agents.zig");
+const mkdirAll = @import("util.zig").mkdirAll;
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -198,19 +199,4 @@ fn psQuote(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
         if (c == '\'') try b.append(arena, '\'');
     }
     return b.items;
-}
-
-fn mkdirAll(io: Io, path: []const u8) !void {
-    Io.Dir.cwd().createDir(io, path, .default_dir) catch |e| switch (e) {
-        error.PathAlreadyExists => return,
-        error.FileNotFound => {
-            const parent = std.fs.path.dirname(path) orelse return e;
-            try mkdirAll(io, parent);
-            Io.Dir.cwd().createDir(io, path, .default_dir) catch |e2| switch (e2) {
-                error.PathAlreadyExists => {},
-                else => return e2,
-            };
-        },
-        else => return e,
-    };
 }

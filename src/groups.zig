@@ -8,6 +8,9 @@
 const std = @import("std");
 const Io = std.Io;
 const store = @import("store.zig");
+const util = @import("util.zig");
+const lowerDup = util.lowerDup;
+const parseStringArray = util.parseStringArray;
 
 /// max_depth bounds recursive group nesting so a pathological (or hand-edited)
 /// chain can't blow the stack; cycles are caught separately and earlier.
@@ -111,14 +114,7 @@ pub fn saveGroups(arena: std.mem.Allocator, io: Io, home: []const u8, groups: []
         try b.appendSlice(arena, "]\n");
     }
 
-    Io.Dir.cwd().createDir(io, home, .default_dir) catch |e| switch (e) {
-        error.PathAlreadyExists => {},
-        else => return e,
-    };
-    const final = try groupsPath(arena, home);
-    const tmp = try store.uniqueTmpName(arena, io, final);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = b.items });
-    try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), final, io);
+    try util.writeFileAtomic(arena, io, try groupsPath(arena, home), b.items);
 }
 
 /// findGroup returns the index of a group by case-insensitive name, or null.
@@ -227,31 +223,6 @@ pub fn stripMemberEverywhere(arena: std.mem.Allocator, groups: *std.ArrayList(Gr
         if (changed) g.members = kept.items;
     }
     return count;
-}
-
-// ---- local helpers ----------------------------------------------------------
-
-fn lowerDup(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, s);
-    for (out) |*c| c.* = std.ascii.toLower(c.*);
-    return out;
-}
-
-/// parseStringArray extracts quoted strings from a TOML inline array body like
-/// `["a", 'b']`. Single- and double-quoted elements; escapes are not interpreted
-/// (alias names are literal). Mirrors config.parseStringArray.
-fn parseStringArray(arena: std.mem.Allocator, text: []const u8) ![][]const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        const c = text[i];
-        if (c == '"' or c == '\'') {
-            const end = std.mem.indexOfScalarPos(u8, text, i + 1, c) orelse break;
-            try out.append(arena, try arena.dupe(u8, text[i + 1 .. end]));
-            i = end;
-        }
-    }
-    return out.items;
 }
 
 // ---- tests ------------------------------------------------------------------

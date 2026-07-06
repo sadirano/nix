@@ -5,6 +5,10 @@
 
 const std = @import("std");
 const Io = std.Io;
+const util = @import("util.zig");
+const parseStringArray = util.parseStringArray;
+const stripQuotes = util.stripQuotes;
+const lower = util.lowerDup;
 
 pub const Shortcut = struct { builtin: []const u8, custom: []const u8 };
 
@@ -167,23 +171,6 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     return cfg;
 }
 
-/// parseStringArray extracts quoted strings from a TOML inline array body like
-/// `["a", "b", 'c']`. Handles single- and double-quoted elements; does not
-/// interpret escapes (exclusion fragments are literal).
-fn parseStringArray(arena: std.mem.Allocator, text: []const u8) ![][]const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        const c = text[i];
-        if (c == '"' or c == '\'') {
-            const end = std.mem.indexOfScalarPos(u8, text, i + 1, c) orelse break;
-            try out.append(arena, try arena.dupe(u8, text[i + 1 .. end]));
-            i = end;
-        }
-    }
-    return out.items;
-}
-
 /// loadSwept reads picker.swept (one fragment per line; blanks and #-comments
 /// ignored). Missing file → empty.
 pub fn loadSwept(arena: std.mem.Allocator, io: Io, home: []const u8) ![][]const u8 {
@@ -226,13 +213,13 @@ pub fn appendSwept(arena: std.mem.Allocator, io: Io, home: []const u8, frags: []
         try buf.append(arena, '\n');
     }
     if (added.items.len == 0) return &.{};
-    // Append to the file.
+    // Append to the file (read + atomic rewrite, so a crash can't truncate it).
     const p = try sweptPath(arena, home);
     const prior = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch "";
     var full: std.ArrayList(u8) = .empty;
     try full.appendSlice(arena, prior);
     try full.appendSlice(arena, buf.items);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = full.items });
+    try util.writeFileAtomic(arena, io, p, full.items);
     return added.items;
 }
 
@@ -265,11 +252,6 @@ pub fn pickerExcludes(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: C
     return out.items;
 }
 
-fn stripQuotes(s: []const u8) []const u8 {
-    if (s.len >= 2 and (s[0] == '"' or s[0] == '\'') and s[s.len - 1] == s[0]) return s[1 .. s.len - 1];
-    return s;
-}
-
 /// parseBool reads a TOML-ish boolean: true/1/yes/on (case-insensitive) → true;
 /// anything else → false.
 fn parseBool(s: []const u8) bool {
@@ -277,28 +259,7 @@ fn parseBool(s: []const u8) bool {
         std.ascii.eqlIgnoreCase(s, "yes") or std.ascii.eqlIgnoreCase(s, "on");
 }
 
-fn lower(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    const o = try arena.dupe(u8, s);
-    for (o) |*c| c.* = std.ascii.toLower(c.*);
-    return o;
-}
-
 // ---- tests ------------------------------------------------------------------
-
-test "parseStringArray: mixed quotes, empty, ignores bare tokens" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    const arr = try parseStringArray(a, "[\"a\", 'b', bare, \"c\"]");
-    try std.testing.expectEqual(@as(usize, 3), arr.len);
-    try std.testing.expectEqualStrings("a", arr[0]);
-    try std.testing.expectEqualStrings("b", arr[1]);
-    try std.testing.expectEqualStrings("c", arr[2]);
-
-    const empty = try parseStringArray(a, "[]");
-    try std.testing.expectEqual(@as(usize, 0), empty.len);
-}
 
 test "parseBool: truthy spellings, everything else false" {
     try std.testing.expect(parseBool("true"));

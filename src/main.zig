@@ -14,6 +14,7 @@ const portable = @import("portable.zig");
 const groups = @import("groups.zig");
 const actions = @import("actions.zig");
 const winpath = @import("winpath.zig");
+const util = @import("util.zig");
 
 const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -1484,13 +1485,12 @@ fn autoDefineSegment(app: *App, alias: []const u8, ps: segments.ParsedSegment) !
     else
         try std.fmt.allocPrint(app.arena, "/{s}/", .{ps.name});
     const path = try segments.centralPath(app.arena, app.home, alias);
-    if (std.fs.path.dirname(path)) |dir| store.mkdirAll(app.io, dir) catch {};
 
     const prior = Io.Dir.cwd().readFileAlloc(app.io, path, app.arena, .unlimited) catch "";
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(app.arena, prior);
     try buf.print(app.arena, "\n[[contexts]]\nsegment = \"{s}\"\nsource-template = \"{s}\"\n", .{ ps.name, template });
-    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = path, .data = buf.items });
+    try writeFileAtomic(app, path, buf.items);
     try app.err.print("created segment \"{s}\" -> {s} in {s}\n", .{ ps.name, template, path });
 }
 
@@ -2637,7 +2637,7 @@ fn cmdExport(app: *App, rest: [][]const u8) !u8 {
     }
     const doc = try portable.render(app.arena, app.io, app.home);
     if (file) |f| {
-        try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = f, .data = doc });
+        try writeFileAtomic(app, f, doc);
         try app.err.print("exported nix data to {s}\n", .{f});
     } else {
         try app.out.writeAll(doc);
@@ -2773,10 +2773,7 @@ fn aliasIndex(list: []const store.Alias, name: []const u8) ?usize {
 /// writeFileAtomic writes via a private temp file + rename, mirroring
 /// store.saveAliases so a crash never leaves a half-written config in place.
 fn writeFileAtomic(app: *App, path: []const u8, data: []const u8) !void {
-    try store.mkdirAll(app.io, app.home);
-    const tmp = try store.uniqueTmpName(app.arena, app.io, path);
-    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = tmp, .data = data });
-    try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), path, app.io);
+    try util.writeFileAtomic(app.arena, app.io, path, data);
 }
 
 /// writeActionsFile writes an `[actions]` table to a central per-alias file,
@@ -2790,10 +2787,7 @@ fn writeActionsFile(app: *App, path: []const u8, list: []const actions.Action) !
         try store.appendTomlString(app.arena, &b, ac.command);
         try b.append(app.arena, '\n');
     }
-    if (std.fs.path.dirname(path)) |dir| try store.mkdirAll(app.io, dir);
-    const tmp = try store.uniqueTmpName(app.arena, app.io, path);
-    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = tmp, .data = b.items });
-    try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), path, app.io);
+    try writeFileAtomic(app, path, b.items);
 }
 
 /// warnStaleWrappers reports wrappers regenerate couldn't replace (locked by a
@@ -3559,11 +3553,7 @@ fn dispWidth(s: []const u8) usize {
     return n;
 }
 
-fn lowerDup(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, s);
-    for (out) |*c| c.* = std.ascii.toLower(c.*);
-    return out;
-}
+const lowerDup = util.lowerDup;
 
 fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
@@ -3792,6 +3782,7 @@ test {
     _ = groups;
     _ = actions;
     _ = winpath;
+    _ = util;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
 }
 

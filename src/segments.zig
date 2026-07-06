@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const eqlFold = @import("util.zig").eqlFoldAscii;
 
 pub const EnvKV = struct { key: []const u8, value: []const u8 };
 
@@ -155,12 +156,6 @@ pub fn lookupGlobalContext(contexts: []const ContextDef, name: []const u8) ?*con
         if (eqlFold(cd.segment, name) and eqlFold(cd.scope, "global")) return cd;
     }
     return null;
-}
-
-fn eqlFold(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
-    return true;
 }
 
 // ---- template expansion + guard --------------------------------------------

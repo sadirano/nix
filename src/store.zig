@@ -4,8 +4,14 @@
 
 const std = @import("std");
 const Io = std.Io;
+const util = @import("util.zig");
 
 pub const sep = std.fs.path.sep;
+
+// Shared helpers, re-exported so existing `store.` call sites keep working.
+pub const eqlFoldAscii = util.eqlFoldAscii;
+pub const mkdirAll = util.mkdirAll;
+pub const uniqueTmpName = util.uniqueTmpName;
 
 /// resolveHome returns the nix config dir: $NIX_HOME (then the legacy $ONIX_HOME),
 /// tilde-expanded, else <userhome>/.nix. The one-time move of a pre-rename
@@ -88,7 +94,7 @@ pub fn loadAliases(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Al
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
             const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            cur = try toLowerDup(arena, line[1..end]);
+            cur = try util.lowerDup(arena, line[1..end]);
             have_path = false;
             continue;
         }
@@ -124,36 +130,7 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
         try b.appendSlice(arena, "\n\n");
     }
 
-    Io.Dir.cwd().createDir(io, home, .default_dir) catch |e| switch (e) {
-        error.PathAlreadyExists => {},
-        else => return e,
-    };
-    const final = try aliasesPath(arena, home);
-    const tmp = try uniqueTmpName(arena, io, final);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = b.items });
-    try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), final, io);
-}
-
-/// uniqueTmpName returns "<path>.<random>.tmp" for atomic write+rename saves.
-/// A fixed ".tmp" would let two concurrent writers clobber each other's temp
-/// file mid-write (one renames the other's half-written bytes into place); a
-/// random suffix keeps each writer's temp private, and the final rename stays
-/// last-wins.
-pub fn uniqueTmpName(arena: std.mem.Allocator, io: Io, path: []const u8) ![]const u8 {
-    var b: [8]u8 = undefined;
-    io.random(&b);
-    return std.fmt.allocPrint(arena, "{s}.{x}.tmp", .{ path, std.mem.readInt(u64, &b, .little) });
-}
-
-test uniqueTmpName {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const t1 = try uniqueTmpName(a, std.testing.io, "C:\\h\\aliases.toml");
-    const t2 = try uniqueTmpName(a, std.testing.io, "C:\\h\\aliases.toml");
-    try std.testing.expect(std.mem.startsWith(u8, t1, "C:\\h\\aliases.toml."));
-    try std.testing.expect(std.mem.endsWith(u8, t1, ".tmp"));
-    try std.testing.expect(!std.mem.eql(u8, t1, t2)); // private per writer
+    try util.writeFileAtomic(arena, io, try aliasesPath(arena, home), b.items);
 }
 
 /// appendTomlString emits a TOML string value: a literal single-quoted string
@@ -198,22 +175,6 @@ pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]co
     return names;
 }
 
-/// mkdirAll creates path and any missing parents (os.MkdirAll equivalent).
-pub fn mkdirAll(io: Io, path: []const u8) !void {
-    Io.Dir.cwd().createDir(io, path, .default_dir) catch |e| switch (e) {
-        error.PathAlreadyExists => return,
-        error.FileNotFound => {
-            const parent = std.fs.path.dirname(path) orelse return e;
-            try mkdirAll(io, parent);
-            Io.Dir.cwd().createDir(io, path, .default_dir) catch |e2| switch (e2) {
-                error.PathAlreadyExists => {},
-                else => return e2,
-            };
-        },
-        else => return e,
-    };
-}
-
 // ---- path/string helpers ----------------------------------------------------
 
 /// fromSlash converts forward slashes to the host separator (\ on Windows).
@@ -246,20 +207,6 @@ pub fn trimLine(line: []const u8) []const u8 {
         } else break;
     }
     return s;
-}
-
-pub fn eqlFoldAscii(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ca, cb| {
-        if (std.ascii.toLower(ca) != std.ascii.toLower(cb)) return false;
-    }
-    return true;
-}
-
-fn toLowerDup(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, s);
-    for (out) |*c| c.* = std.ascii.toLower(c.*);
-    return out;
 }
 
 /// validateAliasName mirrors store.validateName for aliases.

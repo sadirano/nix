@@ -19,6 +19,7 @@ const Io = std.Io;
 const store = @import("store.zig");
 const groups = @import("groups.zig");
 const actions = @import("actions.zig");
+const lowerDup = @import("util.zig").lowerDup;
 
 pub const format_version = 1;
 
@@ -280,12 +281,6 @@ fn stripCr(line: []const u8) []const u8 {
 
 fn startsWithFold(s: []const u8, prefix: []const u8) bool {
     return s.len >= prefix.len and store.eqlFoldAscii(s[0..prefix.len], prefix);
-}
-
-fn lowerDup(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, s);
-    for (out) |*c| c.* = std.ascii.toLower(c.*);
-    return out;
 }
 
 fn aliasLt(_: void, a: store.Alias, b: store.Alias) bool {

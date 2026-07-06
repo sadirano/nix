@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const Io = std.Io;
-const store = @import("store.zig");
+const util = @import("util.zig");
 
 pub const Entry = struct { count: i64, last: i64 };
 pub const Named = struct { name: []const u8, count: i64, last: i64 };
@@ -100,8 +100,5 @@ fn save(arena: std.mem.Allocator, io: Io, home: []const u8, entries: []Named) !v
     for (entries) |e| {
         try b.print(arena, "{s} {d} {d}\n", .{ e.name, e.count, e.last });
     }
-    const p = try usagePath(arena, home);
-    const tmp = try store.uniqueTmpName(arena, io, p);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = b.items });
-    try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), p, io);
+    try util.writeFileAtomic(arena, io, try usagePath(arena, home), b.items);
 }
