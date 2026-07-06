@@ -50,7 +50,7 @@ On Windows, prefer the portable build helper — a native build bakes the dev ma
 .\nix-build.cmd        # zig build … -Dtarget=x86_64-windows -Dcpu=baseline, then --sync
 ```
 
-`nix --init` creates `~/.nix/`, writes a shell snippet to `~/.nix/shell/`, installs the `.exe` command wrappers into `~/.nix/bin` (and adds it to your user PATH), and dot-sources the snippet from your shell profile (`$PROFILE` on Windows, `.bashrc`/`.zshrc`/`.profile` on Unix-likes). Restart your shell (or source your profile) once and the short commands below are live.
+`nix --init` creates `~/.nix/`, installs the `.exe` command wrappers into `~/.nix/bin`, and adds that dir to your user PATH — restart your shell once and the short commands below are live in every shell (PowerShell, cmd, anything). It never touches your shell profile. A snippet is also written to `~/.nix/shell/` for the one thing PATH can't give you — alias tab completion in PowerShell — and `--init` prints the one-liner to dot-source it from `$PROFILE` if you want that. (On Unix-likes the snippet *is* the integration — shell functions that cd in place — so there you add the printed line to `.bashrc`/`.zshrc` yourself.)
 
 Upgrading from an older install that used `~/.onix`? The first run migrates it to `~/.nix` automatically (a rename — your data isn't duplicated), then nudges you to re-run `nix --init` so the shell integration points at the new home. Setting `$NIX_HOME` skips this. The legacy fallback and migration are **removed at 1.0**.
 
@@ -155,7 +155,7 @@ search_roots = ['~/projects', 'D:\work']
 
 `nix --sweep` finds noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.nix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
 
-After editing, run `nix --sync` and `. $PROFILE` (or restart PowerShell) to pick up renamed shortcuts or picker changes.
+After editing, run `nix --sync` and restart your shell to pick up renamed shortcuts or picker changes.
 
 ## Sub-aliases (`@`-segments)
 
@@ -256,7 +256,7 @@ For full scripts rather than one-liners, drop an executable in the alias's `.nix
 
 Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated path that bypasses TOML parsing so Tab stays instant.
 
-cmd.exe via clink is intentionally out of scope for nix; PowerShell completion plus `$PROFILE` wiring cover the supported shells.
+Completion is opt-in: dot-source `~/.nix/shell/nix.ps1` from your `$PROFILE` (the `--init` output shows the exact line). cmd.exe via clink is intentionally out of scope; the commands themselves work everywhere via PATH, completion is PowerShell-only.
 
 ## AI agents
 

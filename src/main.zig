@@ -181,16 +181,14 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "export")) return cmdExport(app, rest);
     if (eql(verb, "import")) return cmdImport(app, rest);
     if (eql(verb, "init")) {
-        var skip_profile = false;
         for (rest) |a| {
-            if (eql(a, "--skip-profile")) {
-                skip_profile = true;
-            } else {
-                try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
-                return 1;
-            }
+            // --skip-profile is a deprecated no-op: --init no longer touches
+            // $PROFILE at all. Accepted so old install scripts don't break.
+            if (eql(a, "--skip-profile")) continue;
+            try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
+            return 1;
         }
-        return cmdInit(app, skip_profile);
+        return cmdInit(app);
     }
     if (eql(verb, "preview")) {
         // Empty target (fzf has no current item) -> empty preview, not an error.
@@ -1207,7 +1205,7 @@ fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         try d.row(.ok, "PATH", try std.fmt.allocPrint(app.arena, "{s} on PATH", .{bin}));
     } else {
         try d.row(.warn, "PATH", try std.fmt.allocPrint(app.arena, "{s} not on PATH", .{bin}));
-        try d.cont("re-source $PROFILE / restart the shell; run `nix --sync` if it never appears");
+        try d.cont("restart the shell; run `nix --sync` if it never appears");
     }
 
     try d.section("Picker  (unknown-alias 'o <name>')");
@@ -2564,7 +2562,7 @@ const starter_aliases = "# nix aliases — edit with care, prefer 'nix <name> <p
 const starter_config =
     \\# nix configuration.
     \\#
-    \\# After editing, run: nix --sync  (then re-source $PROFILE)
+    \\# After editing, run: nix --sync  (then restart your shell)
     \\#
     \\# [shortcuts] renames the built-in command functions
     \\# (o, e, s, y, p, r, sg, ff):
@@ -2614,7 +2612,7 @@ fn cmdSync(app: *App) !u8 {
             try app.err.print("nix: could not add {s} to the user PATH ({s}) — add it manually\n", .{ bin, @errorName(e) });
         }
     }
-    try app.err.writeAll("re-source $PROFILE (or restart your shell) to pick up changes\n");
+    try app.err.writeAll("restart your shell (or re-source the snippet) to pick up changes\n");
     return 0;
 }
 
@@ -2800,7 +2798,7 @@ fn warnStaleWrappers(app: *App, stale: []const []const u8) !void {
     try app.err.writeAll("\n  close the shells/processes using them and rerun `nix --sync`\n");
 }
 
-fn cmdInit(app: *App, skip_profile: bool) !u8 {
+fn cmdInit(app: *App) !u8 {
     // 1. directory tree
     const shell_dir = try std.fs.path.join(app.arena, &.{ app.home, "shell" });
     try store.mkdirAll(app.io, shell_dir);
@@ -2839,60 +2837,17 @@ fn cmdInit(app: *App, skip_profile: bool) !u8 {
         }
     }
 
-    // 4. $PROFILE wiring
-    if (skip_profile) {
-        try app.err.writeAll("skipped $PROFILE update (re-run without --skip-profile to enable)\n");
-        return 0;
-    }
-    if (!proc.is_windows) {
-        try app.err.writeAll("non-Windows $PROFILE wiring not yet ported; add to your shell rc:\n");
+    // 4. Shell rc / $PROFILE: never touched. The wrappers on PATH are all the
+    // commands need; the snippet only adds tab completion, and users who want
+    // it dot-source it themselves.
+    if (proc.is_windows) {
+        try app.err.writeAll("restart your shell to activate o/e/s/y/p/r, sg/ff\n");
+        try app.err.print("optional (PowerShell tab completion): add to $PROFILE:  . '{s}'\n", .{ps});
+    } else {
         const sh = try snippet.bashPath(app.arena, app.home);
-        try app.err.print("  [ -f '{s}' ] && . '{s}'\n", .{ sh, sh });
-        return 0;
+        try app.err.print("add to your shell rc:  [ -f '{s}' ] && . '{s}'\n", .{ sh, sh });
     }
-    try wireProfile(app, ps);
     return 0;
-}
-
-/// wireProfile appends a dot-source of the snippet to PowerShell's
-/// $PROFILE.CurrentUserAllHosts if not already present.
-fn wireProfile(app: *App, ps_snippet: []const u8) !void {
-    const pwsh = pwshBin(app);
-    const out = proc.captureOutput(app.arena, app.io, &.{ pwsh, "-NoProfile", "-NonInteractive", "-Command", "$PROFILE.CurrentUserAllHosts" }, ".") catch {
-        try app.err.print("nix: could not locate $PROFILE (add manually: . '{s}')\n", .{ps_snippet});
-        return;
-    };
-    const profile = std.mem.trim(u8, out, " \t\r\n");
-    if (profile.len == 0) {
-        try app.err.print("nix: PowerShell returned no profile path (add manually: . '{s}')\n", .{ps_snippet});
-        return;
-    }
-    const existing = Io.Dir.cwd().readFileAlloc(app.io, profile, app.arena, .unlimited) catch "";
-    if (std.mem.indexOf(u8, existing, ps_snippet) != null) {
-        try app.err.print("$PROFILE already sources {s}\n", .{ps_snippet});
-        return;
-    }
-    if (std.fs.path.dirname(profile)) |d| store.mkdirAll(app.io, d) catch {};
-    var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(app.arena, existing);
-    try b.appendSlice(app.arena, "\n# Added by 'nix --init'\n. '");
-    for (ps_snippet) |c| {
-        try b.append(app.arena, c);
-        if (c == '\'') try b.append(app.arena, '\'');
-    }
-    try b.appendSlice(app.arena, "'\n");
-    Io.Dir.cwd().writeFile(app.io, .{ .sub_path = profile, .data = b.items }) catch |e| {
-        try app.err.print("nix: append to $PROFILE {s}: {s}\n", .{ profile, @errorName(e) });
-        return;
-    };
-    try app.err.print("updated $PROFILE: {s}\n", .{profile});
-    try app.err.writeAll("restart PowerShell (or run: . $PROFILE) to activate o/e/s/y/p/r, sg/ff\n");
-}
-
-fn pwshBin(app: *App) []const u8 {
-    if (proc.findInPath(app.arena, app.io, app.env, "pwsh") != null) return "pwsh";
-    if (proc.is_windows) return "powershell.exe";
-    return "pwsh";
 }
 
 // ---- sweep -------------------------------------------------------------------
@@ -3748,7 +3703,7 @@ fn printUsage(app: *App) !void {
         \\  --doctor,  -D        check tools/config and what the picker will use
         \\  --groups,  -G        list alias groups  (+<group> --list shows members)
         \\  --contexts, -c       list global @-segment contexts
-        \\  --init [--skip-profile]   set up ~/.nix, wrappers, and shell glue
+        \\  --init,    -I        set up ~/.nix, wrappers, and shell glue
         \\  --sync,    -S        regenerate shell glue and wrappers
         \\  --export  [file]     write a portable backup (aliases/groups/config/actions; stdout if no file)
         \\  --import  <file>     merge a backup (skips existing; --replace for a full restore)
