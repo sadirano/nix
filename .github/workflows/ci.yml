@@ -24,6 +24,9 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Format check
+        run: zig fmt --check src build.zig build.zig.zon
+
       - name: Test
         run: zig build test
 
@@ -31,3 +34,9 @@ jobs:
       # compiles — the artifact shipped to users.
       - name: Build (release, portable)
         run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
+
+      # POSIX paths (bash snippet, xdg-open, find fallbacks) are Windows-first
+      # and never exercised — but they should at least keep COMPILING. A cheap
+      # cross-compile catches bit-rot without committing to POSIX support.
+      - name: Build (linux, compile check)
+        run: zig build -Dtarget=x86_64-linux
