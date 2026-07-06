@@ -29,7 +29,7 @@ scoop install nix
 
 The Scoop package pulls in the tools the interactive commands lean on (`bat`, `fzf`, `ripgrep`, `fd`, `neovim`) and runs `nix --init` for you on install. `scoop update nix` tracks new releases; `scoop install sadirano/nix-nightly` tracks a daily build of `main` instead.
 
-[Everything](https://www.voidtools.com/)'s `es` CLI is an optional extra (`scoop install everything-cli`): when present and running it gives the `o <name>` picker instant, whole-system reach across every drive. It is **not required** — `es` needs the Everything app/service, which some environments can't install, so the picker falls back to walking your drives with `fd`. See the `[picker]` configuration section to tune that fallback.
+[Everything](https://www.voidtools.com/)'s `es` CLI is an optional extra (`scoop install everything-cli`): with it the `o <name>` picker gets instant, whole-system reach across every drive; without it the picker walks your drives with `fd` (tunable under `[picker]`).
 
 ### Prebuilt binaries
 
@@ -51,8 +51,6 @@ On Windows, prefer the portable build helper — a native build bakes the dev ma
 ```
 
 `nix --init` creates `~/.nix/`, installs the `.exe` command wrappers into `~/.nix/bin`, and adds that dir to your user PATH — restart your shell once and the short commands below are live in every shell (PowerShell, cmd, anything). It never touches your shell profile. A snippet is also written to `~/.nix/shell/` for the one thing PATH can't give you — alias tab completion in PowerShell — and `--init` prints the one-liner to dot-source it from `$PROFILE` if you want that. (On Unix-likes the snippet *is* the integration — shell functions that cd in place — so there you add the printed line to `.bashrc`/`.zshrc` yourself.)
-
-Upgrading from an older install that used `~/.onix`? The first run migrates it to `~/.nix` automatically (a rename — your data isn't duplicated), then nudges you to re-run `nix --init` so the shell integration points at the new home. Setting `$NIX_HOME` skips this. The legacy fallback and migration are **removed at 1.0**.
 
 ## Use
 
@@ -146,7 +144,7 @@ Setting `exclude` replaces the default list entirely (`exclude = []` turns filte
 exclude_extra = ['\XboxGames\', '\Engine\']
 ```
 
-Everything's `es` indexes every drive instantly, which is what makes the picker feel instant. Where `es` isn't available — any non-Windows host, a Windows box without Everything, or one where `es.exe` is installed but the Everything service can't run (e.g. locked-down corporate machines) — the picker falls back to walking a set of roots with `fd` (then POSIX `find`), listing directories whose path contains the typed name. A present-but-non-functional `es` (returns nothing) transparently falls through to this walk, so the picker never dead-ends on a dead `es`. `search_roots` lists those roots (`~` is expanded); unset, it defaults to **every fixed drive** on Windows (your home directory elsewhere), pruning the OS trees (`Windows`, `Program Files`, …) so a whole-drive walk stays quick. Point `search_roots` at the trees your projects actually live in to narrow and speed it up:
+Without a working `es` (not installed, or the Everything service isn't running), the picker falls back to walking a set of roots with `fd` (then POSIX `find`), listing directories whose path contains the typed name — a dead `es` falls through transparently. `search_roots` lists those roots (`~` is expanded); unset, it defaults to **every fixed drive** on Windows (your home directory elsewhere), pruning the OS trees so a whole-drive walk stays quick. Point it at the trees your projects actually live in to narrow and speed it up:
 
 ```toml
 [picker]
@@ -256,7 +254,7 @@ For full scripts rather than one-liners, drop an executable in the alias's `.nix
 
 Every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports tab-completion of alias names. The completer calls `nix --list-names` under the hood — a dedicated path that bypasses TOML parsing so Tab stays instant.
 
-Completion is opt-in: dot-source `~/.nix/shell/nix.ps1` from your `$PROFILE` (the `--init` output shows the exact line). cmd.exe via clink is intentionally out of scope; the commands themselves work everywhere via PATH, completion is PowerShell-only.
+Completion is opt-in and PowerShell-only: dot-source `~/.nix/shell/nix.ps1` from your `$PROFILE` (the `--init` output shows the exact line). The commands themselves work in any shell via PATH.
 
 ## AI agents
 
@@ -268,15 +266,13 @@ nix never registers the file with any agent itself — wiring it up is a deliber
 
 Other tools can point at the same file wherever they take custom instructions.
 
-The guide is installed to your machine instead of shipped as a repo-level `AGENTS.md` on purpose: agent tools auto-read repo files the moment anyone clones, which is the wrong consent model for machine-wide instructions. Installed by `--init`, it exists only where you chose to install nix.
-
 ## Commands
 
 `nix --init` initialises `~/.nix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.nix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
 
 `nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, and central per-alias actions as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap.
 
-`nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves. It reports the build and wrapper state (flagging a stale wrapper or a `~/.nix/bin` that isn't on PATH), which finder the picker will actually use — distinguishing a working `es` from one that's installed but whose Everything service isn't running, and **real `fd` from a same-named `.cmd`/`.bat` shim that shadows it** — the resolved search roots (skipping BitLocker-locked drives), the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. Every probe is non-interactive and safe to run on locked-down machines; it exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
+`nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
 ## Architecture
 
