@@ -18,6 +18,8 @@ const util = @import("util.zig");
 const app_zig = @import("app.zig");
 const sweep = @import("sweep.zig");
 const init_zig = @import("init.zig");
+const picker = @import("picker.zig");
+const doctor = @import("doctor.zig");
 const paste = @import("paste.zig");
 
 const App = app_zig.App;
@@ -151,8 +153,8 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "version")) return cmdVersion(app);
     if (eql(verb, "edit")) return cmdEdit(app, "", rest);
     if (eql(verb, "prune")) return cmdPrune(app);
-    if (eql(verb, "picker-check")) return cmdPickerCheck(app, rest);
-    if (eql(verb, "doctor")) return cmdDoctor(app, rest);
+    if (eql(verb, "picker-check")) return picker.cmdPickerCheck(app, rest);
+    if (eql(verb, "doctor")) return doctor.cmdDoctor(app, rest);
     if (eql(verb, "groups")) return cmdGroups(app);
     if (eql(verb, "contexts")) return cmdContexts(app);
     if (eql(verb, "sweep")) return sweep.cmdSweep(app, rest);
@@ -812,570 +814,8 @@ fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
         try app.err.print("nix: unknown alias \"{s}\"\n", .{name});
         return null;
     }
-    return pickDirectory(app, name);
-}
-
-/// PickerSource is what feeds the unknown-alias picker. es output is captured up
-/// front — es is an instant index, so buffering is fine — while the fd/find
-/// fallback is returned as an argv to *stream* into fzf: those walks can take
-/// seconds across whole drives, so the picker must render matches as they arrive
-/// rather than block until the walk finishes.
-const PickerSource = union(enum) {
-    /// es output, already captured (newline-separated paths).
-    materialized: []const u8,
-    /// producer argv to stream through the exclusion filter into fzf.
-    stream: []const []const u8,
-    /// no source tool available at all.
-    none,
-};
-
-/// pickerSource picks the candidate-directory source for the unknown-alias
-/// picker. Everything ('es') is the instant, whole-system source onix relies on;
-/// where it isn't available, or is installed but non-functional (returns
-/// nothing), we fall through to a streamed fd/find walk of the search roots.
-fn pickerSource(app: *App, cfg: config.Config, name: []const u8) !PickerSource {
-    if (proc.findInPath(app.arena, app.io, app.env, "es") != null) {
-        // es matches `name` as a substring anywhere in the path; /ad = dirs only.
-        // Quiet: a dead es prints "Everything IPC not found" to stderr — suppress
-        // it so the fall-through is silent. es is indexed and instant, so we just
-        // buffer its output; only the slow fd/find walk below needs streaming.
-        const out = proc.captureOutputQuiet(app.arena, app.io, &.{ "es", name, "/ad", "-n", "5000" }, ".") catch "";
-        // es.exe can be present yet non-functional: the CLI installs fine from
-        // GitHub, but where the Everything *service* can't be installed (e.g.
-        // policy blocks voidtools.com) it returns nothing. Treat an empty result
-        // as "es unavailable" and fall through rather than letting a dead es
-        // shadow the working finder and report no matches.
-        if (std.mem.trim(u8, out, " \t\r\n").len > 0) return .{ .materialized = out };
-    }
-    return pickerStreamArgv(app, cfg, name);
-}
-
-/// picker_prune_globs are OS trees the es-less picker prunes from fd's traversal:
-/// enormous, never a user-navigated project dir, and dropped by the post-filter
-/// excludes regardless. Pruning here keeps a whole-drive default search root fast.
-const picker_prune_globs = [_][]const u8{
-    "Windows",     "Program Files", "Program Files (x86)",
-    "ProgramData", "$RECYCLE.BIN",  "System Volume Information",
-};
-
-/// pickerStreamArgv builds the producer argv for the es-less picker: a single fd
-/// (or POSIX find) invocation listing directories whose path contains `name`
-/// (case-insensitive substring) under every search root, so one producer streams
-/// the whole walk. Roots come from `[picker] search_roots` (tilde-expanded,
-/// absolutised); unset, they default to every fixed drive root on Windows (so a
-/// concentrated work tree on any drive is found config-free) and to the user's
-/// home directory elsewhere. The prune globs keep a whole-drive walk quick. The
-/// walk is run by the streaming caller, not here. Returns .none only when neither
-/// fd nor find is installed (or no configured root exists).
-fn pickerStreamArgv(app: *App, cfg: config.Config, name: []const u8) !PickerSource {
-    const have_fd = proc.findInPath(app.arena, app.io, app.env, "fd") != null;
-    // POSIX find only — Windows `find` is System32's DOS string-search tool, not
-    // a file finder, so never fall back to it there.
-    const have_find = !proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "find") != null;
-    if (!have_fd and !have_find) return .none;
-
-    var roots: std.ArrayList([]const u8) = .empty;
-    if (cfg.picker_search_roots.len > 0) {
-        for (cfg.picker_search_roots) |r| {
-            const t = std.mem.trim(u8, r, " \t");
-            if (t.len == 0) continue;
-            try roots.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env, t)));
-        }
-    } else {
-        const drives = try proc.fixedDriveRoots(app.arena);
-        if (drives.len > 0) {
-            try roots.appendSlice(app.arena, drives);
-        } else if (app.env.get("USERPROFILE") orelse app.env.get("HOME")) |h| {
-            try roots.append(app.arena, h);
-        }
-    }
-    // Keep only roots that exist; one fd/find invocation walks them all.
-    var paths: std.ArrayList([]const u8) = .empty;
-    for (roots.items) |root| if (proc.pathExists(app.io, root)) try paths.append(app.arena, root);
-    if (paths.items.len == 0) return .none;
-
-    var argv: std.ArrayList([]const u8) = .empty;
-    if (have_fd) {
-        // fd: literal substring (-F) over the full path (-p), dirs only, hidden
-        // and ignored trees included (es doesn't honour .gitignore either), capped
-        // like es's -n, with the OS trees pruned during traversal.
-        try argv.appendSlice(app.arena, &.{
-            "fd",            "--type",        "d",               "--hidden",
-            "--no-ignore",   "--ignore-case", "--fixed-strings", "--full-path",
-            "--max-results", "5000",
-        });
-        for (picker_prune_globs) |g| try argv.appendSlice(app.arena, &.{ "--exclude", g });
-        try argv.append(app.arena, name);
-        try argv.appendSlice(app.arena, paths.items);
-    } else {
-        // find: -ipath matches the whole path, case-fold, across all roots.
-        try argv.append(app.arena, "find");
-        try argv.appendSlice(app.arena, paths.items);
-        try argv.appendSlice(app.arena, &.{
-            "-type", "d", "-ipath", try std.fmt.allocPrint(app.arena, "*{s}*", .{name}),
-        });
-    }
-    return .{ .stream = argv.items };
-}
-
-/// PickFilter is the streaming picker's per-line filter: trim, drop blanks, and
-/// drop excluded paths — the exact rule the materialized es path applies, shared
-/// via excludedBy so streamed and buffered results agree. Returns the trimmed
-/// line to forward, or null to drop it.
-const PickFilter = struct {
-    arena: std.mem.Allocator,
-    excludes: []const []const u8,
-    fn keep(ctx: *anyopaque, line: []const u8) ?[]const u8 {
-        const self: *PickFilter = @ptrCast(@alignCast(ctx));
-        const t = std.mem.trim(u8, line, " \t\r");
-        if (t.len == 0) return null;
-        const hit = excludedBy(self.arena, t, self.excludes) catch return null;
-        return if (hit == null) t else null;
-    }
-};
-
-/// pickDirectory handles an unknown alias: list candidate dirs (es, or a streamed
-/// fd/find walk), filter exclusions, let the user choose in fzf, register the
-/// alias to the pick, and return its path. null = cancelled / no match.
-fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.print("nix: unknown alias \"{s}\" (install fzf for the picker, or register it: nix {s} <path>)\n", .{ name, name });
-        return null;
-    }
-    const cfg = try config.loadConfig(app.arena, app.io, app.home);
-    const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
-
-    const preview = if (proc.is_windows)
-        try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})
-    else
-        "bat --style=numbers --color=always \"{}\" 2>/dev/null || ls -la \"{}\"";
-    const fzf_argv = [_][]const u8{
-        "fzf", "--preview", preview, "--preview-window", "up:40%:border-bottom",
-    };
-
-    const pick = switch (try pickerSource(app, cfg, name)) {
-        .none => {
-            try app.err.print("nix: unknown alias \"{s}\" (install Everything 'es', or fd/find for the directory picker, or register it: nix {s} <path>)\n", .{ name, name });
-            return null;
-        },
-        // es is instant: filter + cap up front, then hand fzf the static list.
-        .materialized => |raw| blk: {
-            var input: std.ArrayList(u8) = .empty;
-            var count: usize = 0;
-            var lines = std.mem.splitScalar(u8, raw, '\n');
-            while (lines.next()) |l0| {
-                const l = std.mem.trim(u8, l0, " \t\r");
-                if (l.len == 0) continue;
-                if (try excludedBy(app.arena, l, excludes) != null) continue;
-                try input.appendSlice(app.arena, l);
-                try input.append(app.arena, '\n');
-                count += 1;
-                if (count >= 500) break;
-            }
-            if (count == 0) {
-                try app.err.print("nix: no unregistered directory matches \"{s}\" (register it: nix {s} <path>)\n", .{ name, name });
-                return null;
-            }
-            const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
-            if (res.code != 0) return null; // cancelled
-            break :blk std.mem.trim(u8, res.output, " \t\r\n");
-        },
-        // fd/find can walk for seconds across drives: stream matches into fzf
-        // through the exclusion filter so they render as they arrive.
-        .stream => |argv| blk: {
-            var filt = PickFilter{ .arena = app.arena, .excludes = excludes };
-            const res = try proc.runPipelineFiltered(app.arena, app.io, argv, &fzf_argv, ".", fzfEnv(app), .{ .ctx = &filt, .func = PickFilter.keep }, 500, true);
-            if (res.forwarded == 0) {
-                try app.err.print("nix: no unregistered directory matches \"{s}\" (register it: nix {s} <path>)\n", .{ name, name });
-                return null;
-            }
-            if (res.code != 0) return null; // cancelled
-            break :blk std.mem.trim(u8, res.output, " \t\r\n");
-        },
-    };
-
-    if (pick.len == 0) return null;
+    const pick = (try picker.pickDirectory(app, name)) orelse return null;
     return try addAlias(app, name, pick);
-}
-
-/// excludedBy returns the first exclusion fragment that matches `path`
-/// (case-insensitive substring), or null if none. This is the picker's exact
-/// filter rule, shared by pickDirectory and the --picker-check diagnostic so
-/// the diagnostic can never disagree with the real picker.
-fn excludedBy(arena: std.mem.Allocator, path: []const u8, excludes: []const []const u8) !?[]const u8 {
-    const lp = try lowerDup(arena, path);
-    for (excludes) |frag| {
-        const lf = try lowerDup(arena, frag);
-        if (std.mem.indexOf(u8, lp, lf) != null) return frag;
-    }
-    return null;
-}
-
-/// cmdPickerCheck replays the `o <name>` picker pipeline (es → exclusion filter
-/// → 500-result cap) and prints, per Everything hit, whether it would appear in
-/// the picker or which exclusion fragment dropped it. Diagnoses "why isn't my
-/// directory offered?".
-fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
-    var name: ?[]const u8 = null;
-    for (rest) |a| {
-        if (eql(a, "--no-prompt") or eql(a, "-q") or eql(a, "--json") or eql(a, "-j")) continue;
-        if (startsWithDash(a)) {
-            try app.err.print("nix: unknown flag for --picker-check: \"{s}\"\n", .{a});
-            return 1;
-        }
-        if (name != null) {
-            try app.err.print("nix: --picker-check takes one name; got extra \"{s}\"\n", .{a});
-            return 1;
-        }
-        name = a;
-    }
-    const q = name orelse {
-        try app.err.writeAll("nix: --picker-check needs a name (usage: nix --picker-check <name>)\n");
-        return 1;
-    };
-    if (proc.findInPath(app.arena, app.io, app.env, "es") == null) {
-        try app.err.writeAll("nix: Everything 'es' CLI not found on PATH\n");
-        return 1;
-    }
-    const cfg = try config.loadConfig(app.arena, app.io, app.home);
-    const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
-
-    const raw = proc.captureOutput(app.arena, app.io, &.{ "es", q, "/ad", "-n", "5000" }, ".") catch "";
-
-    var total: usize = 0;
-    var shown: usize = 0;
-    var excluded: usize = 0;
-    var capped: usize = 0;
-    var lines = std.mem.splitScalar(u8, raw, '\n');
-    while (lines.next()) |l0| {
-        const l = std.mem.trim(u8, l0, " \t\r");
-        if (l.len == 0) continue;
-        total += 1;
-        if (try excludedBy(app.arena, l, excludes)) |frag| {
-            excluded += 1;
-            try app.out.print("exclude  {s}  ({s})\n", .{ l, frag });
-        } else if (shown < 500) {
-            shown += 1;
-            try app.out.print("ok       {s}\n", .{l});
-        } else {
-            capped += 1;
-            try app.out.print("cap      {s}  (beyond the 500-result cap)\n", .{l});
-        }
-    }
-    try app.out.print("\n{d} Everything hit(s) for \"{s}\": {d} shown, {d} excluded, {d} past the cap\n", .{ total, q, shown, excluded, capped });
-    if (total == 0) {
-        try app.out.print("(none — check \"{s}\" is a substring of the path, the drive is indexed, and Everything is running)\n", .{q});
-    }
-    try app.out.flush();
-    return 0;
-}
-
-/// DocStatus tags a --doctor row. ok/note/info are healthy; warn = degraded but
-/// functional; fail = a core path is broken (drives the exit code).
-const DocStatus = enum { ok, warn, fail, note, info };
-
-/// Doc accumulates --doctor results and prints aligned status rows. Detail starts
-/// at a fixed column so wrapped continuation lines (cont) line up under it.
-const Doc = struct {
-    app: *App,
-    warns: usize = 0,
-    fails: usize = 0,
-
-    const cont_indent = "                      "; // 22 spaces = "  " + tag(6) + " " + label(12) + " "
-
-    fn tagText(s: DocStatus) []const u8 {
-        return switch (s) {
-            .ok => "[ ok ]",
-            .warn => "[warn]",
-            .fail => "[fail]",
-            .note => "[note]",
-            .info => "      ",
-        };
-    }
-    fn row(self: *Doc, s: DocStatus, label: []const u8, detail: []const u8) !void {
-        switch (s) {
-            .warn => self.warns += 1,
-            .fail => self.fails += 1,
-            else => {},
-        }
-        try self.app.out.print("  {s} {s: <12} {s}\n", .{ tagText(s), label, detail });
-    }
-    /// cont prints a wrapped detail line aligned under the row's detail column.
-    fn cont(self: *Doc, detail: []const u8) !void {
-        try self.app.out.print("{s}{s}\n", .{ cont_indent, detail });
-    }
-    fn section(self: *Doc, name: []const u8) !void {
-        try self.app.out.print("\n{s}\n", .{name});
-    }
-};
-
-/// isScriptShim reports whether a resolved tool path is a script wrapper rather
-/// than a real executable — the case where a `.cmd`/`.bat` named `fd` shadows the
-/// real fd.exe on PATH. We must never run such a shim from a probe (it may launch
-/// an interactive tool and hang the diagnostic), so detect it by extension.
-fn isScriptShim(path: []const u8) bool {
-    const exts = [_][]const u8{ ".cmd", ".bat", ".ps1", ".sh", ".py" };
-    for (exts) |e| {
-        if (path.len >= e.len and std.ascii.eqlIgnoreCase(path[path.len - e.len ..], e)) return true;
-    }
-    return false;
-}
-
-fn firstLine(s: []const u8) []const u8 {
-    return if (std.mem.indexOfScalar(u8, s, '\n')) |i| s[0..i] else s;
-}
-
-const readFileMaybe = app_zig.readFileMaybe;
-
-/// normDir strips trailing path separators so PATH-membership comparisons treat
-/// "C:\x" and "C:\x\" as equal.
-fn normDir(s: []const u8) []const u8 {
-    return std.mem.trimEnd(u8, s, "\\/");
-}
-
-/// pathContains reports whether `dir` is one of the PATH entries (case-insensitive
-/// on Windows, trailing-separator-insensitive everywhere).
-fn pathContains(app: *App, dir: []const u8) bool {
-    const path = app.env.get("PATH") orelse return false;
-    const sep: u8 = if (proc.is_windows) ';' else ':';
-    const target = normDir(dir);
-    var it = std.mem.splitScalar(u8, path, sep);
-    while (it.next()) |p| {
-        const entry = normDir(std.mem.trim(u8, p, " \t\""));
-        if (entry.len == 0) continue;
-        const same = if (proc.is_windows) std.ascii.eqlIgnoreCase(entry, target) else std.mem.eql(u8, entry, target);
-        if (same) return true;
-    }
-    return false;
-}
-
-/// cmdDoctor runs read-only environment health checks and reports what the
-/// unknown-alias picker will actually do. Exit 1 if any check fails (a core path
-/// is broken), else 0. Safe to run on locked-down machines: every probe is
-/// non-interactive (stdin/stderr discarded) and shims are detected by path, never
-/// executed. Sections: Build, Picker, Search scope, Optional tools, Config & data.
-fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
-    for (rest) |a| {
-        // --json / -q are planned; accept them now so scripts don't break, but
-        // this slice only emits the human-readable report.
-        if (eql(a, "--json") or eql(a, "-j") or eql(a, "-q") or eql(a, "--quiet")) continue;
-        try app.err.print("nix: unknown flag for --doctor: \"{s}\"\n", .{a});
-        return 1;
-    }
-
-    var d = Doc{ .app = app };
-    const cfg = try config.loadConfig(app.arena, app.io, app.home);
-    try app.out.print("nix --doctor   ({s}, built {s})\n", .{ build_version, build_date });
-
-    try d.section("Build");
-    try d.row(.info, "binary", exePath(app));
-    // Wrappers: o/e/s/... are copies of nix.exe in ~/.nix/bin. installExeWrappers
-    // skips any wrapper that's running (can't replace an open exe on Windows), so
-    // one can drift stale relative to the canonical nix.exe after a --sync.
-    const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
-    const ext = if (proc.is_windows) ".exe" else "";
-    const canonical = try std.fmt.allocPrint(app.arena, "{s}{c}nix{s}", .{ bin, std.fs.path.sep, ext });
-    if (readFileMaybe(app, canonical)) |canon| {
-        const names = try config.resolvedShortcutNames(app.arena, cfg);
-        var total: usize = 0;
-        var stale: std.ArrayList([]const u8) = .empty;
-        for (names) |n| {
-            const w = try std.fmt.allocPrint(app.arena, "{s}{c}{s}{s}", .{ bin, std.fs.path.sep, n, ext });
-            const wb = readFileMaybe(app, w) orelse continue;
-            total += 1;
-            if (!std.mem.eql(u8, wb, canon)) try stale.append(app.arena, n);
-        }
-        if (stale.items.len == 0) {
-            try d.row(.ok, "wrappers", try std.fmt.allocPrint(app.arena, "{d} in {s}, all current", .{ total, bin }));
-        } else {
-            try d.row(.warn, "wrappers", try std.fmt.allocPrint(app.arena, "stale: {s}", .{try std.mem.join(app.arena, ", ", stale.items)}));
-            try d.cont("a wrapper in use couldn't be replaced; run `nix --sync` from a fresh shell");
-        }
-    } else {
-        try d.row(.warn, "wrappers", try std.fmt.allocPrint(app.arena, "none installed at {s} — run `nix --init`", .{bin}));
-    }
-    if (pathContains(app, bin)) {
-        try d.row(.ok, "PATH", try std.fmt.allocPrint(app.arena, "{s} on PATH", .{bin}));
-    } else {
-        try d.row(.warn, "PATH", try std.fmt.allocPrint(app.arena, "{s} not on PATH", .{bin}));
-        try d.cont("restart the shell; run `nix --sync` if it never appears");
-    }
-
-    try d.section("Picker  (unknown-alias 'o <name>')");
-
-    // fzf — without it the picker cannot run at all.
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf")) |p| {
-        try d.row(.ok, "fzf", p);
-    } else {
-        try d.row(.fail, "fzf", "not found — the picker can't run (install fzf)");
-    }
-
-    // es — present AND functional? es.exe installs fine from GitHub but is dead
-    // unless the Everything service is running; a bounded probe distinguishes them.
-    var es_ok = false;
-    if (proc.findInPath(app.arena, app.io, app.env, "es")) |p| {
-        const out = proc.probeOutput(app.arena, app.io, &.{ "es", "-n", "1", "-ad" }, ".") catch "";
-        if (std.mem.trim(u8, out, " \t\r\n").len > 0) {
-            es_ok = true;
-            try d.row(.ok, "es", try std.fmt.allocPrint(app.arena, "Everything index working  ({s})", .{p}));
-        } else {
-            try d.row(.warn, "es", try std.fmt.allocPrint(app.arena, "present but Everything service not running  ({s})", .{p}));
-            try d.cont("→ picker can't use es; falling back to fd/find");
-        }
-    } else {
-        try d.row(.note, "es", "not installed (optional — gives instant whole-system reach)");
-    }
-
-    // fd — present AND real? A .cmd/.bat shadowing real fd is the trap, so detect
-    // by path before probing; only version-check a genuine executable.
-    var fd_ok = false;
-    if (proc.findInPath(app.arena, app.io, app.env, "fd")) |p| {
-        if (isScriptShim(p)) {
-            try d.row(.fail, "fd", try std.fmt.allocPrint(app.arena, "NOT real fd — resolves to a script: {s}", .{p}));
-            try d.cont("a shim shadows the real fd.exe; fix PATH or rename the shim");
-        } else {
-            const ver = std.mem.trim(u8, proc.probeOutput(app.arena, app.io, &.{ "fd", "--version" }, ".") catch "", " \t\r\n");
-            if (std.mem.startsWith(u8, ver, "fd ")) {
-                fd_ok = true;
-                try d.row(.ok, "fd", try std.fmt.allocPrint(app.arena, "real {s}  ({s})", .{ firstLine(ver), p }));
-            } else {
-                try d.row(.warn, "fd", try std.fmt.allocPrint(app.arena, "found but did not report an fd version  ({s})", .{p}));
-            }
-        }
-    } else {
-        try d.row(.fail, "fd", "not found — install fd (the picker's fallback finder)");
-    }
-
-    // find — only a real fallback off Windows (System32 find is not a file finder).
-    var find_ok = false;
-    if (!proc.is_windows) {
-        if (proc.findInPath(app.arena, app.io, app.env, "find")) |p| {
-            find_ok = true;
-            try d.row(.info, "find", try std.fmt.allocPrint(app.arena, "POSIX find fallback  ({s})", .{p}));
-        }
-    }
-
-    // Resolved source — which finder the picker will actually pull candidates
-    // from (the es→fd→find fallback, resolved), mirroring pickerSource so the
-    // report matches reality. The bottom line of the section.
-    if (es_ok) {
-        try d.row(.ok, "=> uses", "es — Everything's instant, whole-system index");
-    } else if (fd_ok) {
-        try d.row(.ok, "=> uses", "fd — walks the search roots below");
-    } else if (find_ok) {
-        try d.row(.ok, "=> uses", "find — walks the search roots below");
-    } else {
-        try d.row(.fail, "=> uses", "NONE — no working finder; the picker will fail");
-    }
-
-    try d.section("Search scope  (used only when the picker falls back to fd/find)");
-    {
-        // Mirror pickerStreamArgv's root resolution so the report matches reality.
-        var roots: std.ArrayList([]const u8) = .empty;
-        if (cfg.picker_search_roots.len > 0) {
-            try d.row(.info, "roots", "configured via [picker] search_roots");
-            for (cfg.picker_search_roots) |r| {
-                const t = std.mem.trim(u8, r, " \t");
-                if (t.len == 0) continue;
-                try roots.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env, t)));
-            }
-        } else if (proc.is_windows) {
-            try d.row(.info, "roots", "default: every fixed drive");
-            try roots.appendSlice(app.arena, try proc.fixedDriveRoots(app.arena));
-        } else {
-            try d.row(.info, "roots", "default: home directory");
-            if (app.env.get("HOME")) |h| try roots.append(app.arena, h);
-        }
-        if (roots.items.len == 0) {
-            try d.row(.warn, "", "no roots resolved — the fd/find fallback has nothing to walk");
-        }
-        for (roots.items) |r| {
-            // A configured root that doesn't exist is a misconfiguration worth a
-            // warn; default fixed drives are pre-filtered to existing ones.
-            if (proc.pathExists(app.io, r)) try d.row(.ok, "", r) else try d.row(.warn, "", try std.fmt.allocPrint(app.arena, "{s}  (does not exist)", .{r}));
-        }
-        try d.row(.info, "prune", try std.fmt.allocPrint(app.arena, "{d} OS trees skipped: {s}", .{ picker_prune_globs.len, try std.mem.join(app.arena, ", ", &picker_prune_globs) }));
-    }
-
-    try d.section("Optional tools");
-    {
-        const Tool = struct { name: []const u8, feature: []const u8 };
-        const tools = [_]Tool{
-            .{ .name = "bat", .feature = "syntax-highlighted preview (ff/sg)" },
-            .{ .name = "rg", .feature = "sg search" },
-            .{ .name = "rga", .feature = "sg --all (search PDFs/office docs/archives)" },
-        };
-        for (tools) |t| {
-            if (proc.findInPath(app.arena, app.io, app.env, t.name)) |p| {
-                try d.row(.ok, t.name, try std.fmt.allocPrint(app.arena, "{s}  ({s})", .{ t.feature, p }));
-            } else {
-                try d.row(.warn, t.name, try std.fmt.allocPrint(app.arena, "not found — {s} unavailable", .{t.feature}));
-            }
-        }
-        // editor backs `e`/`s`: $EDITOR, $VISUAL, then nvim/vim/code/nano/notepad.
-        if (resolveEditor(app)) |ed| {
-            try d.row(.ok, "editor", try std.fmt.allocPrint(app.arena, "e / s open files  ({s})", .{ed}));
-        } else {
-            try d.row(.warn, "editor", "no $EDITOR and none of nvim/vim/code/nano/notepad found");
-        }
-    }
-
-    try d.section("Config & data");
-    {
-        try d.row(.ok, "home", app.home);
-
-        const cfg_path = try std.fs.path.join(app.arena, &.{ app.home, "config.toml" });
-        if (proc.pathExists(app.io, cfg_path)) {
-            try d.row(.ok, "config.toml", cfg_path);
-            try d.cont(try std.fmt.allocPrint(app.arena, "grep_all={}, shortcut overrides={d}, search_roots={d}", .{ cfg.grep_all, cfg.shortcuts.len, cfg.picker_search_roots.len }));
-        } else {
-            try d.row(.note, "config.toml", "none — using built-in defaults");
-        }
-        if (cfg.nav_terminal.len > 0) {
-            try d.row(.ok, "nav terminal", cfg.nav_terminal);
-        } else if (proc.is_windows) {
-            try d.row(.note, "nav terminal", "unset — `o +group` extras use `wt -d`, else `start`");
-        } else {
-            try d.row(.note, "nav terminal", "unset — set [nav] terminal for `o +group` extra windows");
-        }
-
-        const adata = try store.readAliasesFile(app.arena, app.io, app.home);
-        const aliases = try store.loadAliases(app.arena, adata);
-        try d.row(.ok, "aliases", try std.fmt.allocPrint(app.arena, "{d} registered  ({s})", .{ aliases.items.len, try store.aliasesPath(app.arena, app.home) }));
-
-        // Duplicate [sections] (hand-edits) silently shadow each other: resolve
-        // reads the first, the add form updates only the first. Surface them.
-        var dups: std.ArrayList([]const u8) = .empty;
-        for (aliases.items, 0..) |a1, i| {
-            var is_dup = false;
-            for (aliases.items[0..i]) |a0| if (std.mem.eql(u8, a0.name, a1.name)) {
-                is_dup = true;
-                break;
-            };
-            if (!is_dup) continue;
-            var noted = false;
-            for (dups.items) |n| if (std.mem.eql(u8, n, a1.name)) {
-                noted = true;
-                break;
-            };
-            if (!noted) try dups.append(app.arena, a1.name);
-        }
-        if (dups.items.len > 0) {
-            try d.row(.warn, "duplicates", try std.fmt.allocPrint(app.arena, "defined more than once: {s}", .{try std.mem.join(app.arena, ", ", dups.items)}));
-            try d.cont("hand-edited aliases.toml? the first entry wins — remove the extras");
-        }
-
-        const snip = if (proc.is_windows) try snippet.pwshPath(app.arena, app.home) else try snippet.bashPath(app.arena, app.home);
-        if (proc.pathExists(app.io, snip)) {
-            try d.row(.ok, "shell", try std.fmt.allocPrint(app.arena, "integration snippet present  ({s})", .{snip}));
-        } else {
-            try d.row(.warn, "shell", try std.fmt.allocPrint(app.arena, "snippet missing ({s}) — run `nix --init`", .{snip}));
-        }
-    }
-
-    try app.out.print("\nSummary: {d} failure(s), {d} warning(s).\n", .{ d.fails, d.warns });
-    try app.out.flush();
-    return if (d.fails > 0) 1 else 0;
 }
 
 /// SegLookup is the variable-resolution context for a source-template:
@@ -1546,28 +986,7 @@ fn cmdContexts(app: *App) !u8 {
     return 0;
 }
 
-/// resolveEditor mirrors commands.resolveEditor: $EDITOR, $VISUAL, then the
-/// first of nvim/vim/code/nano/notepad found on PATH. Returns the full resolved
-/// path (e.g. the actual `code.cmd`) rather than a bare name: this confirms the
-/// editor exists before we spawn, and hands std.process.spawn an explicit path
-/// it can recognize as a .bat/.cmd. Zig itself does the cmd.exe wrapping and
-/// argument escaping for batch scripts (CVE-2024-24576 mitigation) — we must
-/// NOT wrap with `cmd.exe /c` ourselves, as that double-escapes and breaks any
-/// path containing spaces (e.g. `...\Microsoft VS Code\bin\code.cmd`).
-fn resolveEditor(app: *App) ?[]const u8 {
-    if (app.env.get("EDITOR")) |e| {
-        const t = std.mem.trim(u8, e, " \t");
-        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
-    }
-    if (app.env.get("VISUAL")) |e| {
-        const t = std.mem.trim(u8, e, " \t");
-        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
-    }
-    for ([_][]const u8{ "nvim", "vim", "code", "nano", "notepad" }) |cand| {
-        if (proc.findInPath(app.arena, app.io, app.env, cand)) |p| return p;
-    }
-    return null;
-}
+const resolveEditor = app_zig.resolveEditor;
 
 fn cmdEdit(app: *App, alias: []const u8, files: [][]const u8) !u8 {
     const dir = if (alias.len == 0) app.home else (try resolveAliasPath(app, alias)) orelse return 1;
@@ -2754,15 +2173,7 @@ fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 
 // ---- helpers ----------------------------------------------------------------
 
-fn absPath(app: *App, p: []const u8) ![]const u8 {
-    // resolve (not join) so "." / ".." segments collapse — `o test .` must store
-    // the cwd, not "<cwd>/.". For an already-absolute path resolve still
-    // normalizes embedded "."/".." without needing the cwd.
-    if (std.fs.path.isAbsolute(p)) return std.fs.path.resolve(app.arena, &.{p});
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = try std.process.currentPath(app.io, &buf);
-    return std.fs.path.resolve(app.arena, &.{ buf[0..n], p });
-}
+const absPath = app_zig.absPath;
 
 fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
     try w.writeAll(s);
@@ -3014,6 +2425,12 @@ test {
     _ = actions;
     _ = winpath;
     _ = util;
+    _ = app_zig;
+    _ = sweep;
+    _ = paste;
+    _ = init_zig;
+    _ = picker;
+    _ = doctor;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
 }
 
@@ -3103,18 +2520,6 @@ test "humanAge: never / today / 1d / Nd buckets" {
     try std.testing.expectEqualStrings("today", try humanAge(a, now, now));
     try std.testing.expectEqualStrings("1d ago", try humanAge(a, now - day, now));
     try std.testing.expectEqualStrings("5d ago", try humanAge(a, now - 5 * day, now));
-}
-
-test "excludedBy: first matching fragment, case-insensitive, or null" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const ex = [_][]const u8{ "\\node_modules", "\\src\\", "\\." };
-    // Case-insensitive substring over the whole path; returns the original frag.
-    try std.testing.expectEqualStrings("\\src\\", (try excludedBy(a, "C:\\Dev\\Src\\proj", &ex)).?);
-    try std.testing.expectEqualStrings("\\node_modules", (try excludedBy(a, "C:\\app\\node_modules\\x", &ex)).?);
-    // No fragment matches → null (this path would be offered).
-    try std.testing.expect((try excludedBy(a, "C:\\work\\acme", &ex)) == null);
 }
 
 test "flag maps: systemVerb, aliasAction, actionFlag" {
@@ -3208,16 +2613,6 @@ test "splitGrepRow: drive-letter prefix is part of the file, not a separator" {
     try std.testing.expectEqualStrings("", bare.line);
 }
 
-test "isScriptShim: scripts vs real executables" {
-    // Shadowing shims the doctor must never execute.
-    try std.testing.expect(isScriptShim("C:\\tools\\fd.cmd"));
-    try std.testing.expect(isScriptShim("C:\\tools\\fd.BAT"));
-    try std.testing.expect(isScriptShim("/usr/local/bin/fd.sh"));
-    // Genuine executables (and the bare POSIX name) are fine to probe.
-    try std.testing.expect(!isScriptShim("C:\\scoop\\shims\\fd.exe"));
-    try std.testing.expect(!isScriptShim("/usr/bin/fd"));
-}
-
 test "buildTerminalArgv: {dir} substitution, tokenization, spaces in dir" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -3250,10 +2645,4 @@ test "isUncPath / isCmdShell" {
     try std.testing.expect(isCmdShell("cmd"));
     try std.testing.expect(!isCmdShell("powershell.exe"));
     try std.testing.expect(!isCmdShell("/bin/sh"));
-}
-
-test "firstLine: up to first newline, else whole string" {
-    try std.testing.expectEqualStrings("fd 10.4.2", firstLine("fd 10.4.2\nextra"));
-    try std.testing.expectEqualStrings("fd 10.4.2", firstLine("fd 10.4.2"));
-    try std.testing.expectEqualStrings("", firstLine("\nx"));
 }

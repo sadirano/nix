@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const proc = @import("proc.zig");
 
 pub const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -63,6 +64,39 @@ pub fn startsWithDash(s: []const u8) bool {
 /// where a missing/unreadable file just means "treat as absent".
 pub fn readFileMaybe(app: *App, path: []const u8) ?[]const u8 {
     return Io.Dir.cwd().readFileAlloc(app.io, path, app.arena, .unlimited) catch null;
+}
+
+pub fn absPath(app: *App, p: []const u8) ![]const u8 {
+    // resolve (not join) so "." / ".." segments collapse — `o test .` must store
+    // the cwd, not "<cwd>/.". For an already-absolute path resolve still
+    // normalizes embedded "."/".." without needing the cwd.
+    if (std.fs.path.isAbsolute(p)) return std.fs.path.resolve(app.arena, &.{p});
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try std.process.currentPath(app.io, &buf);
+    return std.fs.path.resolve(app.arena, &.{ buf[0..n], p });
+}
+
+/// resolveEditor mirrors commands.resolveEditor: $EDITOR, $VISUAL, then the
+/// first of nvim/vim/code/nano/notepad found on PATH. Returns the full resolved
+/// path (e.g. the actual `code.cmd`) rather than a bare name: this confirms the
+/// editor exists before we spawn, and hands std.process.spawn an explicit path
+/// it can recognize as a .bat/.cmd. Zig itself does the cmd.exe wrapping and
+/// argument escaping for batch scripts (CVE-2024-24576 mitigation) — we must
+/// NOT wrap with `cmd.exe /c` ourselves, as that double-escapes and breaks any
+/// path containing spaces (e.g. `...\Microsoft VS Code\bin\code.cmd`).
+pub fn resolveEditor(app: *App) ?[]const u8 {
+    if (app.env.get("EDITOR")) |e| {
+        const t = std.mem.trim(u8, e, " \t");
+        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
+    }
+    if (app.env.get("VISUAL")) |e| {
+        const t = std.mem.trim(u8, e, " \t");
+        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
+    }
+    for ([_][]const u8{ "nvim", "vim", "code", "nano", "notepad" }) |cand| {
+        if (proc.findInPath(app.arena, app.io, app.env, cand)) |p| return p;
+    }
+    return null;
 }
 
 /// fzfEnv hands fzf the Tokyo Night theme unless the user already themes it.
