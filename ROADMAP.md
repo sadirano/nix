@@ -96,12 +96,13 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
   `--json`/`-q` (so scripts don't break) but emits only the human-readable
   report. Implement a structured JSON form for tooling.
-- ⬜ **Split `src/main.zig` (post-0.9.0).** At ~4k lines it holds dispatch,
-  groups, doctor, picker, sweep, paste, init/sync, import/export, and
-  navigation. The section markers are the seams (`doctor.zig`, `picker.zig`,
-  `cmd_groups.zig`, `init.zig`, …) with `App` as the shared context.
-  Deliberately deferred until v0.9.0 ships — a mechanical 4k-line move right
-  before a release would reset the soak.
+- 🔶 **Split `src/main.zig` (in progress, started after v0.9.0).** Done:
+  `app.zig` (the shared App context + cross-module helpers), `sweep.zig`,
+  `paste.zig`, `init.zig` (init/sync/export/import), `picker.zig`,
+  `doctor.zig` — main.zig is down from ~4.0k to ~2.6k lines. Remaining: the
+  grep/find/run/nav command families, then `cmd_groups.zig` (the group
+  fan-out layer calls into all of them, so it goes last), then the
+  dispatch/grammar core stays as main.zig.
 - ⬜ **Scripted end-to-end harness.** The historical "verified end-to-end
   against a scratch NIX_HOME" runs were manual. A script that builds, points
   `NIX_HOME` at a temp dir, and drives the real exe through
