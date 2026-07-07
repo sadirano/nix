@@ -99,6 +99,28 @@ pub fn resolveEditor(app: *App) ?[]const u8 {
     return null;
 }
 
+pub fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
+    try w.writeAll(s);
+    var i: usize = s.len;
+    while (i < width) : (i += 1) try w.writeByte(' ');
+}
+
+pub fn writeSpaces(w: *Io.Writer, n: usize) !void {
+    var i: usize = 0;
+    while (i < n) : (i += 1) try w.writeByte(' ');
+}
+
+/// dispWidth counts display columns of an ASCII/UTF-8 string by counting
+/// codepoints (UTF-8 continuation bytes don't add width). Good enough for the
+/// narrow glyphs used in help text (e.g. the `…` ellipsis is one column).
+pub fn dispWidth(s: []const u8) usize {
+    var n: usize = 0;
+    for (s) |b| {
+        if (b & 0xC0 != 0x80) n += 1;
+    }
+    return n;
+}
+
 /// fzfEnv hands fzf the Tokyo Night theme unless the user already themes it.
 pub fn fzfEnv(app: *App) *std.process.Environ.Map {
     if (app.env.get("FZF_DEFAULT_OPTS") == null) {
