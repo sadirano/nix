@@ -47,6 +47,24 @@ pub fn exePath(app: *App) []const u8 {
     return p;
 }
 
+/// isGlobalFlag reports the process-wide flags any sub-parser silently accepts
+/// (parsed up front into app.json / app.no_prompt) so they don't read as an
+/// unexpected argument to a group command.
+pub fn isGlobalFlag(a: []const u8) bool {
+    return std.mem.eql(u8, a, "--no-prompt") or std.mem.eql(u8, a, "-q") or
+        std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "-j");
+}
+
+pub fn startsWithDash(s: []const u8) bool {
+    return s.len > 0 and s[0] == '-';
+}
+
+/// readFileMaybe reads a whole file, or null on any error — for the many spots
+/// where a missing/unreadable file just means "treat as absent".
+pub fn readFileMaybe(app: *App, path: []const u8) ?[]const u8 {
+    return Io.Dir.cwd().readFileAlloc(app.io, path, app.arena, .unlimited) catch null;
+}
+
 /// fzfEnv hands fzf the Tokyo Night theme unless the user already themes it.
 pub fn fzfEnv(app: *App) *std.process.Environ.Map {
     if (app.env.get("FZF_DEFAULT_OPTS") == null) {
