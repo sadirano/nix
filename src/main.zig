@@ -15,39 +15,19 @@ const groups = @import("groups.zig");
 const actions = @import("actions.zig");
 const winpath = @import("winpath.zig");
 const util = @import("util.zig");
+const app_zig = @import("app.zig");
+const sweep = @import("sweep.zig");
+const paste = @import("paste.zig");
 
-const fzf_tokyonight_theme =
-    "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
-    "--color=hl+:#2ac3de,info:#7aa2f7,prompt:#2ac3de,pointer:#ff007c " ++
-    "--color=marker:#ff5da0,spinner:#ff007c,header:#ff9e64,query:#c0caf5 " ++
-    "--color=border:#27a1b9,separator:#ff9e64,gutter:#283457";
+const App = app_zig.App;
+const exePath = app_zig.exePath;
+const fzfEnv = app_zig.fzfEnv;
+const fzf_tokyonight_theme = app_zig.fzf_tokyonight_theme;
 
 // Version is injected by build.zig (git describe → build.zig.zon .version → "dev").
 const build_version = @import("build_options").version;
 // Local wall-clock build date+time ("YYYY-MM-DD HH:MM:SS"), injected by build.zig.
 const build_date = @import("build_options").build_date;
-
-/// App bundles process-wide context handed to every command, mirroring the
-/// Go onix `env` struct.
-const App = struct {
-    arena: std.mem.Allocator,
-    io: Io,
-    out: *Io.Writer,
-    err: *Io.Writer,
-    env: *std.process.Environ.Map,
-    home: []const u8,
-    /// argv[0] as received — the exePath() fallback.
-    argv0: []const u8,
-    /// Real on-disk image path; computed lazily by exePath() (only the preview/
-    /// picker/init/sync paths need it) so resolve never pays GetModuleFileNameW.
-    exe_path: ?[]const u8 = null,
-    json: bool,
-    no_prompt: bool,
-    /// PATH as the process started, captured *lazily* on first aliasRunEnv use
-    /// (the run/navigate paths only) so the resolve hot path does zero extra work.
-    /// aliasRunEnv rebuilds from this each call, so scripts dirs never accumulate.
-    orig_path: ?[]const u8 = null,
-};
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -174,7 +154,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "doctor")) return cmdDoctor(app, rest);
     if (eql(verb, "groups")) return cmdGroups(app);
     if (eql(verb, "contexts")) return cmdContexts(app);
-    if (eql(verb, "sweep")) return cmdSweep(app, rest);
+    if (eql(verb, "sweep")) return sweep.cmdSweep(app, rest);
     if (eql(verb, "sync")) return cmdSync(app);
     if (eql(verb, "export")) return cmdExport(app, rest);
     if (eql(verb, "import")) return cmdImport(app, rest);
@@ -492,7 +472,7 @@ fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
     };
     if (has_pat) {
         return switch (try findPick(app, targets, args)) {
-            .selected => |sel| yankSelectionFiles(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
+            .selected => |sel| paste.yankSelectionFiles(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
             .cancelled => 0,
             .failed => 1,
         };
@@ -536,7 +516,7 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
         name = a;
     }
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
-    if (targets.len == 1) return pasteClipboardInto(app, targets[0].path, name);
+    if (targets.len == 1) return paste.pasteClipboardInto(app, targets[0].path, name);
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick +{s}'s paste destination (or `p <member>`)\n", .{group});
         return 1;
@@ -548,7 +528,7 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
     if (res.code != 0) return 0; // cancelled
     const row = std.mem.trim(u8, res.output, " \t\r\n");
     if (row.len == 0) return 0;
-    return pasteClipboardInto(app, rowPath(row), name);
+    return paste.pasteClipboardInto(app, rowPath(row), name);
 }
 
 /// cmdGroupExplore: bare `s +group` opens every member dir in the file manager
@@ -1953,13 +1933,6 @@ fn cmdPrune(app: *App) !u8 {
 /// fzfEnv ensures FZF_DEFAULT_OPTS carries the Tokyo Night theme (unless the
 /// user already set one), returning the env map to hand fzf. Mirrors
 /// applyDefaultFzfTheme.
-fn fzfEnv(app: *App) *std.process.Environ.Map {
-    if (app.env.get("FZF_DEFAULT_OPTS") == null) {
-        app.env.put("FZF_DEFAULT_OPTS", fzf_tokyonight_theme) catch {};
-    }
-    return app.env;
-}
-
 /// relaxNonASCII rewrites non-ASCII bytes to "." so a UTF-8 query matches the
 /// same position across encodings (mirrors search.relaxNonASCII, byte-level).
 fn relaxNonASCII(arena: std.mem.Allocator, query: []const u8) !?[]const u8 {
@@ -2879,400 +2852,6 @@ fn cmdInit(app: *App) !u8 {
     return 0;
 }
 
-// ---- sweep -------------------------------------------------------------------
-
-const SweepCand = struct { path: []const u8, count: i64 };
-const sweep_default_min: i64 = 100;
-const sweep_max_suggestions: usize = 40;
-
-fn cmdSweep(app: *App, rest: [][]const u8) !u8 {
-    var min: i64 = sweep_default_min;
-    var i: usize = 0;
-    while (i < rest.len) : (i += 1) {
-        const a = rest[i];
-        if (eql(a, "--no-prompt") or eql(a, "-q") or eql(a, "--json") or eql(a, "-j")) continue;
-        if (eql(a, "--min")) {
-            if (i + 1 >= rest.len) {
-                try app.err.writeAll("nix: --min needs a number\n");
-                return 1;
-            }
-            i += 1;
-            min = std.fmt.parseInt(i64, rest[i], 10) catch {
-                try app.err.print("nix: --min needs a positive number, got \"{s}\"\n", .{rest[i]});
-                return 1;
-            };
-            if (min <= 0) {
-                try app.err.writeAll("nix: --min needs a positive number\n");
-                return 1;
-            }
-        } else {
-            try app.err.print("nix: unknown flag for --sweep: \"{s}\"\n", .{a});
-            return 1;
-        }
-    }
-    if (proc.findInPath(app.arena, app.io, app.env, "es") == null) {
-        try app.err.writeAll("nix: Everything 'es' CLI not found on PATH\n");
-        return 1;
-    }
-    const cfg = try config.loadConfig(app.arena, app.io, app.home);
-    const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
-    // Alias targets (stored forward-slash, as onix compares them).
-    const adata = try store.readAliasesFile(app.arena, app.io, app.home);
-    const aliases = try store.loadAliases(app.arena, adata);
-    var alias_paths: std.ArrayList([]const u8) = .empty;
-    for (aliases.items) |a| try alias_paths.append(app.arena, a.path);
-
-    const raw = proc.captureOutput(app.arena, app.io, &.{ "es", "/ad" }, ".") catch "";
-    const cands = try sweepAnalyze(app, raw, excludes, alias_paths.items, min);
-    if (cands.len == 0) {
-        try app.out.print("no directories with {d}+ unfiltered subfolders found\n", .{min});
-        return 0;
-    }
-
-    var b: std.ArrayList(u8) = .empty;
-    for (cands) |cd| try b.print(app.arena, "{d}\t{s}\n", .{ cd.count, cd.path });
-    if (app.no_prompt) {
-        try app.out.writeAll(b.items);
-        return 0;
-    }
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.writeAll("nix: fzf not found on PATH (use --no-prompt to just print the ranking)\n");
-        return 1;
-    }
-    const res = try proc.runFilter(app.arena, app.io, &.{
-        "fzf",      "--multi",                                                                    "--layout=reverse",
-        "--header", "sweep: Tab marks, Enter hides marked subtrees from the picker, Esc cancels",
-    }, b.items, fzfEnv(app));
-    if (res.code != 0) return 0;
-
-    var frags: std.ArrayList([]const u8) = .empty;
-    var sel = std.mem.splitScalar(u8, std.mem.trim(u8, res.output, " \t\r\n"), '\n');
-    while (sel.next()) |line| {
-        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
-        const path = std.mem.trim(u8, line[tab + 1 ..], " \t\r");
-        if (path.len == 0) continue;
-        try frags.append(app.arena, try sweepFragment(app.arena, path));
-    }
-    if (frags.items.len == 0) {
-        try app.err.writeAll("nothing swept\n");
-        return 0;
-    }
-    const added = try config.appendSwept(app.arena, app.io, app.home, frags.items);
-    if (added.len == 0) {
-        try app.err.writeAll("nothing swept (already excluded)\n");
-        return 0;
-    }
-    const swept_path = try config.sweptPath(app.arena, app.home);
-    try app.err.print("swept {d} into {s}:\n", .{ added.len, swept_path });
-    for (added) |f| try app.err.print("  {s}\n", .{f});
-    return 0;
-}
-
-/// sweepFragment turns a flooding dir into an es exclusion term: trailing
-/// backslash hides the subtree but keeps the dir pickable; dropped for spaced
-/// paths (es eats a backslash-quote pair).
-fn sweepFragment(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const trimmed = std.mem.trimEnd(u8, path, "\\");
-    const frag = try std.fmt.allocPrint(arena, "{s}\\", .{trimmed});
-    if (std.mem.indexOfAny(u8, frag, " \t") != null) return trimmed;
-    return frag;
-}
-
-fn sweepAnalyze(app: *App, raw: []const u8, excludes: []const []const u8, alias_paths: []const []const u8, min: i64) ![]SweepCand {
-    const arena = app.arena;
-    var lower_ex: std.ArrayList([]const u8) = .empty;
-    for (excludes) |f| try lower_ex.append(arena, try lowerDup(arena, f));
-
-    var counts = std.StringHashMap(i64).init(arena);
-    var lines = std.mem.splitScalar(u8, raw, '\n');
-    scan: while (lines.next()) |l0| {
-        const p = std.mem.trim(u8, l0, " \t\r");
-        if (p.len == 0) continue;
-        const lp = try lowerDup(arena, p);
-        for (lower_ex.items) |frag| {
-            if (std.mem.indexOf(u8, lp, frag) != null) continue :scan;
-        }
-        const cut = std.mem.lastIndexOfScalar(u8, p, '\\') orelse continue;
-        if (cut == 0) continue;
-        const parent = p[0..cut];
-        const gop = try counts.getOrPut(parent);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-
-    var cands: std.ArrayList(SweepCand) = .empty;
-    var it = counts.iterator();
-    while (it.next()) |e| {
-        if (e.value_ptr.* >= min and std.mem.count(u8, e.key_ptr.*, "\\") >= 2) {
-            try cands.append(arena, .{ .path = e.key_ptr.*, .count = e.value_ptr.* });
-        }
-    }
-
-    // Sibling collapse to a fixpoint: 3+ flooding children of one parent
-    // (depth>=2) collapse into the parent (count = sum).
-    var changed = true;
-    while (changed) {
-        changed = false;
-        var by_parent = std.StringHashMap(std.ArrayList(usize)).init(arena);
-        for (cands.items, 0..) |cd, idx| {
-            const cut = std.mem.lastIndexOfScalar(u8, cd.path, '\\') orelse continue;
-            if (cut == 0) continue;
-            const parent = cd.path[0..cut];
-            const gop = try by_parent.getOrPut(parent);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.*.append(arena, idx);
-        }
-        var bp = by_parent.iterator();
-        collapse: while (bp.next()) |entry| {
-            const parent = entry.key_ptr.*;
-            const kids = entry.value_ptr.*.items;
-            if (kids.len < 3 or std.mem.count(u8, parent, "\\") < 2) continue;
-            var sum: i64 = 0;
-            for (kids) |k| sum += cands.items[k].count;
-            var next: std.ArrayList(SweepCand) = .empty;
-            for (cands.items, 0..) |cd, idx| {
-                var gone = false;
-                for (kids) |k| if (k == idx) {
-                    gone = true;
-                    break;
-                };
-                if (!gone) try next.append(arena, cd);
-            }
-            try next.append(arena, .{ .path = parent, .count = sum });
-            cands = next;
-            changed = true;
-            break :collapse; // indices invalidated — regroup
-        }
-    }
-
-    // Drop any candidate that contains (or is) an alias target. Mirrors onix's
-    // exact string ops (alias paths kept as stored — forward slash).
-    var kept: std.ArrayList(SweepCand) = .empty;
-    for (cands.items) |cd| {
-        const prefix = try std.fmt.allocPrint(arena, "{s}\\", .{std.mem.trimEnd(u8, cd.path, "\\")});
-        const lprefix = try lowerDup(arena, prefix);
-        var covers = false;
-        for (alias_paths) |ap| {
-            const lap = try std.fmt.allocPrint(arena, "{s}\\", .{std.mem.trimEnd(u8, try lowerDup(arena, ap), "\\")});
-            if (std.mem.startsWith(u8, lap, lprefix)) {
-                covers = true;
-                break;
-            }
-        }
-        if (!covers) try kept.append(arena, cd);
-    }
-
-    std.mem.sort(SweepCand, kept.items, {}, struct {
-        fn lt(_: void, a: SweepCand, c: SweepCand) bool {
-            if (a.count != c.count) return a.count > c.count;
-            return std.mem.lessThan(u8, a.path, c.path);
-        }
-    }.lt);
-    if (kept.items.len > sweep_max_suggestions) return kept.items[0..sweep_max_suggestions];
-    return kept.items;
-}
-
-// ---- paste -------------------------------------------------------------------
-
-fn isDir(app: *App, p: []const u8) bool {
-    if (Io.Dir.cwd().openDir(app.io, p, .{})) |dir| {
-        var d = dir;
-        d.close(app.io);
-        return true;
-    } else |_| return false;
-}
-
-/// pasteFilename builds the destination filename: explicit extension honoured,
-/// else defaultExt appended, else a local timestamp.
-fn pasteFilename(app: *App, name: []const u8, default_ext: []const u8) ![]const u8 {
-    const n = std.mem.trim(u8, name, " \t");
-    if (n.len == 0) {
-        const ts = try clipboard.localTimestamp(app.arena, app.io);
-        return std.fmt.allocPrint(app.arena, "{s}{s}", .{ ts, default_ext });
-    }
-    if (std.fs.path.extension(n).len > 0) return n;
-    return std.fmt.allocPrint(app.arena, "{s}{s}", .{ n, default_ext });
-}
-
-/// uniquePath returns path if free, else the first "<stem>-<n><ext>" variant.
-fn uniquePath(app: *App, path: []const u8) ![]const u8 {
-    if (!proc.pathExists(app.io, path)) return path;
-    const ext = std.fs.path.extension(path);
-    const stem = path[0 .. path.len - ext.len];
-    var i: usize = 1;
-    while (true) : (i += 1) {
-        const cand = try std.fmt.allocPrint(app.arena, "{s}-{d}{s}", .{ stem, i, ext });
-        if (!proc.pathExists(app.io, cand)) return cand;
-    }
-}
-
-fn copyFile(app: *App, src: []const u8, dest: []const u8) !void {
-    // Streamed by std (atomic at dest) — never buffers the whole file, so
-    // pasting a copied video/ISO doesn't balloon memory with the file's size.
-    try Io.Dir.cwd().copyFile(src, Io.Dir.cwd(), dest, app.io, .{});
-}
-
-fn copyTree(app: *App, src: []const u8, dest: []const u8) !void {
-    try store.mkdirAll(app.io, dest);
-    var dir = try Io.Dir.cwd().openDir(app.io, src, .{ .iterate = true });
-    defer dir.close(app.io);
-    var it = dir.iterate();
-    while (try it.next(app.io)) |ent| {
-        const s = try std.fs.path.join(app.arena, &.{ src, ent.name });
-        const d = try std.fs.path.join(app.arena, &.{ dest, ent.name });
-        if (ent.kind == .directory) {
-            try copyTree(app, s, d);
-        } else {
-            try copyFile(app, s, d);
-        }
-    }
-}
-
-fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
-    if (action_args.len > 1) {
-        try app.err.writeAll("usage: nix <alias> --paste [name]\n");
-        return 1;
-    }
-    const name: []const u8 = if (action_args.len == 1) action_args[0] else "";
-    const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return pasteClipboardInto(app, target, name);
-}
-
-/// pasteClipboardInto lands the clipboard in `target`: Explorer-copied files
-/// win, then image (.png) over text (.md) — the harder content to re-grab
-/// first. Shared by the alias and group forms of `p`.
-fn pasteClipboardInto(app: *App, target: []const u8, name: []const u8) !u8 {
-    if (try clipboard.readFiles(app.arena, app.io)) |files| {
-        return pasteFiles(app, target, files, name);
-    }
-    if (try clipboard.readImage(app.arena, app.io)) |img| {
-        return pasteContent(app, target, name, img, ".png");
-    }
-    if (try clipboard.readText(app.arena, app.io)) |text| {
-        return pasteContent(app, target, name, text, ".md");
-    }
-    try app.err.writeAll("nix: clipboard holds no files, image, or text to paste\n");
-    return 1;
-}
-
-/// pasteContent writes clipboard bytes to a uniquely-named file under target,
-/// prints the path, and copies it back to the clipboard.
-fn pasteContent(app: *App, target: []const u8, name: []const u8, data: []const u8, default_ext: []const u8) !u8 {
-    const fname = try pasteFilename(app, name, default_ext);
-    const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname }));
-    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = data });
-    const out = try store.toSlash(app.arena, dest);
-    try app.out.print("{s}\n", .{out});
-    try app.out.flush();
-    // Clipboard gets the host-separator path: / is not always a valid
-    // separator on Windows (cmd.exe, some dialogs), \ always is.
-    clipboard.writeText(app.arena, app.io, dest) catch {};
-    return 0;
-}
-
-fn pasteFiles(app: *App, target: []const u8, files: [][]const u8, name: []const u8) !u8 {
-    if (name.len > 0 and files.len > 1) {
-        try app.err.print("nix: --paste <name> needs a single copied file; the clipboard holds {d}\n", .{files.len});
-        return 1;
-    }
-    var outs: std.ArrayList([]const u8) = .empty;
-    for (files) |src| {
-        const dir = isDir(app, src);
-        var base = std.fs.path.basename(src);
-        if (name.len > 0) {
-            base = if (dir) name else try pasteFilename(app, name, std.fs.path.extension(src));
-        }
-        const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, base }));
-        if (dir) {
-            copyTree(app, src, dest) catch |e| {
-                try app.err.print("nix: copy {s}: {s}\n", .{ src, @errorName(e) });
-                return 1;
-            };
-        } else {
-            copyFile(app, src, dest) catch |e| {
-                try app.err.print("nix: copy {s}: {s}\n", .{ src, @errorName(e) });
-                return 1;
-            };
-        }
-        try outs.append(app.arena, try store.toSlash(app.arena, dest));
-    }
-    for (outs.items) |o| try app.out.print("{s}\n", .{o});
-    try app.out.flush();
-    // Clipboard gets host-separator paths: / is not always a valid separator
-    // on Windows (cmd.exe, some dialogs), \ always is.
-    var joined: std.ArrayList(u8) = .empty;
-    for (outs.items, 0..) |o, i| {
-        if (i > 0) try joined.append(app.arena, '\n');
-        try joined.appendSlice(app.arena, try store.fromSlash(app.arena, o));
-    }
-    clipboard.writeText(app.arena, app.io, joined.items) catch {};
-    return 0;
-}
-
-fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
-    // `y <alias> <pat>`: ff-style picker → copy the selected FILES to the
-    // clipboard as an OS file drop (paste in Explorer drops them). Bare
-    // `y <alias>`: copy the path text (the original behavior).
-    var has_pat = false;
-    for (action_args) |a| if (!isGlobalFlag(a)) {
-        has_pat = true;
-        break;
-    };
-    if (has_pat) return cmdYankFiles(app, alias, action_args);
-
-    const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    try app.out.print("{s}\n", .{target});
-    try app.out.flush();
-    clipboard.writeText(app.arena, app.io, target) catch |e| {
-        try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
-    };
-    return 0;
-}
-
-/// cmdYankFiles runs the file picker under the alias dir and copies the selected
-/// files to the clipboard as a real OS file drop (CF_HDROP on Windows; elsewhere
-/// it falls back to copying the paths as text).
-fn cmdYankFiles(app: *App, alias: []const u8, args: [][]const u8) !u8 {
-    const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, args)) {
-        .selected => |sel| yankSelectionFiles(app, target, sel),
-        .cancelled => 0,
-        .failed => 1,
-    };
-}
-
-fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8) !u8 {
-    var paths: std.ArrayList([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
-    while (lines.next()) |ln| {
-        const s = std.mem.trim(u8, ln, " \t\r");
-        if (s.len == 0) continue;
-        // Picker rows are relative to the alias dir (or absolute for a group);
-        // the clipboard needs absolute, host-separator paths.
-        const abs = if (std.fs.path.isAbsolute(s)) s else try std.fs.path.join(app.arena, &.{ target, s });
-        try paths.append(app.arena, try store.fromSlash(app.arena, abs));
-    }
-    if (paths.items.len == 0) return 0;
-
-    clipboard.writeFiles(app.arena, app.io, paths.items) catch |e| {
-        if (e == error.Unsupported) {
-            // Non-Windows: no file-drop format — copy the paths as text instead.
-            var buf: std.ArrayList(u8) = .empty;
-            for (paths.items, 0..) |p, i| {
-                if (i > 0) try buf.append(app.arena, '\n');
-                try buf.appendSlice(app.arena, p);
-            }
-            clipboard.writeText(app.arena, app.io, buf.items) catch {};
-            try app.err.writeAll("note: file-drop clipboard is Windows-only — copied the paths as text\n");
-        } else {
-            try app.err.print("nix: clipboard file copy failed: {s}\n", .{@errorName(e)});
-            return 1;
-        }
-    };
-    for (paths.items) |p| try app.out.print("{s}\n", .{p});
-    return 0;
-}
-
 /// navigate resolves the alias and opens a fresh interactive shell rooted in
 /// the target dir. A child can't relocate its parent shell, so onix-as-an-exe
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
@@ -3291,19 +2870,6 @@ fn navigate(app: *App, alias: []const u8) !u8 {
     }
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
     return enterDir(app, dir);
-}
-
-/// exePath returns the real on-disk image path, computed lazily and cached. The
-/// find/picker preview indirection re-invokes the binary as `<exe> --preview
-/// <path>`, so this must be the actual image — ask the OS (GetModuleFileNameW)
-/// rather than argv[0]+cwd (under a wrapper like `o`, argv[0] is the bare
-/// relative "o" and cwd is unrelated, yielding a bogus path cmd.exe can't run).
-/// Only preview/picker/init/sync need it, so resolve never pays the syscall.
-fn exePath(app: *App) []const u8 {
-    if (app.exe_path) |p| return p;
-    const p = std.process.executablePathAlloc(app.io, app.arena) catch app.argv0;
-    app.exe_path = p;
-    return p;
 }
 
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
@@ -3455,6 +3021,35 @@ fn interactiveShell(app: *App) []const u8 {
         if (t.len > 0) return t;
     }
     return "/bin/sh";
+}
+
+// ---- paste / yank (thin alias-level entry; mechanics live in paste.zig) ------
+
+fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
+    if (action_args.len > 1) {
+        try app.err.writeAll("usage: nix <alias> --paste [name]\n");
+        return 1;
+    }
+    const name: []const u8 = if (action_args.len == 1) action_args[0] else "";
+    const target = (try resolveAliasPath(app, alias)) orelse return 1;
+    return paste.pasteClipboardInto(app, target, name);
+}
+
+/// cmdYank: `y <alias> <pat>` runs the ff picker and copies the selected FILES
+/// to the clipboard as an OS file drop; bare `y <alias>` copies the path text.
+fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
+    var has_pat = false;
+    for (action_args) |a| if (!isGlobalFlag(a)) {
+        has_pat = true;
+        break;
+    };
+    const target = (try resolveAliasPath(app, alias)) orelse return 1;
+    if (!has_pat) return paste.yankPathText(app, target);
+    return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, action_args)) {
+        .selected => |sel| paste.yankSelectionFiles(app, target, sel),
+        .cancelled => 0,
+        .failed => 1,
+    };
 }
 
 // ---- helpers ----------------------------------------------------------------
