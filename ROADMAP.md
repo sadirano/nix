@@ -69,6 +69,19 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - **Generated from config** by `--init`/`--sync` (`src/agents.zig`), so the
   rendered names honour `[shortcuts]` renames.
 
+### main.zig split (module layout)
+
+- **Command modules import `app.zig`/`resolve.zig`, never main.zig or each
+  other's internals** — `app.zig` holds the App context + tiny shared
+  helpers; `resolve.zig` the alias→path entry point (segment eval, picker
+  handoff, registration) and group-target expansion; `open.zig` the shared
+  picker-row/open plumbing. main.zig keeps dispatch/grammar, the alias-store
+  commands, and the thin resolve-and-delegate entries (`navigate`, p/y).
+- **Group fan-out (`cmd_groups.zig`) sits on top** of grep/find/run/nav/paste
+  — it was extracted last because it calls into every family.
+- **Tests live with their code**; main.zig's root test block references every
+  module so `zig build test` collects them all.
+
 ### Export / import (`--export` / `--import`)
 
 - **Single TOML document, not an archive** — greppable and stdout-friendly;
@@ -96,13 +109,6 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
   `--json`/`-q` (so scripts don't break) but emits only the human-readable
   report. Implement a structured JSON form for tooling.
-- 🔶 **Split `src/main.zig` (in progress, started after v0.9.0).** Done:
-  `app.zig` (the shared App context + cross-module helpers), `sweep.zig`,
-  `paste.zig`, `init.zig` (init/sync/export/import), `picker.zig`,
-  `doctor.zig` — main.zig is down from ~4.0k to ~2.6k lines. Remaining: the
-  grep/find/run/nav command families, then `cmd_groups.zig` (the group
-  fan-out layer calls into all of them, so it goes last), then the
-  dispatch/grammar core stays as main.zig.
 - ⬜ **Scripted end-to-end harness.** The historical "verified end-to-end
   against a scratch NIX_HOME" runs were manual. A script that builds, points
   `NIX_HOME` at a temp dir, and drives the real exe through

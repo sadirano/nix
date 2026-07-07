@@ -121,6 +121,22 @@ pub fn dispWidth(s: []const u8) usize {
     return n;
 }
 
+pub fn aliasAction(flag: []const u8) ?[]const u8 {
+    const map = [_]struct { k: []const u8, v: []const u8 }{
+        .{ .k = "--resolve", .v = "resolve" }, .{ .k = "--remove", .v = "remove" },
+        .{ .k = "--rm", .v = "remove" },       .{ .k = "--edit", .v = "edit" },
+        .{ .k = "-e", .v = "edit" },           .{ .k = "--explore", .v = "explore" },
+        .{ .k = "-x", .v = "explore" },        .{ .k = "--yank", .v = "yank" },
+        .{ .k = "-y", .v = "yank" },           .{ .k = "--paste", .v = "paste" },
+        .{ .k = "-p", .v = "paste" },          .{ .k = "--grep", .v = "grep" },
+        .{ .k = "-g", .v = "grep" },           .{ .k = "--find", .v = "find" },
+        .{ .k = "-f", .v = "find" },           .{ .k = "--run", .v = "run" },
+        .{ .k = "-r", .v = "run" },
+    };
+    for (map) |m| if (std.mem.eql(u8, flag, m.k)) return m.v;
+    return null;
+}
+
 /// fzfEnv hands fzf the Tokyo Night theme unless the user already themes it.
 pub fn fzfEnv(app: *App) *std.process.Environ.Map {
     if (app.env.get("FZF_DEFAULT_OPTS") == null) {

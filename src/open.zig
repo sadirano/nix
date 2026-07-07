@@ -215,6 +215,33 @@ pub fn spawnEditor(app: *App, ed: []const u8, targets: []const editor.Target, cw
     };
 }
 
+/// exploreSelections opens every picker selection with the OS handler,
+/// resolving relative rows against `base`.
+pub fn exploreSelections(app: *App, base: []const u8, selection: []const u8) !u8 {
+    var rc: u8 = 0;
+    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
+    while (lines.next()) |ln| {
+        const s = std.mem.trim(u8, ln, " \t\r");
+        if (s.len == 0) continue;
+        if (try exploreTarget(app, try absUnder(app, base, s)) != 0) rc = 1;
+    }
+    return rc;
+}
+
+/// exploreTarget opens one path with the OS handler: a dir lands in the file
+/// manager, a file in its registered default app.
+pub fn exploreTarget(app: *App, target: []const u8) !u8 {
+    if (proc.is_windows) {
+        proc.runDetached(app.io, &.{ "explorer.exe", target }, null, true) catch {};
+        return 0;
+    }
+    proc.runDetached(app.io, &.{ "xdg-open", target }, null, false) catch |e| {
+        try app.err.print("nix: xdg-open: {s}\n", .{@errorName(e)});
+        return 1;
+    };
+    return 0;
+}
+
 test "stripCmdCarets: unescapes ^X, keeps ^^ as a literal caret" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
