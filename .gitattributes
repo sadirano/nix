@@ -1,0 +1,4 @@
+# zig fmt only accepts LF. GitHub's Windows runners ship core.autocrlf=true,
+# which would check sources out as CRLF and fail the CI format gate.
+*.zig text eol=lf
+*.zon text eol=lf
