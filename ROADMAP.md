@@ -31,45 +31,33 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 
 ### Alias groups (`+` multi-alias)
 
-- **Sigil:** `+`, forbidden in alias names (like `@`) so `pa+projects` parses
-  unambiguously. `+group` references a group; `member+group` adds a member
-  (creating the group), paralleling `o <alias> <path>` = register + navigate.
-- **Storage:** `~/.nix/groups.toml`, flat `projects = ["pa", "pb"]`. Members
-  are **alias names**, resolved on use — single source of truth in
-  aliases.toml, auto-follows moves, dead members detectable (skipped with a
-  stderr note). `nix <alias> --remove` cascade-strips the alias from every
-  group.
-- **Nesting:** a member may be `+othergroup`; expansion is recursive with
-  cycle detection, a depth guard, and dedupe.
-- **`o +group`:** fzf multi-select of members (`name -> path` rows). The
-  **topmost** selection keeps the current shell (stacked subshell); each
-  additional selection opens a new terminal via `[nav] terminal` in
-  config.toml (`{dir}` placeholder; Windows defaults `wt -d` then `start`,
-  Unix requires the config — no probing).
-- **Fan-out:** `sg`/`ff` search all member roots as one picker (rows read
-  `alias\rel`, mapped back on selection); `r` runs sequentially per member
-  with a per-dir header, no confirm; `s`/`y` open/copy all members (or run the
-  file picker with a pattern); `p` picks ONE member then pastes. `e` is
-  deliberately single-alias.
-- **Management:** `nix --groups`, `nix +g --list`, `nix pa+g --remove`,
-  `nix +g --remove`.
+- **Sigil `+`, forbidden in alias names** (like `@`) so `pa+projects` parses
+  unambiguously; `member+group` adds a member (creating the group),
+  paralleling `o <alias> <path>` = register + navigate.
+- **Members are alias names, resolved on use** — single source of truth in
+  aliases.toml, groups auto-follow moves, dead members are detectable (skipped
+  with a stderr note, never a hard failure); `nix <alias> --remove`
+  cascade-strips the alias from every group. Nested `+group` members expand
+  recursively (cycle/depth-guarded, deduped).
+- **`o +group`:** the topmost fzf selection keeps the current shell; each
+  additional one opens a new terminal via `[nav] terminal` (Windows defaults
+  `wt -d` then `start`; Unix requires the config — no probing).
+- **Deliberate fan-out exceptions:** `e` stays single-alias; `p +group` picks
+  ONE member (a paste has one destination).
 - **Out of v1:** ad-hoc comma lists (`sg pa,pb`); named `+groups` only.
 
 ### Per-alias actions (`r <alias> :<name>`)
 
-- **Invocation:** a leading `:` marks a named action vs a literal command;
-  `r <alias> :` lists them. Runs as a shell string (`cmd /c` / `sh -c`) in the
-  alias dir so `&&`/pipes/redirects work; `-o` runs detached.
-- **Storage:** project-local `<alias-dir>/.nix/actions.toml` (committed,
-  travels with the repo) wins over central `~/.nix/actions/<alias>.toml`
-  (private) — a `[actions]` table of `name = "command"`.
-- **Group fan-out:** `r +<group> :<name>` runs each member's OWN action;
-  members without it are skipped with a note.
-- **Project scripts:** the alias's `.nix/scripts` (then central
-  `~/.nix/scripts`) is prepended to PATH in any alias context, so
-  `r <alias> build` and the `o <alias>` subshell resolve the project's own
-  scripts, shadowing globals. The env rebuilds from the original PATH each
-  run, so group fan-out never stacks dirs.
+- **A leading `:` marks a named action** vs a literal command, so `r` stays
+  unambiguous. Actions run as a shell string (`cmd /c` / `sh -c`) so
+  `&&`/pipes/redirects work.
+- **Project-local wins over central:** `<alias-dir>/.nix/actions.toml` is
+  committed and travels with the repo; `~/.nix/actions/<alias>.toml` stays
+  private per-machine. Group fan-out runs each member's OWN action; members
+  without it are skipped with a note.
+- **Scripts shadow by PATH order** (project `.nix/scripts`, then central);
+  the env rebuilds from the original PATH each run, so group fan-out never
+  stacks dirs.
 
 ### Agent guide (`~/.nix/AGENTS.md`)
 
@@ -83,12 +71,11 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 
 ### Export / import (`--export` / `--import`)
 
-- **Single TOML v1**, not an archive — greppable and stdout-friendly. Flat
-  sub-tables: `[aliases]`, `[groups]`, `[config]`/`[config.*]` (comments
-  preserved losslessly), `[actions.<alias>]` (central per-alias actions).
+- **Single TOML document, not an archive** — greppable and stdout-friendly;
+  config comments are preserved losslessly.
 - **Merge by default, never clobbers:** only adds names not already present
-  and never overwrites a local config.toml; `--replace` does the deliberate
-  full restore. Both modes non-interactive.
+  and never overwrites a local config.toml, so re-importing is safe;
+  `--replace` is the deliberate full restore. Both modes non-interactive.
 - **`usage` excluded** (machine-local churn); project-local
   `.nix/actions.toml` files travel with their repos and are out of scope.
 

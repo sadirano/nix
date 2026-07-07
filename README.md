@@ -77,27 +77,17 @@ nix --edit                                 # open ~/.nix in your editor
 nix acme --remove                          # forget the alias
 ```
 
-Three `o` forms:
-
-- `o <alias>` — jump to the alias dir. An unknown name runs the directory picker (`es`/`fd` + fzf): pick a directory and it's registered and entered in one step.
-- `o <alias> <path>` — register (or update) the alias to point at `<path>` and jump there. The directory is auto-created if it doesn't exist.
-- `o` (no args) — open `~/.nix` in `$EDITOR`. Use `nix --list` for a tabular dump to stdout instead.
+An unknown name after `o` runs the directory picker (`es`/`fd` + fzf): pick a directory and it's registered and entered in one step.
 
 On Windows every command is a standalone `.exe` wrapper, so they all work from any prompt with no shell glue; `o` stacks a new shell rooted at the target (with the project's `.nix/scripts` on PATH — exit it to land back where you were). On Unix-likes `o` is a shell function that cd's your current shell in place.
 
-`s <alias> <file>` opens a single file with its registered default application instead of the file manager — a PDF in your viewer, a `.zip` in your archiver, and so on. The file is resolved against the alias directory and opened by the OS handler (`explorer.exe` / `xdg-open`). When the argument isn't an exact existing file, it's treated as a pattern: the `ff` picker runs under the alias dir and every selected file opens with its default app — the same shape as `y <alias> <pat>`, but opening instead of copying.
-
-`y <alias>` prints the alias path and copies it to the clipboard as text. Given a pattern — `y <alias> <pat>` — it instead runs the `ff` file picker under the alias dir and copies the **selected files themselves** to the clipboard as a system file drop (Windows `CF_HDROP`), so a paste in Explorer drops the real files (a `.png` lands as a file, not a path). It's the inverse of `p`. On non-Windows the file-drop format isn't available, so it falls back to copying the paths as text.
-
-`p <alias> [name]` saves the current clipboard contents into the alias directory and copies the saved path(s) back to the clipboard. Files copied in Explorer (Ctrl+C) take priority — directories are copied recursively, turning the clipboard into a cross-folder copy channel from any prompt. Otherwise the content path applies, handy for parking a screenshot and pasting its path into an agent: an image saves as `.png`, text as `.md`. An explicit extension on `<name>` is honoured; with no name, files keep their source name and content uses a timestamp. Collisions auto-increment (`shot.png`, `shot-1.png`) so nothing is ever clobbered.
+Clipboard fine print: `y <alias> <pat>` copies the picked files as a real file drop (Windows `CF_HDROP`; elsewhere it falls back to paths as text) — the inverse of `p`. `p` gives Explorer-copied files priority over text/image content (directories copy recursively), honours an explicit extension on `<name>`, and auto-increments on collision (`shot.png`, `shot-1.png`) so nothing is ever clobbered.
 
 ## Search and find
 
-`sg <alias> <pat>` runs a ripgrep search rooted at the alias directory and streams the matches into an fzf picker with a live `bat` preview. Each match line is its own row, so you narrow by content as you type; Tab marks several, Enter opens the selection(s) in your editor at the matched line.
+`sg` streams every ripgrep match into fzf as its own content-filterable row, with a live `bat` preview; Tab marks several, Enter opens the selection(s) in your editor at the matched line. `sg <alias> <pat> --all` (or `-a`) searches with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) instead, so matches reach **inside PDFs, office documents, archives, ebooks, and more** — the preview shows the extracted text, and a document hit opens in its default app (its "line" is really a page, not an editor position). Set `[grep] all = true` in `config.toml` to make `rga` the default for every `sg`.
 
-`sg <alias> <pat> --all` (or `-a`) searches with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) instead, so matches reach **inside PDFs, office documents, archives, ebooks, and more** — not just plain text. Each hit is still an individual, content-filterable fzf row. The preview adapts to what you land on: a directory lists its entries, a text file renders in `bat` with the matched line highlighted, and a document shows the extracted text trimmed to the selected match. Opening adapts the same way — a text hit opens in your editor at the line, while a PDF/office hit opens in its default app (its "line" is really a page, not an editor position). Set `[grep] all = true` in `config.toml` (see below) to make `rga` the default for every `sg`.
-
-`ff <alias> [pat]` fuzzy-finds files under the alias directory — using Everything's `es` on Windows, else `fd`, else `find` — into the same fzf-with-preview picker. Enter opens the selection: directories and registered default-app file types (PDF, images, archives, …) open with the OS handler, everything else in your editor.
+`ff` shares the same fzf-with-preview picker, choosing its file lister by what's available — Everything's `es` on Windows, else `fd`, else `find`. Enter opens directories and default-app file types (PDF, images, archives, …) with the OS handler, everything else in your editor.
 
 ## Configuration
 
@@ -110,11 +100,7 @@ path = "C:/Users/dev/projects/acme"
 
 You can hand-edit the file (`nix --list` and resolve pick up changes immediately) or use `nix <name> <path>` to register and `nix <name> --remove` to forget. Alias lookups are case-insensitive.
 
-When the list grows crusty, `nix --prune` opens an fzf multi-select of every alias ranked prune-first: dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `nix --prune --no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh).
-
 Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$NIX_HOME`.
-
-## Configuring shortcuts and search
 
 `~/.nix/config.toml` holds the optional sections.
 
@@ -126,14 +112,12 @@ s = "show"     # type `show acme` instead of `s acme`
 ff = "fzf"
 ```
 
-`[grep]` tunes the `sg` search. `all = true` makes `sg` search with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) by default, reaching into PDFs, office docs, archives, and more:
+`[grep]` sets the `sg` default — `all = true` makes every search run `rga`; the per-run `--all`/`-a` flag flips a single search either way:
 
 ```toml
 [grep]
 all = true
 ```
-
-Per search, `sg <alias> <pat> --all` (or `-a`) switches that one run to `rga` without changing the config default.
 
 `[picker]` filters the unknown-alias directory picker (Everything `es` + fzf), which `o` runs in-process when you navigate to a name that isn't an alias yet. By default it excludes any path component starting with `.`, `_`, or `[`, plus dependency/build/cache trees (`node_modules`, `site-packages`, `cache`, `bin`, `obj`, `build`, `dist`, …), the Windows system trees (`C:\Windows\`, `C:\Program Files`, `AppData`, …), and store-owned install trees (`scoop\apps`, `steamapps`) — so the result cap is spent on directories worth picking.
 
@@ -150,8 +134,6 @@ Without a working `es` (not installed, or the Everything service isn't running),
 [picker]
 search_roots = ['~/projects', 'D:\work']
 ```
-
-`nix --sweep` finds noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.nix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
 
 After editing, run `nix --sync` and restart your shell to pick up renamed shortcuts or picker changes.
 
@@ -268,31 +250,15 @@ Other tools can point at the same file wherever they take custom instructions.
 
 ## Commands
 
-`nix --init` initialises `~/.nix`, installs the PowerShell snippet, and on Windows installs the `.exe` command wrappers into `~/.nix/bin` and adds it to your user PATH (re-run any time; it's idempotent). `nix --sync` regenerates the snippet and refreshes the wrappers after you move the binary or edit `config.toml`. `nix --prune` interactively removes stale aliases. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
+`nix --init` (covered under Install) is idempotent — re-run it any time. `nix --sync` regenerates the shell snippet, the agent guide, and the command wrappers after you move the binary or edit `config.toml`. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
+
+`nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh).
+
+`nix --sweep` finds picker noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.nix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
 
 `nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, and central per-alias actions as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap.
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
-
-## Architecture
-
-A single Zig binary, split by subsystem:
-
-- **`src/store.zig`** — `aliases.toml`: byte-scan resolve, quote unescaping, `fromSlash` → host separators, atomic temp+rename writes, name validation.
-- **`src/util.zig`** — the shared helpers (case-fold/lowercase, quote stripping, TOML string arrays, `mkdirAll`, and the atomic `writeFileAtomic` every store saves through).
-- **`src/segments.zig`** — `@`-segment grammar, `${VAR}` template expansion, `[[contexts]]` reading with local→central→global precedence and the traversal guard.
-- **`src/groups.zig`** — `groups.toml`: the `+` multi-alias store, the `member+group` grammar, recursive member expansion (cycle/depth-guarded, deduped), and the mutation helpers behind the group commands.
-- **`src/actions.zig`** — `[actions]` per-alias named shell commands (`r <alias> :name`), parsed project-local over central.
-- **`src/config.zig`** — `config.toml`: `[shortcuts]`, `[grep]`, `[picker]`, `[nav]` (composed + deduped exclusion list shared by sweep/picker).
-- **`src/portable.zig`** — `--export`/`--import`: renders the central stores (aliases/groups/config/actions) to one TOML document and parses one back for merge or `--replace` restore.
-- **`src/proc.zig`** — process spawning: `runInherit`/`runDetached`/`findInPath`/`runFilter`/`runPipeline`. Streams `rg | fzf` live by relaying bytes through the parent with `File.readStreaming`.
-- **`src/clipboard.zig`** — Win32 clipboard read/write (CF_UNICODETEXT, CF_HDROP file drops, CF_DIB images), lazy-loading `user32` only when needed so the resolve hot path never pulls it into the import table.
-- **`src/png.zig`** — DIB decode + PNG encode (DEFLATE via `std.compress.flate`, stored-block fallback, CRC32/Adler32) for image paste.
-- **`src/snippet.zig`** — PowerShell (`nix.ps1`) and bash (`nix.sh`) shell glue with alias completers, honouring `[shortcuts]`.
-- **`src/agents.zig`** — renders `~/.nix/AGENTS.md`, the installed agent guide, with the effective `[shortcuts]` names.
-- **`src/winpath.zig`** — persistent user PATH editing via the registry (preserves `REG_EXPAND_SZ`; `setx` truncates at 1024 chars).
-- **`src/usage.zig`** — the debounced usage recorder behind `--prune` ranking.
-- **`src/editor.zig`** — per-editor line-jump dialects (vim `+N`, VS Code `--goto`).
 
 ## License
 

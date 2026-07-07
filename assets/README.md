@@ -33,15 +33,7 @@ fzf colors). Clear the screen before each take.
 ## Storyboard
 
 The hero clips (`navigate.gif`, `sg-all.gif`, `paste.gif`) are captured and
-embedded in the README's Demos section. Still to capture, in priority order:
-
-| File | Capability | What to show |
-|------|------------|--------------|
-| `sg.gif` | `sg` plain search | `sg acme TODO` → ripgrep matches stream into fzf with the bat preview; narrow by typing; Enter opens the hit in `$EDITOR` at the line. |
-| `ff.gif` | `ff` fuzzy-find | `ff acme config` → es/fd into fzf; preview a file; Enter opens it. |
-| `prune.gif` | `nix --prune` | The fzf multi-select ranked dead → never-used → least-recent; Tab to mark, Enter to remove. |
-| `segments.gif` | sub-aliases | `o docs@acme` and `o tasks:432@acme` resolving `@`-segments. |
-| `yank.png` | `y` (still) | `y acme` printing the path + "copied to clipboard". |
-
-New clips embed in the README's Demos section with descriptive alt text
-(accessibility + shows if the image fails to load).
+embedded in the README's Demos section. One clip is still planned:
+`segments.gif` — `o docs@acme` and `o tasks:432@acme` resolving `@`-segments.
+It embeds in the same Demos section with descriptive alt text (accessibility +
+shows if the image fails to load).
