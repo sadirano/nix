@@ -3,9 +3,6 @@
 //! ~/.nix/bin under each command name (o, e, …) and recovers the action from
 //! argv[0]; the PowerShell snippet only puts that dir on PATH and registers
 //! alias tab-completion. POSIX keeps the shell-function model (cd in place).
-//!
-//! nix writes its own artifacts (nix.ps1 / nix.exe wrappers) so it doesn't
-//! clobber a co-installed onix sharing the same ~/.nix.
 
 const std = @import("std");
 const builtin = @import("builtin");

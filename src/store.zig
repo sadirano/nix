@@ -13,24 +13,15 @@ pub const eqlFoldAscii = util.eqlFoldAscii;
 pub const mkdirAll = util.mkdirAll;
 pub const uniqueTmpName = util.uniqueTmpName;
 
-/// resolveHome returns the nix config dir: $NIX_HOME (then the legacy $ONIX_HOME),
-/// tilde-expanded, else <userhome>/.nix. The one-time move of a pre-rename
-/// ~/.onix is handled separately (migrateLegacyHome — it needs IO).
+/// resolveHome returns the nix config dir: $NIX_HOME, tilde-expanded, else
+/// <userhome>/.nix.
 pub fn resolveHome(arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]const u8 {
-    for ([_][]const u8{ "NIX_HOME", "ONIX_HOME" }) |key| {
-        if (env.get(key)) |v| {
-            const t = std.mem.trim(u8, v, " \t");
-            if (t.len > 0) return expandTilde(arena, env, t);
-        }
+    if (env.get("NIX_HOME")) |v| {
+        const t = std.mem.trim(u8, v, " \t");
+        if (t.len > 0) return expandTilde(arena, env, t);
     }
     const home = env.get("USERPROFILE") orelse env.get("HOME") orelse return error.NoHome;
     return std.fs.path.join(arena, &.{ home, ".nix" });
-}
-
-/// legacyHome returns <userhome>/.onix — the pre-rename default — or null.
-pub fn legacyHome(arena: std.mem.Allocator, env: *std.process.Environ.Map) ?[]const u8 {
-    const home = env.get("USERPROFILE") orelse env.get("HOME") orelse return null;
-    return std.fs.path.join(arena, &.{ home, ".onix" }) catch null;
 }
 
 /// expandTilde expands a leading ~/ or bare ~ to the user home directory.

@@ -16,8 +16,8 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - **Simple, onix-derived formats.** `aliases.toml` / `config.toml` / `usage` /
   segment files keep onix's simple TOML shapes. New state lives in new files
   (e.g. `groups.toml`), never by adding shapes the simple readers can't handle.
-  nix homes at `~/.nix` (auto-migrated from the legacy `~/.onix`; fallback
-  removed at 1.0).
+  nix homes at `~/.nix` (the transitional `~/.onix` migration and
+  `ONIX_HOME`/`ONIX_SHELL` fallbacks were removed after v0.9.0).
 - **Read-only queries stay read-only.** `--resolve` (alias and group forms)
   prints paths without creating directories; only navigation and actions
   materialize missing dirs.
@@ -108,11 +108,3 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   add/resolve/remove/groups/actions/export→import would lock those behaviors
   in CI — most historical bugs lived at the dispatch/IO seam the unit tests
   can't reach.
-- ⬜ **Legacy `.onix/` project-dir nudge.** After the rename, a project with
-  `.onix/actions.toml` but no `.nix/` silently loses its actions (this repo
-  had exactly that). When the actions/scripts loader finds the legacy dir and
-  no new one, print a one-line warning.
-- ⬜ **Grace note for pre-existing `+` alias names.** Forbidding `+` in names
-  can reject *re-registering* an old alias whose name contains `+` (resolve
-  still works; only the add path validates). Decide whether that needs a
-  migration hint in the error message.
