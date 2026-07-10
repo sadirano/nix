@@ -137,10 +137,18 @@ pub fn aliasAction(flag: []const u8) ?[]const u8 {
     return null;
 }
 
-/// fzfEnv hands fzf the Tokyo Night theme unless the user already themes it.
+/// fzfEnv hands nix's OWN fzf children the Tokyo Night theme unless the user
+/// already themes fzf. It works on a fresh COPY of the process environment —
+/// mutating app.env would leak FZF_DEFAULT_OPTS into every later child (the
+/// `o` subshell, editors, `r` commands), overriding the user's own fzf look in
+/// shells nix spawned. A fresh copy per call (not cached) so vars put into
+/// app.env between pickers (e.g. NIX_RGA_QUERY) are always carried along; fzf
+/// runs are interactive, the clone cost is noise. Any failure falls back to
+/// the shared env: worse theme, never a broken picker.
 pub fn fzfEnv(app: *App) *std.process.Environ.Map {
-    if (app.env.get("FZF_DEFAULT_OPTS") == null) {
-        app.env.put("FZF_DEFAULT_OPTS", fzf_tokyonight_theme) catch {};
-    }
-    return app.env;
+    if (app.env.get("FZF_DEFAULT_OPTS") != null) return app.env;
+    const copy = app.arena.create(std.process.Environ.Map) catch return app.env;
+    copy.* = app.env.clone(app.arena) catch return app.env;
+    copy.put("FZF_DEFAULT_OPTS", fzf_tokyonight_theme) catch return app.env;
+    return copy;
 }
