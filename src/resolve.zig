@@ -342,10 +342,12 @@ pub const GroupTarget = struct { name: []const u8, path: []const u8 };
 
 /// resolveGroupTargets expands a group to its existing alias members as
 /// (name, host-path) pairs — creating each dir (unless `create_dirs` is false:
-/// the read-only `--resolve` form must not materialize directories) and
-/// recording usage — applying the dead-member policy: a member alias that's no
-/// longer registered is skipped with a note, as is a `+sub` member whose group
-/// was deleted. Returns null (after a message) on unknown group / cycle /
+/// the read-only `--resolve` form must not materialize directories) — applying
+/// the dead-member policy: a member alias that's no longer registered is
+/// skipped with a note, as is a `+sub` member whose group was deleted. Usage is
+/// recorded once against the group itself (a `+name` key in ~/.nix/usage);
+/// members are NOT bumped — an alias's own frecency moves only when it is used
+/// individually. Returns null (after a message) on unknown group / cycle /
 /// depth, or when no member resolves.
 pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]GroupTarget {
     const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
@@ -368,7 +370,6 @@ pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]
     for (names) |n| {
         if (try store.scanForAlias(app.arena, adata, n)) |p| {
             if (create_dirs) store.mkdirAll(app.io, p) catch {};
-            usage.record(app.arena, app.io, app.home, n) catch {};
             try out.append(app.arena, .{ .name = n, .path = p });
         } else {
             try app.err.print("nix: group \"+{s}\": skipping dead member \"{s}\" (no such alias)\n", .{ group, n });
@@ -378,6 +379,12 @@ pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]
         try app.err.print("nix: group \"+{s}\" has no resolvable members\n", .{group});
         return null;
     }
+    // Charge the use to the group itself, never the members: a fan-out
+    // shouldn't drown each alias's individual frecency signal. Deliberately
+    // uncounted: failed resolutions (returned null above), `+g --list` (it
+    // doesn't come through here), and the single member `p +group` picks —
+    // that pick still only records the group.
+    usage.record(app.arena, app.io, app.home, try std.fmt.allocPrint(app.arena, "+{s}", .{group})) catch {};
     return out.items;
 }
 

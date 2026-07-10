@@ -9,7 +9,8 @@
 //!   [actions.<alias>]      name = 'command'         (central per-alias actions)
 //!
 //! Locked decisions (ROADMAP §3): merge skips existing names (--replace does a
-//! full restore); the machine-local `usage` ranking is deliberately NOT exported
+//! full restore); the machine-local `usage` ranking — the per-alias lines and
+//! the `+name` group-usage lines alike — is deliberately NOT exported
 //! (churny, non-portable); single TOML over an archive (matches nix's simple,
 //! onix-derived formats). Project-local `.nix/actions.toml` files travel with
 //! their repos and are out of scope — only central `~/.nix/actions/*.toml` ship.

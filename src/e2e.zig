@@ -226,6 +226,32 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "work") != null and std.mem.indexOf(u8, r.out, "all") != null, "--groups lists all groups", r);
     }
 
+    // --- group usage (usage is charged to +group, never fanned to members) ----
+    {
+        const upath = join(&c, &.{ home, "usage" });
+        // Age pa's entry far past the debounce window, so a member bump WOULD
+        // land if group resolution still recorded members.
+        try writeFile(&c, upath, "pa 5 1000\n");
+        var r = try c.run(&.{ "+work", "--resolve" });
+        const udata = readFileOr(&c, upath, "");
+        c.check(r.code == 0 and hasLine(udata, "pa 5 1000"), "group use does not bump member usage", r);
+        c.check(hasRow(udata, "+work"), "group use records the +group key", r);
+
+        // Individual use still counts: same aged entry, direct resolve bumps it.
+        r = try c.run(&.{ "pa", "--resolve" });
+        const udata2 = readFileOr(&c, upath, "");
+        c.check(r.code == 0 and std.mem.indexOf(u8, udata2, "pa 6 ") != null, "individual use still bumps the alias", r);
+
+        // Prune protection: only +work has recent usage, yet its members rank
+        // as protected — inherited recency with a (via +work) marker.
+        const now_s = @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s);
+        try writeFile(&c, upath, try std.fmt.allocPrint(arena, "+work 1 {d}\n", .{now_s}));
+        r = try c.run(&.{ "--prune", "-q" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "(via +work)") != null and
+            std.mem.indexOf(u8, r.out, "today") != null, "prune ranks members by inherited group recency", r);
+        c.check(std.mem.indexOf(u8, r.out, "never") == null, "no +work member ranks as never-used", r);
+    }
+
     // --- actions ---------------------------------------------------------------
     {
         try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), if (proc.is_windows)
@@ -290,6 +316,8 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "+work", "--remove" });
         const g = try c.run(&.{"--groups"});
         c.check(r.code == 0 and !hasRow(g.out, "work"), "+group --remove deletes the group", g);
+        const upath = join(&c, &.{ home, "usage" });
+        c.check(!hasRow(readFileOr(&c, upath, ""), "+work"), "+group --remove drops its usage line", r);
 
         // `all` still references the deleted `+work`: the dead-subgroup policy
         // skips it with a note naming the missing group, and the surviving
@@ -300,9 +328,13 @@ pub fn main(init: std.process.Init) !void {
             std.mem.indexOf(u8, dg.err, "\"+all\"") != null, "a dangling nested group is skipped with a note", dg);
 
         _ = try c.run(&.{"pb+work2"});
+        // Seed a usage line for +work2 (adding members records nothing), so the
+        // cascade's emptied-group cleanup has something to drop.
+        try writeFile(&c, upath, try std.fmt.allocPrint(arena, "{s}+work2 3 123\n", .{readFileOr(&c, upath, "")}));
         r = try c.run(&.{ "pb", "--remove" });
         const g2 = try c.run(&.{"--groups"});
         c.check(r.code == 0 and !hasRow(g2.out, "work2"), "alias --remove cascades; an emptied group is dropped", g2);
+        c.check(!hasRow(readFileOr(&c, upath, ""), "+work2"), "the cascade drops the emptied group's usage line", r);
 
         r = try c.run(&.{ "pb", "--resolve" });
         c.check(r.code != 0, "a removed alias no longer resolves", r);

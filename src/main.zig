@@ -375,6 +375,13 @@ fn cascadeStripFromGroups(app: *App, alias_lower: []const u8) !void {
     if (n == 0) return;
     try groups.saveGroups(app.arena, app.io, app.home, gs.items);
     try app.err.print("removed {s} from {d} group(s)\n", .{ alias_lower, n });
+    // Groups the strip emptied were just dropped by saveGroups; drop their
+    // usage lines (+name) with them (best-effort).
+    var dead_keys: std.ArrayList([]const u8) = .empty;
+    for (gs.items) |g| if (g.members.len == 0) {
+        try dead_keys.append(app.arena, try std.fmt.allocPrint(app.arena, "+{s}", .{g.name}));
+    };
+    if (dead_keys.items.len > 0) usage.remove(app.arena, app.io, app.home, dead_keys.items) catch {};
 }
 
 fn cmdList(app: *App) !u8 {
@@ -475,7 +482,38 @@ fn humanAge(arena: std.mem.Allocator, last: i64, now: i64) ![]const u8 {
     return std.fmt.allocPrint(arena, "{d}d ago", .{days});
 }
 
-const PruneCand = struct { name: []const u8, path: []const u8, count: i64, last: i64, dead: bool };
+const PruneCand = struct { name: []const u8, path: []const u8, count: i64, eff_last: i64, via: []const u8, dead: bool };
+
+/// Protection is one alias's inherited group recency: the most recent last-used
+/// time among the used groups that (transitively) contain it, and which group.
+const Protection = struct { name: []const u8, last: i64, group: []const u8 };
+
+/// protectionMap flattens every used group (the `+name` usage entries) to its
+/// member aliases so cmdPrune can rank members by group recency too: a group
+/// used yesterday protects members that were never used individually. Groups
+/// with structural problems (unknown / cycle / too deep) are skipped, never
+/// fatal — prune must still rank what it can.
+fn protectionMap(arena: std.mem.Allocator, gs: []const groups.Group, entries: []const usage.Named) ![]Protection {
+    var out: std.ArrayList(Protection) = .empty;
+    for (entries) |e| {
+        if (e.name.len < 2 or e.name[0] != '+' or e.last == 0) continue;
+        const gname = e.name[1..];
+        const members = groups.expandMembers(arena, gs, gname, null) catch continue;
+        for (members) |m| {
+            var found = false;
+            for (out.items) |*pr| if (store.eqlFoldAscii(pr.name, m)) {
+                found = true;
+                if (e.last > pr.last) {
+                    pr.last = e.last;
+                    pr.group = gname;
+                }
+                break;
+            };
+            if (!found) try out.append(arena, .{ .name = m, .last = e.last, .group = gname });
+        }
+    }
+    return out.items;
+}
 
 fn cmdPrune(app: *App) !u8 {
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
@@ -491,6 +529,11 @@ fn cmdPrune(app: *App) !u8 {
     }.lt);
 
     const u = try usage.load(app.arena, app.io, app.home);
+    // Group usage protects members: an alias inside a recently used +group
+    // inherits that group's recency for ranking (marked "(via +group)").
+    const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
+    const gs = try groups.loadGroups(app.arena, gdata);
+    const prot = try protectionMap(app.arena, gs.items, u.items);
     var cands: std.ArrayList(PruneCand) = .empty;
     var name_width: usize = 0;
     for (aliases.items) |a| {
@@ -503,29 +546,43 @@ fn cmdPrune(app: *App) !u8 {
                 break;
             }
         }
+        var eff_last = last;
+        var via: []const u8 = "";
+        for (prot) |pr| if (store.eqlFoldAscii(pr.name, a.name)) {
+            if (pr.last > eff_last) {
+                eff_last = pr.last;
+                via = pr.group;
+            }
+            break;
+        };
         const host = store.fromSlash(app.arena, a.path) catch a.path;
         const dead = !proc.pathExists(app.io, host);
-        try cands.append(app.arena, .{ .name = a.name, .path = a.path, .count = count, .last = last, .dead = dead });
+        try cands.append(app.arena, .{ .name = a.name, .path = a.path, .count = count, .eff_last = eff_last, .via = via, .dead = dead });
         name_width = @max(name_width, a.name.len);
     }
-    // Stable sort: dead first, then least-recently-used (last ascending, 0=never first).
+    // Stable sort: dead first, then least-recently-used (effective last
+    // ascending, 0=never first).
     std.sort.insertion(PruneCand, cands.items, {}, struct {
         fn lt(_: void, a: PruneCand, b: PruneCand) bool {
             if (a.dead != b.dead) return a.dead;
-            return a.last < b.last;
+            return a.eff_last < b.eff_last;
         }
     }.lt);
 
     const now = usage.nowUnix(app.io);
     var b: std.ArrayList(u8) = .empty;
     for (cands.items) |cd| {
-        const age = try humanAge(app.arena, cd.last, now);
+        const age = try humanAge(app.arena, cd.eff_last, now);
         const marker = if (cd.dead) "  [gone]" else "";
+        const via = if (cd.via.len > 0)
+            try std.fmt.allocPrint(app.arena, "  (via +{s})", .{cd.via})
+        else
+            "";
         try b.print(app.arena, "{s}", .{cd.name});
         var pad = cd.name.len;
         while (pad < name_width) : (pad += 1) try b.append(app.arena, ' ');
         const count_str = try std.fmt.allocPrint(app.arena, "{d}", .{cd.count});
-        try b.print(app.arena, "  {s: >9}  {s: >4} uses  {s}{s}\n", .{ age, count_str, cd.path, marker });
+        try b.print(app.arena, "  {s: >9}  {s: >4} uses  {s}{s}{s}\n", .{ age, count_str, cd.path, marker, via });
     }
 
     if (app.no_prompt) {
@@ -943,6 +1000,42 @@ test "multicallAction: wrapper-name mapping, .exe stripping, case-fold" {
     // The canonical binary name is not a multicall wrapper.
     try std.testing.expect(multicallAction("nix") == null);
     try std.testing.expect(multicallAction("unknown") == null);
+}
+
+test "protectionMap: flat + transitive inheritance, most recent group wins" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const gs = try groups.loadGroups(a, "work = [\"pa\", \"pb\"]\nall = [\"+work\", \"pc\"]\n");
+    const entries = [_]usage.Named{
+        .{ .name = "+work", .count = 3, .last = 100 },
+        .{ .name = "+all", .count = 1, .last = 200 },
+        .{ .name = "pa", .count = 9, .last = 50 }, // plain alias entries are ignored
+        .{ .name = "+ghost", .count = 1, .last = 300 }, // unknown group: skipped
+    };
+    const prot = try protectionMap(a, gs.items, &entries);
+    try std.testing.expectEqual(@as(usize, 3), prot.len);
+    for (prot) |pr| {
+        // +all (200) reaches pa/pb through +work and pc directly, beating +work's 100.
+        try std.testing.expectEqual(@as(i64, 200), pr.last);
+        try std.testing.expectEqualStrings("all", pr.group);
+    }
+    try std.testing.expectEqualStrings("pa", prot[0].name);
+    try std.testing.expectEqualStrings("pb", prot[1].name);
+    try std.testing.expectEqualStrings("pc", prot[2].name);
+}
+
+test "protectionMap: cyclic and never-used groups are skipped" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const gs = try groups.loadGroups(a, "x = [\"+y\"]\ny = [\"+x\"]\nw = [\"pa\"]\n");
+    const entries = [_]usage.Named{
+        .{ .name = "+x", .count = 5, .last = 100 }, // cycle: skipped, not fatal
+        .{ .name = "+w", .count = 2, .last = 0 }, // never used: no protection
+    };
+    const prot = try protectionMap(a, gs.items, &entries);
+    try std.testing.expectEqual(@as(usize, 0), prot.len);
 }
 
 test "humanAge: never / today / 1d / Nd buckets" {

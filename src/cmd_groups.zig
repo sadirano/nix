@@ -9,6 +9,7 @@ const app_zig = @import("app.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
 const groups = @import("groups.zig");
+const usage = @import("usage.zig");
 const clipboard = @import("clipboard.zig");
 const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
@@ -177,6 +178,8 @@ fn cmdGroupDelete(app: *App, group: []const u8) !u8 {
         return 1;
     }
     try groups.saveGroups(app.arena, app.io, app.home, gs.items);
+    // The group's own usage line (+name) dies with it (best-effort).
+    usage.remove(app.arena, app.io, app.home, &.{try std.fmt.allocPrint(app.arena, "+{s}", .{group})}) catch {};
     try app.err.print("removed group +{s}\n", .{group});
     return 0;
 }
@@ -227,6 +230,12 @@ pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: 
             return 1;
         }
         try groups.saveGroups(app.arena, app.io, app.home, gs.items);
+        // A group emptied by this removal was just dropped by saveGroups; its
+        // usage line (+name) goes with it (best-effort).
+        if (groups.findGroup(gs.items, group)) |gi| {
+            if (gs.items[gi].members.len == 0)
+                usage.remove(app.arena, app.io, app.home, &.{try std.fmt.allocPrint(app.arena, "+{s}", .{group})}) catch {};
+        }
         try app.err.print("removed {s} from group +{s}\n", .{ member, group });
         return 0;
     }
