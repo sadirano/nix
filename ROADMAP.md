@@ -21,8 +21,10 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - **Read-only queries stay read-only.** `--resolve` (alias and group forms)
   prints paths without creating directories; only navigation and actions
   materialize missing dirs.
-- **nix never rewrites files it doesn't own.** `--init` prints the $PROFILE
-  one-liner instead of appending it; every store nix does own is written via
+- **nix never rewrites files it doesn't own.** `--init` never touches shell
+  profiles — on Windows the wrappers on PATH are the whole integration (the
+  retired `nix.ps1` snippet is deleted by `--sync`), and on POSIX the rc line
+  is printed for the user to add. Every store nix does own is written via
   atomic temp+rename (`util.writeFileAtomic`).
 
 ---
@@ -50,6 +52,10 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - **Deliberate fan-out exceptions:** `e` stays single-alias; `p +group` picks
   ONE member (a paste has one destination).
 - **Out of v1:** ad-hoc comma lists (`sg pa,pb`); named `+groups` only.
+- **Unregistered members route through the picker:** `pa+group` with an
+  unknown `pa` goes through the unknown-alias directory picker (register
+  first, then add) instead of recording a dead member; `-q`/`--no-prompt`
+  errors instead.
 
 ### Per-alias actions (`r <alias> :<name>`)
 
@@ -127,6 +133,3 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   read-only, a registered-but-deleted dir no longer reappears on `o`. All
   need a navigate verb the function calls for these cases. Deferred —
   revisit only if non-Windows use becomes important.
-- ⬜ **Picker-route for `o pa+group` with an unregistered `pa`.** Today it adds
-  `pa` as a (dead) member; the design wants it to route through the
-  unknown-alias es/fd picker to register `pa` first, then add + navigate.
