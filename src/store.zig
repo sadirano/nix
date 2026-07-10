@@ -214,6 +214,14 @@ pub fn validateAliasName(name: []const u8) !void {
         // and "ControlInName" reads as gibberish for it.
         if (c == ' ') return error.SpaceInName;
         if (c < ' ' or c == 0x7f) return error.ControlInName;
+        // TOML metacharacters corrupt the stores' line-based round-trip: `]`
+        // ends the [name] section header early, a leading `#` comments out a
+        // groups.toml line, `=` splits a group key wrong, quotes derail the
+        // member strings. Reject them all rather than special-case per file.
+        switch (c) {
+            '[', ']', '=', '#', '"', '\'' => return error.TomlMetaInName,
+            else => {},
+        }
     }
 }
 
@@ -360,6 +368,15 @@ test "validateAliasName: rejects separators, @, spaces, control chars, empty" {
     try std.testing.expectError(error.PlusInName, validateAliasName("a+b"));
     try std.testing.expectError(error.SpaceInName, validateAliasName("a b"));
     try std.testing.expectError(error.ControlInName, validateAliasName("a\tb"));
+    // TOML metacharacters would corrupt aliases.toml/groups.toml round-trips:
+    // `[a]b]` reads back as `a`, `#work` becomes a comment, `=`/quotes split
+    // or truncate group lines.
+    try std.testing.expectError(error.TomlMetaInName, validateAliasName("a]b"));
+    try std.testing.expectError(error.TomlMetaInName, validateAliasName("a[b"));
+    try std.testing.expectError(error.TomlMetaInName, validateAliasName("a=b"));
+    try std.testing.expectError(error.TomlMetaInName, validateAliasName("#work"));
+    try std.testing.expectError(error.TomlMetaInName, validateAliasName("a\"b"));
+    try std.testing.expectError(error.TomlMetaInName, validateAliasName("a'b"));
 }
 
 test "listNames: sorted, skips non-section lines and empty brackets" {
