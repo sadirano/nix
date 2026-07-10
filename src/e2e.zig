@@ -174,6 +174,29 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and hasLine(r.out, "pa") and hasLine(r.out, "pb"), "--list-names prints bare names", r);
     }
 
+    // --- which (reverse lookup) ----------------------------------------------
+    {
+        var r = try c.run(&.{ "--which", pa });
+        c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pa"), "--which resolves the alias dir itself", r);
+
+        r = try c.run(&.{ "--which", join(&c, &.{ pa, "src", "deep" }) });
+        c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pa"), "--which resolves a nested path to its alias", r);
+
+        // A nested alias must beat its ancestor (deepest dir wins).
+        const pad = join(&c, &.{ pa, "docs" });
+        _ = try c.run(&.{ "pad", pad });
+        r = try c.run(&.{ "--which", join(&c, &.{ pad, "img" }) });
+        c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pad"), "--which picks the deepest containing alias", r);
+        _ = try c.run(&.{ "pad", "--remove" });
+
+        r = try c.run(&.{ "--which", join(&c, &.{ root, "nowhere" }) });
+        c.check(r.code != 0 and trim(r.out).len == 0, "--which outside every alias errors with empty stdout", r);
+
+        // Bare --which queries the cwd (the scratch work dir → no alias covers it).
+        r = try c.run(&.{"--which"});
+        c.check(r.code != 0, "bare --which uses the cwd", r);
+    }
+
     // --- groups ---------------------------------------------------------------
     {
         var r = try c.run(&.{"pa+work"});
@@ -205,11 +228,18 @@ pub fn main(init: std.process.Init) !void {
 
     // --- actions ---------------------------------------------------------------
     {
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-project\"\n");
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), if (proc.is_windows)
+            "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=%NIX_ALIAS% path=%NIX_ALIAS_PATH%\"\n"
+        else
+            "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=$NIX_ALIAS path=$NIX_ALIAS_PATH\"\n");
         try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }), "[actions]\nhello = \"echo from-central\"\nonly = \"echo central-only\"\n");
 
         var r = try c.run(&.{ "pa", "--run", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "project-local action wins over central", r);
+
+        const expect_ctx = try std.fmt.allocPrint(arena, "alias=pa path={s}", .{pa});
+        r = try c.run(&.{ "pa", "--run", ":whoami" });
+        c.check(r.code == 0 and pathEql(trim(r.out), expect_ctx), "alias runs see NIX_ALIAS / NIX_ALIAS_PATH", r);
 
         r = try c.run(&.{ "pa", "--run", ":only" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "central-only") != null, "central action runs when no local one exists", r);

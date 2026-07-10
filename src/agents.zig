@@ -64,8 +64,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   `{[e]s} <alias> src/main.zig`, `{[s]s} <alias> report.pdf`, `{[sg]s} <alias> TODO`.
         \\2. **Discover aliases before suggesting.** `nix --list` prints every alias
         \\   with its path; `nix --list-names` prints bare names; `nix <alias>` resolves
-        \\   one to its absolute path. Use the alias that maps to the directory you
-        \\   worked in — don't invent names. If none covers it, suggest registering
+        \\   one to its absolute path; `nix --which [path]` prints the alias containing
+        \\   a path (default: cwd) — and inside a `{[r]s}`/`{[o]s}` session `$NIX_ALIAS` /
+        \\   `$NIX_ALIAS_PATH` are already set. Use the alias that maps to the directory
+        \\   you worked in — don't invent names. If none covers it, suggest registering
         \\   one: `nix <name> <path>`.
         \\3. **Prefer saved actions for repeatable commands.** If a project needs a
         \\   recurring build/test/serve/deploy command, add it to the project's

@@ -73,6 +73,7 @@ sg acme invoice --all                      # search inside PDFs/office docs/arch
 ff acme config                             # fuzzy-find files under the dir → fzf → open the selection
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
 nix --list                                 # show every alias
+nix --which                                # print the alias containing the cwd (reverse of resolve)
 nix --edit                                 # open ~/.nix in your editor
 nix acme --remove                          # forget the alias
 ```
@@ -259,6 +260,8 @@ Other tools can point at the same file wherever they take custom instructions.
 `nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, and central per-alias actions as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap.
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), and your config/alias state. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
+
+`nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no usage recording, no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `r <alias> <cmd>`, a `:action`, group fan-outs — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
 
 ## License
 
