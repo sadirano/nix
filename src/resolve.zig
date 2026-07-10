@@ -263,6 +263,80 @@ pub fn cmdContexts(app: *App) !u8 {
     return 0;
 }
 
+// ---- reverse lookup (--which) -------------------------------------------------
+
+/// cmdWhich prints the alias whose directory contains a path — the reverse of
+/// `nix <alias>`. The path is the optional argument (default: the current
+/// directory); the deepest registered dir wins. Read-only by design: it's meant
+/// to be polled by prompts and status lines, so it must not record usage (that
+/// would drown the real navigation signal) or create directories.
+pub fn cmdWhich(app: *App, args: [][]const u8) !u8 {
+    var query: ?[]const u8 = null;
+    for (args) |a| {
+        if (app_zig.isGlobalFlag(a)) continue;
+        if (app_zig.startsWithDash(a)) {
+            try app.err.print("nix: unknown flag for --which: \"{s}\"\n", .{a});
+            return 1;
+        }
+        if (query != null) {
+            try app.err.print("nix: --which takes one path; got \"{s}\"\n", .{a});
+            return 1;
+        }
+        query = a;
+    }
+    const raw = query orelse blk: {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try std.process.currentPath(app.io, &buf);
+        break :blk try app.arena.dupe(u8, buf[0..n]);
+    };
+    const expanded = try store.expandTilde(app.arena, app.env, std.mem.trim(u8, raw, " \t"));
+    const abs = try absPath(app, expanded);
+
+    const data = try store.readAliasesFile(app.arena, app.io, app.home);
+    const aliases = try store.loadAliases(app.arena, data);
+    const hit = (try whichAlias(app.arena, aliases.items, abs)) orelse {
+        try app.err.print("nix: no alias contains \"{s}\"\n", .{abs});
+        return 1;
+    };
+    try app.out.print("{s}\n", .{hit});
+    return 0;
+}
+
+/// whichAlias picks the alias whose dir equals `path` or is an ancestor of it.
+/// Comparison is separator-insensitive (store paths are forward-slashed, the
+/// query is host-native) and case-insensitive on Windows. The deepest dir wins;
+/// among aliases on the same dir the first in file order wins (aliases.toml is
+/// saved name-sorted), keeping the answer deterministic.
+pub fn whichAlias(arena: std.mem.Allocator, aliases: []const store.Alias, path: []const u8) !?[]const u8 {
+    const q = try normalizeForCompare(arena, path);
+    var best: ?[]const u8 = null;
+    var best_len: usize = 0;
+    for (aliases) |a| {
+        const d = try normalizeForCompare(arena, a.path);
+        if (d.len == 0) continue;
+        if (q.len != d.len and !(q.len > d.len and q[d.len] == '/')) continue;
+        if (!std.mem.eql(u8, q[0..d.len], d)) continue;
+        if (best == null or d.len > best_len) {
+            best = a.name;
+            best_len = d.len;
+        }
+    }
+    return best;
+}
+
+/// normalizeForCompare canonicalizes a path for containment tests: forward
+/// slashes, no trailing slash, ASCII-lowercased on Windows (NTFS ignores case).
+fn normalizeForCompare(arena: std.mem.Allocator, p: []const u8) ![]const u8 {
+    const out = try arena.dupe(u8, p);
+    for (out) |*ch| {
+        if (ch.* == '\\') ch.* = '/';
+        if (store.sep == '\\') ch.* = std.ascii.toLower(ch.*);
+    }
+    var end = out.len;
+    while (end > 0 and out[end - 1] == '/') end -= 1;
+    return out[0..end];
+}
+
 /// GroupTarget is one resolved, existing member: alias name + host path.
 pub const GroupTarget = struct { name: []const u8, path: []const u8 };
 
@@ -314,8 +388,60 @@ pub fn rowPath(row: []const u8) []const u8 {
     return row;
 }
 
+/// rowName extracts the alias name from a `name -> path` picker row (before the
+/// last " -> "), or "" if the separator is absent (no name to report).
+pub fn rowName(row: []const u8) []const u8 {
+    if (std.mem.lastIndexOf(u8, row, " -> ")) |i| return row[0..i];
+    return "";
+}
+
 test "rowPath: path after the last ' -> ', else whole row" {
     try std.testing.expectEqualStrings("C:/a/b", rowPath("pa -> C:/a/b"));
     try std.testing.expectEqualStrings("/x", rowPath("name -> /x"));
     try std.testing.expectEqualStrings("noseparator", rowPath("noseparator"));
+}
+
+test "rowName: name before the last ' -> ', else empty" {
+    try std.testing.expectEqualStrings("pa", rowName("pa -> C:/a/b"));
+    try std.testing.expectEqualStrings("", rowName("noseparator"));
+}
+
+test "whichAlias: exact, child, deepest wins, sibling prefix is not a match" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const aliases = [_]store.Alias{
+        .{ .name = "acme", .path = "c:/proj/acme" },
+        .{ .name = "docs", .path = "c:/proj/acme/docs" },
+        .{ .name = "other", .path = "c:/proj/other/" }, // trailing slash in the store
+    };
+    try std.testing.expectEqualStrings("acme", (try whichAlias(a, &aliases, "c:/proj/acme")).?);
+    try std.testing.expectEqualStrings("acme", (try whichAlias(a, &aliases, "c:/proj/acme/src/x")).?);
+    try std.testing.expectEqualStrings("docs", (try whichAlias(a, &aliases, "c:/proj/acme/docs/img")).?);
+    try std.testing.expectEqualStrings("other", (try whichAlias(a, &aliases, "c:/proj/other/sub")).?);
+    // `acme2` shares a string prefix with `acme` but is a sibling dir, not a child.
+    try std.testing.expect((try whichAlias(a, &aliases, "c:/proj/acme2")) == null);
+    try std.testing.expect((try whichAlias(a, &aliases, "c:/elsewhere")) == null);
+}
+
+test "whichAlias: host separators and (on Windows) case-insensitivity" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const aliases = [_]store.Alias{.{ .name = "acme", .path = "c:/proj/acme" }};
+    try std.testing.expectEqualStrings("acme", (try whichAlias(a, &aliases, "c:\\proj\\acme\\src")).?);
+    if (store.sep == '\\') {
+        try std.testing.expectEqualStrings("acme", (try whichAlias(a, &aliases, "C:\\Proj\\ACME\\Src")).?);
+    }
+}
+
+test "whichAlias: two aliases on the same dir — first in file order wins" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const aliases = [_]store.Alias{
+        .{ .name = "aa", .path = "c:/proj/x" },
+        .{ .name = "zz", .path = "c:/proj/x" },
+    };
+    try std.testing.expectEqualStrings("aa", (try whichAlias(a, &aliases, "c:/proj/x/sub")).?);
 }

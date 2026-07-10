@@ -157,6 +157,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     };
     if (eql(verb, "list")) return cmdList(app);
     if (eql(verb, "list-names")) return cmdListNames(app);
+    if (eql(verb, "which")) return cmdWhich(app, rest);
     if (eql(verb, "version")) return cmdVersion(app);
     if (eql(verb, "edit")) return cmdEdit(app, "", rest);
     if (eql(verb, "prune")) return cmdPrune(app);
@@ -253,6 +254,7 @@ const addAlias = resolve.addAlias;
 const resolveAliasPath = resolve.resolveAliasPath;
 const resolveSegmented = resolve.resolveSegmented;
 const cmdContexts = resolve.cmdContexts;
+const cmdWhich = resolve.cmdWhich;
 const GroupTarget = resolve.GroupTarget;
 const resolveGroupTargets = resolve.resolveGroupTargets;
 const rowPath = resolve.rowPath;
@@ -597,7 +599,7 @@ fn navigate(app: *App, alias: []const u8) !u8 {
         },
     }
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
-    return enterDir(app, dir);
+    return enterDir(app, alias, dir);
 }
 
 // ---- paste / yank (thin alias-level entry; mechanics live in paste.zig) ------
@@ -725,6 +727,7 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
     const map = [_]struct { k: []const u8, v: []const u8 }{
         .{ .k = "--list", .v = "list" },                 .{ .k = "--ls", .v = "list" },
         .{ .k = "-l", .v = "list" },                     .{ .k = "--list-names", .v = "list-names" },
+        .{ .k = "--which", .v = "which" },               .{ .k = "-w", .v = "which" },
         .{ .k = "--edit", .v = "edit" },                 .{ .k = "-e", .v = "edit" },
         .{ .k = "--contexts", .v = "contexts" },         .{ .k = "-c", .v = "contexts" },
         .{ .k = "--prune", .v = "prune" },               .{ .k = "--sweep", .v = "sweep" },
@@ -807,6 +810,7 @@ fn printUsage(app: *App) !void {
         \\
         \\COMMANDS
         \\  --list,    -l        list every alias  (--list-names for bare names)
+        \\  --which,  -w [path]  print the alias containing a path (default: cwd)
         \\  --edit,    -e        open ~/.nix in your editor
         \\  --prune              interactively remove stale aliases
         \\  --sweep   [--min N]  find noisy dir trees to exclude from the picker
