@@ -8,10 +8,8 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
-const store = @import("store.zig");
 const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
-const util = @import("util.zig");
 
 const App = app_zig.App;
 const GroupTarget = resolve.GroupTarget;

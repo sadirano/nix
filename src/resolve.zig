@@ -10,7 +10,6 @@ const usage = @import("usage.zig");
 const segments = @import("segments.zig");
 const groups = @import("groups.zig");
 const picker = @import("picker.zig");
-const proc = @import("proc.zig");
 const util = @import("util.zig");
 
 const App = app_zig.App;

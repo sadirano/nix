@@ -147,7 +147,9 @@ pub fn appendTomlString(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []co
     try b.append(arena, '"');
 }
 
-/// listNames returns lowercase alias names, sorted.
+/// listNames returns lowercase alias names, sorted. Lowercased like
+/// loadAliases: a hand-edited `[Acme]` header must complete (and re-resolve)
+/// as the same `acme` every other path reports.
 pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]const u8) {
     var names: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, data, '\n');
@@ -156,7 +158,7 @@ pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]co
         if (line.len == 0 or line[0] != '[') continue;
         const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
         if (end <= 1) continue;
-        try names.append(arena, line[1..end]);
+        try names.append(arena, try util.lowerDup(arena, line[1..end]));
     }
     std.mem.sort([]const u8, names.items, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
@@ -383,10 +385,11 @@ test "listNames: sorted, skips non-section lines and empty brackets" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const toml = "[zeta]\npath='x'\n[acme]\npath='y'\n[]\nrandom = 1\n";
+    const toml = "[Zeta]\npath='x'\n[acme]\npath='y'\n[]\nrandom = 1\n";
     const names = try listNames(a, toml);
     try std.testing.expectEqual(@as(usize, 2), names.items.len);
     try std.testing.expectEqualStrings("acme", names.items[0]);
+    // Hand-edited mixed-case headers list lowercase, like every other path.
     try std.testing.expectEqualStrings("zeta", names.items[1]);
 }
 

@@ -208,6 +208,13 @@ pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: 
         try app.err.print("nix: invalid group name \"{s}\" ({s})\n", .{ group, nameErrorText(e) orelse @errorName(e) });
         return 1;
     };
+    // `+work+work` would be an immediate cycle; reject it at add time rather
+    // than letting every later use fail expansion. (Indirect cycles can still
+    // be assembled across adds; expandMembers catches those on use.)
+    if (member[0] == '+' and store.eqlFoldAscii(member[1..], group)) {
+        try app.err.print("nix: group \"+{s}\" can't contain itself\n", .{group});
+        return 1;
+    }
     if (!remove and member[0] != '+') {
         // Adding an unregistered alias: picker-route (register, then add) —
         // a `+sub` member is instead checked lazily by the dead-subgroup policy.

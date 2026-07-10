@@ -10,7 +10,6 @@ const editor = @import("editor.zig");
 const proc = @import("proc.zig");
 const store = @import("store.zig");
 const resolve = @import("resolve.zig");
-const util = @import("util.zig");
 
 const App = app_zig.App;
 const GroupTarget = resolve.GroupTarget;

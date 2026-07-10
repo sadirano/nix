@@ -113,6 +113,8 @@ s = "show"     # type `show acme` instead of `s acme`
 ff = "fzf"
 ```
 
+Custom names follow the alias name rules (no spaces, separators, or TOML metacharacters) and can't be `nix` itself; an unusable rename is ignored and the slot keeps its built-in name.
+
 `[grep]` sets the `sg` default — `all = true` makes every search run `rga`; the per-run `--all`/`-a` flag flips a single search either way:
 
 ```toml

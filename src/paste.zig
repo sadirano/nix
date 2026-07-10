@@ -9,7 +9,6 @@ const app_zig = @import("app.zig");
 const clipboard = @import("clipboard.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
-const util = @import("util.zig");
 
 const App = app_zig.App;
 

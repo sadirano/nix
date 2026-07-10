@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const store = @import("store.zig");
 const util = @import("util.zig");
 const parseStringArray = util.parseStringArray;
 const stripQuotes = util.stripQuotes;
@@ -124,8 +125,14 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         const val_start = std.mem.trim(u8, line[eq + 1 ..], " \t");
         if (std.mem.eql(u8, section, "shortcuts")) {
             // value is a (possibly quoted) command name; key is the builtin slot.
+            // An unusable name is ignored (the slot keeps its builtin name):
+            // the value becomes a wrapper exe filename and a completer target,
+            // so it gets the alias charset rules — and never "nix", which would
+            // shadow the canonical binary in ~/.nix/bin.
             const custom = stripQuotes(val_start);
-            if (custom.len > 0) {
+            const usable = custom.len > 0 and !std.ascii.eqlIgnoreCase(custom, "nix") and
+                if (store.validateAliasName(custom)) |_| true else |_| false;
+            if (usable) {
                 var sc: std.ArrayList(Shortcut) = .empty;
                 try sc.appendSlice(arena, cfg.shortcuts);
                 try sc.append(arena, .{ .builtin = try arena.dupe(u8, key), .custom = try arena.dupe(u8, custom) });
@@ -270,6 +277,24 @@ test "parseBool: truthy spellings, everything else false" {
     try std.testing.expect(!parseBool("false"));
     try std.testing.expect(!parseBool("0"));
     try std.testing.expect(!parseBool(""));
+}
+
+test "loadConfig shortcuts: unusable custom names are ignored" {
+    // Exercise the usable-name predicate through the same rules loadConfig
+    // applies: alias charset + never "nix".
+    const cases = [_]struct { name: []const u8, ok: bool }{
+        .{ .name = "show", .ok = true },
+        .{ .name = "nix", .ok = false }, // shadows the canonical binary
+        .{ .name = "NIX", .ok = false },
+        .{ .name = "my app", .ok = false }, // space
+        .{ .name = "a]b", .ok = false }, // TOML metachar
+        .{ .name = "a\\b", .ok = false }, // path separator
+    };
+    for (cases) |c| {
+        const usable = c.name.len > 0 and !std.ascii.eqlIgnoreCase(c.name, "nix") and
+            if (store.validateAliasName(c.name)) |_| true else |_| false;
+        try std.testing.expectEqual(c.ok, usable);
+    }
 }
 
 test "resolvedShortcutNames: defaults sorted; override replaces a slot" {

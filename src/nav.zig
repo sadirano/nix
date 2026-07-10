@@ -7,7 +7,6 @@ const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
-const store = @import("store.zig");
 const config = @import("config.zig");
 const resolve = @import("resolve.zig");
 const run_zig = @import("run.zig");
