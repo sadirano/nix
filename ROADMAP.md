@@ -82,6 +82,14 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - **Tests live with their code**; main.zig's root test block references every
   module so `zig build test` collects them all.
 
+### E2E harness (`zig build e2e`)
+
+- **Drives the real exe against a scratch `NIX_HOME`** (`src/e2e.zig`; CI,
+  nightly, and release all gate on it) — add/resolve/remove, groups,
+  actions, segments, export→import, and the read-only `--resolve` guarantee.
+- **Out of scope by design:** `--init` (it edits the real user PATH via the
+  registry) and every interactive path (fzf pickers, navigation subshells).
+
 ### Export / import (`--export` / `--import`)
 
 - **Single TOML document, not an archive** — greppable and stdout-friendly;
@@ -109,9 +117,10 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
   `--json`/`-q` (so scripts don't break) but emits only the human-readable
   report. Implement a structured JSON form for tooling.
-- ⬜ **Scripted end-to-end harness.** The historical "verified end-to-end
-  against a scratch NIX_HOME" runs were manual. A script that builds, points
-  `NIX_HOME` at a temp dir, and drives the real exe through
-  add/resolve/remove/groups/actions/export→import would lock those behaviors
-  in CI — most historical bugs lived at the dispatch/IO seam the unit tests
-  can't reach.
+- ⬜ **Dangling nested-group members error under the wrong name.** Deleting a
+  group that another group references (`all = ["+work"]`, then `+work
+  --remove`) makes `+all` expansion fail with `unknown group "+all"` — the
+  OUTER group's name, and a hard error where dead *alias* members are skipped
+  with a note. Decide: skip dead subgroup refs with a note (consistent), or
+  at least name the missing `+work` in the error. Found by the e2e harness,
+  which pins the current behavior.

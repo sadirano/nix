@@ -66,6 +66,23 @@ pub fn build(b: *std.Build) void {
     const deploy_step = b.step("deploy", "Build, then sync the binary + wrappers into ~/.nix/bin");
     deploy_step.dependOn(&deploy_cmd.step);
 
+    // `zig build e2e` builds the harness and runs it against the freshly
+    // built exe: real child processes, a scratch NIX_HOME, no interactivity.
+    const e2e = b.addExecutable(.{
+        .name = "e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/e2e.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const e2e_cmd = b.addRunArtifact(e2e);
+    e2e_cmd.addArtifactArg(exe);
+    // The harness's value is the child-process run, which the cache can't see.
+    e2e_cmd.has_side_effects = true;
+    const e2e_step = b.step("e2e", "Run the end-to-end harness against the built exe");
+    e2e_step.dependOn(&e2e_cmd.step);
+
     // `zig build test` runs both modules' test blocks (a test executable only
     // covers one module at a time, hence two).
     const mod_tests = b.addTest(.{ .root_module = mod });

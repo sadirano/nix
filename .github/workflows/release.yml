@@ -24,6 +24,9 @@ jobs:
       - name: Test
         run: zig build test
 
+      - name: End-to-end
+        run: zig build e2e
+
       # Portable build: -Dcpu=baseline avoids baking the runner's CPU extensions
       # into the binary (a native build crashes with an illegal instruction on
       # machines lacking them). Mirrors nix-build.cmd, minus the --sync deploy.

@@ -30,6 +30,12 @@ jobs:
       - name: Test
         run: zig build test
 
+      # Drive the real exe through add/resolve/remove/groups/actions/segments/
+      # export→import against a scratch NIX_HOME — the dispatch/IO seam the
+      # unit tests can't reach.
+      - name: End-to-end
+        run: zig build e2e
+
       # Make sure the portable release build (baseline CPU, Windows target) still
       # compiles — the artifact shipped to users.
       - name: Build (release, portable)

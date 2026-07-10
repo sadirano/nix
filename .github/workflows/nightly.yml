@@ -34,6 +34,9 @@ jobs:
       - name: Test
         run: zig build test
 
+      - name: End-to-end
+        run: zig build e2e
+
       # Drop the local rolling `nightly` tag before building so `git describe`
       # reports the semver base (e.g. v0.9.0-pre-12-gABCDEF) rather than the
       # stale `nightly` tag fetched from a previous run.
