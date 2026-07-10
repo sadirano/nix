@@ -287,9 +287,20 @@ pub fn main(init: std.process.Init) !void {
         const o_exe = join(&c, &.{ root, "o.exe" });
         try writeFile(&c, o_exe, exe_bytes);
         c.exe = o_exe;
-        const r = try c.run(&.{"pa+"});
+        var r = try c.run(&.{"pa+"});
         c.exe = real_exe;
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "invalid group token") != null, "o with a malformed group token errors, no picker", r);
+
+        // A [shortcuts] rename: a wrapper installed under the custom name must
+        // desugar to the builtin slot's action, not fall through to `nix <alias>`.
+        const show_exe = join(&c, &.{ root, "show.exe" });
+        try writeFile(&c, show_exe, exe_bytes);
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nr = \"show\"\n");
+        c.exe = show_exe;
+        r = try c.run(&.{ "pa", ":hello" });
+        c.exe = real_exe;
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a renamed wrapper ([shortcuts]) desugars via argv0", r);
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
     }
 
     // --- segments ---------------------------------------------------------------

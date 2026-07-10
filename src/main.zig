@@ -89,7 +89,18 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     const argv0 = raw_args[0];
     var args = try preprocessArgs(app.arena, raw_args[1..]);
 
-    if (multicallAction(argv0)) |action| {
+    const mc_action = multicallAction(argv0) orelse blk: {
+        // Not a builtin wrapper and not `nix` itself: it may be a [shortcuts]
+        // rename, whose wrapper is installed under the custom name. Config is
+        // consulted only on this miss path, so default installs never pay the
+        // read; any config error just means "not a wrapper".
+        var lb: [64]u8 = undefined;
+        const base = wrapperName(argv0, &lb) orelse break :blk null;
+        if (eql(base, "nix")) break :blk null;
+        const cfg = config.loadConfig(app.arena, app.io, app.home) catch break :blk null;
+        break :blk renamedMulticallAction(cfg, argv0);
+    };
+    if (mc_action) |action| {
         const d = desugarMultiCall(app.arena, action, args) catch |e| return e;
         if (d.is_nav) return navigate(app, d.nav_alias);
         if (d.nav_after) {
@@ -756,22 +767,47 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
     return .{ .args = out, .nav_alias = "", .is_nav = false };
 }
 
-/// multicallAction maps argv0's basename (minus .exe) to an action.
-fn multicallAction(argv0: []const u8) ?[]const u8 {
-    const base0 = std.fs.path.basename(argv0);
-    var base = base0;
+/// wrapperName normalizes argv0 to a lowercase basename without .exe, or null
+/// if it doesn't fit the buffer (no wrapper name is that long).
+fn wrapperName(argv0: []const u8, lb: *[64]u8) ?[]const u8 {
+    var base = std.fs.path.basename(argv0);
     if (std.ascii.endsWithIgnoreCase(base, ".exe")) base = base[0 .. base.len - 4];
-    var lb: [64]u8 = undefined;
     if (base.len > lb.len) return null;
-    const name = std.ascii.lowerString(lb[0..base.len], base);
-    if (eql(name, "nix")) return null;
+    return std.ascii.lowerString(lb[0..base.len], base);
+}
+
+/// slotAction maps a builtin wrapper slot name to its action verb.
+fn slotAction(slot: []const u8) ?[]const u8 {
     const map = [_]struct { k: []const u8, v: []const u8 }{
         .{ .k = "o", .v = "navigate" }, .{ .k = "e", .v = "edit" },
         .{ .k = "s", .v = "explore" },  .{ .k = "y", .v = "yank" },
         .{ .k = "p", .v = "paste" },    .{ .k = "r", .v = "run" },
         .{ .k = "sg", .v = "grep" },    .{ .k = "ff", .v = "find" },
     };
-    for (map) |m| if (eql(name, m.k)) return m.v;
+    for (map) |m| if (eql(slot, m.k)) return m.v;
+    return null;
+}
+
+/// multicallAction maps argv0's basename (minus .exe) to an action — builtin
+/// wrapper names only; config [shortcuts] renames are resolved separately by
+/// renamedMulticallAction, so the default install never reads config here.
+fn multicallAction(argv0: []const u8) ?[]const u8 {
+    var lb: [64]u8 = undefined;
+    const name = wrapperName(argv0, &lb) orelse return null;
+    if (eql(name, "nix")) return null;
+    return slotAction(name);
+}
+
+/// renamedMulticallAction resolves argv0 against config.toml [shortcuts]
+/// renames — the fallback when the builtin wrapper map misses. Without it a
+/// renamed wrapper (`show.exe` from `s = "show"`) would fall through to the
+/// canonical grammar and treat `show acme` as a bare `nix acme` resolve.
+fn renamedMulticallAction(cfg: config.Config, argv0: []const u8) ?[]const u8 {
+    var lb: [64]u8 = undefined;
+    const name = wrapperName(argv0, &lb) orelse return null;
+    for (cfg.shortcuts) |sc| {
+        if (std.ascii.eqlIgnoreCase(sc.custom, name)) return slotAction(sc.builtin);
+    }
     return null;
 }
 
@@ -1006,6 +1042,20 @@ test "multicallAction: wrapper-name mapping, .exe stripping, case-fold" {
     // The canonical binary name is not a multicall wrapper.
     try std.testing.expect(multicallAction("nix") == null);
     try std.testing.expect(multicallAction("unknown") == null);
+}
+
+test "renamedMulticallAction: [shortcuts] renames map to the builtin's action" {
+    const cfg = config.Config{ .shortcuts = &.{
+        .{ .builtin = "s", .custom = "show" },
+        .{ .builtin = "sg", .custom = "search" },
+    } };
+    try std.testing.expectEqualStrings("explore", renamedMulticallAction(cfg, "C:/bin/show.exe").?);
+    try std.testing.expectEqualStrings("grep", renamedMulticallAction(cfg, "SEARCH").?);
+    // Names not renamed stay with the builtin map, not this fallback.
+    try std.testing.expect(renamedMulticallAction(cfg, "o") == null);
+    try std.testing.expect(renamedMulticallAction(cfg, "unknown") == null);
+    // No renames at all: nothing matches.
+    try std.testing.expect(renamedMulticallAction(.{}, "show") == null);
 }
 
 test "protectionMap: flat + transitive inheritance, most recent group wins" {

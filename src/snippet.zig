@@ -44,12 +44,27 @@ pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []con
     const cfg = try config.loadConfig(arena, io, home);
     try agents.write(arena, io, home, cfg);
     const names = try config.resolvedShortcutNames(arena, cfg);
-    if (is_windows) return writePwsh(arena, io, home, exe, names);
+    if (is_windows) {
+        // Builtin slot names renamed away in [shortcuts] leave their old
+        // wrapper exes behind — collect them so --sync deletes them, or the
+        // stale `s.exe` keeps answering after a rename to `show`. A builtin
+        // name still claimed by ANY slot's effective name is kept (swaps).
+        var renamed_away: std.ArrayList([]const u8) = .empty;
+        for (config.builtinShortcuts()) |bsc| {
+            var in_use = false;
+            for (names) |n| if (std.ascii.eqlIgnoreCase(n, bsc.builtin)) {
+                in_use = true;
+                break;
+            };
+            if (!in_use) try renamed_away.append(arena, bsc.builtin);
+        }
+        return writePwsh(arena, io, home, exe, names, renamed_away.items);
+    }
     try writeBash(arena, io, home, exe, cfg);
     return &.{};
 }
 
-fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, names: [][]const u8) ![]const []const u8 {
+fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, names: [][]const u8, renamed_away: []const []const u8) ![]const []const u8 {
     const path = try pwshPath(arena, home);
     if (std.fs.path.dirname(path)) |d| try mkdirAll(io, d);
     const bin = try std.fs.path.join(arena, &.{ home, "bin" });
@@ -72,7 +87,7 @@ fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     try b.appendSlice(arena, " -ScriptBlock $nixAliasCompleter\n");
 
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = b.items });
-    return installExeWrappers(arena, io, bin, exe, names);
+    return installExeWrappers(arena, io, bin, exe, names, renamed_away);
 }
 
 fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, cfg: config.Config) !void {
@@ -156,9 +171,15 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
 /// Returns the names whose wrapper could not be replaced (running exes are
 /// locked on Windows) AND whose on-disk copy differs from the new binary —
 /// those keep answering with the OLD version until updated.
-fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []const u8, names: [][]const u8) ![]const []const u8 {
+fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []const u8, names: [][]const u8, renamed_away: []const []const u8) ![]const []const u8 {
     try mkdirAll(io, bin);
     const ext = if (is_windows) ".exe" else "";
+    // Renamed-away builtin wrappers: delete so the old name stops answering.
+    // Best-effort — a locked (running) exe stays until the next sync.
+    for (renamed_away) |name| {
+        const dst = try std.fmt.allocPrint(arena, "{s}{c}{s}{s}", .{ bin, std.fs.path.sep, name, ext });
+        Io.Dir.cwd().deleteFile(io, dst) catch {};
+    }
     const canonical = try std.fmt.allocPrint(arena, "{s}{c}nix{s}", .{ bin, std.fs.path.sep, ext });
     if (!samePath(canonical, exe)) {
         const data = try Io.Dir.cwd().readFileAlloc(io, exe, arena, .unlimited);

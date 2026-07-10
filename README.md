@@ -136,7 +136,7 @@ Without a working `es` (not installed, or the Everything service isn't running),
 search_roots = ['~/projects', 'D:\work']
 ```
 
-After editing, run `nix --sync` and restart your shell to pick up renamed shortcuts or picker changes.
+After editing, run `nix --sync` and restart your shell to pick up renamed shortcuts or picker changes. On Windows `--sync` installs the wrapper exe under the new name and deletes the old builtin one, so the previous name stops answering.
 
 ## Sub-aliases (`@`-segments)
 
