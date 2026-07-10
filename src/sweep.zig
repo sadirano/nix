@@ -12,7 +12,6 @@ const util = @import("util.zig");
 
 const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
-const exePath = app_zig.exePath;
 const lowerDup = util.lowerDup;
 
 fn eql(a: []const u8, b: []const u8) bool {
@@ -60,8 +59,12 @@ pub fn cmdSweep(app: *App, rest: [][]const u8) !u8 {
     var alias_paths: std.ArrayList([]const u8) = .empty;
     for (aliases.items) |a| try alias_paths.append(app.arena, a.path);
 
-    const raw = proc.captureOutput(app.arena, app.io, &.{ "es", "/ad" }, ".") catch "";
-    const cands = try sweepAnalyze(app, raw, excludes, alias_paths.items, min);
+    // Stream the index dump line-by-line: a whole-Everything `es /ad` listing
+    // can run to hundreds of MB, so only the per-parent counts are kept, never
+    // the dump itself. An es failure just leaves the counts empty.
+    var counter = SweepCounter{ .arena = app.arena, .excludes = excludes, .counts = std.StringHashMap(i64).init(app.arena) };
+    proc.forEachLine(app.arena, app.io, &.{ "es", "/ad" }, ".", .{ .ctx = &counter, .func = SweepCounter.onLine }) catch {};
+    const cands = try sweepRank(app.arena, &counter.counts, alias_paths.items, min);
     if (cands.len == 0) {
         try app.out.print("no directories with {d}+ unfiltered subfolders found\n", .{min});
         return 0;
@@ -116,28 +119,35 @@ fn sweepFragment(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
     return frag;
 }
 
-fn sweepAnalyze(app: *App, raw: []const u8, excludes: []const []const u8, alias_paths: []const []const u8, min: i64) ![]SweepCand {
-    const arena = app.arena;
-    var lower_ex: std.ArrayList([]const u8) = .empty;
-    for (excludes) |f| try lower_ex.append(arena, try lowerDup(arena, f));
+/// SweepCounter aggregates the streamed `es /ad` dump into per-parent subdir
+/// counts. Lines are transient (see proc.LineSink), so parent keys are duped on
+/// first insert; excluded subtrees are matched case-insensitively in place
+/// rather than lowercasing every line of the dump.
+const SweepCounter = struct {
+    arena: std.mem.Allocator,
+    excludes: []const []const u8,
+    counts: std.StringHashMap(i64),
 
-    var counts = std.StringHashMap(i64).init(arena);
-    var lines = std.mem.splitScalar(u8, raw, '\n');
-    scan: while (lines.next()) |l0| {
-        const p = std.mem.trim(u8, l0, " \t\r");
-        if (p.len == 0) continue;
-        const lp = try lowerDup(arena, p);
-        for (lower_ex.items) |frag| {
-            if (std.mem.indexOf(u8, lp, frag) != null) continue :scan;
+    fn onLine(ctx: *anyopaque, line: []const u8) anyerror!void {
+        const self: *SweepCounter = @ptrCast(@alignCast(ctx));
+        const p = std.mem.trim(u8, line, " \t\r");
+        if (p.len == 0) return;
+        for (self.excludes) |frag| {
+            if (std.ascii.findIgnoreCase(p, frag) != null) return;
         }
-        const cut = std.mem.lastIndexOfScalar(u8, p, '\\') orelse continue;
-        if (cut == 0) continue;
+        const cut = std.mem.lastIndexOfScalar(u8, p, '\\') orelse return;
+        if (cut == 0) return;
         const parent = p[0..cut];
-        const gop = try counts.getOrPut(parent);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
+        const gop = try self.counts.getOrPut(parent);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.arena.dupe(u8, parent);
+            gop.value_ptr.* = 0;
+        }
         gop.value_ptr.* += 1;
     }
+};
 
+fn sweepRank(arena: std.mem.Allocator, counts: *std.StringHashMap(i64), alias_paths: []const []const u8, min: i64) ![]SweepCand {
     var cands: std.ArrayList(SweepCand) = .empty;
     var it = counts.iterator();
     while (it.next()) |e| {
@@ -208,4 +218,26 @@ fn sweepAnalyze(app: *App, raw: []const u8, excludes: []const []const u8, alias_
     }.lt);
     if (kept.items.len > sweep_max_suggestions) return kept.items[0..sweep_max_suggestions];
     return kept.items;
+}
+
+test "sweep: streaming counter + rank find flooding parents" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var counter = SweepCounter{
+        .arena = a,
+        .excludes = &.{"\\skipme\\"},
+        .counts = std.StringHashMap(i64).init(a),
+    };
+    const lines = [_][]const u8{
+        "C:\\w\\flood\\a", "C:\\w\\flood\\b",  "C:\\w\\flood\\c",
+        "C:\\w\\SKIPME\\x", // excluded, case-insensitive
+        "C:\\w\\quiet\\only", // below min
+        "", "   ",
+    };
+    for (&lines) |l| try SweepCounter.onLine(@ptrCast(&counter), l);
+    const cands = try sweepRank(a, &counter.counts, &.{}, 3);
+    try std.testing.expectEqual(@as(usize, 1), cands.len);
+    try std.testing.expectEqualStrings("C:\\w\\flood", cands[0].path);
+    try std.testing.expectEqual(@as(i64, 3), cands[0].count);
 }

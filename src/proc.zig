@@ -215,6 +215,63 @@ fn captureOutputImpl(arena: std.mem.Allocator, io: Io, argv: []const []const u8,
     return out;
 }
 
+/// LineSink is forEachLine's consumer: called once per stdout line (newline
+/// stripped, trailing CR trimmed). The slice is only valid during the call —
+/// dupe anything kept.
+pub const LineSink = struct {
+    ctx: *anyopaque,
+    func: *const fn (ctx: *anyopaque, line: []const u8) anyerror!void,
+};
+
+/// forEachLine spawns argv in cwd and feeds every stdout line to `sink` as it
+/// arrives — the streaming replacement for captureOutput when the caller only
+/// aggregates (e.g. --sweep over the whole Everything index) and must not hold
+/// the full dump in memory. Memory stays bounded by the longest line. stdin and
+/// stderr are inherited, like captureOutput.
+pub fn forEachLine(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8, sink: LineSink) !void {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .inherit,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    });
+    // On a sink/alloc error, kill (which also reaps) so the child can't block
+    // writing into a full pipe nobody drains.
+    errdefer child.kill(io);
+    const src = child.stdout.?;
+    var pending: std.ArrayList(u8) = .empty;
+    var chunk: [16 * 1024]u8 = undefined;
+    var eof = false;
+    while (true) {
+        var iov = [_][]u8{chunk[0..]};
+        const n = src.readStreaming(io, &iov) catch break;
+        if (n == 0) {
+            eof = true;
+            break;
+        }
+        try pending.appendSlice(arena, chunk[0..n]);
+        var consumed: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, pending.items, consumed, '\n')) |nl| {
+            const line = std.mem.trimEnd(u8, pending.items[consumed..nl], "\r");
+            consumed = nl + 1;
+            try sink.func(sink.ctx, line);
+        }
+        if (consumed > 0) {
+            const rest = pending.items[consumed..];
+            std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
+            pending.shrinkRetainingCapacity(rest.len);
+        }
+    }
+    // Final line when the child ended without a trailing newline.
+    if (pending.items.len > 0) try sink.func(sink.ctx, std.mem.trimEnd(u8, pending.items, "\r"));
+    if (eof) {
+        _ = child.wait(io) catch {};
+    } else {
+        child.kill(io);
+    }
+}
+
 /// probeOutput runs argv with stdin AND stderr discarded (only stdout captured)
 /// — for `--doctor` health probes that must never block on input or leak a
 /// tool's error text. With stdin ignored, a tool that tries to read input gets
