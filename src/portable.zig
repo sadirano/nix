@@ -106,23 +106,30 @@ pub fn render(arena: std.mem.Allocator, io: Io, home: []const u8) ![]const u8 {
     }
 
     // [actions.<alias>] — central per-alias actions, scoped to known aliases
-    // (an orphan actions file for a deleted alias is not exported).
-    for (aliases.items) |a| {
-        const acts = try actions.loadFile(arena, io, try actions.centralPath(arena, home, a.name));
-        if (acts.len == 0) continue;
-        try b.appendSlice(arena, "[actions.");
-        try b.appendSlice(arena, a.name);
-        try b.appendSlice(arena, "]\n");
-        for (acts) |ac| {
-            try b.appendSlice(arena, ac.name);
-            try b.appendSlice(arena, " = ");
-            try store.appendTomlString(arena, &b, ac.command);
-            try b.append(arena, '\n');
-        }
-        try b.append(arena, '\n');
-    }
+    // (an orphan actions file for a deleted alias is not exported), plus the
+    // machine-wide [actions._default] (the name is reserved, never an alias,
+    // so import lands it back in _default.toml via the same centralPath).
+    for (aliases.items) |a| try appendActionSet(arena, io, home, &b, a.name);
+    try appendActionSet(arena, io, home, &b, "_default");
 
     return b.items;
+}
+
+/// appendActionSet emits one `[actions.<name>]` table from the central actions
+/// file of that name, or nothing when the file is absent/empty.
+fn appendActionSet(arena: std.mem.Allocator, io: Io, home: []const u8, b: *std.ArrayList(u8), name: []const u8) !void {
+    const acts = try actions.loadFile(arena, io, try actions.centralPath(arena, home, name));
+    if (acts.len == 0) return;
+    try b.appendSlice(arena, "[actions.");
+    try b.appendSlice(arena, name);
+    try b.appendSlice(arena, "]\n");
+    for (acts) |ac| {
+        try b.appendSlice(arena, ac.name);
+        try b.appendSlice(arena, " = ");
+        try store.appendTomlString(arena, b, ac.command);
+        try b.append(arena, '\n');
+    }
+    try b.append(arena, '\n');
 }
 
 // ---- import ----------------------------------------------------------------

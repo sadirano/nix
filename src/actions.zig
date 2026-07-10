@@ -1,8 +1,10 @@
 //! Per-alias named actions (ROADMAP §2): a small `[actions]` TOML table mapping
 //! action names to shell-command strings, run as `r <alias> :<name>` (and across
-//! a group with `r +<group> :<name>`). Loaded from two places — project-local
+//! a group with `r +<group> :<name>`). Loaded from three places — project-local
 //! `<alias-dir>/.nix/actions.toml` (travels with the repo) overriding central
-//! `~/.nix/actions/<alias>.toml` (private) — mirroring the segments precedence.
+//! `~/.nix/actions/<alias>.toml` (private) overriding machine-wide
+//! `~/.nix/actions/_default.toml` (personal actions available from any alias;
+//! `_default` is a reserved name, never a registrable alias).
 
 const std = @import("std");
 const Io = std.Io;
@@ -20,6 +22,13 @@ pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 
 pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8) ![]const u8 {
     const file = try std.fmt.allocPrint(arena, "{s}.toml", .{alias});
     return std.fs.path.join(arena, &.{ home, "actions", file });
+}
+
+/// defaultPath: <home>/actions/_default.toml — machine-wide defaults consulted
+/// after the project-local and central per-alias files, so a personal action
+/// (open agent, git status, …) is defined once and works via `r <any-alias> :name`.
+pub fn defaultPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
+    return centralPath(arena, home, "_default");
 }
 
 /// loadFile reads and parses a file, or returns empty when it's absent.

@@ -275,6 +275,25 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{ "pa", "--run", ":missing" });
         c.check(r.code != 0, "an unknown action errors", r);
+
+        // Machine-wide defaults: _default.toml is the last layer — its own
+        // names work from any alias, but never shadow project/central ones.
+        try writeFile(&c, join(&c, &.{ home, "actions", "_default.toml" }),
+            "[actions]\nhello = \"echo from-default\"\nonly = \"echo from-default\"\ndefonly = \"echo default-only\"\n");
+        r = try c.run(&.{ "pa", "--run", ":defonly" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "default-only") != null, "a machine-wide default action runs via any alias", r);
+        r = try c.run(&.{ "pa", "--run", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "project action still wins over the default layer", r);
+        r = try c.run(&.{ "pa", "--run", ":only" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "central-only") != null, "central action still wins over the default layer", r);
+        r = try c.run(&.{ "pa", "--run", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "defonly") != null, "`--run :` lists machine-wide defaults too", r);
+
+        r = try c.run(&.{ "_default", join(&c, &.{ root, "reserved" }) });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "reserved") != null, "registering the _default alias is rejected", r);
+
+        r = try c.run(&.{"--export"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[actions._default]") != null, "--export includes the machine-wide default actions", r);
     }
 
     // --- multicall via argv0 (wrapper copies; Windows-shaped install) ----------

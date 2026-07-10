@@ -137,24 +137,36 @@ pub fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
 
 /// resolveAction looks up a named action for an alias: project-local
 /// `<dir>/.nix/actions.toml` first (wins), then central
-/// `~/.nix/actions/<alias>.toml`. Returns the command string, or null if absent.
+/// `~/.nix/actions/<alias>.toml`, then the machine-wide
+/// `~/.nix/actions/_default.toml`. Returns the command string, or null if absent.
 pub fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?[]const u8 {
-    const pp = try actions.projectPath(app.arena, dir);
-    if (actions.find(try actions.loadFile(app.arena, app.io, pp), name)) |c| return c;
-    const cp = try actions.centralPath(app.arena, app.home, alias);
-    return actions.find(try actions.loadFile(app.arena, app.io, cp), name);
+    for (try actionPaths(app, alias, dir)) |p| {
+        if (actions.find(try actions.loadFile(app.arena, app.io, p), name)) |c| return c;
+    }
+    return null;
 }
 
-/// listActions prints an alias's actions (project-local merged over central) as a
-/// padded NAME/COMMAND table — the `r <alias> :` form.
+/// actionPaths returns the action files for an alias in precedence order:
+/// project-local, central per-alias, machine-wide default.
+fn actionPaths(app: *App, alias: []const u8, dir: []const u8) ![]const []const u8 {
+    const paths = try app.arena.alloc([]const u8, 3);
+    paths[0] = try actions.projectPath(app.arena, dir);
+    paths[1] = try actions.centralPath(app.arena, app.home, alias);
+    paths[2] = try actions.defaultPath(app.arena, app.home);
+    return paths;
+}
+
+/// listActions prints an alias's actions (project-local merged over central,
+/// over machine-wide defaults) as a padded NAME/COMMAND table — the
+/// `r <alias> :` form.
 pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
     const pp = try actions.projectPath(app.arena, dir);
-    const cp = try actions.centralPath(app.arena, app.home, alias);
     var merged: std.ArrayList(actions.Action) = .empty;
-    for (try actions.loadFile(app.arena, app.io, pp)) |a| try merged.append(app.arena, a);
-    outer: for (try actions.loadFile(app.arena, app.io, cp)) |a| {
-        for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // project wins
-        try merged.append(app.arena, a);
+    for (try actionPaths(app, alias, dir)) |p| {
+        outer: for (try actions.loadFile(app.arena, app.io, p)) |a| {
+            for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // earlier layer wins
+            try merged.append(app.arena, a);
+        }
     }
     if (merged.items.len == 0) {
         try app.out.print("no actions for \"{s}\" — define them in {s}\n", .{ alias, pp });

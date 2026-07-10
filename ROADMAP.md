@@ -62,10 +62,14 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - **A leading `:` marks a named action** vs a literal command, so `r` stays
   unambiguous. Actions run as a shell string (`cmd /c` / `sh -c`) so
   `&&`/pipes/redirects work.
-- **Project-local wins over central:** `<alias-dir>/.nix/actions.toml` is
-  committed and travels with the repo; `~/.nix/actions/<alias>.toml` stays
-  private per-machine. Group fan-out runs each member's OWN action; members
-  without it are skipped with a note.
+- **Project-local wins over central, central over machine-wide:**
+  `<alias-dir>/.nix/actions.toml` is committed and travels with the repo;
+  `~/.nix/actions/<alias>.toml` stays private per-machine;
+  `~/.nix/actions/_default.toml` holds personal cross-project actions usable
+  from any alias (`_default` is a reserved name — never registrable, so the
+  file can share the central dir and export/import as a normal action set).
+  Group fan-out runs each member's OWN action (defaults included); members
+  resolving nothing are skipped with a note.
 - **Scripts shadow by PATH order** (project `.nix/scripts`, then central);
   the env rebuilds from the original PATH each run, so group fan-out never
   stacks dirs.

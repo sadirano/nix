@@ -206,6 +206,9 @@ pub fn trimLine(line: []const u8) []const u8 {
 pub fn validateAliasName(name: []const u8) !void {
     const t = std.mem.trim(u8, name, " \t\r\n");
     if (t.len == 0) return error.EmptyName;
+    // `_default` names the machine-wide actions file (~/.nix/actions/_default.toml);
+    // an alias by that name would share its central actions file. See actions.zig.
+    if (eqlFoldAscii(t, "_default")) return error.ReservedName;
     for (name) |c| {
         if (c == '/' or c == '\\') return error.PathSeparatorInName;
         if (c == '@') return error.AtInName;
@@ -370,6 +373,8 @@ test "validateAliasName: rejects separators, @, spaces, control chars, empty" {
     try std.testing.expectError(error.PlusInName, validateAliasName("a+b"));
     try std.testing.expectError(error.SpaceInName, validateAliasName("a b"));
     try std.testing.expectError(error.ControlInName, validateAliasName("a\tb"));
+    try std.testing.expectError(error.ReservedName, validateAliasName("_default"));
+    try std.testing.expectError(error.ReservedName, validateAliasName("_DEFAULT"));
     // TOML metacharacters would corrupt aliases.toml/groups.toml round-trips:
     // `[a]b]` reads back as `a`, `#work` becomes a comment, `=`/quotes split
     // or truncate group lines.

@@ -33,6 +33,7 @@ pub fn nameErrorText(e: anyerror) ?[]const u8 {
         error.SpaceInName => "names can't contain spaces",
         error.ControlInName => "names can't contain control characters",
         error.TomlMetaInName => "names can't contain [ ] = # or quotes",
+        error.ReservedName => "\"_default\" is reserved (machine-wide default actions)",
         else => null,
     };
 }

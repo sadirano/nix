@@ -135,9 +135,17 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
       (no long buffering pause before fzf appears) — **Esc out, don't delete**.
 - [ ] `sg <alias> <pat>` and `ff <alias>` still behave normally end-to-end.
 
-## 12. Release hygiene
+## 12. Machine-wide default actions (`~/.nix/actions/_default.toml`)
 
-- [ ] Release CI green: unit tests, e2e (50 checks), baked-version gate.
+- [ ] 🧪 Create `_default.toml` with a `[actions]` entry; `r <any-alias> :<name>`
+      runs it and `r <alias> :` lists it.
+- [ ] 🧪 A project-local or central per-alias action of the same name wins.
+- [ ] 🧪 `nix _default <path>` is rejected ("reserved").
+- [ ] 🧪 `nix --export` includes `[actions._default]`; re-import restores it.
+
+## 13. Release hygiene
+
+- [ ] Release CI green: unit tests, e2e (56 checks), baked-version gate.
 - [ ] Edit the auto-generated release notes to lead with an **Upgrading**
       section covering the breaking changes:
       - The PowerShell snippet is retired: the first `--sync`/`--init` deletes

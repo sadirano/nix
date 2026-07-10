@@ -362,8 +362,9 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
         try app.err.writeAll("usage: r +<group> <cmd> [args...]   (or :<action>)\n");
         return 1;
     }
-    // Named action (`r +<group> :test`): each member runs its OWN action; a member
-    // lacking it is skipped with a note. Otherwise a literal command in each dir.
+    // Named action (`r +<group> :test`): each member runs its OWN action (with the
+    // machine-wide _default.toml as the last fallback); a member resolving nothing
+    // is skipped with a note. Otherwise a literal command in each dir.
     const action_name: ?[]const u8 = if (argv[0].len > 0 and argv[0][0] == ':') argv[0][1..] else null;
     if (action_name) |n| {
         if (n.len == 0) {

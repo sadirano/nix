@@ -74,7 +74,9 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   recurring build/test/serve/deploy command, add it to the project's
         \\   `.nix/actions.toml` under `[actions]` and point the user at
         \\   `{[r]s} <alias> :<name>`. Full scripts go in the project's `.nix/scripts/`
-        \\   and run by bare name: `{[r]s} <alias> build`.
+        \\   and run by bare name: `{[r]s} <alias> build`. Personal machine-wide
+        \\   actions live in `~/.nix/actions/_default.toml` (lowest precedence,
+        \\   available via `{[r]s} <any-alias> :<name>`).
         \\4. **In your own shell, resolve — don't `{[o]s}`.** `{[o]s}` is shell glue that
         \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
         \\   to get the path, then use the absolute path. `{[r]s} <alias> <cmd>` works
