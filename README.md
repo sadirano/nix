@@ -55,6 +55,8 @@ zig-out\bin\nix.exe --sync                 # deploy into ~/.nix/bin
 
 `nix --init` creates `~/.nix/`, installs the `.exe` command wrappers into `~/.nix/bin`, and adds that dir to your user PATH — restart your shell once and the short commands below are live in every shell (PowerShell, cmd, anything). It never touches your shell profile; the wrappers on PATH are the whole integration on Windows. (On Unix-likes a snippet written to `~/.nix/shell/` *is* the integration — shell functions that cd in place — so there you add the printed line to `.bashrc`/`.zshrc` yourself.)
 
+One PowerShell gotcha: pwsh resolves aliases before PATH exes, and `r` is a built-in alias for `Invoke-History` — so of the eight commands it's the one pwsh silently shadows. Add `Remove-Item Alias:r -Force` to your `$PROFILE` (cmd and clink have no alias layer and are unaffected).
+
 ## Use
 
 ```powershell

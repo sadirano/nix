@@ -325,6 +325,9 @@ pub fn cmdInit(app: *App) !u8 {
     // are the whole integration; on POSIX users add the snippet line themselves.
     if (proc.is_windows) {
         try app.err.writeAll("restart your shell to activate o/e/s/y/p/r, sg/ff\n");
+        // PowerShell resolves aliases before PATH exes, and `r` is a built-in
+        // alias (Invoke-History) — the one wrapper pwsh silently shadows.
+        try app.err.writeAll("PowerShell users: the built-in `r` alias shadows r.exe — add to $PROFILE:  Remove-Item Alias:r -Force\n");
     } else {
         const sh = try snippet.bashPath(app.arena, app.home);
         try app.err.print("add to your shell rc:  [ -f '{s}' ] && . '{s}'\n", .{ sh, sh });
