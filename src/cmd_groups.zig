@@ -17,6 +17,7 @@ const find = @import("find.zig");
 const run_zig = @import("run.zig");
 const nav = @import("nav.zig");
 const paste = @import("paste.zig");
+const picker = @import("picker.zig");
 
 const App = app_zig.App;
 const isGlobalFlag = app_zig.isGlobalFlag;
@@ -181,7 +182,10 @@ fn cmdGroupDelete(app: *App, group: []const u8) !u8 {
 }
 
 /// dispatchGroupAdd handles `member+group` (add, idempotent) and
-/// `member+group --remove` (drop a member).
+/// `member+group --remove` (drop a member). Adding an unregistered alias
+/// routes through the unknown-alias picker (register first, then add) rather
+/// than recording a dead member; `--remove` still accepts dead members —
+/// that's how they're cleaned up.
 pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: []const []const u8) !u8 {
     var remove = false;
     for (rest) |a| {
@@ -201,6 +205,19 @@ pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: 
         try app.err.print("nix: invalid group name \"{s}\" ({s})\n", .{ group, nameErrorText(e) orelse @errorName(e) });
         return 1;
     };
+    if (!remove and member[0] != '+') {
+        // Adding an unregistered alias: picker-route (register, then add) —
+        // a `+sub` member is instead checked lazily by the dead-subgroup policy.
+        const adata = try store.readAliasesFile(app.arena, app.io, app.home);
+        if ((try store.scanForAlias(app.arena, adata, member)) == null) {
+            if (app.no_prompt) {
+                try app.err.print("nix: unknown alias \"{s}\" — not added to +{s} (register it: nix {s} <path>)\n", .{ member, group, member });
+                return 1;
+            }
+            const pick = (try picker.pickDirectory(app, member)) orelse return 1;
+            _ = try addAlias(app, member, pick);
+        }
+    }
 
     const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
     var gs = try groups.loadGroups(app.arena, gdata);

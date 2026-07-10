@@ -186,6 +186,12 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "+work", "--resolve" });
         c.check(r.code == 0 and hasLine(r.out, pa) and hasLine(r.out, pb), "+group --resolve prints every member path", r);
 
+        // Adding an unregistered member picker-routes; -q (no picker) must
+        // error without recording a dead member.
+        r = try c.run(&.{ "ghost+work", "-q" });
+        const gl = try c.run(&.{ "+work", "--list" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "unknown alias") != null and !hasRow(gl.out, "ghost"), "-q add of an unregistered member errors, records nothing", r);
+
         // Nested groups: hand-edit groups.toml (a documented, supported format).
         const gpath = join(&c, &.{ home, "groups.toml" });
         const gdata = readFileOr(&c, gpath, "");
