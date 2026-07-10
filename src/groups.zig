@@ -123,15 +123,21 @@ pub fn findGroup(groups: []const Group, name: []const u8) ?usize {
     return null;
 }
 
+/// SkippedRef records a dangling `+sub` member dropped during expansion: the
+/// missing group and the group whose member list references it.
+pub const SkippedRef = struct { group: []const u8, referenced_by: []const u8 };
+
 /// expandMembers flattens a group to its deduped, ordered list of alias names,
 /// expanding any `+sub` members recursively. It is purely structural: it does NOT
 /// check that the alias names exist (the caller resolves them against aliases.toml
-/// and applies the dead-member policy). Errors: UnknownGroup (name or a referenced
-/// subgroup is undefined), GroupCycle, GroupTooDeep.
-pub fn expandMembers(arena: std.mem.Allocator, groups: []const Group, name: []const u8) ![][]const u8 {
+/// and applies the dead-member policy). A `+sub` member naming an undefined group
+/// gets the same policy — skipped, recorded in `skipped` (when given) for the
+/// caller's note; only the top-level `name` must exist. Errors: UnknownGroup
+/// (the top-level name is undefined), GroupCycle, GroupTooDeep.
+pub fn expandMembers(arena: std.mem.Allocator, groups: []const Group, name: []const u8, skipped: ?*std.ArrayList(SkippedRef)) ![][]const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     var stack: std.ArrayList([]const u8) = .empty;
-    try expandInto(arena, groups, name, &out, &stack, 0);
+    try expandInto(arena, groups, name, &out, &stack, 0, skipped);
     return out.items;
 }
 
@@ -142,6 +148,7 @@ fn expandInto(
     out: *std.ArrayList([]const u8),
     stack: *std.ArrayList([]const u8),
     depth: usize,
+    skipped: ?*std.ArrayList(SkippedRef),
 ) !void {
     if (depth > max_depth) return error.GroupTooDeep;
     for (stack.items) |s| if (store.eqlFoldAscii(s, name)) return error.GroupCycle;
@@ -150,7 +157,14 @@ fn expandInto(
     defer _ = stack.pop();
     for (groups[idx].members) |m| {
         if (m.len > 0 and m[0] == '+') {
-            try expandInto(arena, groups, m[1..], out, stack, depth + 1);
+            const sub = m[1..];
+            if (findGroup(groups, sub) == null) {
+                // Dead-subgroup policy: a `+sub` reference to a deleted group is
+                // skipped like a dead alias member, never a hard failure.
+                if (skipped) |sk| try sk.append(arena, .{ .group = sub, .referenced_by = name });
+                continue;
+            }
+            try expandInto(arena, groups, sub, out, stack, depth + 1, skipped);
         } else {
             var seen = false;
             for (out.items) |o| if (store.eqlFoldAscii(o, m)) {
@@ -295,7 +309,7 @@ test "expandMembers: flat, nested, dedupe" {
         \\
     ;
     const groups = try loadGroups(a, toml);
-    const flat = try expandMembers(a, groups.items, "all");
+    const flat = try expandMembers(a, groups.items, "all", null);
     // projects -> pa,pb ; more -> pb(dup),pc ; pa(dup) => pa,pb,pc
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "pa", "pb", "pc" }), flat);
 }
@@ -305,11 +319,18 @@ test "expandMembers: cycle, unknown, depth errors" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const cyclic = try loadGroups(a, "x = [\"+y\"]\ny = [\"+x\"]\n");
-    try std.testing.expectError(error.GroupCycle, expandMembers(a, cyclic.items, "x"));
+    try std.testing.expectError(error.GroupCycle, expandMembers(a, cyclic.items, "x", null));
 
-    const orphan = try loadGroups(a, "x = [\"+nope\"]\n");
-    try std.testing.expectError(error.UnknownGroup, expandMembers(a, orphan.items, "x"));
-    try std.testing.expectError(error.UnknownGroup, expandMembers(a, orphan.items, "missing"));
+    // Only the top-level name errors; a member referencing an undefined group
+    // is skipped and recorded (the dead-subgroup policy).
+    const orphan = try loadGroups(a, "x = [\"pa\", \"+nope\"]\n");
+    try std.testing.expectError(error.UnknownGroup, expandMembers(a, orphan.items, "missing", null));
+    var sk: std.ArrayList(SkippedRef) = .empty;
+    const flat = try expandMembers(a, orphan.items, "x", &sk);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"pa"}), flat);
+    try std.testing.expectEqual(@as(usize, 1), sk.items.len);
+    try std.testing.expectEqualStrings("nope", sk.items[0].group);
+    try std.testing.expectEqualStrings("x", sk.items[0].referenced_by);
 }
 
 test "addMember: idempotent, creates group, lowercases" {

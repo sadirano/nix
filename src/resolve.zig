@@ -270,12 +270,14 @@ pub const GroupTarget = struct { name: []const u8, path: []const u8 };
 /// (name, host-path) pairs — creating each dir (unless `create_dirs` is false:
 /// the read-only `--resolve` form must not materialize directories) and
 /// recording usage — applying the dead-member policy: a member alias that's no
-/// longer registered is skipped with a note. Returns null (after a message) on
-/// unknown group / cycle / depth, or when no member resolves.
+/// longer registered is skipped with a note, as is a `+sub` member whose group
+/// was deleted. Returns null (after a message) on unknown group / cycle /
+/// depth, or when no member resolves.
 pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]GroupTarget {
     const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
     const gs = try groups.loadGroups(app.arena, gdata);
-    const names = groups.expandMembers(app.arena, gs.items, group) catch |e| {
+    var skipped: std.ArrayList(groups.SkippedRef) = .empty;
+    const names = groups.expandMembers(app.arena, gs.items, group, &skipped) catch |e| {
         switch (e) {
             error.UnknownGroup => try app.err.print("nix: unknown group \"+{s}\"\n", .{group}),
             error.GroupCycle => try app.err.print("nix: group \"+{s}\" has a cycle\n", .{group}),
@@ -284,6 +286,9 @@ pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]
         }
         return null;
     };
+    for (skipped.items) |s| {
+        try app.err.print("nix: skipping unknown group \"+{s}\" (referenced by \"+{s}\")\n", .{ s.group, s.referenced_by });
+    }
     const adata = try store.readAliasesFile(app.arena, app.io, app.home);
     var out: std.ArrayList(GroupTarget) = .empty;
     for (names) |n| {

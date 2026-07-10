@@ -39,6 +39,11 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   with a stderr note, never a hard failure); `nix <alias> --remove`
   cascade-strips the alias from every group. Nested `+group` members expand
   recursively (cycle/depth-guarded, deduped).
+- **Dead `+sub` references get the dead-member policy too:** a member naming a
+  deleted group is skipped with a note naming the missing group and its
+  referrer (`skipping unknown group "+work" (referenced by "+all")`) — only
+  the top-level group must exist. A group fails hard only when NOTHING
+  resolves.
 - **`o +group`:** the topmost fzf selection keeps the current shell; each
   additional one opens a new terminal via `[nav] terminal` (Windows defaults
   `wt -d` then `start`; Unix requires the config — no probing).
@@ -86,9 +91,20 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 
 - **Drives the real exe against a scratch `NIX_HOME`** (`src/e2e.zig`; CI,
   nightly, and release all gate on it) — add/resolve/remove, groups,
-  actions, segments, export→import, and the read-only `--resolve` guarantee.
+  actions, segments, export→import, the read-only `--resolve` guarantee, and
+  the `--doctor` output modes.
 - **Out of scope by design:** `--init` (it edits the real user PATH via the
   registry) and every interactive path (fzf pickers, navigation subshells).
+
+### `--doctor` output modes
+
+- **Rows are buffered, then rendered** — the full report, `-q`/`--quiet`
+  (warn/fail rows + summary only; silence means healthy), and `--json`/`-j`
+  all read the same data, so the JSON mirrors the human rows one-to-one:
+  `{version, built, failures, warnings, sections[].rows[]{status, label,
+  detail, notes[]}}`. `--json` wins when both flags are given.
+- **Exit code unchanged in every mode:** 1 iff any core check fails, so
+  `nix --doctor -q && …` and JSON consumers agree.
 
 ### Export / import (`--export` / `--import`)
 
@@ -114,13 +130,3 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - ⬜ **Picker-route for `o pa+group` with an unregistered `pa`.** Today it adds
   `pa` as a (dead) member; the design wants it to route through the
   unknown-alias es/fd picker to register `pa` first, then add + navigate.
-- ⬜ **`--doctor --json` machine-readable output.** `cmdDoctor` already accepts
-  `--json`/`-q` (so scripts don't break) but emits only the human-readable
-  report. Implement a structured JSON form for tooling.
-- ⬜ **Dangling nested-group members error under the wrong name.** Deleting a
-  group that another group references (`all = ["+work"]`, then `+work
-  --remove`) makes `+all` expansion fail with `unknown group "+all"` — the
-  OUTER group's name, and a hard error where dead *alias* members are skipped
-  with a note. Decide: skip dead subgroup refs with a note (consistent), or
-  at least name the missing `+work` in the error. Found by the e2e harness,
-  which pins the current behavior.

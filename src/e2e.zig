@@ -189,7 +189,7 @@ pub fn main(init: std.process.Init) !void {
         // Nested groups: hand-edit groups.toml (a documented, supported format).
         const gpath = join(&c, &.{ home, "groups.toml" });
         const gdata = readFileOr(&c, gpath, "");
-        try writeFile(&c, gpath, try std.fmt.allocPrint(arena, "{s}\nall = [\"+work\"]\n", .{trim(gdata)}));
+        try writeFile(&c, gpath, try std.fmt.allocPrint(arena, "{s}\nall = [\"+work\", \"pa\"]\n", .{trim(gdata)}));
         r = try c.run(&.{ "+all", "--resolve" });
         c.check(r.code == 0 and hasLine(r.out, pa) and hasLine(r.out, pb), "nested +group expands recursively", r);
 
@@ -255,12 +255,13 @@ pub fn main(init: std.process.Init) !void {
         const g = try c.run(&.{"--groups"});
         c.check(r.code == 0 and !hasRow(g.out, "work"), "+group --remove deletes the group", g);
 
-        // `all` still references the deleted `+work`. Current behavior: the
-        // expansion fails with UnknownGroup, reported under the OUTER group's
-        // name. Pinned as-is; candidate for skip-with-a-note like dead alias
-        // members (and the error should at least name `+work`).
+        // `all` still references the deleted `+work`: the dead-subgroup policy
+        // skips it with a note naming the missing group, and the surviving
+        // direct member (`pa`) still resolves.
         const dg = try c.run(&.{ "+all", "--resolve" });
-        c.check(dg.code != 0 and std.mem.indexOf(u8, dg.err, "unknown group") != null, "a dangling nested group errors (current behavior)", dg);
+        c.check(dg.code == 0 and hasLine(dg.out, pa) and
+            std.mem.indexOf(u8, dg.err, "skipping unknown group \"+work\"") != null and
+            std.mem.indexOf(u8, dg.err, "\"+all\"") != null, "a dangling nested group is skipped with a note", dg);
 
         _ = try c.run(&.{"pb+work2"});
         r = try c.run(&.{ "pb", "--remove" });
@@ -294,10 +295,20 @@ pub fn main(init: std.process.Init) !void {
         try c.env.put("NIX_HOME", home);
     }
 
-    // --- doctor smoke ----------------------------------------------------------------
+    // --- doctor: full, quiet, json -----------------------------------------------------
     {
-        const r = try c.run(&.{ "--doctor", "-q" });
-        c.check((r.code == 0 or r.code == 1) and std.mem.indexOf(u8, r.out, "Summary") != null, "--doctor runs and prints a summary", r);
+        // The scratch home has no wrappers/snippet, so warnings (maybe failures)
+        // are expected — accept either exit, assert on the shape.
+        var r = try c.run(&.{"--doctor"});
+        c.check((r.code == 0 or r.code == 1) and std.mem.indexOf(u8, r.out, "Summary") != null and std.mem.indexOf(u8, r.out, "[ ok ]") != null, "--doctor prints the full report", r);
+
+        r = try c.run(&.{ "--doctor", "-q" });
+        c.check((r.code == 0 or r.code == 1) and std.mem.indexOf(u8, r.out, "Summary") != null and std.mem.indexOf(u8, r.out, "[ ok ]") == null, "--doctor -q keeps only problems + summary", r);
+
+        r = try c.run(&.{ "--doctor", "--json" });
+        const parsed: ?std.json.Value = std.json.parseFromSliceLeaky(std.json.Value, arena, r.out, .{}) catch null;
+        const shaped = if (parsed) |v| v.object.contains("sections") and v.object.contains("failures") else false;
+        c.check((r.code == 0 or r.code == 1) and shaped, "--doctor --json emits valid JSON with sections", r);
     }
 
     std.debug.print("\ne2e: {d} checks, {d} failure(s)\n", .{ c.checks, c.fails });
