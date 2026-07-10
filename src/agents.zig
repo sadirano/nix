@@ -12,6 +12,7 @@
 const std = @import("std");
 const Io = std.Io;
 const config = @import("config.zig");
+const util = @import("util.zig");
 
 pub fn path(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ home, "AGENTS.md" });
@@ -19,7 +20,7 @@ pub fn path(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 
 pub fn write(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: config.Config) !void {
     const p = try path(arena, home);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = try render(arena, cfg) });
+    try util.writeFileAtomic(arena, io, p, try render(arena, cfg));
 }
 
 /// render produces the guide with the machine's effective command names, so a

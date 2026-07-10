@@ -9,7 +9,8 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const config = @import("config.zig");
 const agents = @import("agents.zig");
-const mkdirAll = @import("util.zig").mkdirAll;
+const util = @import("util.zig");
+const mkdirAll = util.mkdirAll;
 
 const is_windows = builtin.os.tag == .windows;
 
@@ -86,7 +87,7 @@ fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     }
     try b.appendSlice(arena, " -ScriptBlock $nixAliasCompleter\n");
 
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = b.items });
+    try util.writeFileAtomic(arena, io, path, b.items);
     return installExeWrappers(arena, io, bin, exe, names, renamed_away);
 }
 
@@ -162,7 +163,7 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
         \\fi
         \\
     , .{ joined.items, joined.items });
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = b.items });
+    try util.writeFileAtomic(arena, io, path, b.items);
 }
 
 /// installExeWrappers makes nix available under each command name in binDir by
@@ -183,14 +184,14 @@ fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []
     const canonical = try std.fmt.allocPrint(arena, "{s}{c}nix{s}", .{ bin, std.fs.path.sep, ext });
     if (!samePath(canonical, exe)) {
         const data = try Io.Dir.cwd().readFileAlloc(io, exe, arena, .unlimited);
-        try Io.Dir.cwd().writeFile(io, .{ .sub_path = canonical, .data = data });
+        try writeExeAtomic(arena, io, canonical, data);
     }
     const data = try Io.Dir.cwd().readFileAlloc(io, canonical, arena, .unlimited);
     var stale: std.ArrayList([]const u8) = .empty;
     for (names) |name| {
         const dst = try std.fmt.allocPrint(arena, "{s}{c}{s}{s}", .{ bin, std.fs.path.sep, name, ext });
         if (samePath(dst, canonical)) continue;
-        Io.Dir.cwd().writeFile(io, .{ .sub_path = dst, .data = data }) catch {
+        writeExeAtomic(arena, io, dst, data) catch {
             // Locked (a running wrapper can't be replaced on Windows). If the
             // bytes on disk already match, it's merely busy, not stale.
             const existing = Io.Dir.cwd().readFileAlloc(io, dst, arena, .unlimited) catch "";
@@ -199,6 +200,20 @@ fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []
         };
     }
     return stale.items;
+}
+
+/// writeExeAtomic writes an exe via a private temp + rename, so an interrupted
+/// --sync can never leave a half-written binary answering on PATH (a torn
+/// wrapper is worse than a stale one). On rename failure — the destination is
+/// a running, locked exe — the temp is removed and the error propagates to the
+/// caller's stale check.
+fn writeExeAtomic(arena: std.mem.Allocator, io: Io, dst: []const u8, data: []const u8) !void {
+    const tmp = try util.uniqueTmpName(arena, io, dst);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data });
+    Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), dst, io) catch |e| {
+        Io.Dir.cwd().deleteFile(io, tmp) catch {};
+        return e;
+    };
 }
 
 fn samePath(a: []const u8, b: []const u8) bool {
