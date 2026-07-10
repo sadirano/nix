@@ -1,8 +1,8 @@
 //! Persistent user PATH editing (Windows): add ~/.nix/bin to the HKCU
-//! Environment Path so cmd.exe and every other non-PowerShell context finds
-//! the wrappers. The PowerShell snippet only fixes the *session* PATH; a fresh
-//! install (scoop's post_install runs `nix --init`) previously left cmd users
-//! to edit PATH by hand.
+//! Environment Path so every shell finds the wrappers — this registry entry
+//! IS the Windows integration (no shell snippet or $PROFILE glue exists).
+//! A fresh install (scoop's post_install runs `nix --init`) needs no manual
+//! PATH editing.
 //!
 //! setx is avoided on purpose — it silently truncates PATH at 1024 chars.
 //! Instead the value is read/written through the registry API, preserving its

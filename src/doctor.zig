@@ -418,11 +418,14 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             try d.cont("hand-edited aliases.toml? the first entry wins — remove the extras");
         }
 
-        const snip = if (proc.is_windows) try snippet.pwshPath(app.arena, app.home) else try snippet.bashPath(app.arena, app.home);
-        if (proc.pathExists(app.io, snip)) {
-            try d.row(.ok, "shell", try std.fmt.allocPrint(app.arena, "integration snippet present  ({s})", .{snip}));
-        } else {
-            try d.row(.warn, "shell", try std.fmt.allocPrint(app.arena, "snippet missing ({s}) — run `nix --init`", .{snip}));
+        // Windows needs no snippet — the wrappers/PATH rows above cover it.
+        if (!proc.is_windows) {
+            const snip = try snippet.bashPath(app.arena, app.home);
+            if (proc.pathExists(app.io, snip)) {
+                try d.row(.ok, "shell", try std.fmt.allocPrint(app.arena, "integration snippet present  ({s})", .{snip}));
+            } else {
+                try d.row(.warn, "shell", try std.fmt.allocPrint(app.arena, "snippet missing ({s}) — run `nix --init`", .{snip}));
+            }
         }
     }
 

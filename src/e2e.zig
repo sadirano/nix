@@ -391,7 +391,7 @@ pub fn main(init: std.process.Init) !void {
 
     // --- doctor: full, quiet, json -----------------------------------------------------
     {
-        // The scratch home has no wrappers/snippet, so warnings (maybe failures)
+        // The scratch home has no wrappers, so warnings (maybe failures)
         // are expected — accept either exit, assert on the shape.
         var r = try c.run(&.{"--doctor"});
         c.check((r.code == 0 or r.code == 1) and std.mem.indexOf(u8, r.out, "Summary") != null and std.mem.indexOf(u8, r.out, "[ ok ]") != null, "--doctor prints the full report", r);

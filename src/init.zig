@@ -1,6 +1,6 @@
 //! First-run and maintenance plumbing: `--init` (home + wrappers + PATH +
-//! snippet + agent guide), `--sync` (regenerate after config/binary moves),
-//! and the `--export` / `--import` portable backup commands.
+//! agent guide; plus the shell snippet on POSIX), `--sync` (regenerate after
+//! config/binary moves), and the `--export` / `--import` backup commands.
 
 const std = @import("std");
 const Io = std.Io;
@@ -56,14 +56,13 @@ const starter_config =
 
 pub fn cmdSync(app: *App) !u8 {
     const stale = snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
-        try app.err.print("nix: regenerate snippet: {s}\n", .{@errorName(e)});
+        try app.err.print("nix: regenerate wrappers: {s}\n", .{@errorName(e)});
         return 1;
     };
-    const ps = try snippet.pwshPath(app.arena, app.home);
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
     const guide = try agents.path(app.arena, app.home);
     if (proc.is_windows) {
-        try app.err.print("regenerated {s}, {s}, and wrappers in {s}\n", .{ ps, guide, bin });
+        try app.err.print("regenerated {s} and wrappers in {s}\n", .{ guide, bin });
     } else {
         const sh = try snippet.bashPath(app.arena, app.home);
         try app.err.print("regenerated {s} and {s}\n", .{ sh, guide });
@@ -78,9 +77,29 @@ pub fn cmdSync(app: *App) !u8 {
         } else |e| {
             try app.err.print("nix: could not add {s} to the user PATH ({s}) — add it manually\n", .{ bin, @errorName(e) });
         }
+        try removeLegacyPwshSnippet(app);
+        try app.err.writeAll("restart your shell to pick up changes\n");
+    } else {
+        try app.err.writeAll("restart your shell (or re-source the snippet) to pick up changes\n");
     }
-    try app.err.writeAll("restart your shell (or re-source the snippet) to pick up changes\n");
     return 0;
+}
+
+/// removeLegacyPwshSnippet deletes the retired ~/.nix/shell/nix.ps1 (older
+/// versions generated it for PowerShell tab completion; the exe wrappers on the
+/// persistent PATH made it redundant). Deleting breaks any $PROFILE that still
+/// dot-sources it, so say what to remove — and where the `q` helper went.
+fn removeLegacyPwshSnippet(app: *App) !void {
+    const ps = try std.fs.path.join(app.arena, &.{ app.home, "shell", "nix.ps1" });
+    if (!proc.pathExists(app.io, ps)) return;
+    Io.Dir.cwd().deleteFile(app.io, ps) catch |e| {
+        try app.err.print("nix: could not remove the retired {s} ({s}) — delete it manually\n", .{ ps, @errorName(e) });
+        return;
+    };
+    if (std.fs.path.dirname(ps)) |d| Io.Dir.cwd().deleteDir(app.io, d) catch {};
+    try app.err.print("removed {s} (no longer used)\n", .{ps});
+    try app.err.writeAll("  if your $PROFILE dot-sources it, remove that line\n");
+    try app.err.writeAll("  if you used `q`, add to $PROFILE:  function q { exit }\n");
 }
 
 /// cmdExport writes a portable backup of the central stores (aliases, groups,
@@ -267,8 +286,7 @@ fn warnStaleWrappers(app: *App, stale: []const []const u8) !void {
 
 pub fn cmdInit(app: *App) !u8 {
     // 1. directory tree
-    const shell_dir = try std.fs.path.join(app.arena, &.{ app.home, "shell" });
-    try store.mkdirAll(app.io, shell_dir);
+    try store.mkdirAll(app.io, app.home);
 
     // 2. starters (only if missing)
     const cfg_path = try std.fs.path.join(app.arena, &.{ app.home, "config.toml" });
@@ -280,20 +298,18 @@ pub fn cmdInit(app: *App) !u8 {
         try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = aliases_path, .data = starter_aliases });
     }
 
-    // 3. snippet + wrappers
+    // 3. wrappers (Windows) / snippet (POSIX)
     const stale = snippet.regenerate(app.arena, app.io, app.home, exePath(app)) catch |e| {
-        try app.err.print("nix: regenerate snippet: {s}\n", .{@errorName(e)});
+        try app.err.print("nix: regenerate wrappers: {s}\n", .{@errorName(e)});
         return 1;
     };
-    const ps = try snippet.pwshPath(app.arena, app.home);
     try app.err.print("nix home: {s}\n", .{app.home});
-    try app.err.print("shell snippet: {s}\n", .{ps});
     try app.err.print("agent guide: {s} (see README to wire it into your agent)\n", .{try agents.path(app.arena, app.home)});
     try warnStaleWrappers(app, stale);
 
-    // 3.5. persistent user PATH (Windows): the snippet only fixes PowerShell
-    // sessions; cmd.exe needs ~/.nix/bin in the registry user PATH. Without
-    // this, a fresh scoop install leaves cmd users editing PATH by hand.
+    // 3.5. persistent user PATH (Windows): the wrappers only work once
+    // ~/.nix/bin is in the registry user PATH. Without this, a fresh scoop
+    // install leaves users editing PATH by hand.
     if (proc.is_windows) {
         const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
         if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
@@ -302,14 +318,13 @@ pub fn cmdInit(app: *App) !u8 {
         } else |e| {
             try app.err.print("nix: could not add {s} to the user PATH ({s}) — add it manually\n", .{ bin, @errorName(e) });
         }
+        try removeLegacyPwshSnippet(app);
     }
 
-    // 4. Shell rc / $PROFILE: never touched. The wrappers on PATH are all the
-    // commands need; the snippet only adds tab completion, and users who want
-    // it dot-source it themselves.
+    // 4. Shell rc / $PROFILE: never touched. On Windows the wrappers on PATH
+    // are the whole integration; on POSIX users add the snippet line themselves.
     if (proc.is_windows) {
         try app.err.writeAll("restart your shell to activate o/e/s/y/p/r, sg/ff\n");
-        try app.err.print("optional (PowerShell tab completion): add to $PROFILE:  . '{s}'\n", .{ps});
     } else {
         const sh = try snippet.bashPath(app.arena, app.home);
         try app.err.print("add to your shell rc:  [ -f '{s}' ] && . '{s}'\n", .{ sh, sh });

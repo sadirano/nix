@@ -182,9 +182,6 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "import")) return init_zig.cmdImport(app, rest);
     if (eql(verb, "init")) {
         for (rest) |a| {
-            // --skip-profile is a deprecated no-op: --init no longer touches
-            // $PROFILE at all. Accepted so old install scripts don't break.
-            if (eql(a, "--skip-profile")) continue;
             try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
             return 1;
         }
@@ -917,8 +914,8 @@ fn printUsage(app: *App) !void {
         \\  --doctor,  -D        check tools/config and what the picker will use
         \\  --groups,  -G        list alias groups  (+<group> --list shows members)
         \\  --contexts, -c       list global @-segment contexts
-        \\  --init,    -I        set up ~/.nix, wrappers, and shell glue
-        \\  --sync,    -S        regenerate shell glue and wrappers
+        \\  --init,    -I        set up ~/.nix, wrappers, and PATH
+        \\  --sync,    -S        regenerate wrappers and generated files
         \\  --export  [file]     write a portable backup (aliases/groups/config/actions; stdout if no file)
         \\  --import  <file>     merge a backup (skips existing; --replace for a full restore)
         \\  --version, -v        print version and platform

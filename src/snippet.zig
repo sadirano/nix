@@ -1,8 +1,8 @@
-//! Shell-integration snippet generation, mirroring internal/snippet. On
-//! Windows nix ships as a multi-call binary: the same exe is installed into
-//! ~/.nix/bin under each command name (o, e, …) and recovers the action from
-//! argv[0]; the PowerShell snippet only puts that dir on PATH and registers
-//! alias tab-completion. POSIX keeps the shell-function model (cd in place).
+//! Shell-integration generation. On Windows nix ships as a multi-call binary:
+//! the same exe is installed into ~/.nix/bin under each command name (o, e, …)
+//! and recovers the action from argv[0]; with ~/.nix/bin on the persistent
+//! user PATH (winpath.zig) no shell snippet or $PROFILE glue is needed.
+//! POSIX keeps the shell-function snippet model (cd in place + completion).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -14,30 +14,13 @@ const mkdirAll = util.mkdirAll;
 
 const is_windows = builtin.os.tag == .windows;
 
-pub fn pwshPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
-    return std.fs.path.join(arena, &.{ home, "shell", "nix.ps1" });
-}
 pub fn bashPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ home, "shell", "nix.sh" });
 }
 
-const pwsh_completer =
-    \\$nixAliasCompleter = {
-    \\    param($wordToComplete, $commandAst, $cursorPosition)
-    \\    if ($commandAst.CommandElements.Count -gt 2) { return }
-    \\    @(& $global:nixExe --list-names 2>$null) |
-    \\        Where-Object { $_ -like "$wordToComplete*" } |
-    \\        ForEach-Object {
-    \\            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-    \\        }
-    \\}
-    \\
-;
-
-const pwsh_q = "function global:q { exit }\n";
-
-/// regenerate loads config and writes the host-platform snippet (+ installs the
-/// Windows wrappers). exe is the absolute path to the running nix binary.
+/// regenerate loads config and installs the platform integration: exe wrappers
+/// on Windows, the shell-function snippet elsewhere. exe is the absolute path
+/// to the running nix binary.
 /// Returns the wrapper names left STALE on disk (locked while an old version was
 /// running) — callers must surface these, or the old binary silently keeps
 /// answering to that name.
@@ -59,36 +42,11 @@ pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []con
             };
             if (!in_use) try renamed_away.append(arena, bsc.builtin);
         }
-        return writePwsh(arena, io, home, exe, names, renamed_away.items);
+        const bin = try std.fs.path.join(arena, &.{ home, "bin" });
+        return installExeWrappers(arena, io, bin, exe, names, renamed_away.items);
     }
     try writeBash(arena, io, home, exe, cfg);
     return &.{};
-}
-
-fn writePwsh(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, names: [][]const u8, renamed_away: []const []const u8) ![]const []const u8 {
-    const path = try pwshPath(arena, home);
-    if (std.fs.path.dirname(path)) |d| try mkdirAll(io, d);
-    const bin = try std.fs.path.join(arena, &.{ home, "bin" });
-
-    var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(arena, "# nix shell integration (generated; do not edit — run 'nix --sync')\n");
-    try b.print(arena, "# Source from $PROFILE: . '{s}'\n\n", .{try psQuote(arena, path)});
-    try b.print(arena, "$global:nixExe = '{s}'\n\n", .{try psQuote(arena, exe)});
-    try b.print(arena, "$nixBin = '{s}'\n", .{try psQuote(arena, bin)});
-    try b.appendSlice(arena, "if (($env:PATH -split ';') -notcontains $nixBin) { $env:PATH = $nixBin + ';' + $env:PATH }\n\n");
-    try b.appendSlice(arena, pwsh_completer);
-    try b.append(arena, '\n');
-    try b.appendSlice(arena, pwsh_q);
-    try b.append(arena, '\n');
-    try b.appendSlice(arena, "Register-ArgumentCompleter -Native -CommandName ");
-    for (names, 0..) |n, i| {
-        if (i > 0) try b.append(arena, ',');
-        try b.appendSlice(arena, n);
-    }
-    try b.appendSlice(arena, " -ScriptBlock $nixAliasCompleter\n");
-
-    try util.writeFileAtomic(arena, io, path, b.items);
-    return installExeWrappers(arena, io, bin, exe, names, renamed_away);
 }
 
 fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8, cfg: config.Config) !void {
@@ -223,13 +181,4 @@ fn samePath(a: []const u8, b: []const u8) bool {
         return true;
     }
     return std.mem.eql(u8, a, b);
-}
-
-fn psQuote(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
-    var b: std.ArrayList(u8) = .empty;
-    for (s) |c| {
-        try b.append(arena, c);
-        if (c == '\'') try b.append(arena, '\'');
-    }
-    return b.items;
 }
