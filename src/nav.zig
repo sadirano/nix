@@ -16,6 +16,7 @@ const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
 const resolveGroupTargets = resolve.resolveGroupTargets;
 const rowPath = resolve.rowPath;
+const rowName = resolve.rowName;
 const aliasRunEnv = run_zig.aliasRunEnv;
 
 fn eql(a: []const u8, b: []const u8) bool {
@@ -25,8 +26,11 @@ fn eql(a: []const u8, b: []const u8) bool {
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
 /// single-target navigation primitive shared by alias and group navigation. The
 /// shell gets the alias's `.nix/scripts` on PATH (scoped to the subshell), so
-/// inside an `o <alias>` session the project's own `build`/`clean`/… just work.
-pub fn enterDir(app: *App, dir: []const u8) !u8 {
+/// inside an `o <alias>` session the project's own `build`/`clean`/… just work,
+/// plus NIX_ALIAS/NIX_ALIAS_PATH so anything started from the session (prompts,
+/// status lines) knows its alias context. `alias` is the token that selected the
+/// dir ("" when unknown, e.g. a hand-typed picker row — the vars are then left out).
+pub fn enterDir(app: *App, alias: []const u8, dir: []const u8) !u8 {
     // A subshell whose cwd doesn't exist fails to spawn with a bare "FileNotFound"
     // that reads as if the shell itself is missing. Check the dir first and say
     // what's actually wrong — typically a deleted/moved dir, or an incomplete or
@@ -37,7 +41,7 @@ pub fn enterDir(app: *App, dir: []const u8) !u8 {
         return 1;
     }
     const shell = interactiveShell(app);
-    const env = try aliasRunEnv(app, dir);
+    const env = try aliasRunEnv(app, alias, dir);
     try app.out.flush();
     // cmd.exe rejects a UNC path as its working directory ("UNC paths are not
     // supported. Defaulting to Windows directory."). `pushd` maps the share to a
@@ -73,7 +77,7 @@ pub fn isCmdShell(shell: []const u8) bool {
 /// opens a new terminal via launchTerminal. A single live member just navigates.
 pub fn navigateGroup(app: *App, group: []const u8) !u8 {
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
-    if (targets.len == 1) return enterDir(app, targets[0].path);
+    if (targets.len == 1) return enterDir(app, targets[0].name, targets[0].path);
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick among +{s}'s members (or `o <member>`)\n", .{group});
         return 1;
@@ -87,6 +91,7 @@ pub fn navigateGroup(app: *App, group: []const u8) !u8 {
     if (sel.len == 0) return 0;
 
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    var first_name: []const u8 = "";
     var first_path: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, sel, '\n');
     while (lines.next()) |ln| {
@@ -94,14 +99,15 @@ pub fn navigateGroup(app: *App, group: []const u8) !u8 {
         if (row.len == 0) continue;
         const path = rowPath(row);
         if (first_path == null) {
-            first_path = path; // topmost selection → current shell (entered last)
+            first_name = rowName(row); // topmost selection → current shell (entered last)
+            first_path = path;
         } else if (!launchTerminal(app, cfg, path)) {
             try app.err.print("nix: could not open a new terminal for {s} (set [nav] terminal)\n", .{path});
         }
     }
     // Enter the first selection in THIS shell last: it blocks (stacks a subshell),
     // so the extra terminals must already have been launched above.
-    if (first_path) |p| return enterDir(app, p);
+    if (first_path) |p| return enterDir(app, first_name, p);
     return 0;
 }
 

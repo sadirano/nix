@@ -370,14 +370,14 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
                 try app.err.print("   (no action :{s} — skipped)\n", .{n});
                 continue;
             };
-            const code = try runShellString(app, cmd, t.path, false);
+            const code = try runShellString(app, cmd, t.name, t.path, false);
             if (code != 0) rc = code;
         } else {
             // Each member resolves its own `.nix/scripts` command and runs with
             // that dir on PATH.
             var rargv = try app.arena.dupe([]const u8, argv);
             if (resolveScript(app, t.path, argv[0])) |s| rargv[0] = s;
-            const env = try aliasRunEnv(app, t.path);
+            const env = try aliasRunEnv(app, t.name, t.path);
             const code = proc.runInheritEnv(app.io, rargv, t.path, env) catch |e| blk: {
                 try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });
                 break :blk @as(u8, 1);

@@ -44,7 +44,7 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
             try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `r {s} :`)\n", .{ alias, name, alias });
             return 1;
         };
-        return runShellString(app, cmd, target, outside);
+        return runShellString(app, cmd, alias, target, outside);
     }
     // Resolve the command: a project script in `.nix/scripts` (then central
     // `~/.nix/scripts`) wins, so `r <alias> build` runs the project's build;
@@ -62,7 +62,7 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
             }
         }
     }
-    const env = try aliasRunEnv(app, target);
+    const env = try aliasRunEnv(app, alias, target);
     try app.out.flush();
     if (outside) {
         proc.runDetachedEnv(app.io, resolved, target, false, env) catch |e| {
@@ -81,9 +81,13 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// process env with the alias's project scripts dir `<dir>/.nix/scripts` and the
 /// central `~/.nix/scripts` prepended to PATH (so `r <alias> build` and the
 /// `o <alias>` subshell both resolve the project's own `build`, shadowing globals,
-/// and scripts can call siblings by bare name). Rebuilt from orig_path each call,
-/// so repeated runs (a group) never stack dirs. Returns app.env (mutated in place).
-pub fn aliasRunEnv(app: *App, dir: []const u8) !*std.process.Environ.Map {
+/// and scripts can call siblings by bare name), plus NIX_ALIAS/NIX_ALIAS_PATH so
+/// children (prompts, status lines, scripts) know their alias context without a
+/// reverse lookup. `alias` is the token that selected the dir (a group member's
+/// name, possibly a `seg@alias` form). Rebuilt from orig_path each call and put
+/// overwrites, so repeated runs (a group) never stack dirs or leak a previous
+/// member's alias. Returns app.env (mutated in place).
+pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8) !*std.process.Environ.Map {
     // Capture the original PATH lazily (and dupe it — the env.put below may free
     // the map's value). This runs only here, on the run/navigate paths, so the
     // resolve hot path pays nothing.
@@ -97,6 +101,10 @@ pub fn aliasRunEnv(app: *App, dir: []const u8) !*std.process.Environ.Map {
     const central = try std.fs.path.join(app.arena, &.{ app.home, "scripts" });
     const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, orig });
     try app.env.put("PATH", newpath);
+    if (alias.len > 0) {
+        try app.env.put("NIX_ALIAS", alias);
+        try app.env.put("NIX_ALIAS_PATH", dir);
+    }
     return app.env;
 }
 
@@ -164,14 +172,15 @@ pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
 }
 
 /// runShellString runs an action's command through the shell (cmd /c on Windows,
-/// sh -c elsewhere) in `dir`, so `&&`, pipes, and redirects work. `outside` runs
-/// it detached (a new window), mirroring `r --outside`.
-pub fn runShellString(app: *App, command: []const u8, dir: []const u8, outside: bool) !u8 {
+/// sh -c elsewhere) in `dir`, so `&&`, pipes, and redirects work. `alias` names
+/// the alias context for NIX_ALIAS; `outside` runs it detached (a new window),
+/// mirroring `r --outside`.
+pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, outside: bool) !u8 {
     const shell_argv: []const []const u8 = if (proc.is_windows)
         &.{ app.env.get("COMSPEC") orelse "cmd.exe", "/c", command }
     else
         &.{ "/bin/sh", "-c", command };
-    const env = try aliasRunEnv(app, dir);
+    const env = try aliasRunEnv(app, alias, dir);
     try app.out.flush();
     if (outside) {
         proc.runDetachedEnv(app.io, shell_argv, dir, false, env) catch |e| {
