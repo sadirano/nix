@@ -32,10 +32,20 @@ fn eql(a: []const u8, b: []const u8) bool {
 /// functional; fail = a core path is broken (drives the exit code).
 const DocStatus = enum { ok, warn, fail, note, info };
 
-/// Doc accumulates --doctor results and prints aligned status rows. Detail starts
-/// at a fixed column so wrapped continuation lines (cont) line up under it.
+const Row = struct {
+    status: DocStatus,
+    label: []const u8,
+    detail: []const u8,
+    /// Wrapped continuation lines shown under the detail column ("notes" in JSON).
+    conts: std.ArrayList([]const u8) = .empty,
+};
+const Section = struct { name: []const u8, rows: std.ArrayList(Row) = .empty };
+
+/// Doc accumulates --doctor results; rendering happens once at the end so the
+/// full report, the quiet form, and --json all read the same data.
 const Doc = struct {
     app: *App,
+    sections: std.ArrayList(Section) = .empty,
     warns: usize = 0,
     fails: usize = 0,
 
@@ -56,16 +66,95 @@ const Doc = struct {
             .fail => self.fails += 1,
             else => {},
         }
-        try self.app.out.print("  {s} {s: <12} {s}\n", .{ tagText(s), label, detail });
+        const sec = &self.sections.items[self.sections.items.len - 1];
+        try sec.rows.append(self.app.arena, .{ .status = s, .label = label, .detail = detail });
     }
-    /// cont prints a wrapped detail line aligned under the row's detail column.
+    /// cont adds a wrapped detail line aligned under the last row's detail column.
     fn cont(self: *Doc, detail: []const u8) !void {
-        try self.app.out.print("{s}{s}\n", .{ cont_indent, detail });
+        const sec = &self.sections.items[self.sections.items.len - 1];
+        const r = &sec.rows.items[sec.rows.items.len - 1];
+        try r.conts.append(self.app.arena, detail);
     }
     fn section(self: *Doc, name: []const u8) !void {
-        try self.app.out.print("\n{s}\n", .{name});
+        try self.sections.append(self.app.arena, .{ .name = name });
     }
 };
+
+/// renderHuman prints the aligned status report. Quiet keeps only warn/fail
+/// rows (and their sections) plus the summary — silence means healthy.
+fn renderHuman(app: *App, d: *Doc, quiet: bool) !void {
+    if (!quiet) try app.out.print("nix --doctor   ({s}, built {s})\n", .{ build_version, build_date });
+    for (d.sections.items) |sec| {
+        if (quiet) {
+            var relevant = false;
+            for (sec.rows.items) |r| {
+                if (r.status == .warn or r.status == .fail) relevant = true;
+            }
+            if (!relevant) continue;
+        }
+        try app.out.print("\n{s}\n", .{sec.name});
+        for (sec.rows.items) |r| {
+            if (quiet and r.status != .warn and r.status != .fail) continue;
+            try app.out.print("  {s} {s: <12} {s}\n", .{ Doc.tagText(r.status), r.label, r.detail });
+            for (r.conts.items) |c| try app.out.print("{s}{s}\n", .{ Doc.cont_indent, c });
+        }
+    }
+    try app.out.print("\nSummary: {d} failure(s), {d} warning(s).\n", .{ d.fails, d.warns });
+}
+
+/// appendJsonString appends `s` as a JSON string literal, quotes included.
+fn appendJsonString(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []const u8) !void {
+    try b.append(arena, '"');
+    for (s) |ch| switch (ch) {
+        '"' => try b.appendSlice(arena, "\\\""),
+        '\\' => try b.appendSlice(arena, "\\\\"),
+        '\n' => try b.appendSlice(arena, "\\n"),
+        '\r' => try b.appendSlice(arena, "\\r"),
+        '\t' => try b.appendSlice(arena, "\\t"),
+        else => if (ch < 0x20)
+            try b.appendSlice(arena, try std.fmt.allocPrint(arena, "\\u{x:0>4}", .{ch}))
+        else
+            try b.append(arena, ch),
+    };
+    try b.append(arena, '"');
+}
+
+/// renderJson emits the whole report as one JSON document: version/build info,
+/// failure/warning counts, and sections[].rows[] with status/label/detail/notes
+/// mirroring the human rows one-to-one.
+fn renderJson(app: *App, d: *Doc) !void {
+    const arena = app.arena;
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(arena, "{\n  \"version\": ");
+    try appendJsonString(arena, &b, build_version);
+    try b.appendSlice(arena, ",\n  \"built\": ");
+    try appendJsonString(arena, &b, build_date);
+    try b.appendSlice(arena, try std.fmt.allocPrint(arena, ",\n  \"failures\": {d},\n  \"warnings\": {d},\n  \"sections\": [", .{ d.fails, d.warns }));
+    for (d.sections.items, 0..) |sec, si| {
+        if (si > 0) try b.append(arena, ',');
+        try b.appendSlice(arena, "\n    {\n      \"name\": ");
+        try appendJsonString(arena, &b, sec.name);
+        try b.appendSlice(arena, ",\n      \"rows\": [");
+        for (sec.rows.items, 0..) |r, ri| {
+            if (ri > 0) try b.append(arena, ',');
+            try b.appendSlice(arena, "\n        {\"status\": ");
+            try appendJsonString(arena, &b, @tagName(r.status));
+            try b.appendSlice(arena, ", \"label\": ");
+            try appendJsonString(arena, &b, r.label);
+            try b.appendSlice(arena, ", \"detail\": ");
+            try appendJsonString(arena, &b, r.detail);
+            try b.appendSlice(arena, ", \"notes\": [");
+            for (r.conts.items, 0..) |c, ci| {
+                if (ci > 0) try b.appendSlice(arena, ", ");
+                try appendJsonString(arena, &b, c);
+            }
+            try b.appendSlice(arena, "]}");
+        }
+        try b.appendSlice(arena, "\n      ]\n    }");
+    }
+    try b.appendSlice(arena, "\n  ]\n}\n");
+    try app.out.writeAll(b.items);
+}
 
 /// isScriptShim reports whether a resolved tool path is a script wrapper rather
 /// than a real executable — the case where a `.cmd`/`.bat` named `fd` shadows the
@@ -112,18 +201,24 @@ fn pathContains(app: *App, dir: []const u8) bool {
 /// is broken), else 0. Safe to run on locked-down machines: every probe is
 /// non-interactive (stdin/stderr discarded) and shims are detected by path, never
 /// executed. Sections: Build, Picker, Search scope, Optional tools, Config & data.
+/// Output modes: full report (default), `-q`/`--quiet` (warn/fail rows + summary
+/// only), `--json`/`-j` (the structured mirror, for tooling).
 pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
+    var json = false;
+    var quiet = false;
     for (rest) |a| {
-        // --json / -q are planned; accept them now so scripts don't break, but
-        // this slice only emits the human-readable report.
-        if (eql(a, "--json") or eql(a, "-j") or eql(a, "-q") or eql(a, "--quiet")) continue;
-        try app.err.print("nix: unknown flag for --doctor: \"{s}\"\n", .{a});
-        return 1;
+        if (eql(a, "--json") or eql(a, "-j")) {
+            json = true; // structured report; takes precedence over -q
+        } else if (eql(a, "-q") or eql(a, "--quiet")) {
+            quiet = true;
+        } else {
+            try app.err.print("nix: unknown flag for --doctor: \"{s}\"\n", .{a});
+            return 1;
+        }
     }
 
     var d = Doc{ .app = app };
     const cfg = try config.loadConfig(app.arena, app.io, app.home);
-    try app.out.print("nix --doctor   ({s}, built {s})\n", .{ build_version, build_date });
 
     try d.section("Build");
     try d.row(.info, "binary", exePath(app));
@@ -331,9 +426,18 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         }
     }
 
-    try app.out.print("\nSummary: {d} failure(s), {d} warning(s).\n", .{ d.fails, d.warns });
+    if (json) try renderJson(app, &d) else try renderHuman(app, &d, quiet);
     try app.out.flush();
     return if (d.fails > 0) 1 else 0;
+}
+
+test "appendJsonString: quotes, backslashes (Windows paths), control chars" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var b: std.ArrayList(u8) = .empty;
+    try appendJsonString(a, &b, "C:\\x\\y \"q\"\n\x01");
+    try std.testing.expectEqualStrings("\"C:\\\\x\\\\y \\\"q\\\"\\n\\u0001\"", b.items);
 }
 
 test "isScriptShim: scripts vs real executables" {
