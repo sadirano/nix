@@ -644,7 +644,13 @@ fn cmdPrune(app: *App) !u8 {
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
 /// A `+group` token routes to navigateGroup; `member+group` adds then navigates.
 fn navigate(app: *App, alias: []const u8) !u8 {
-    switch (groups.parseRef(alias) catch .none) {
+    // A malformed group token (`pa+`, `+`) must error here like it does in
+    // dispatch — swallowing it as .none would send the user through the
+    // unknown-alias picker only to fail on the name validation at the end.
+    switch (groups.parseRef(alias) catch |e| {
+        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ alias, @errorName(e) });
+        return 1;
+    }) {
         .none => {},
         .reference => |g| return navigateGroup(app, g),
         .add => |ad| {

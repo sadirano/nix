@@ -277,6 +277,21 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0, "an unknown action errors", r);
     }
 
+    // --- multicall via argv0 (wrapper copies; Windows-shaped install) ----------
+    if (proc.is_windows) {
+        const real_exe = c.exe;
+        const exe_bytes = try Io.Dir.cwd().readFileAlloc(io, real_exe, arena, .unlimited);
+
+        // A malformed group token through the `o` wrapper errors cleanly
+        // instead of routing into the unknown-alias picker.
+        const o_exe = join(&c, &.{ root, "o.exe" });
+        try writeFile(&c, o_exe, exe_bytes);
+        c.exe = o_exe;
+        const r = try c.run(&.{"pa+"});
+        c.exe = real_exe;
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "invalid group token") != null, "o with a malformed group token errors, no picker", r);
+    }
+
     // --- segments ---------------------------------------------------------------
     {
         try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }),
