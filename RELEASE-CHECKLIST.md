@@ -22,7 +22,8 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 - [ ] Download `nix-v0.10.0-pre-windows-amd64.zip` from the GitHub release;
       `nix.exe --version` prints `v0.10.0-pre` (baked from the tag, not `0.0.0`).
-- [ ] ⚠️ Deploy over the daily install (`nix-build.cmd` or drop-in + `nix --sync`);
+- [ ] ⚠️ Deploy over the daily install (`r nix :build` + `r nix :sync`, or
+      drop-in + `nix --sync`);
       existing aliases, groups, actions, and `[shortcuts]` all still resolve.
 - [ ] Confirm no machine still depends on the removed onix auto-migration
       (anything upgrading straight from ≤0.8.x must go through 0.9.0 first —

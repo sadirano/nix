@@ -44,11 +44,14 @@ zig build -Doptimize=ReleaseFast    # -> zig-out\bin\nix.exe
 zig-out\bin\nix.exe --init
 ```
 
-On Windows, prefer the portable build helper — a native build bakes the dev machine's CPU extensions into the binary and crashes with an illegal instruction on any machine lacking them:
+On Windows, prefer the portable build — a native build bakes the dev machine's CPU extensions into the binary and crashes with an illegal instruction on any machine lacking them:
 
 ```powershell
-.\nix-build.cmd        # zig build … -Dtarget=x86_64-windows -Dcpu=baseline, then --sync
+zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
+zig-out\bin\nix.exe --sync                 # deploy into ~/.nix/bin
 ```
+
+(Both are saved as project actions in `.nix/actions.toml` — once the repo is registered as an alias, `r <alias> :build` and `r <alias> :sync` run them from anywhere.)
 
 `nix --init` creates `~/.nix/`, installs the `.exe` command wrappers into `~/.nix/bin`, and adds that dir to your user PATH — restart your shell once and the short commands below are live in every shell (PowerShell, cmd, anything). It never touches your shell profile; the wrappers on PATH are the whole integration on Windows. (On Unix-likes a snippet written to `~/.nix/shell/` *is* the integration — shell functions that cd in place — so there you add the printed line to `.bashrc`/`.zshrc` yourself.)
 

@@ -45,7 +45,7 @@ jobs:
         run: git tag -d nightly 2>/dev/null || true
 
       # Portable build: -Dcpu=baseline avoids baking the runner's CPU extensions
-      # into the binary. Mirrors ci.yml / nix-build.cmd, minus the --sync deploy.
+      # into the binary. Mirrors ci.yml / the :build action in .nix/actions.toml.
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
 

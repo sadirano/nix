@@ -29,7 +29,7 @@ jobs:
 
       # Portable build: -Dcpu=baseline avoids baking the runner's CPU extensions
       # into the binary (a native build crashes with an illegal instruction on
-      # machines lacking them). Mirrors nix-build.cmd, minus the --sync deploy.
+      # machines lacking them). Mirrors the :build action in .nix/actions.toml.
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
 
