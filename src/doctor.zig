@@ -4,13 +4,11 @@
 //! `nix --doctor && …` works in scripts.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Io = std.Io;
 const app_zig = @import("app.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
-const groups = @import("groups.zig");
 const snippet = @import("snippet.zig");
 const picker = @import("picker.zig");
 const util = @import("util.zig");
@@ -267,7 +265,9 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     // unless the Everything service is running; a bounded probe distinguishes them.
     var es_ok = false;
     if (proc.findInPath(app.arena, app.io, app.env, "es")) |p| {
-        const out = proc.probeOutput(app.arena, app.io, &.{ "es", "-n", "1", "-ad" }, ".") catch "";
+        // Probe with the exact switch shape the picker uses (`/ad`, `-n`), so a
+        // "working" verdict here can't diverge from what the picker will run.
+        const out = proc.probeOutput(app.arena, app.io, &.{ "es", "/ad", "-n", "1" }, ".") catch "";
         if (std.mem.trim(u8, out, " \t\r\n").len > 0) {
             es_ok = true;
             try d.row(.ok, "es", try std.fmt.allocPrint(app.arena, "Everything index working  ({s})", .{p}));
