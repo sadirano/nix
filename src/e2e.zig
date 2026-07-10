@@ -278,8 +278,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Machine-wide defaults: _default.toml is the last layer — its own
         // names work from any alias, but never shadow project/central ones.
-        try writeFile(&c, join(&c, &.{ home, "actions", "_default.toml" }),
-            "[actions]\nhello = \"echo from-default\"\nonly = \"echo from-default\"\ndefonly = \"echo default-only\"\n");
+        try writeFile(&c, join(&c, &.{ home, "actions", "_default.toml" }), "[actions]\nhello = \"echo from-default\"\nonly = \"echo from-default\"\ndefonly = \"echo default-only\"\n");
         r = try c.run(&.{ "pa", "--run", ":defonly" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "default-only") != null, "a machine-wide default action runs via any alias", r);
         r = try c.run(&.{ "pa", "--run", ":hello" });

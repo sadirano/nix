@@ -230,10 +230,11 @@ test "sweep: streaming counter + rank find flooding parents" {
         .counts = std.StringHashMap(i64).init(a),
     };
     const lines = [_][]const u8{
-        "C:\\w\\flood\\a", "C:\\w\\flood\\b",  "C:\\w\\flood\\c",
+        "C:\\w\\flood\\a", "C:\\w\\flood\\b", "C:\\w\\flood\\c",
         "C:\\w\\SKIPME\\x", // excluded, case-insensitive
         "C:\\w\\quiet\\only", // below min
-        "", "   ",
+        "",
+        "   ",
     };
     for (&lines) |l| try SweepCounter.onLine(@ptrCast(&counter), l);
     const cands = try sweepRank(a, &counter.counts, &.{}, 3);
