@@ -120,6 +120,22 @@ ff = "fzf"
 
 Custom names follow the alias name rules (no spaces, separators, or TOML metacharacters) and can't be `nix` itself; an unusable rename is ignored and the slot keeps its built-in name.
 
+**Friendly names.** New to nix and the single letters feel cryptic? Rename every slot to the spelled-out word in one go. `ff` becomes `findfile` rather than `find`, so it never clashes with the built-in `find.exe`:
+
+```toml
+[shortcuts]
+o  = "open"       # cd into the alias dir
+e  = "edit"       # open the dir/file in your editor
+s  = "show"       # open the dir in the file manager
+y  = "yank"       # copy the path (or picked files)
+p  = "paste"      # save the clipboard into the dir
+r  = "run"        # run a command / saved action
+sg = "search"     # ripgrep search under the dir
+ff = "findfile"   # fuzzy-find files under the dir
+```
+
+These *replace* the letters (the renamed slot's short form stops answering) — so it's an either/or, not both. The same preset ships commented out in the starter `config.toml`.
+
 `[grep]` sets the `sg` default — `all = true` makes every search run `rga`; the per-run `--all`/`-a` flag flips a single search either way:
 
 ```toml

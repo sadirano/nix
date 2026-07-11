@@ -37,6 +37,20 @@ const starter_config =
     \\#   [shortcuts]
     \\#   s = "show"
     \\#
+    \\# Prefer spelled-out names to the letters? Uncomment this full preset — a
+    \\# friendlier setup that trades each short name for a word (findfile, not
+    \\# find, so it never clashes with the built-in find.exe):
+    \\#
+    \\#   [shortcuts]
+    \\#   o  = "open"       # cd into the alias dir
+    \\#   e  = "edit"       # open the dir/file in your editor
+    \\#   s  = "show"       # open the dir in the file manager
+    \\#   y  = "yank"       # copy the path (or picked files)
+    \\#   p  = "paste"      # save the clipboard into the dir
+    \\#   r  = "run"        # run a command / saved action
+    \\#   sg = "search"     # ripgrep search under the dir
+    \\#   ff = "findfile"   # fuzzy-find files under the dir
+    \\#
     \\# [grep] tunes the sg search. `all = true` makes sg search with
     \\# ripgrep-all (rga) by default — same as passing --all on every search:
     \\#
