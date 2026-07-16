@@ -21,6 +21,29 @@ jobs:
         with:
           version: 0.16.0
 
+      # Stable tags (no pre-release suffix) must ship with every box in
+      # RELEASE-CHECKLIST.md checked — the manual Windows-only verification
+      # the e2e harness can't reach (interactive pickers, real PATH/registry
+      # mutation). Pre-release tags (v*-pre, v*-rc1, …) are exempt: they're
+      # the build the checklist itself gets run against.
+      - name: Verify release checklist is complete
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if [[ "$tag" == *-* ]]; then
+            echo "Pre-release tag ($tag) — skipping checklist gate."
+          elif [ -f RELEASE-CHECKLIST.md ]; then
+            unchecked=$(grep -c '^- \[ \]' RELEASE-CHECKLIST.md || true)
+            if [ "$unchecked" -gt 0 ]; then
+              echo "::error::RELEASE-CHECKLIST.md has $unchecked unchecked item(s) — complete them (or delete/reset the file, per its own last step) before tagging a stable release."
+              grep -n '^- \[ \]' RELEASE-CHECKLIST.md
+              exit 1
+            fi
+            echo "Release checklist fully checked."
+          else
+            echo "No RELEASE-CHECKLIST.md present — nothing to verify."
+          fi
+
       - name: Test
         run: zig build test
 
