@@ -55,7 +55,7 @@ zig-out\bin\nix.exe --sync                 # deploy into ~/.nix/bin
 
 `nix --init` creates `~/.nix/`, installs the `.exe` command wrappers into `~/.nix/bin`, and adds that dir to your user PATH — restart your shell once and the short commands below are live in every shell (PowerShell, cmd, anything). It never touches your shell profile; the wrappers on PATH are the whole integration on Windows. (On Unix-likes a snippet written to `~/.nix/shell/` *is* the integration — shell functions that cd in place — so there you add the printed line to `.bashrc`/`.zshrc` yourself.)
 
-One PowerShell gotcha: pwsh resolves aliases before PATH exes, and `r` is a built-in alias for `Invoke-History` — so of the eight commands it's the one pwsh silently shadows. Add `Remove-Item Alias:r -Force` to your `$PROFILE` (cmd and clink have no alias layer and are unaffected).
+One PowerShell gotcha: pwsh resolves aliases before PATH exes, and `r` is a built-in alias for `Invoke-History` — so of the eight commands it's the one pwsh silently shadows. Add `Remove-Item Alias:r -Force` to your `$PROFILE` (cmd and clink have no alias layer and are unaffected). Or sidestep it entirely: give the slot a second spelling with `[shortcuts]` — `r = ["r", "x"]` keeps `r` everywhere it already works and adds `x` for the shells that steal it.
 
 ## Use
 
@@ -120,6 +120,15 @@ ff = "fzf"
 
 Custom names follow the alias name rules (no spaces, separators, or TOML metacharacters) and can't be `nix` itself; an unusable rename is ignored and the slot keeps its built-in name.
 
+A slot can also take **several names** — list them as an array, and each one gets its own wrapper:
+
+```toml
+[shortcuts]
+r = ["r", "x"]   # keep `r`, add `x` — dodges pwsh's built-in `r` alias without retraining your hands
+```
+
+The first listed name is the primary (the one `--help` and the agent guide show). With a single string the rename *replaces* the letter; with an array, exactly the names you list answer — so `["r", "x"]` is how you say "both".
+
 **Friendly names.** New to nix and the single letters feel cryptic? Rename every slot to the spelled-out word in one go. `ff` becomes `findfile` rather than `find`, so it never clashes with the built-in `find.exe`:
 
 ```toml
@@ -134,7 +143,7 @@ sg = "search"     # ripgrep search under the dir
 ff = "findfile"   # fuzzy-find files under the dir
 ```
 
-These *replace* the letters (the renamed slot's short form stops answering) — so it's an either/or, not both. The same preset ships commented out in the starter `config.toml`.
+These *replace* the letters (the renamed slot's short form stops answering); use the array form (`r = ["r", "run"]`) on any slot where you want both. The same preset ships commented out in the starter `config.toml`.
 
 `[grep]` sets the `sg` default — `all = true` makes every search run `rga`; the per-run `--all`/`-a` flag flips a single search either way:
 

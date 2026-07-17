@@ -365,6 +365,16 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pa", ":hello" });
         c.exe = real_exe;
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a renamed wrapper ([shortcuts]) desugars via argv0", r);
+
+        // A multi-name slot: `r = ["r", "x"]` — the extra spelling desugars to
+        // the same slot (the pwsh-collision escape hatch keeps `r` too).
+        const x_exe = join(&c, &.{ root, "x.exe" });
+        try writeFile(&c, x_exe, exe_bytes);
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nr = [\"r\", \"x\"]\n");
+        c.exe = x_exe;
+        r = try c.run(&.{ "pa", ":hello" });
+        c.exe = real_exe;
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a multi-name slot's extra wrapper desugars via argv0", r);
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
     }
 
