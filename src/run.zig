@@ -10,6 +10,7 @@ const store = @import("store.zig");
 const actions = @import("actions.zig");
 const resolve = @import("resolve.zig");
 const config = @import("config.zig");
+const notify = @import("notify.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -213,6 +214,8 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
 /// completion hook (feedback 2026-07-16): every action gets a voice (exit code,
 /// duration) in one place, no `hoot run` boilerplate per command line. Detached
 /// (`--outside`) runs are exempt — there is no completion to observe. The hook
+/// runs synchronously in the alias dir with the action's env (NIX_ALIAS, scripts
+/// dirs on PATH) plus NIX_ACTION / NIX_ACTION_EXIT / NIX_ACTION_DURATION_MS, and
 /// never changes the action's exit code.
 pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool) !u8 {
     if (outside) return runShellString(app, command, alias, dir, true);
@@ -222,83 +225,15 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
     const code = try runShellString(app, command, alias, dir, false);
     const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
     const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
-    notifyFinish(app, cfg.notify_on_finish, alias, dir, name, code, ms) catch |e| {
-        try app.err.print("nix: notify hook: {s}\n", .{@errorName(e)});
-    };
-    return code;
-}
-
-/// notifyFinish runs the `[notify] on_finish` hook in the alias dir,
-/// synchronously (a notifier call is milliseconds; a deterministic order keeps
-/// its output after the action's). Like `[nav] terminal`, the template is
-/// tokenized and spawned directly — NOT through cmd/sh: cmd.exe can't round-trip
-/// embedded quotes (its quote rules disagree with the MSVC escaping the spawn
-/// applies), and a multi-word {message} must survive as one argument. Expansion
-/// happens per token, so a bare `{message}` token stays a single argument;
-/// shell operators need an explicit `cmd /c` / `sh -c` prefix. The hook gets the
-/// same env as the action — NIX_ALIAS, scripts dirs on PATH — plus NIX_ACTION,
-/// NIX_ACTION_EXIT, and NIX_ACTION_DURATION_MS on a private copy (so nothing
-/// leaks into a later group member's action), and its exit code is ignored: a
-/// broken notifier must never turn a green build red.
-fn notifyFinish(app: *App, template: []const u8, alias: []const u8, dir: []const u8, name: []const u8, code: u8, ms: u64) !void {
-    const tokens = try splitTemplate(app.arena, template);
-    if (tokens.len == 0) return;
-    const argv = try app.arena.alloc([]const u8, tokens.len);
-    for (tokens, 0..) |t, i| argv[i] = try expandNotifyTemplate(app.arena, t, alias, name, code, ms);
-    const env = try app.arena.create(std.process.Environ.Map);
-    env.* = try app.env.clone(app.arena);
-    try env.put("NIX_ACTION", name);
-    try env.put("NIX_ACTION_EXIT", try std.fmt.allocPrint(app.arena, "{d}", .{code}));
-    try env.put("NIX_ACTION_DURATION_MS", try std.fmt.allocPrint(app.arena, "{d}", .{ms}));
-    try app.out.flush();
-    _ = try proc.runInheritEnv(app.io, argv, dir, env);
-}
-
-/// splitTemplate splits a command template into argv tokens: whitespace
-/// separates, double or single quotes group (and are stripped), no escape
-/// sequences. An unterminated quote runs to the end of the string — lenient,
-/// like the config readers.
-pub fn splitTemplate(arena: std.mem.Allocator, s: []const u8) ![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    var tok: std.ArrayList(u8) = .empty;
-    var in_tok = false;
-    var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        const ch = s[i];
-        if (ch == '"' or ch == '\'') {
-            in_tok = true; // a quoted section counts even when empty ("")
-            i += 1;
-            while (i < s.len and s[i] != ch) : (i += 1) try tok.append(arena, s[i]);
-            continue;
-        }
-        if (ch == ' ' or ch == '\t') {
-            if (in_tok) try out.append(arena, try arena.dupe(u8, tok.items));
-            tok.clearRetainingCapacity();
-            in_tok = false;
-            continue;
-        }
-        in_tok = true;
-        try tok.append(arena, ch);
-    }
-    if (in_tok) try out.append(arena, try arena.dupe(u8, tok.items));
-    return out.items;
-}
-
-/// expandNotifyTemplate substitutes the on_finish placeholders: {alias},
-/// {action}, {exit}, {status} (ok|fail), {duration} (humanized), {level}
-/// (info|warn — hoot's quiet-on-success convention), and {message} (a composed
-/// one-liner). Unknown {tokens} pass through literally, lenient like the other
-/// readers. Applied per argv token (after splitTemplate), so a multi-word value
-/// like {message} expands inside its token without re-splitting.
-pub fn expandNotifyTemplate(arena: std.mem.Allocator, template: []const u8, alias: []const u8, name: []const u8, code: u8, ms: u64) ![]const u8 {
     const ok = code == 0;
-    const duration = try fmtDuration(arena, ms);
+    const duration = try notify.fmtDuration(app.arena, ms);
     const message = if (ok)
-        try std.fmt.allocPrint(arena, ":{s} finished in {s}", .{ name, duration })
+        try std.fmt.allocPrint(app.arena, ":{s} finished in {s}", .{ name, duration })
     else
-        try std.fmt.allocPrint(arena, ":{s} failed (exit {d}) after {s}", .{ name, code, duration });
-    const exit_str = try std.fmt.allocPrint(arena, "{d}", .{code});
-    const pairs = [_]struct { k: []const u8, v: []const u8 }{
+        try std.fmt.allocPrint(app.arena, ":{s} failed (exit {d}) after {s}", .{ name, code, duration });
+    const exit_str = try std.fmt.allocPrint(app.arena, "{d}", .{code});
+    const ms_str = try std.fmt.allocPrint(app.arena, "{d}", .{ms});
+    const pairs = [_]notify.Pair{
         .{ .k = "{alias}", .v = alias },
         .{ .k = "{action}", .v = name },
         .{ .k = "{exit}", .v = exit_str },
@@ -307,75 +242,22 @@ pub fn expandNotifyTemplate(arena: std.mem.Allocator, template: []const u8, alia
         .{ .k = "{level}", .v = if (ok) "info" else "warn" },
         .{ .k = "{message}", .v = message },
     };
-    var out: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    outer: while (i < template.len) {
-        if (template[i] == '{') {
-            for (pairs) |p| {
-                if (std.mem.startsWith(u8, template[i..], p.k)) {
-                    try out.appendSlice(arena, p.v);
-                    i += p.k.len;
-                    continue :outer;
-                }
-            }
-        }
-        try out.append(arena, template[i]);
-        i += 1;
-    }
-    return out.items;
+    const env_extra = [_]notify.Pair{
+        .{ .k = "NIX_ACTION", .v = name },
+        .{ .k = "NIX_ACTION_EXIT", .v = exit_str },
+        .{ .k = "NIX_ACTION_DURATION_MS", .v = ms_str },
+    };
+    notify.fire(app, cfg.notify_on_finish, dir, &pairs, &env_extra) catch |e| {
+        try app.err.print("nix: notify hook: {s}\n", .{@errorName(e)});
+    };
+    return code;
 }
 
-/// fmtDuration renders a millisecond count for humans: 850ms, 12s, 1m23s, 1h02m.
-pub fn fmtDuration(arena: std.mem.Allocator, ms: u64) ![]const u8 {
-    if (ms < 1000) return std.fmt.allocPrint(arena, "{d}ms", .{ms});
-    const secs = ms / 1000;
-    if (secs < 60) return std.fmt.allocPrint(arena, "{d}s", .{secs});
-    if (secs < 3600) return std.fmt.allocPrint(arena, "{d}m{d:0>2}s", .{ secs / 60, secs % 60 });
-    return std.fmt.allocPrint(arena, "{d}h{d:0>2}m", .{ secs / 3600, (secs % 3600) / 60 });
-}
-
-test "fmtDuration: unit boundaries" {
+test "runAction message shapes (via notify.expandTemplate pairs)" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    try std.testing.expectEqualStrings("0ms", try fmtDuration(a, 0));
-    try std.testing.expectEqualStrings("850ms", try fmtDuration(a, 850));
-    try std.testing.expectEqualStrings("12s", try fmtDuration(a, 12_499));
-    try std.testing.expectEqualStrings("1m23s", try fmtDuration(a, 83_000));
-    try std.testing.expectEqualStrings("59m59s", try fmtDuration(a, 3_599_999));
-    try std.testing.expectEqualStrings("1h02m", try fmtDuration(a, 3_720_000));
-}
-
-test "splitTemplate: whitespace, quote grouping, empty and unterminated quotes" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expectEqualDeep(
-        @as([]const []const u8, &.{ "hoot", "send", "{message}", "--tag", "{alias}" }),
-        try splitTemplate(a, "hoot send \"{message}\"  --tag {alias}"),
-    );
-    try std.testing.expectEqualDeep(
-        @as([]const []const u8, &.{ "sh", "-c", "echo a b" }),
-        try splitTemplate(a, "sh -c 'echo a b'"),
-    );
-    // Adjacent quoted/bare parts fuse into one token; "" is a real empty arg.
-    try std.testing.expectEqualDeep(
-        @as([]const []const u8, &.{ "--msg=a b", "" }),
-        try splitTemplate(a, "--msg='a b' \"\""),
-    );
-    // Unterminated quote runs to the end; blank template yields nothing.
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"a b"}), try splitTemplate(a, "\"a b"));
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{}), try splitTemplate(a, "  \t "));
-}
-
-test "expandNotifyTemplate: all placeholders, both statuses, unknown tokens survive" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const ok = try expandNotifyTemplate(a, "hoot send \"{message}\" --tag {alias} --level {level}", "acme", "build", 0, 83_000);
-    try std.testing.expectEqualStrings("hoot send \":build finished in 1m23s\" --tag acme --level info", ok);
-    const fail = try expandNotifyTemplate(a, "{alias}/{action}: {status} exit={exit} in {duration}", "acme", "build", 3, 850);
-    try std.testing.expectEqualStrings("acme/build: fail exit=3 in 850ms", fail);
-    // Unknown {tokens} and stray braces pass through untouched.
-    try std.testing.expectEqualStrings("x {nope} {} {", try expandNotifyTemplate(a, "x {nope} {} {", "a", "b", 0, 0));
+    // The composed {message} strings runAction hands the hook.
+    try std.testing.expectEqualStrings(":build finished in 1m23s", try std.fmt.allocPrint(a, ":{s} finished in {s}", .{ "build", try notify.fmtDuration(a, 83_000) }));
+    try std.testing.expectEqualStrings(":build failed (exit 3) after 850ms", try std.fmt.allocPrint(a, ":{s} failed (exit {d}) after {s}", .{ "build", 3, try notify.fmtDuration(a, 850) }));
 }

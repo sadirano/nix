@@ -267,8 +267,9 @@ fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
         break;
     };
     if (has_pat) {
+        const group_label = try std.fmt.allocPrint(app.arena, "+{s}", .{group});
         return switch (try findPick(app, targets, args)) {
-            .selected => |sel| paste.yankSelectionFiles(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
+            .selected => |sel| paste.yankSelectionFiles(app, group_label, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
             .cancelled => 0,
             .failed => 1,
         };
@@ -282,7 +283,10 @@ fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
     try app.out.flush();
     clipboard.writeText(app.arena, app.io, buf.items) catch |e| {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
+        return 0;
     };
+    const label = try std.fmt.allocPrint(app.arena, "+{s}", .{group});
+    paste.notifyEvent(app, .yank, label, targets[0].path, try std.fmt.allocPrint(app.arena, "yanked {d} member paths", .{targets.len}));
     return 0;
 }
 
@@ -312,7 +316,7 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
         name = a;
     }
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
-    if (targets.len == 1) return paste.pasteClipboardInto(app, targets[0].path, name);
+    if (targets.len == 1) return paste.pasteClipboardInto(app, targets[0].name, targets[0].path, name);
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick +{s}'s paste destination (or `p <member>`)\n", .{group});
         return 1;
@@ -324,7 +328,7 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
     if (res.code != 0) return 0; // cancelled
     const row = std.mem.trim(u8, res.output, " \t\r\n");
     if (row.len == 0) return 0;
-    return paste.pasteClipboardInto(app, rowPath(row), name);
+    return paste.pasteClipboardInto(app, resolve.rowName(row), rowPath(row), name);
 }
 
 /// cmdGroupExplore: bare `s +group` opens every member dir in the file manager

@@ -73,10 +73,14 @@ const starter_config =
     \\# :action` finishes, with {alias} {action} {exit} {status} {duration}
     \\# {level} {message} expanded — so long builds report completion (and
     \\# especially failure) without per-action boilerplate. With a notifier
-    \\# like hoot, success logs quietly and failure toasts:
+    \\# like hoot, success logs quietly and failure toasts. on_paste / on_yank
+    \\# record what `p` / `y` actually did ({alias} {message} {status} {level}),
+    \\# so the result is on record instead of re-checked:
     \\#
     \\#   [notify]
     \\#   on_finish = 'hoot send "{message}" --tag {alias} --level {level}'
+    \\#   on_paste  = 'hoot send "{message}" --tag {alias}'
+    \\#   on_yank   = 'hoot send "{message}" --tag {alias}'
     \\
 ;
 

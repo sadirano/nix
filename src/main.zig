@@ -682,7 +682,7 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     }
     const name: []const u8 = if (action_args.len == 1) action_args[0] else "";
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return paste.pasteClipboardInto(app, target, name);
+    return paste.pasteClipboardInto(app, alias, target, name);
 }
 
 /// cmdYank: `y <alias> <pat>` runs the ff picker and copies the selected FILES
@@ -694,9 +694,9 @@ fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         break;
     };
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    if (!has_pat) return paste.yankPathText(app, target);
+    if (!has_pat) return paste.yankPathText(app, alias, target);
     return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, action_args)) {
-        .selected => |sel| paste.yankSelectionFiles(app, target, sel),
+        .selected => |sel| paste.yankSelectionFiles(app, alias, target, sel),
         .cancelled => 0,
         .failed => 1,
     };
