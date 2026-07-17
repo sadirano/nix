@@ -78,6 +78,14 @@ fn hasLine(hay: []const u8, want: []const u8) bool {
     return false;
 }
 
+/// hasLineFold is hasLine with case-insensitive comparison (for lines carrying
+/// Windows paths, which round-trip through the store case-normalized).
+fn hasLineFold(hay: []const u8, want: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, hay, '\n');
+    while (lines.next()) |l| if (pathEql(trim(l), want)) return true;
+    return false;
+}
+
 /// hasRow reports whether any line's first whitespace-delimited token equals
 /// `name` — i.e. a table row for that entry (not a substring anywhere).
 fn hasRow(hay: []const u8, name: []const u8) bool {
@@ -263,9 +271,11 @@ pub fn main(init: std.process.Init) !void {
         var r = try c.run(&.{ "pa", "--run", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "project-local action wins over central", r);
 
+        // Match a line, not the whole stdout: a machine's cmd AutoRun (doskey/
+        // clink) may prepend noise to every `cmd /c` run.
         const expect_ctx = try std.fmt.allocPrint(arena, "alias=pa path={s}", .{pa});
         r = try c.run(&.{ "pa", "--run", ":whoami" });
-        c.check(r.code == 0 and pathEql(trim(r.out), expect_ctx), "alias runs see NIX_ALIAS / NIX_ALIAS_PATH", r);
+        c.check(r.code == 0 and hasLineFold(r.out, expect_ctx), "alias runs see NIX_ALIAS / NIX_ALIAS_PATH", r);
 
         r = try c.run(&.{ "pa", "--run", ":only" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "central-only") != null, "central action runs when no local one exists", r);
@@ -293,6 +303,43 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{"--export"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[actions._default]") != null, "--export includes the machine-wide default actions", r);
+    }
+
+    // --- notify hook ([notify] on_finish fires after :actions) -----------------
+    {
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-project\"\nbad = \"exit 3\"\n");
+        // The hook spawns directly (no shell), so route the echo through an
+        // explicit cmd /c | sh -c — which also exercises env-var visibility.
+        const dur_ref = if (proc.is_windows) "%NIX_ACTION_DURATION_MS%" else "$NIX_ACTION_DURATION_MS";
+        const hook = if (proc.is_windows)
+            try std.fmt.allocPrint(arena, "cmd /c echo notified={{alias}},{{action}},{{status}},{{exit}},dur={s}", .{dur_ref})
+        else
+            try std.fmt.allocPrint(arena, "sh -c 'echo notified={{alias}},{{action}},{{status}},{{exit}},dur={s}'", .{dur_ref});
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), try std.fmt.allocPrint(arena, "[notify]\non_finish = \"{s}\"\n", .{hook}));
+
+        var r = try c.run(&.{ "pa", "--run", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null and
+            std.mem.indexOf(u8, r.out, "notified=pa,hello,ok,0") != null, "on_finish fires after a successful action", r);
+        c.check(std.mem.indexOf(u8, r.out, "dur=") != null and std.mem.indexOf(u8, r.out, dur_ref) == null, "the hook sees NIX_ACTION_DURATION_MS", r);
+
+        r = try c.run(&.{ "pa", "--run", ":bad" });
+        c.check(r.code == 3 and std.mem.indexOf(u8, r.out, "notified=pa,bad,fail,3") != null, "on_finish reports failure and the action's exit code passes through", r);
+
+        r = if (proc.is_windows)
+            try c.run(&.{ "pa", "--run", "cmd", "/c", "echo literal" })
+        else
+            try c.run(&.{ "pa", "--run", "sh", "-c", "echo literal" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "literal") != null and
+            std.mem.indexOf(u8, r.out, "notified=") == null, "a literal command does not fire the hook", r);
+
+        r = try c.run(&.{ "+work", "--run", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "notified=pa,hello,ok,0") != null, "a group :action fan-out notifies per member", r);
+
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), if (proc.is_windows)
+            "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=%NIX_ALIAS% path=%NIX_ALIAS_PATH%\"\n"
+        else
+            "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=$NIX_ALIAS path=$NIX_ALIAS_PATH\"\n");
     }
 
     // --- multicall via argv0 (wrapper copies; Windows-shaped install) ----------

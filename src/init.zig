@@ -65,6 +65,15 @@ const starter_config =
     \\#
     \\#   [picker]
     \\#   search_roots = ['~/projects', 'D:\\work']
+    \\#
+    \\# [notify] on_finish runs a notifier after every foreground `r <alias>
+    \\# :action` finishes, with {alias} {action} {exit} {status} {duration}
+    \\# {level} {message} expanded — so long builds report completion (and
+    \\# especially failure) without per-action boilerplate. With a notifier
+    \\# like hoot, success logs quietly and failure toasts:
+    \\#
+    \\#   [notify]
+    \\#   on_finish = 'hoot send "{message}" --tag {alias} --level {level}'
     \\
 ;
 

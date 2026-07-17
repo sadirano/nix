@@ -40,7 +40,7 @@ const navigateGroup = nav.navigateGroup;
 const aliasRunEnv = run_zig.aliasRunEnv;
 const resolveAction = run_zig.resolveAction;
 const resolveScript = run_zig.resolveScript;
-const runShellString = run_zig.runShellString;
+const runAction = run_zig.runAction;
 const listActions = run_zig.listActions;
 const padPrint = app_zig.padPrint;
 
@@ -387,7 +387,7 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
                 try app.err.print("   (no action :{s} — skipped)\n", .{n});
                 continue;
             };
-            const code = try runShellString(app, cmd, t.name, t.path, false);
+            const code = try runAction(app, cmd, t.name, t.path, n, false);
             if (code != 0) rc = code;
         } else {
             // Each member resolves its own `.nix/scripts` command and runs with
