@@ -495,6 +495,7 @@ pub fn doctorFindings(app: *App) ![]const Finding {
         while (it.next(app.io) catch null) |ent| {
             if (ent.kind == .directory) continue;
             if (std.ascii.endsWithIgnoreCase(ent.name, ".tmp")) continue; // interrupted atomic write
+            if (std.ascii.endsWithIgnoreCase(ent.name, ".stale")) continue; // parked live image (--sync replaces running wrappers by renaming them aside)
             const stem = if (std.mem.lastIndexOfScalar(u8, ent.name, '.')) |i| ent.name[0..i] else ent.name;
             if (isReservedName(app.arena, cfg, stem)) continue;
             var owned = false;
