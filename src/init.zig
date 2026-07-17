@@ -100,8 +100,11 @@ pub fn cmdSync(app: *App) !u8 {
     }
     try warnStaleWrappers(app, stale);
     // [bin] exports are generated files too — a bare `--sync` must refresh them
-    // or "run `nix --sync`" stops being the universal fix. Problems are printed
-    // loudly but don't change sync's exit: wrappers regenerated is still true.
+    // or "run `nix --sync`" stops being the universal fix. Implicit mode:
+    // refresh only manifest-owned exports (a NEW export needs an explicit
+    // `--sync-bin`, so registering a repo never installs commands as a side
+    // effect). Problems are printed loudly but don't change sync's exit:
+    // wrappers regenerated is still true.
     _ = bin_exports.syncBin(app, true) catch |e| {
         try app.err.print("nix: sync [bin] exports: {s}\n", .{@errorName(e)});
     };

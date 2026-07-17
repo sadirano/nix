@@ -81,17 +81,26 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   keeps `[bin]` out of `--export`/`--import` (which round-trip only central
   `[actions]`). Central/private `[bin]` can come later if wanted.
 - **Copy exes, forward scripts.** A copy survives rebuilds while the tool is
-  running and adds no indirection; `.cmd`/`.bat`/`.ps1` get a one-line
-  forwarder so edits take effect live. Other types are refused (a bin holds
-  runnables, not data — the Noir `user\` lesson).
+  running and adds no indirection; `.cmd`/`.bat` get a one-line forwarder so
+  edits take effect live; `.ps1` gets a `.cmd` trampoline (pwsh, else
+  powershell) because PATHEXT rarely includes `.PS1`. Other types are refused
+  (a bin holds runnables, not data — the Noir `user\` lesson).
 - **Membership is declarative via the `~/.nix/exports.toml` manifest**
   (`<installed file> = "<owning alias>"`). Sync only ever deletes files the
   manifest owns; dropping the `[bin]` line or the alias prunes the file on the
-  next sync. `--sync` runs the bin sync too (quiet when nothing is declared),
-  so it stays the universal fix; `--sync-bin` is the focused verb.
+  next sync. An alias dir that is merely UNREACHABLE (unplugged drive) keeps
+  its exports — unknown is not undeclared; uninstalling follows an explicit
+  act only.
+- **New exports need an explicit `--sync-bin`; `--sync` only refreshes.**
+  `--sync` runs the bin sync in implicit mode: manifest-owned exports are
+  refreshed/pruned, but a name not yet in the manifest is only listed for
+  review — so registering a repo can never install commands on PATH as a side
+  effect. Installing also warns when the name resolves elsewhere on PATH
+  (shadowing is legitimate, surprising is not; doctor keeps a note-level row).
 - **Collisions refuse loudly, nobody wins:** a name declared by two aliases is
   reported and left uninstalled until one renames. Wrapper names — builtin
-  slots, `[shortcuts]` renames, and `nix` itself — are reserved.
+  slots, `[shortcuts]` renames, `nix` itself — and DOS device names
+  (`nul`, `con`, `com1`…) are reserved.
 - **Doctor reports drift, sync repairs it:** gone alias, gone source, stale
   copy, undeclared file in `~/.nix/bin`. The drift logic lives in
   bin_exports.zig next to the sync so the two can't disagree.

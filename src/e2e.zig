@@ -357,17 +357,26 @@ pub fn main(init: std.process.Init) !void {
         const restore = readFileOr(&c, pa_actions, "");
         const src_cmd = join(&c, &.{ pa, "tools", "greet.cmd" });
         const src_exe = join(&c, &.{ pa, "zig-out", "tool.exe" });
+        const src_ps1 = join(&c, &.{ pa, "tools", "task.ps1" });
         try writeFile(&c, src_cmd, "@echo greeting\r\n");
         try writeFile(&c, src_exe, "MZfake-v1");
-        try writeFile(&c, pa_actions, "[actions]\nhello = \"echo from-project\"\n[bin]\ngreet = \"tools/greet.cmd\"\ntool = \"zig-out/tool.exe\"\n");
+        try writeFile(&c, src_ps1, "Write-Output 'task'\r\n");
+        const bin_decls = "[bin]\ngreet = \"tools/greet.cmd\"\ntool = \"zig-out/tool.exe\"\ntask = \"tools/task.ps1\"\n";
+        try writeFile(&c, pa_actions, try std.fmt.allocPrint(arena, "[actions]\nhello = \"echo from-project\"\n{s}", .{bin_decls}));
 
         const inst_cmd = join(&c, &.{ home, "bin", "greet.cmd" });
         const inst_exe = join(&c, &.{ home, "bin", "tool.exe" });
+        const inst_ps = join(&c, &.{ home, "bin", "task.cmd" });
         var r = try c.run(&.{"--sync-bin"});
         c.check(r.code == 0 and std.ascii.indexOfIgnoreCase(readFileOr(&c, inst_cmd, ""), src_cmd) != null and
             std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v1"), "--sync-bin installs a script forwarder and an exe copy", r);
+        // .ps1 installs as a cmd-launchable trampoline, not a bare .ps1.
+        const tramp = readFileOr(&c, inst_ps, "");
+        c.check(std.mem.indexOf(u8, tramp, "-File") != null and std.ascii.indexOfIgnoreCase(tramp, src_ps1) != null and
+            !proc.pathExists(io, join(&c, &.{ home, "bin", "task.ps1" })), "a .ps1 export installs as a .cmd trampoline", r);
         const man = readFileOr(&c, join(&c, &.{ home, "exports.toml" }), "");
-        c.check(std.mem.indexOf(u8, man, "greet.cmd") != null and std.mem.indexOf(u8, man, "tool.exe") != null, "the exports manifest records both installs", r);
+        c.check(std.mem.indexOf(u8, man, "greet.cmd") != null and std.mem.indexOf(u8, man, "tool.exe") != null and
+            std.mem.indexOf(u8, man, "task.cmd") != null, "the exports manifest records every install", r);
 
         // A rebuild leaves the copy stale: doctor flags it, resync refreshes it.
         try writeFile(&c, src_exe, "MZfake-v2");
@@ -384,16 +393,31 @@ pub fn main(init: std.process.Init) !void {
             !proc.pathExists(io, inst_exe) and proc.pathExists(io, inst_cmd), "a name claimed twice is refused and uninstalled", r);
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ pb, ".nix", "actions.toml" })) catch {};
 
-        // Wrapper names are reserved — an export can't shadow a nix command.
-        try writeFile(&c, pa_actions, "[bin]\nr = \"tools/greet.cmd\"\n");
+        // Wrapper names and DOS device names are refused (declarations kept in
+        // the same file stay installed — a bad line doesn't take down the rest).
+        try writeFile(&c, pa_actions, try std.fmt.allocPrint(arena, "{s}r = \"tools/greet.cmd\"\nnul = \"tools/greet.cmd\"\n", .{bin_decls}));
         r = try c.run(&.{"--sync-bin"});
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "wrapper") != null and
             !proc.pathExists(io, join(&c, &.{ home, "bin", "r.cmd" })), "a wrapper name is refused as an export", r);
+        c.check(std.mem.indexOf(u8, r.err, "device") != null and proc.pathExists(io, inst_cmd), "a DOS device name is refused; valid siblings survive", r);
+
+        // An unreachable alias dir protects its exports: unknown is not
+        // undeclared, so nothing is pruned until the dir returns (or the
+        // alias is removed).
+        try writeFile(&c, pa_actions, bin_decls);
+        _ = try c.run(&.{"--sync-bin"});
+        const pa_hidden = join(&c, &.{ root, "proj", "pa-hidden" });
+        try Io.Dir.cwd().rename(pa, Io.Dir.cwd(), pa_hidden, io);
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "unreachable") != null and
+            proc.pathExists(io, inst_cmd) and proc.pathExists(io, inst_exe) and proc.pathExists(io, inst_ps), "an unreachable alias dir keeps its exports installed", r);
+        try Io.Dir.cwd().rename(pa_hidden, Io.Dir.cwd(), pa, io);
 
         // Dropping the [bin] table prunes everything it declared.
         try writeFile(&c, pa_actions, restore);
         r = try c.run(&.{"--sync-bin"});
-        c.check(r.code == 0 and !proc.pathExists(io, inst_cmd) and !proc.pathExists(io, inst_exe), "undeclared exports are pruned on the next sync", r);
+        c.check(r.code == 0 and !proc.pathExists(io, inst_cmd) and !proc.pathExists(io, inst_exe) and
+            !proc.pathExists(io, inst_ps), "undeclared exports are pruned on the next sync", r);
     }
 
     // --- multicall via argv0 (wrapper copies; Windows-shaped install) ----------
