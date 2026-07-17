@@ -32,10 +32,13 @@ const starter_config =
     \\# After editing, run: nix --sync  (then restart your shell)
     \\#
     \\# [shortcuts] renames the built-in command functions
-    \\# (o, e, s, y, p, r, sg, ff):
+    \\# (o, e, s, y, p, r, sg, ff). An array gives a slot several names —
+    \\# every listed one answers, the first is the primary (e.g. keep `r`
+    \\# and add `x` for shells whose built-in `r` alias shadows it):
     \\#
     \\#   [shortcuts]
     \\#   s = "show"
+    \\#   r = ["r", "x"]
     \\#
     \\# Prefer spelled-out names to the letters? Uncomment this full preset — a
     \\# friendlier setup that trades each short name for a word (findfile, not

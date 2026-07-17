@@ -50,19 +50,31 @@ pub fn builtinShortcuts() []const Shortcut {
     };
 }
 
-/// shortcutFor returns the effective command name for a builtin slot, honouring
+/// shortcutFor returns the PRIMARY command name for a builtin slot, honouring
 /// any [shortcuts] override in config.toml (falls back to the slot name itself).
+/// A multi-name slot (`r = ["r", "x"]`) keeps its first listed name as the
+/// primary — the one help text, the agent guide, and the POSIX snippet use;
+/// the extra names still get wrappers via resolvedShortcutNames.
 pub fn shortcutFor(cfg: Config, slot: []const u8) []const u8 {
     for (cfg.shortcuts) |sc| if (std.mem.eql(u8, sc.builtin, slot)) return sc.custom;
     return slot;
 }
 
 /// resolvedShortcutNames returns the effective command names (defaults with any
-/// config overrides applied), sorted.
+/// config overrides applied), deduplicated case-insensitively and sorted. A slot
+/// may carry SEVERAL names (an array override like `r = ["r", "x"]` — extra
+/// spellings that dodge a shell builtin while keeping the familiar one); every
+/// listed name becomes a wrapper, so they all appear here.
 pub fn resolvedShortcutNames(arena: std.mem.Allocator, cfg: Config) ![][]const u8 {
     var names: std.ArrayList([]const u8) = .empty;
     for (builtinShortcuts()) |b| {
-        try names.append(arena, shortcutFor(cfg, b.builtin));
+        var overridden = false;
+        for (cfg.shortcuts) |sc| {
+            if (!std.mem.eql(u8, sc.builtin, b.builtin)) continue;
+            overridden = true;
+            try appendUniqueFold(arena, &names, sc.custom);
+        }
+        if (!overridden) try appendUniqueFold(arena, &names, b.builtin);
     }
     std.mem.sort([]const u8, names.items, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
@@ -70,6 +82,11 @@ pub fn resolvedShortcutNames(arena: std.mem.Allocator, cfg: Config) ![][]const u
         }
     }.lt);
     return names.items;
+}
+
+fn appendUniqueFold(arena: std.mem.Allocator, names: *std.ArrayList([]const u8), name: []const u8) !void {
+    for (names.items) |n| if (std.ascii.eqlIgnoreCase(n, name)) return;
+    try names.append(arena, name);
 }
 
 /// pickerExcludeDefaults returns the default exclusion fragments (dependency/
@@ -129,15 +146,35 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const val_start = std.mem.trim(u8, line[eq + 1 ..], " \t");
         if (std.mem.eql(u8, section, "shortcuts")) {
-            // value is a (possibly quoted) command name; key is the builtin slot.
-            // An unusable name is ignored (the slot keeps its builtin name):
-            // the value becomes a wrapper exe filename and a completer target,
-            // so it gets the alias charset rules — and never "nix", which would
-            // shadow the canonical binary in ~/.nix/bin.
-            const custom = stripQuotes(val_start);
-            const usable = custom.len > 0 and !std.ascii.eqlIgnoreCase(custom, "nix") and
-                if (store.validateAliasName(custom)) |_| true else |_| false;
-            if (usable) {
+            // value is a (possibly quoted) command name, or an array of names —
+            // `r = ["r", "x"]` gives a slot several spellings (each becomes a
+            // wrapper; the FIRST listed is the primary shown in docs/help), so a
+            // name a shell shadows (pwsh's `r`) gets an alternate without losing
+            // the familiar one. key is the builtin slot. An unusable name is
+            // ignored: the value becomes a wrapper exe filename and a completer
+            // target, so it gets the alias charset rules — and never "nix",
+            // which would shadow the canonical binary in ~/.nix/bin.
+            var customs: [][]const u8 = undefined;
+            if (val_start.len > 0 and val_start[0] == '[') {
+                // Gather to the closing ']' (may span lines), like [picker].
+                var buf: std.ArrayList(u8) = .empty;
+                try buf.appendSlice(arena, val_start);
+                while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
+                    i += 1;
+                    const cont = std.mem.trim(u8, all.items[i], " \t\r");
+                    if (cont.len > 0 and cont[0] == '#') continue;
+                    try buf.append(arena, ' ');
+                    try buf.appendSlice(arena, cont);
+                }
+                customs = try parseStringArray(arena, buf.items);
+            } else {
+                customs = try arena.alloc([]const u8, 1);
+                customs[0] = stripQuotes(val_start);
+            }
+            for (customs) |custom| {
+                const usable = custom.len > 0 and !std.ascii.eqlIgnoreCase(custom, "nix") and
+                    if (store.validateAliasName(custom)) |_| true else |_| false;
+                if (!usable) continue;
                 var sc: std.ArrayList(Shortcut) = .empty;
                 try sc.appendSlice(arena, cfg.shortcuts);
                 try sc.append(arena, .{ .builtin = try arena.dupe(u8, key), .custom = try arena.dupe(u8, custom) });
@@ -332,4 +369,29 @@ test "resolvedShortcutNames: defaults sorted; override replaces a slot" {
     const shortcuts = [_]Shortcut{.{ .builtin = "s", .custom = "show" }};
     const got = try resolvedShortcutNames(a, .{ .shortcuts = &shortcuts });
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "r", "sg", "show", "y" }), got);
+}
+
+test "multi-name slot: every listed name resolves; first stays primary" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // r = ["r", "x"] parses to two entries for the same slot.
+    const shortcuts = [_]Shortcut{
+        .{ .builtin = "r", .custom = "r" },
+        .{ .builtin = "r", .custom = "x" },
+    };
+    const cfg: Config = .{ .shortcuts = &shortcuts };
+    const got = try resolvedShortcutNames(a, cfg);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "r", "s", "sg", "x", "y" }), got);
+    // Help/guide/snippet keep showing the familiar first name.
+    try std.testing.expectEqualStrings("r", shortcutFor(cfg, "r"));
+
+    // Duplicate spellings collapse (case-insensitively).
+    const dup = [_]Shortcut{
+        .{ .builtin = "r", .custom = "x" },
+        .{ .builtin = "r", .custom = "X" },
+    };
+    const got2 = try resolvedShortcutNames(a, .{ .shortcuts = &dup });
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "s", "sg", "x", "y" }), got2);
 }
