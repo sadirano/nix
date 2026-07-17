@@ -21,9 +21,10 @@ pub fn bashPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 /// regenerate loads config and installs the platform integration: exe wrappers
 /// on Windows, the shell-function snippet elsewhere. exe is the absolute path
 /// to the running nix binary.
-/// Returns the wrapper names left STALE on disk (locked while an old version was
-/// running) — callers must surface these, or the old binary silently keeps
-/// answering to that name.
+/// Returns the wrapper names left STALE on disk — a running wrapper is
+/// normally replaced by renaming its live image aside, so this is only the
+/// double-failure case (even the rename refused) — callers must surface
+/// these, or the old binary silently keeps answering to that name.
 pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8) ![]const []const u8 {
     const cfg = try config.loadConfig(arena, io, home);
     try agents.write(arena, io, home, cfg);
@@ -127,11 +128,13 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
 /// installExeWrappers makes nix available under each command name in binDir by
 /// copying the canonical nix exe to bin/nix.exe and to each wrapper name. (onix
 /// hardlinks; nix copies — simpler, functionally equivalent, just more disk.)
-/// Returns the names whose wrapper could not be replaced (running exes are
-/// locked on Windows) AND whose on-disk copy differs from the new binary —
-/// those keep answering with the OLD version until updated.
+/// A wrapper backing a live session is replaced via rename-aside (see
+/// writeExeAtomic). Returns the names whose wrapper STILL could not be
+/// replaced AND whose on-disk copy differs from the new binary — those keep
+/// answering with the OLD version until updated.
 fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []const u8, names: [][]const u8, renamed_away: []const []const u8) ![]const []const u8 {
     try mkdirAll(io, bin);
+    sweepStale(arena, io, bin);
     const ext = if (is_windows) ".exe" else "";
     // Renamed-away builtin wrappers: delete so the old name stops answering.
     // Best-effort — a locked (running) exe stays until the next sync.
@@ -162,16 +165,78 @@ fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []
 
 /// writeExeAtomic writes an exe via a private temp + rename, so an interrupted
 /// --sync can never leave a half-written binary answering on PATH (a torn
-/// wrapper is worse than a stale one). On rename failure — the destination is
-/// a running, locked exe — the temp is removed and the error propagates to the
+/// wrapper is worse than a stale one). A locked destination (a RUNNING exe —
+/// Windows denies writing its image but allows renaming it) is moved aside to
+/// `<dst>.<rand>.stale` and the new file lands in its place: live sessions
+/// keep executing the renamed image, every new invocation gets the new build,
+/// and later syncs sweep the leftovers once they unlock. Only when even the
+/// move-aside fails does the temp get removed and the error propagate to the
 /// caller's stale check.
 fn writeExeAtomic(arena: std.mem.Allocator, io: Io, dst: []const u8, data: []const u8) !void {
     const tmp = try util.uniqueTmpName(arena, io, dst);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data });
-    Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), dst, io) catch |e| {
-        Io.Dir.cwd().deleteFile(io, tmp) catch {};
-        return e;
+    Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), dst, io) catch |first_err| {
+        // Busy but already current: a live session on the NEW build is not a
+        // replacement problem — don't park its image on every sync.
+        const existing = Io.Dir.cwd().readFileAlloc(io, dst, arena, .unlimited) catch "";
+        if (std.mem.eql(u8, existing, data)) {
+            Io.Dir.cwd().deleteFile(io, tmp) catch {};
+            return;
+        }
+        const aside = asideName(arena, io, dst) catch {
+            Io.Dir.cwd().deleteFile(io, tmp) catch {};
+            return first_err;
+        };
+        moveFile(arena, io, dst, aside) catch {
+            Io.Dir.cwd().deleteFile(io, tmp) catch {};
+            return first_err;
+        };
+        Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), dst, io) catch |e| {
+            // The slot is now EMPTY — put the old image back rather than leave
+            // the name answering to nothing.
+            moveFile(arena, io, aside, dst) catch {};
+            Io.Dir.cwd().deleteFile(io, tmp) catch {};
+            return e;
+        };
     };
+}
+
+extern "kernel32" fn MoveFileExW(lpExistingFileName: [*:0]const u16, lpNewFileName: ?[*:0]const u16, dwFlags: u32) callconv(.winapi) i32;
+
+/// moveFile renames via MoveFileExW on Windows: the Io.Dir.rename path opens
+/// the source with access a RUNNING exe's image lock denies (FileBusy), while
+/// MoveFileExW performs the same-volume rename the OS explicitly permits for
+/// live images — the whole point of the move-aside strategy. POSIX renames
+/// have no such lock and use the portable path.
+fn moveFile(arena: std.mem.Allocator, io: Io, from: []const u8, to: []const u8) !void {
+    if (!is_windows) return Io.Dir.cwd().rename(from, Io.Dir.cwd(), to, io);
+    const from_w = try std.unicode.utf8ToUtf16LeAllocZ(arena, from);
+    const to_w = try std.unicode.utf8ToUtf16LeAllocZ(arena, to);
+    if (MoveFileExW(from_w.ptr, to_w.ptr, 0) == 0) return error.MoveFileFailed;
+}
+
+/// asideName is uniqueTmpName's sibling for parked live images: a random
+/// suffix keeps concurrent syncs apart, and the fixed ".stale" tail is what
+/// sweepStale and the doctor's undeclared-file scan key on.
+fn asideName(arena: std.mem.Allocator, io: Io, path: []const u8) ![]const u8 {
+    var b: [8]u8 = undefined;
+    io.random(&b);
+    return std.fmt.allocPrint(arena, "{s}.{x}.stale", .{ path, std.mem.readInt(u64, &b, .little) });
+}
+
+/// sweepStale deletes parked `.stale` images left by earlier syncs. Best
+/// effort: one still backing a live session stays locked and simply survives
+/// to the next sweep.
+fn sweepStale(arena: std.mem.Allocator, io: Io, bin: []const u8) void {
+    var dir = Io.Dir.cwd().openDir(io, bin, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |ent| {
+        if (ent.kind == .directory) continue;
+        if (!std.ascii.endsWithIgnoreCase(ent.name, ".stale")) continue;
+        const p = std.fs.path.join(arena, &.{ bin, ent.name }) catch continue;
+        Io.Dir.cwd().deleteFile(io, p) catch {};
+    }
 }
 
 fn samePath(a: []const u8, b: []const u8) bool {

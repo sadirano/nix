@@ -129,6 +129,10 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 - [ ] 🧪 An invalid shortcut name is rejected at sync time.
 - [ ] `--sync` while a shell window is open (wrapper exes potentially in use)
       still completes — atomic replace, no half-written exes.
+- [ ] ⚠️ `--sync` while an `r <alias> <long-cmd>` session is live: the running
+      `r.exe` is renamed aside (`r.exe.<rand>.stale`), the new build answers
+      immediately, the live session keeps working, and the next `--sync`
+      sweeps the `.stale` leftover once the session ends.
 
 ## 11. Sweep & pickers
 
