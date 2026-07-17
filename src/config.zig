@@ -38,6 +38,11 @@ pub const Config = struct {
     /// Placeholders: {alias} {action} {exit} {status} {duration} {level}
     /// {message}. Empty → no hook.
     notify_on_finish: []const u8 = "",
+    /// [notify] on_paste / on_yank: result-record hooks run after a successful
+    /// `p` / `y`, so "what exactly did that do?" has an inbox answer instead of
+    /// a re-check. Placeholders: {alias} {message} {status} {level}.
+    notify_on_paste: []const u8 = "",
+    notify_on_yank: []const u8 = "",
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -192,9 +197,11 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             continue;
         }
         if (std.mem.eql(u8, section, "notify")) {
-            // value is a command template with {placeholders}; may contain '='
+            // values are command templates with {placeholders}; may contain '='
             // and spaces, so only the first '=' (found above) splits key/value.
             if (std.mem.eql(u8, key, "on_finish")) cfg.notify_on_finish = try arena.dupe(u8, stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, stripQuotes(val_start));
             continue;
         }
         if (!std.mem.eql(u8, section, "picker")) continue;

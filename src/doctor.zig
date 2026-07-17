@@ -391,18 +391,27 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         } else {
             try d.row(.note, "nav terminal", "unset — set [nav] terminal for `o +group` extra windows");
         }
-        if (cfg.notify_on_finish.len > 0) {
-            // The hook runs through the shell, so only its first token can be
-            // checked here: is the notifier itself on PATH?
-            const end = std.mem.indexOfAny(u8, cfg.notify_on_finish, " \t") orelse cfg.notify_on_finish.len;
-            const exe = cfg.notify_on_finish[0..end];
-            if (proc.findInPath(app.arena, app.io, app.env, exe)) |p| {
-                try d.row(.ok, "notify hook", try std.fmt.allocPrint(app.arena, "actions report via {s}  ({s})", .{ exe, p }));
-            } else {
-                try d.row(.warn, "notify hook", try std.fmt.allocPrint(app.arena, "\"{s}\" not found on PATH — [notify] on_finish will fail after every action", .{exe}));
+        {
+            const hooks = [_]struct { key: []const u8, template: []const u8 }{
+                .{ .key = "on_finish", .template = cfg.notify_on_finish },
+                .{ .key = "on_paste", .template = cfg.notify_on_paste },
+                .{ .key = "on_yank", .template = cfg.notify_on_yank },
+            };
+            var any = false;
+            for (hooks) |h| {
+                if (h.template.len == 0) continue;
+                any = true;
+                // The template spawns its first token directly: is the notifier
+                // itself findable?
+                const end = std.mem.indexOfAny(u8, h.template, " \t") orelse h.template.len;
+                const exe = h.template[0..end];
+                if (proc.findInPath(app.arena, app.io, app.env, exe)) |p| {
+                    try d.row(.ok, "notify hook", try std.fmt.allocPrint(app.arena, "{s} reports via {s}  ({s})", .{ h.key, exe, p }));
+                } else {
+                    try d.row(.warn, "notify hook", try std.fmt.allocPrint(app.arena, "[notify] {s}: \"{s}\" not found — the hook will fail every time it fires", .{ h.key, exe }));
+                }
             }
-        } else {
-            try d.row(.note, "notify hook", "unset — set [notify] on_finish to report action completions (e.g. hoot)");
+            if (!any) try d.row(.note, "notify hook", "unset — set [notify] on_finish/on_paste/on_yank to record outcomes (e.g. hoot)");
         }
 
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);

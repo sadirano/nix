@@ -315,7 +315,11 @@ pub fn main(init: std.process.Init) !void {
             try std.fmt.allocPrint(arena, "cmd /c echo notified={{alias}},{{action}},{{status}},{{exit}},dur={s}", .{dur_ref})
         else
             try std.fmt.allocPrint(arena, "sh -c 'echo notified={{alias}},{{action}},{{status}},{{exit}},dur={s}'", .{dur_ref});
-        try writeFile(&c, join(&c, &.{ home, "config.toml" }), try std.fmt.allocPrint(arena, "[notify]\non_finish = \"{s}\"\n", .{hook}));
+        const yank_hook = if (proc.is_windows)
+            "cmd /c echo yank-hook={alias},{status},{level}:{message}"
+        else
+            "sh -c 'echo yank-hook={alias},{status},{level}:{message}'";
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), try std.fmt.allocPrint(arena, "[notify]\non_finish = \"{s}\"\non_yank = \"{s}\"\n", .{ hook, yank_hook }));
 
         var r = try c.run(&.{ "pa", "--run", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null and
@@ -334,6 +338,11 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{ "+work", "--run", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "notified=pa,hello,ok,0") != null, "a group :action fan-out notifies per member", r);
+
+        // Bare `y` records what it copied (note: writes the runner's clipboard —
+        // a scratch path — which is what makes the hook fire).
+        r = try c.run(&.{ "pa", "--yank" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "yank-hook=pa,ok,info:yanked path ") != null, "on_yank records the copied path", r);
 
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
         try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), if (proc.is_windows)

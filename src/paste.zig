@@ -9,8 +9,23 @@ const app_zig = @import("app.zig");
 const clipboard = @import("clipboard.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
+const config = @import("config.zig");
+const notify = @import("notify.zig");
 
 const App = app_zig.App;
+
+/// notifyEvent fires the on_paste / on_yank result-record hook (when
+/// configured) with a composed outcome message — so a `p`/`y` that scrolled
+/// away has an inbox answer instead of a re-check. `alias` labels the context
+/// (a member name, or a `+group` token for group-wide yanks).
+pub fn notifyEvent(app: *App, comptime which: enum { paste, yank }, alias: []const u8, dir: []const u8, message: []const u8) void {
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const template = switch (which) {
+        .paste => cfg.notify_on_paste,
+        .yank => cfg.notify_on_yank,
+    };
+    notify.fireEvent(app, template, alias, dir, message);
+}
 
 fn isDir(app: *App, p: []const u8) bool {
     if (Io.Dir.cwd().openDir(app.io, p, .{})) |dir| {
@@ -68,16 +83,17 @@ fn copyTree(app: *App, src: []const u8, dest: []const u8) !void {
 
 /// pasteClipboardInto lands the clipboard in `target`: Explorer-copied files
 /// win, then image (.png) over text (.md) — the harder content to re-grab
-/// first. Shared by the alias and group forms of `p`.
-pub fn pasteClipboardInto(app: *App, target: []const u8, name: []const u8) !u8 {
+/// first. Shared by the alias and group forms of `p`; `alias` labels the
+/// destination for the on_paste hook.
+pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name: []const u8) !u8 {
     if (try clipboard.readFiles(app.arena, app.io)) |files| {
-        return pasteFiles(app, target, files, name);
+        return pasteFiles(app, alias, target, files, name);
     }
     if (try clipboard.readImage(app.arena, app.io)) |img| {
-        return pasteContent(app, target, name, img, ".png");
+        return pasteContent(app, alias, target, name, img, ".png");
     }
     if (try clipboard.readText(app.arena, app.io)) |text| {
-        return pasteContent(app, target, name, text, ".md");
+        return pasteContent(app, alias, target, name, text, ".md");
     }
     try app.err.writeAll("nix: clipboard holds no files, image, or text to paste\n");
     return 1;
@@ -85,7 +101,7 @@ pub fn pasteClipboardInto(app: *App, target: []const u8, name: []const u8) !u8 {
 
 /// pasteContent writes clipboard bytes to a uniquely-named file under target,
 /// prints the path, and copies it back to the clipboard.
-fn pasteContent(app: *App, target: []const u8, name: []const u8, data: []const u8, default_ext: []const u8) !u8 {
+fn pasteContent(app: *App, alias: []const u8, target: []const u8, name: []const u8, data: []const u8, default_ext: []const u8) !u8 {
     const fname = try pasteFilename(app, name, default_ext);
     const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname }));
     try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = data });
@@ -95,10 +111,12 @@ fn pasteContent(app: *App, target: []const u8, name: []const u8, data: []const u
     // Clipboard gets the host-separator path: / is not always a valid
     // separator on Windows (cmd.exe, some dialogs), \ always is.
     clipboard.writeText(app.arena, app.io, dest) catch {};
+    const kind = if (std.mem.eql(u8, default_ext, ".png")) "image" else "text";
+    notifyEvent(app, .paste, alias, target, try std.fmt.allocPrint(app.arena, "pasted {s} {s}", .{ kind, out }));
     return 0;
 }
 
-fn pasteFiles(app: *App, target: []const u8, files: [][]const u8, name: []const u8) !u8 {
+fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const u8, name: []const u8) !u8 {
     if (name.len > 0 and files.len > 1) {
         try app.err.print("nix: --paste <name> needs a single copied file; the clipboard holds {d}\n", .{files.len});
         return 1;
@@ -134,21 +152,28 @@ fn pasteFiles(app: *App, target: []const u8, files: [][]const u8, name: []const 
         try joined.appendSlice(app.arena, try store.fromSlash(app.arena, o));
     }
     clipboard.writeText(app.arena, app.io, joined.items) catch {};
+    const msg = if (outs.items.len == 1)
+        try std.fmt.allocPrint(app.arena, "pasted {s}", .{outs.items[0]})
+    else
+        try std.fmt.allocPrint(app.arena, "pasted {d} files into {s}", .{ outs.items.len, try store.toSlash(app.arena, target) });
+    notifyEvent(app, .paste, alias, target, msg);
     return 0;
 }
 
 /// yankPathText is the bare `y <alias>`: print the target path and copy it to
 /// the clipboard as text.
-pub fn yankPathText(app: *App, target: []const u8) !u8 {
+pub fn yankPathText(app: *App, alias: []const u8, target: []const u8) !u8 {
     try app.out.print("{s}\n", .{target});
     try app.out.flush();
     clipboard.writeText(app.arena, app.io, target) catch |e| {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
+        return 0; // path was still printed; nothing landed on the clipboard to record
     };
+    notifyEvent(app, .yank, alias, target, try std.fmt.allocPrint(app.arena, "yanked path {s}", .{target}));
     return 0;
 }
 
-pub fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8) !u8 {
+pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, selection: []const u8) !u8 {
     var paths: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
     while (lines.next()) |ln| {
@@ -177,5 +202,10 @@ pub fn yankSelectionFiles(app: *App, target: []const u8, selection: []const u8) 
         }
     };
     for (paths.items) |p| try app.out.print("{s}\n", .{p});
+    const msg = if (paths.items.len == 1)
+        try std.fmt.allocPrint(app.arena, "yanked {s}", .{paths.items[0]})
+    else
+        try std.fmt.allocPrint(app.arena, "yanked {d} files", .{paths.items.len});
+    notifyEvent(app, .yank, alias, target, msg);
     return 0;
 }
