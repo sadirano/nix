@@ -144,9 +144,45 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 - [ ] 🧪 `nix _default <path>` is rejected ("reserved").
 - [ ] 🧪 `nix --export` includes `[actions._default]`; re-import restores it.
 
-## 13. Release hygiene
+## 13. `[notify]` hooks (on_finish / on_paste / on_yank)
 
-- [ ] Release CI green: unit tests, e2e (56 checks), baked-version gate.
+- [ ] With the real hoot configured in `~/.nix/config.toml`: a successful
+      `r <alias> :<action>` logs quietly; a failing one raises the level
+      (check `{status}`/`{exit}`/`{duration}` render in the message).
+- [ ] A literal command (`r <alias> <cmd>`) and a detached run (`-o`) do
+      **not** fire on_finish.
+- [ ] `y <alias>` / `p <alias>` record their result via on_yank / on_paste;
+      a quoted `{message}` stays one argument (spawned directly, no cmd /c).
+- [ ] `nix --doctor` shows the notify-hook rows; with the notifier renamed
+      away it flags "not found — the hook will fail every time it fires".
+
+## 14. Multi-name `[shortcuts]` slots
+
+- [ ] 🧪 `r = ["r", "x"]` + `--sync`: both wrapper exes exist and `x <alias>
+      :<name>` dispatches like `r`.
+- [ ] 🧪 Help text and `~/.nix/AGENTS.md` show the **first** listed name as
+      primary.
+- [ ] 🧪 Dropping the extra name + `--sync` deletes its wrapper.
+
+## 15. `[bin]` exports (`--sync-bin`)
+
+- [ ] 🧪 Declare `[bin]` exe + `.cmd` + `.ps1` entries in a scratch alias;
+      `nix --sync-bin` installs a byte copy, a `@call` forwarder, and a
+      `.cmd` trampoline (`-File`), and writes `~/.nix/exports.toml`.
+- [ ] 🧪 `nix --sync` does **not** install a brand-new export — it lists it
+      for review; a manifest-owned one is refreshed after a source rebuild.
+- [ ] 🧪 An export name that also resolves elsewhere on PATH (e.g. `fd`)
+      warns at install and shows a note row in `--doctor`.
+- [ ] 🧪 Two aliases claiming one name: refused loudly, neither installed.
+- [ ] 🧪 Wrapper names (`r`) and device names (`nul`) are rejected.
+- [ ] 🧪 Rename the alias dir away: `--sync-bin` **keeps** the exports
+      ("unreachable"); rename it back, drop the `[bin]` lines: pruned.
+- [ ] `nix --doctor` "Bin exports" section: ok rows on the daily machine,
+      stale/orphan/undeclared drift flagged in a doctored 🧪 scratch bin.
+
+## 16. Release hygiene
+
+- [ ] Release CI green: unit tests, e2e (73 checks), baked-version gate.
 - [ ] Edit the auto-generated release notes to lead with an **Upgrading**
       section covering the breaking changes:
       - The PowerShell snippet is retired: the first `--sync`/`--init` deletes
@@ -161,7 +197,7 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
       pointing at v0.9.0 until the official tag).
 - [ ] `scoop update nix-nightly` still works (nightly channel unaffected).
 
-## 13. Promote
+## 17. Promote
 
 Once every box above is checked:
 
