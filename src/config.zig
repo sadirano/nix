@@ -33,6 +33,11 @@ pub const Config = struct {
     /// (`o +group`). Empty → per-OS defaults on Windows (wt/start), required on
     /// Unix (no probing).
     nav_terminal: []const u8 = "",
+    /// [notify] on_finish: command template run after every foreground
+    /// `r <alias> :action` finishes — the notification hook (e.g. hoot).
+    /// Placeholders: {alias} {action} {exit} {status} {duration} {level}
+    /// {message}. Empty → no hook.
+    notify_on_finish: []const u8 = "",
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -96,9 +101,9 @@ pub fn sweptPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ home, "picker.swept" });
 }
 
-/// loadConfig reads config.toml's [picker] exclude / exclude_extra arrays. Any
-/// other section is ignored (grep defaults are applied inline; shortcuts are
-/// only needed by snippet generation). A missing file yields the zero Config.
+/// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
+/// [grep] all, [nav] terminal, and [notify] on_finish. Unknown sections are
+/// ignored. A missing file yields the zero Config.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     const p = try configPath(arena, home);
     const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
@@ -147,6 +152,12 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         if (std.mem.eql(u8, section, "nav")) {
             // value is a command template; may contain spaces (wt -d {dir}).
             if (std.mem.eql(u8, key, "terminal")) cfg.nav_terminal = try arena.dupe(u8, stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "notify")) {
+            // value is a command template with {placeholders}; may contain '='
+            // and spaces, so only the first '=' (found above) splits key/value.
+            if (std.mem.eql(u8, key, "on_finish")) cfg.notify_on_finish = try arena.dupe(u8, stripQuotes(val_start));
             continue;
         }
         if (!std.mem.eql(u8, section, "picker")) continue;
@@ -295,6 +306,17 @@ test "loadConfig shortcuts: unusable custom names are ignored" {
             if (store.validateAliasName(c.name)) |_| true else |_| false;
         try std.testing.expectEqual(c.ok, usable);
     }
+}
+
+test "notify template survives quotes, '=' and spaces in the value" {
+    // Exercise the [notify] branch's parsing rules directly: first '=' splits,
+    // one pair of surrounding quotes is stripped, inner quotes survive.
+    const line = "on_finish = 'hoot send \"{message}\" --tag {alias} --level {level}'";
+    const eq = std.mem.indexOfScalar(u8, line, '=').?;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const val = stripQuotes(std.mem.trim(u8, line[eq + 1 ..], " \t"));
+    try std.testing.expectEqualStrings("on_finish", key);
+    try std.testing.expectEqualStrings("hoot send \"{message}\" --tag {alias} --level {level}", val);
 }
 
 test "resolvedShortcutNames: defaults sorted; override replaces a slot" {

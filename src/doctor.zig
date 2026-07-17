@@ -391,6 +391,19 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         } else {
             try d.row(.note, "nav terminal", "unset — set [nav] terminal for `o +group` extra windows");
         }
+        if (cfg.notify_on_finish.len > 0) {
+            // The hook runs through the shell, so only its first token can be
+            // checked here: is the notifier itself on PATH?
+            const end = std.mem.indexOfAny(u8, cfg.notify_on_finish, " \t") orelse cfg.notify_on_finish.len;
+            const exe = cfg.notify_on_finish[0..end];
+            if (proc.findInPath(app.arena, app.io, app.env, exe)) |p| {
+                try d.row(.ok, "notify hook", try std.fmt.allocPrint(app.arena, "actions report via {s}  ({s})", .{ exe, p }));
+            } else {
+                try d.row(.warn, "notify hook", try std.fmt.allocPrint(app.arena, "\"{s}\" not found on PATH — [notify] on_finish will fail after every action", .{exe}));
+            }
+        } else {
+            try d.row(.note, "notify hook", "unset — set [notify] on_finish to report action completions (e.g. hoot)");
+        }
 
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);
         const aliases = try store.loadAliases(app.arena, adata);
