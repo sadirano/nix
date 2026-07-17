@@ -45,6 +45,13 @@ pub fn loadFile(arena: std.mem.Allocator, io: Io, path: []const u8) ![]Action {
 /// keeps its raw text (one pair of surrounding quotes stripped) so shell operators
 /// (`&&`, `|`, redirects) survive to execution.
 pub fn parse(arena: std.mem.Allocator, data: []const u8) ![]Action {
+    return parseTable(arena, data, "actions");
+}
+
+/// parseTable is parse generalized to any `[section]` name — the same file
+/// format also carries `[bin]` exports (bin_exports.zig) and the exports
+/// manifest, so the lenient key = "value" reader lives once.
+pub fn parseTable(arena: std.mem.Allocator, data: []const u8, section: []const u8) ![]Action {
     var out: std.ArrayList(Action) = .empty;
     var in_section = false;
     var lines = std.mem.splitScalar(u8, data, '\n');
@@ -53,7 +60,7 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) ![]Action {
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
             const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            in_section = store.eqlFoldAscii(line[1..end], "actions");
+            in_section = store.eqlFoldAscii(line[1..end], section);
             continue;
         }
         if (!in_section) continue;

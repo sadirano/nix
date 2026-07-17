@@ -74,6 +74,28 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   the env rebuilds from the original PATH each run, so group fan-out never
   stacks dirs.
 
+### `[bin]` exports (`--sync-bin`)
+
+- **Project-local `[bin]` in the committed `.nix/actions.toml` only** — the
+  file travelling with the repo is what gives an export provenance, and it
+  keeps `[bin]` out of `--export`/`--import` (which round-trip only central
+  `[actions]`). Central/private `[bin]` can come later if wanted.
+- **Copy exes, forward scripts.** A copy survives rebuilds while the tool is
+  running and adds no indirection; `.cmd`/`.bat`/`.ps1` get a one-line
+  forwarder so edits take effect live. Other types are refused (a bin holds
+  runnables, not data — the Noir `user\` lesson).
+- **Membership is declarative via the `~/.nix/exports.toml` manifest**
+  (`<installed file> = "<owning alias>"`). Sync only ever deletes files the
+  manifest owns; dropping the `[bin]` line or the alias prunes the file on the
+  next sync. `--sync` runs the bin sync too (quiet when nothing is declared),
+  so it stays the universal fix; `--sync-bin` is the focused verb.
+- **Collisions refuse loudly, nobody wins:** a name declared by two aliases is
+  reported and left uninstalled until one renames. Wrapper names — builtin
+  slots, `[shortcuts]` renames, and `nix` itself — are reserved.
+- **Doctor reports drift, sync repairs it:** gone alias, gone source, stale
+  copy, undeclared file in `~/.nix/bin`. The drift logic lives in
+  bin_exports.zig next to the sync so the two can't disagree.
+
 ### Agent guide (`~/.nix/AGENTS.md`)
 
 - **Installed artifact, not a repo `AGENTS.md` — locked.** Repo-level agent

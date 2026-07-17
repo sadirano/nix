@@ -351,6 +351,51 @@ pub fn main(init: std.process.Init) !void {
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=$NIX_ALIAS path=$NIX_ALIAS_PATH\"\n");
     }
 
+    // --- [bin] exports (--sync-bin) --------------------------------------------
+    {
+        const pa_actions = join(&c, &.{ pa, ".nix", "actions.toml" });
+        const restore = readFileOr(&c, pa_actions, "");
+        const src_cmd = join(&c, &.{ pa, "tools", "greet.cmd" });
+        const src_exe = join(&c, &.{ pa, "zig-out", "tool.exe" });
+        try writeFile(&c, src_cmd, "@echo greeting\r\n");
+        try writeFile(&c, src_exe, "MZfake-v1");
+        try writeFile(&c, pa_actions, "[actions]\nhello = \"echo from-project\"\n[bin]\ngreet = \"tools/greet.cmd\"\ntool = \"zig-out/tool.exe\"\n");
+
+        const inst_cmd = join(&c, &.{ home, "bin", "greet.cmd" });
+        const inst_exe = join(&c, &.{ home, "bin", "tool.exe" });
+        var r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and std.ascii.indexOfIgnoreCase(readFileOr(&c, inst_cmd, ""), src_cmd) != null and
+            std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v1"), "--sync-bin installs a script forwarder and an exe copy", r);
+        const man = readFileOr(&c, join(&c, &.{ home, "exports.toml" }), "");
+        c.check(std.mem.indexOf(u8, man, "greet.cmd") != null and std.mem.indexOf(u8, man, "tool.exe") != null, "the exports manifest records both installs", r);
+
+        // A rebuild leaves the copy stale: doctor flags it, resync refreshes it.
+        try writeFile(&c, src_exe, "MZfake-v2");
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "Bin exports") != null and std.mem.indexOf(u8, r.out, "stale") != null, "--doctor flags a stale export copy", r);
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v2"), "resync refreshes a rebuilt exe copy", r);
+
+        // Collision: a second alias claims the same name — loud refusal, nobody
+        // wins, and the previously installed file is withdrawn.
+        try writeFile(&c, join(&c, &.{ pb, ".nix", "actions.toml" }), "[bin]\ntool = \"other/tool.exe\"\n");
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "declared by both") != null and
+            !proc.pathExists(io, inst_exe) and proc.pathExists(io, inst_cmd), "a name claimed twice is refused and uninstalled", r);
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ pb, ".nix", "actions.toml" })) catch {};
+
+        // Wrapper names are reserved — an export can't shadow a nix command.
+        try writeFile(&c, pa_actions, "[bin]\nr = \"tools/greet.cmd\"\n");
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "wrapper") != null and
+            !proc.pathExists(io, join(&c, &.{ home, "bin", "r.cmd" })), "a wrapper name is refused as an export", r);
+
+        // Dropping the [bin] table prunes everything it declared.
+        try writeFile(&c, pa_actions, restore);
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and !proc.pathExists(io, inst_cmd) and !proc.pathExists(io, inst_exe), "undeclared exports are pruned on the next sync", r);
+    }
+
     // --- multicall via argv0 (wrapper copies; Windows-shaped install) ----------
     if (proc.is_windows) {
         const real_exe = c.exe;

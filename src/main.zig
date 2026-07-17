@@ -28,6 +28,7 @@ const run_zig = @import("run.zig");
 const nav = @import("nav.zig");
 const cmd_groups = @import("cmd_groups.zig");
 const paste = @import("paste.zig");
+const bin_exports = @import("bin_exports.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
@@ -178,6 +179,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "contexts")) return cmdContexts(app);
     if (eql(verb, "sweep")) return sweep.cmdSweep(app, rest);
     if (eql(verb, "sync")) return init_zig.cmdSync(app);
+    if (eql(verb, "sync-bin")) return bin_exports.cmdSyncBin(app);
     if (eql(verb, "export")) return init_zig.cmdExport(app, rest);
     if (eql(verb, "import")) return init_zig.cmdImport(app, rest);
     if (eql(verb, "init")) {
@@ -831,10 +833,10 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
         .{ .k = "-D", .v = "doctor" },                   .{ .k = "--groups", .v = "groups" },
         .{ .k = "-G", .v = "groups" },                   .{ .k = "--init", .v = "init" },
         .{ .k = "-I", .v = "init" },                     .{ .k = "--sync", .v = "sync" },
-        .{ .k = "-S", .v = "sync" },                     .{ .k = "--preview", .v = "preview" },
-        .{ .k = "--version", .v = "version" },           .{ .k = "--export", .v = "export" },
-        .{ .k = "--import", .v = "import" },             .{ .k = "--rga-preview", .v = "rga-preview" },
-        .{ .k = "-v", .v = "version" },
+        .{ .k = "-S", .v = "sync" },                     .{ .k = "--sync-bin", .v = "sync-bin" },
+        .{ .k = "--preview", .v = "preview" },           .{ .k = "--version", .v = "version" },
+        .{ .k = "--export", .v = "export" },             .{ .k = "--import", .v = "import" },
+        .{ .k = "--rga-preview", .v = "rga-preview" },   .{ .k = "-v", .v = "version" },
     };
     for (map) |m| if (eql(flag, m.k)) return m.v;
     return null;
@@ -916,6 +918,7 @@ fn printUsage(app: *App) !void {
         \\  --contexts, -c       list global @-segment contexts
         \\  --init,    -I        set up ~/.nix, wrappers, and PATH
         \\  --sync,    -S        regenerate wrappers and generated files
+        \\  --sync-bin           install projects' [bin] exports into ~/.nix/bin
         \\  --export  [file]     write a portable backup (aliases/groups/config/actions; stdout if no file)
         \\  --import  <file>     merge a backup (skips existing; --replace for a full restore)
         \\  --version, -v        print version and platform
@@ -962,6 +965,7 @@ test {
     _ = run_zig;
     _ = nav;
     _ = cmd_groups;
+    _ = bin_exports;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
 }
 
