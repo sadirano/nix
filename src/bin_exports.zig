@@ -54,6 +54,10 @@ pub const Plan = struct {
     exports: []Export,
     problems: []const []const u8,
     aliases: []const store.Alias,
+    /// Aliases whose directory couldn't be reached (unplugged drive, network
+    /// share down). Their declarations are unknown, not absent — sync must
+    /// keep, never prune, their installed exports.
+    unreachable_aliases: []const []const u8,
 };
 
 pub fn manifestPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
@@ -86,23 +90,42 @@ pub fn kindOf(source: []const u8) ?Kind {
 
 /// validateExportName: the key becomes a filename on PATH, so keep it to
 /// [A-Za-z0-9_-] — no dots (the extension comes from the source), no path or
-/// shell metacharacters.
+/// shell metacharacters — and never a DOS device name (`nul.exe` on PATH is
+/// a trap for every shell that touches it).
 pub fn validateExportName(name: []const u8) !void {
     if (name.len == 0) return error.EmptyName;
     for (name) |c| {
         if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return error.BadCharInName;
     }
+    const devices = [_][]const u8{
+        "con",  "prn",  "aux",  "nul",
+        "com1", "com2", "com3", "com4",
+        "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3",
+        "lpt4", "lpt5", "lpt6", "lpt7",
+        "lpt8", "lpt9",
+    };
+    for (devices) |d| if (std.ascii.eqlIgnoreCase(name, d)) return error.DeviceName;
 }
 
 /// renderForwarder writes the one-line trampoline for a script export. cmd
-/// forwarders propagate the child's exit code via `call`; the ps1 form exits
-/// with $LASTEXITCODE explicitly.
-pub fn renderForwarder(arena: std.mem.Allocator, source: []const u8) ![]const u8 {
+/// forwarders propagate the child's exit code via `call`. A .ps1 source gets
+/// a .cmd trampoline invoking ps_shell (`pwsh` when installed, `powershell`
+/// otherwise) — PATHEXT rarely includes .PS1, so a bare `.ps1` on PATH would
+/// only ever work from PowerShell itself.
+pub fn renderForwarder(arena: std.mem.Allocator, source: []const u8, ps_shell: []const u8) ![]const u8 {
     const ext = std.fs.path.extension(source);
     if (std.ascii.eqlIgnoreCase(ext, ".ps1")) {
-        return std.fmt.allocPrint(arena, "& \"{s}\" @args\r\nexit $LASTEXITCODE\r\n", .{source});
+        return std.fmt.allocPrint(arena, "@{s} -NoProfile -ExecutionPolicy Bypass -File \"{s}\" %*\r\n", .{ ps_shell, source });
     }
     return std.fmt.allocPrint(arena, "@call \"{s}\" %*\r\n", .{source});
+}
+
+/// psShell picks the PowerShell a .ps1 trampoline should invoke: pwsh when
+/// present, else Windows PowerShell (always installed). Resolved by bare name
+/// at run time so the trampoline survives a pwsh upgrade/move.
+fn psShell(app: *App) []const u8 {
+    return if (proc.findInPath(app.arena, app.io, app.env, "pwsh") != null) "pwsh" else "powershell";
 }
 
 /// declared reads an alias dir's committed `[bin]` table (empty when the
@@ -137,6 +160,7 @@ pub fn buildPlan(app: *App) !Plan {
     const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
     var out: std.ArrayList(Export) = .empty;
     var problems: std.ArrayList([]const u8) = .empty;
+    var unreach: std.ArrayList([]const u8) = .empty;
 
     for (aliases.items, 0..) |a, i| {
         // Duplicate alias sections: the first wins everywhere else (resolve,
@@ -147,9 +171,21 @@ pub fn buildPlan(app: *App) !Plan {
         }
         if (dup) continue;
 
-        for (declared(app.arena, app.io, a.path) catch &.{}) |d| {
-            validateExportName(d.name) catch {
-                try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "invalid export name \"{s}\" in {s}'s [bin] (letters/digits/-/_ only)", .{ d.name, a.name }));
+        // An unreachable alias dir means the declarations are UNKNOWN, not
+        // gone — uninstalling must follow an explicit act (removing the alias
+        // or the [bin] line), never a transiently absent filesystem.
+        if (!proc.pathExists(app.io, a.path)) {
+            try unreach.append(app.arena, a.name);
+            continue;
+        }
+        const decls = declared(app.arena, app.io, a.path) catch {
+            try unreach.append(app.arena, a.name);
+            continue;
+        };
+        for (decls) |d| {
+            validateExportName(d.name) catch |e| {
+                const why = if (e == error.DeviceName) "a reserved DOS device name" else "letters/digits/-/_ only";
+                try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "invalid export name \"{s}\" in {s}'s [bin] ({s})", .{ d.name, a.name, why }));
                 continue;
             };
             if (isReservedName(app.arena, cfg, d.name)) {
@@ -168,11 +204,13 @@ pub fn buildPlan(app: *App) !Plan {
             if (seen) continue;
             const source = try std.fs.path.resolve(app.arena, &.{ a.path, d.command });
             const ext = try util.lowerDup(app.arena, std.fs.path.extension(d.command));
+            // .ps1 installs under .cmd — the trampoline is what goes on PATH.
+            const inst_ext = if (std.mem.eql(u8, ext, ".ps1")) ".cmd" else ext;
             try out.append(app.arena, .{
                 .name = d.name,
                 .alias = a.name,
                 .source = source,
-                .file = try std.fmt.allocPrint(app.arena, "{s}{s}", .{ d.name, ext }),
+                .file = try std.fmt.allocPrint(app.arena, "{s}{s}", .{ d.name, inst_ext }),
                 .kind = kind,
             });
         }
@@ -199,12 +237,17 @@ pub fn buildPlan(app: *App) !Plan {
             try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "export \"{s}\" declared by both {s} and {s} — neither installed until one renames", .{ ex.name, ex.alias, c.alias }));
         }
     }
-    return .{ .exports = keep.items, .problems = problems.items, .aliases = aliases.items };
+    return .{ .exports = keep.items, .problems = problems.items, .aliases = aliases.items, .unreachable_aliases = unreach.items };
 }
 
 fn planFile(plan: Plan, file: []const u8) ?Export {
     for (plan.exports) |ex| if (store.eqlFoldAscii(ex.file, file)) return ex;
     return null;
+}
+
+fn ownerUnreachable(plan: Plan, alias: []const u8) bool {
+    for (plan.unreachable_aliases) |u| if (store.eqlFoldAscii(u, alias)) return true;
+    return false;
 }
 
 /// installContent returns the exact bytes an export's installed file should
@@ -213,36 +256,78 @@ fn planFile(plan: Plan, file: []const u8) ?Export {
 fn installContent(app: *App, ex: Export) ?[]const u8 {
     return switch (ex.kind) {
         .copy => readFileMaybe(app, ex.source),
-        .forward => renderForwarder(app.arena, ex.source) catch null,
+        .forward => renderForwarder(app.arena, ex.source, psShell(app)) catch null,
     };
+}
+
+/// envWithoutOwnBin returns an env copy whose PATH omits ~/.nix/bin, so a
+/// lookup answers "who ELSE does this name resolve to" — the shadow probe an
+/// installed export would otherwise answer itself. Null when there's no PATH
+/// (or on any allocation failure): no probe, never a broken sync.
+fn envWithoutOwnBin(app: *App) ?*std.process.Environ.Map {
+    const bin = std.fs.path.join(app.arena, &.{ app.home, "bin" }) catch return null;
+    const path_var = app.env.get("PATH") orelse return null;
+    const sep: u8 = if (proc.is_windows) ';' else ':';
+    var b: std.ArrayList(u8) = .empty;
+    var it = std.mem.splitScalar(u8, path_var, sep);
+    while (it.next()) |p| {
+        const entry = std.mem.trimEnd(u8, std.mem.trim(u8, p, " \t\""), "\\/");
+        if (entry.len == 0) continue;
+        const own = if (proc.is_windows) store.eqlFoldAscii(entry, std.mem.trimEnd(u8, bin, "\\/")) else std.mem.eql(u8, entry, bin);
+        if (own) continue;
+        if (b.items.len > 0) b.append(app.arena, sep) catch return null;
+        b.appendSlice(app.arena, p) catch return null;
+    }
+    const copy = app.arena.create(std.process.Environ.Map) catch return null;
+    copy.* = app.env.clone(app.arena) catch return null;
+    copy.put("PATH", b.items) catch return null;
+    return copy;
+}
+
+/// shadowed reports what an export name resolves to on PATH beyond ~/.nix/bin
+/// (a scoop shim, a system tool …) — the case where installing it changes
+/// which binary answers, worth a loud note either way the PATH order falls.
+fn shadowed(app: *App, probe_env: ?*std.process.Environ.Map, name: []const u8) ?[]const u8 {
+    const pe = probe_env orelse return null;
+    return proc.findInPath(app.arena, app.io, pe, name);
 }
 
 pub fn cmdSyncBin(app: *App) !u8 {
     return syncBin(app, false);
 }
 
-/// syncBin makes ~/.nix/bin match the plan: install/refresh every declared
-/// export, delete manifest-owned files no longer declared, rewrite the
-/// manifest. quiet_when_empty suppresses the "nothing declared" note so
-/// `--sync` (which calls this after wrappers) stays silent on machines that
-/// don't use [bin]. Exit 1 on declaration problems — a collision must not
-/// pass silently just because the rest synced.
-pub fn syncBin(app: *App, quiet_when_empty: bool) !u8 {
+/// syncBin makes ~/.nix/bin match the plan: install/refresh declared exports,
+/// delete manifest-owned files no longer declared, rewrite the manifest.
+/// `implicit` is the `--sync` mode: it only refreshes exports the manifest
+/// already owns — a NEW export must be installed by an explicit `--sync-bin`,
+/// so registering someone else's repo can never put commands on PATH as a side
+/// effect of routine syncing. It also stays silent when nothing is declared.
+/// Exit 1 on declaration problems — a collision must not pass silently just
+/// because the rest synced.
+pub fn syncBin(app: *App, implicit: bool) !u8 {
     const plan = try buildPlan(app);
     const old = try loadManifest(app.arena, app.io, app.home);
     if (plan.exports.len == 0 and plan.problems.len == 0 and old.len == 0) {
-        if (!quiet_when_empty) try app.err.writeAll("no [bin] exports declared (add a [bin] table to a project's .nix/actions.toml)\n");
+        if (!implicit) try app.err.writeAll("no [bin] exports declared (add a [bin] table to a project's .nix/actions.toml)\n");
         return 0;
     }
     for (plan.problems) |p| try app.err.print("nix: {s}\n", .{p});
 
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
     try util.mkdirAll(app.io, bin);
+    const probe_env = envWithoutOwnBin(app);
 
     var current: usize = 0;
     var updated: usize = 0;
     var locked: std.ArrayList([]const u8) = .empty;
+    var skipped_new: std.ArrayList([]const u8) = .empty;
+    var manifest: std.ArrayList(Export) = .empty;
     for (plan.exports) |ex| {
+        if (implicit and actions.find(old, ex.file) == null) {
+            try skipped_new.append(app.arena, try std.fmt.allocPrint(app.arena, "{s} ({s})", .{ ex.file, ex.alias }));
+            continue; // not consented yet: not installed, not manifest-owned
+        }
+        try manifest.append(app.arena, ex);
         if (!proc.pathExists(app.io, ex.source)) {
             try app.err.print("nix: {s}: source missing — {s} (build it, then rerun `nix --sync-bin`)\n", .{ ex.file, ex.source });
             continue; // still declared: stays in the manifest, doctor keeps flagging it
@@ -264,16 +349,24 @@ pub fn syncBin(app: *App, quiet_when_empty: bool) !u8 {
         };
         updated += 1;
         try app.err.print("  {s}  ← {s} ({s})\n", .{ ex.file, ex.alias, @tagName(ex.kind) });
+        if (shadowed(app, probe_env, ex.name)) |other| {
+            try app.err.print("  warning: \"{s}\" also resolves to {s} — PATH order decides which answers\n", .{ ex.name, other });
+        }
     }
 
     // Prune: every manifest-owned file that no alias declares any more. Only
     // manifest entries are ever deleted — nix never removes a file it didn't
-    // install. A locked file stays in the manifest so the next sync retries.
-    var manifest: std.ArrayList(Export) = .empty;
-    try manifest.appendSlice(app.arena, plan.exports);
+    // install — and an unreachable alias dir protects its exports (unknown is
+    // not undeclared). A locked or protected file stays in the manifest so
+    // the next sync retries.
     var removed: usize = 0;
     for (old) |m| {
         if (planFile(plan, m.name) != null) continue;
+        if (ownerUnreachable(plan, m.command)) {
+            try manifest.append(app.arena, .{ .name = m.name, .alias = m.command, .source = "", .file = m.name, .kind = .copy });
+            try app.err.print("  keeping {s} — {s}'s directory is unreachable (reconnect it, or remove the alias to drop the export)\n", .{ m.name, m.command });
+            continue;
+        }
         const p = try std.fs.path.join(app.arena, &.{ bin, m.name });
         if (proc.pathExists(app.io, p)) {
             Io.Dir.cwd().deleteFile(app.io, p) catch {
@@ -288,6 +381,9 @@ pub fn syncBin(app: *App, quiet_when_empty: bool) !u8 {
     try writeManifest(app, manifest.items);
 
     try app.err.print("bin exports: {d} current ({d} updated), {d} removed  → {s}\n", .{ current + updated, updated, removed, bin });
+    if (skipped_new.items.len > 0) {
+        try app.err.print("new [bin] exports not installed by --sync: {s}\n  review them, then run `nix --sync-bin` to install\n", .{try std.mem.join(app.arena, ", ", skipped_new.items)});
+    }
     if (locked.items.len > 0) {
         try app.err.writeAll("warning: in use, not replaced:");
         for (locked.items) |n| try app.err.print(" {s}", .{n});
@@ -344,6 +440,7 @@ pub fn doctorFindings(app: *App) ![]const Finding {
         try out.append(app.arena, .{ .status = .warn, .label = "declared", .detail = p });
     }
 
+    const probe_env = envWithoutOwnBin(app);
     for (plan.exports) |ex| {
         var in_manifest = false;
         for (manifest) |m| if (store.eqlFoldAscii(m.name, ex.file)) {
@@ -351,26 +448,34 @@ pub fn doctorFindings(app: *App) ![]const Finding {
         };
         const dst = try std.fs.path.join(app.arena, &.{ bin, ex.file });
         if (!in_manifest and !proc.pathExists(app.io, dst)) {
-            try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "declared by {s} but not installed — run `nix --sync-bin`", .{ex.alias}) });
-            continue;
-        }
-        if (!proc.pathExists(app.io, ex.source)) {
+            try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "declared by {s} but not installed — review it, then run `nix --sync-bin`", .{ex.alias}) });
+        } else if (!proc.pathExists(app.io, ex.source)) {
             try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "source missing: {s} (build {s}, then `nix --sync-bin`)", .{ ex.source, ex.alias }) });
-            continue;
+        } else blk: {
+            const want = installContent(app, ex);
+            const have = readFileMaybe(app, dst);
+            if (want == null or have == null or !std.mem.eql(u8, want.?, have.?)) {
+                try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "stale — {s}'s source changed since the last sync; run `nix --sync-bin`", .{ex.alias}) });
+                break :blk;
+            }
+            try out.append(app.arena, .{ .status = .ok, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "← {s} ({s}, current)", .{ ex.alias, @tagName(ex.kind) }) });
         }
-        const want = installContent(app, ex);
-        const have = readFileMaybe(app, dst);
-        if (want == null or have == null or !std.mem.eql(u8, want.?, have.?)) {
-            try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "stale — {s}'s source changed since the last sync; run `nix --sync-bin`", .{ex.alias}) });
-            continue;
+        // Shadowing is a note, not a warn: overriding a scoop-installed tool
+        // with your own build is legitimate — but it should never be a surprise.
+        if (shadowed(app, probe_env, ex.name)) |other| {
+            try out.append(app.arena, .{ .status = .note, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "\"{s}\" also resolves to {s} — PATH order decides which answers", .{ ex.name, other }) });
         }
-        try out.append(app.arena, .{ .status = .ok, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "← {s} ({s}, current)", .{ ex.alias, @tagName(ex.kind) }) });
     }
 
-    // Manifest entries nothing declares any more: the alias is gone, or its
-    // [bin] line is — either way the file is orphaned until a sync prunes it.
+    // Manifest entries nothing declares any more: the alias is gone, its [bin]
+    // line is, or its directory is unreachable — only the first two are prune
+    // material; unknown is not undeclared.
     for (manifest) |m| {
         if (planFile(plan, m.name) != null) continue;
+        if (ownerUnreachable(plan, m.command)) {
+            try out.append(app.arena, .{ .status = .warn, .label = m.name, .detail = try std.fmt.allocPrint(app.arena, "{s}'s directory is unreachable — export kept (reconnect it, or remove the alias)", .{m.command}) });
+            continue;
+        }
         var alias_exists = false;
         for (plan.aliases) |a| if (store.eqlFoldAscii(a.name, m.command)) {
             alias_exists = true;
@@ -417,24 +522,28 @@ test "kindOf: exe copies, scripts forward, unknown refused" {
     try std.testing.expect(kindOf("notes.md") == null);
 }
 
-test "validateExportName: filename-safe keys only" {
+test "validateExportName: filename-safe keys only, no DOS devices" {
     try validateExportName("hoot");
     try validateExportName("my-tool_2");
+    try validateExportName("console"); // prefix of a device name is fine
     try std.testing.expectError(error.EmptyName, validateExportName(""));
     try std.testing.expectError(error.BadCharInName, validateExportName("a.b")); // ext comes from the source
     try std.testing.expectError(error.BadCharInName, validateExportName("a b"));
     try std.testing.expectError(error.BadCharInName, validateExportName("a/b"));
+    try std.testing.expectError(error.DeviceName, validateExportName("nul"));
+    try std.testing.expectError(error.DeviceName, validateExportName("CON"));
+    try std.testing.expectError(error.DeviceName, validateExportName("com3"));
 }
 
-test "renderForwarder: cmd call vs ps1 args" {
+test "renderForwarder: cmd call vs ps1 trampoline" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const cmd = try renderForwarder(a, "C:\\p\\go.cmd");
+    const cmd = try renderForwarder(a, "C:\\p\\go.cmd", "pwsh");
     try std.testing.expectEqualStrings("@call \"C:\\p\\go.cmd\" %*\r\n", cmd);
-    const ps = try renderForwarder(a, "C:\\p\\tasks.ps1");
-    try std.testing.expect(std.mem.indexOf(u8, ps, "@args") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ps, "$LASTEXITCODE") != null);
+    // .ps1 gets a cmd-launchable trampoline (PATHEXT rarely includes .PS1).
+    const ps = try renderForwarder(a, "C:\\p\\tasks.ps1", "pwsh");
+    try std.testing.expectEqualStrings("@pwsh -NoProfile -ExecutionPolicy Bypass -File \"C:\\p\\tasks.ps1\" %*\r\n", ps);
 }
 
 test "isReservedName: wrappers, builtins under rename, canonical nix" {
