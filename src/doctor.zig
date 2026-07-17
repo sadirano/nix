@@ -11,6 +11,7 @@ const proc = @import("proc.zig");
 const config = @import("config.zig");
 const snippet = @import("snippet.zig");
 const picker = @import("picker.zig");
+const bin_exports = @import("bin_exports.zig");
 const util = @import("util.zig");
 
 // Version baked by build.zig (git describe).
@@ -448,6 +449,20 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             } else {
                 try d.row(.warn, "shell", try std.fmt.allocPrint(app.arena, "snippet missing ({s}) — run `nix --init`", .{snip}));
             }
+        }
+    }
+
+    try d.section("Bin exports  ([bin] → ~/.nix/bin)");
+    {
+        // The drift logic lives with the sync (bin_exports.zig) so the report
+        // and `--sync-bin` can never disagree about what counts as current.
+        const findings = bin_exports.doctorFindings(app) catch &.{};
+        for (findings) |f| {
+            try d.row(switch (f.status) {
+                .ok => .ok,
+                .warn => .warn,
+                .note => .note,
+            }, f.label, f.detail);
         }
     }
 

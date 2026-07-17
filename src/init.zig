@@ -12,6 +12,7 @@ const snippet = @import("snippet.zig");
 const agents = @import("agents.zig");
 const portable = @import("portable.zig");
 const actions = @import("actions.zig");
+const bin_exports = @import("bin_exports.zig");
 const groups = @import("groups.zig");
 const winpath = @import("winpath.zig");
 const util = @import("util.zig");
@@ -98,6 +99,12 @@ pub fn cmdSync(app: *App) !u8 {
         try app.err.print("regenerated {s} and {s}\n", .{ sh, guide });
     }
     try warnStaleWrappers(app, stale);
+    // [bin] exports are generated files too — a bare `--sync` must refresh them
+    // or "run `nix --sync`" stops being the universal fix. Problems are printed
+    // loudly but don't change sync's exit: wrappers regenerated is still true.
+    _ = bin_exports.syncBin(app, true) catch |e| {
+        try app.err.print("nix: sync [bin] exports: {s}\n", .{@errorName(e)});
+    };
     // Keep the persistent user PATH honest too — the doctor's fix-it advice for
     // a missing ~/.nix/bin is "run `nix --sync`", so sync must actually fix it.
     if (proc.is_windows) {

@@ -1,0 +1,467 @@
+//! `[bin]` exports — declarative global tools (the one-bin idea, nix feedback
+//! 2026-07-17): a project's committed `.nix/actions.toml` declares the tools
+//! it wants runnable from anywhere —
+//!
+//!     [bin]
+//!     hoot = "zig-out/bin/hoot.exe"
+//!
+//! — and `nix --sync-bin` (also run by `--sync`) materializes them into
+//! ~/.nix/bin, which nix already keeps on the user PATH: global tools with
+//! zero PATH edits. Exes are copied (a copy survives rebuilds while running);
+//! .cmd/.bat/.ps1 get a one-line forwarder so script edits take effect live.
+//! Every installed file is recorded in the ~/.nix/exports.toml manifest, so
+//! membership stays declarative: removing the `[bin]` line (or the alias)
+//! removes the file on the next sync, a name claimed by two aliases is refused
+//! loudly (nobody wins), and --doctor reports drift (gone alias, gone source,
+//! stale copy, undeclared file). Project-local declarations only — the
+//! committed file travelling with the repo is what gives an export provenance
+//! (and keeps `[bin]` out of the export/import backup, which round-trips only
+//! central `[actions]`).
+
+const std = @import("std");
+const Io = std.Io;
+const app_zig = @import("app.zig");
+const store = @import("store.zig");
+const proc = @import("proc.zig");
+const config = @import("config.zig");
+const actions = @import("actions.zig");
+const util = @import("util.zig");
+
+const App = app_zig.App;
+const readFileMaybe = app_zig.readFileMaybe;
+
+/// Kind picks the install strategy per source type: copy the bytes (exes —
+/// indirection-free, and the export keeps working while the source rebuilds)
+/// or write a one-line forwarder (scripts — edits take effect live).
+pub const Kind = enum { copy, forward };
+
+pub const Export = struct {
+    /// Declared key ("hoot") — the command name users will type.
+    name: []const u8,
+    /// Owning alias (provenance; recorded in the manifest).
+    alias: []const u8,
+    /// Absolute source path inside the alias dir.
+    source: []const u8,
+    /// Installed filename: name + the source's extension ("hoot.exe").
+    file: []const u8,
+    kind: Kind,
+};
+
+/// Plan is everything --sync-bin and --doctor need to agree on: the collision-
+/// free exports every registered alias declares, plus the human-readable
+/// problem lines (invalid/reserved names, unsupported types, collisions).
+pub const Plan = struct {
+    exports: []Export,
+    problems: []const []const u8,
+    aliases: []const store.Alias,
+};
+
+pub fn manifestPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
+    return std.fs.path.join(arena, &.{ home, "exports.toml" });
+}
+
+/// loadManifest reads the installed-exports record: `<filename> = "<alias>"`
+/// pairs (Action.name = filename, Action.command = alias). Absent file = empty.
+pub fn loadManifest(arena: std.mem.Allocator, io: Io, home: []const u8) ![]actions.Action {
+    const p = try manifestPath(arena, home);
+    const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
+        error.FileNotFound => return &.{},
+        else => return e,
+    };
+    return actions.parseTable(arena, data, "exports");
+}
+
+/// kindOf classifies a source path by extension, or null for types nix can't
+/// install (Windows-first: only .exe/.cmd/.bat/.ps1 are runnable-from-PATH
+/// shapes; extensionless sources pass as copies off Windows).
+pub fn kindOf(source: []const u8) ?Kind {
+    const ext = std.fs.path.extension(source);
+    if (ext.len == 0) return if (proc.is_windows) null else .copy;
+    if (std.ascii.eqlIgnoreCase(ext, ".exe")) return .copy;
+    for ([_][]const u8{ ".cmd", ".bat", ".ps1" }) |e| {
+        if (std.ascii.eqlIgnoreCase(ext, e)) return .forward;
+    }
+    return null;
+}
+
+/// validateExportName: the key becomes a filename on PATH, so keep it to
+/// [A-Za-z0-9_-] — no dots (the extension comes from the source), no path or
+/// shell metacharacters.
+pub fn validateExportName(name: []const u8) !void {
+    if (name.len == 0) return error.EmptyName;
+    for (name) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return error.BadCharInName;
+    }
+}
+
+/// renderForwarder writes the one-line trampoline for a script export. cmd
+/// forwarders propagate the child's exit code via `call`; the ps1 form exits
+/// with $LASTEXITCODE explicitly.
+pub fn renderForwarder(arena: std.mem.Allocator, source: []const u8) ![]const u8 {
+    const ext = std.fs.path.extension(source);
+    if (std.ascii.eqlIgnoreCase(ext, ".ps1")) {
+        return std.fmt.allocPrint(arena, "& \"{s}\" @args\r\nexit $LASTEXITCODE\r\n", .{source});
+    }
+    return std.fmt.allocPrint(arena, "@call \"{s}\" %*\r\n", .{source});
+}
+
+/// declared reads an alias dir's committed `[bin]` table (empty when the
+/// project has no .nix/actions.toml or no [bin] section).
+pub fn declared(arena: std.mem.Allocator, io: Io, alias_dir: []const u8) ![]actions.Action {
+    const p = try actions.projectPath(arena, alias_dir);
+    const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
+        error.FileNotFound => return &.{},
+        else => return e,
+    };
+    return actions.parseTable(arena, data, "bin");
+}
+
+/// isReservedName guards the names nix itself owns in ~/.nix/bin: the canonical
+/// binary and every wrapper — both the builtin slot names (a rename must be
+/// able to come back) and the currently resolved ones.
+fn isReservedName(arena: std.mem.Allocator, cfg: config.Config, name: []const u8) bool {
+    if (std.ascii.eqlIgnoreCase(name, "nix")) return true;
+    for (config.builtinShortcuts()) |b| {
+        if (std.ascii.eqlIgnoreCase(name, b.builtin)) return true;
+    }
+    const names = config.resolvedShortcutNames(arena, cfg) catch return false;
+    for (names) |n| if (std.ascii.eqlIgnoreCase(n, name)) return true;
+    return false;
+}
+
+/// buildPlan walks every registered alias's `[bin]` table and produces the
+/// deduplicated, collision-checked install plan. Read-only — shared by
+/// --sync-bin (which acts on it) and --doctor (which only reports).
+pub fn buildPlan(app: *App) !Plan {
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
+    var out: std.ArrayList(Export) = .empty;
+    var problems: std.ArrayList([]const u8) = .empty;
+
+    for (aliases.items, 0..) |a, i| {
+        // Duplicate alias sections: the first wins everywhere else (resolve,
+        // doctor warns) — mirror that here rather than double-declaring.
+        var dup = false;
+        for (aliases.items[0..i]) |prev| {
+            if (std.mem.eql(u8, prev.name, a.name)) dup = true;
+        }
+        if (dup) continue;
+
+        for (declared(app.arena, app.io, a.path) catch &.{}) |d| {
+            validateExportName(d.name) catch {
+                try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "invalid export name \"{s}\" in {s}'s [bin] (letters/digits/-/_ only)", .{ d.name, a.name }));
+                continue;
+            };
+            if (isReservedName(app.arena, cfg, d.name)) {
+                try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "export \"{s}\" from {s} collides with a nix command wrapper — pick another name", .{ d.name, a.name }));
+                continue;
+            }
+            const kind = kindOf(d.command) orelse {
+                try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "export \"{s}\" from {s}: unsupported type \"{s}\" (use .exe, .cmd, .bat, or .ps1)", .{ d.name, a.name, d.command }));
+                continue;
+            };
+            // Same key twice in one file: first wins, like actions.find.
+            var seen = false;
+            for (out.items) |ex| {
+                if (std.mem.eql(u8, ex.alias, a.name) and store.eqlFoldAscii(ex.name, d.name)) seen = true;
+            }
+            if (seen) continue;
+            const source = try std.fs.path.resolve(app.arena, &.{ a.path, d.command });
+            const ext = try util.lowerDup(app.arena, std.fs.path.extension(d.command));
+            try out.append(app.arena, .{
+                .name = d.name,
+                .alias = a.name,
+                .source = source,
+                .file = try std.fmt.allocPrint(app.arena, "{s}{s}", .{ d.name, ext }),
+                .kind = kind,
+            });
+        }
+    }
+
+    // Cross-alias collisions: refuse loudly, nobody wins — a silently picked
+    // winner is exactly the kind of rot the manifest exists to prevent.
+    var keep: std.ArrayList(Export) = .empty;
+    for (out.items, 0..) |ex, i| {
+        var clash: ?Export = null;
+        for (out.items, 0..) |other, j| {
+            if (i != j and store.eqlFoldAscii(ex.name, other.name)) clash = other;
+        }
+        const c = clash orelse {
+            try keep.append(app.arena, ex);
+            continue;
+        };
+        // Report once, from the first of the pair.
+        var first = true;
+        for (out.items[0..i]) |prev| {
+            if (store.eqlFoldAscii(prev.name, ex.name)) first = false;
+        }
+        if (first) {
+            try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "export \"{s}\" declared by both {s} and {s} — neither installed until one renames", .{ ex.name, ex.alias, c.alias }));
+        }
+    }
+    return .{ .exports = keep.items, .problems = problems.items, .aliases = aliases.items };
+}
+
+fn planFile(plan: Plan, file: []const u8) ?Export {
+    for (plan.exports) |ex| if (store.eqlFoldAscii(ex.file, file)) return ex;
+    return null;
+}
+
+/// installContent returns the exact bytes an export's installed file should
+/// hold (the source copy, or the rendered forwarder), or null when the source
+/// can't be read.
+fn installContent(app: *App, ex: Export) ?[]const u8 {
+    return switch (ex.kind) {
+        .copy => readFileMaybe(app, ex.source),
+        .forward => renderForwarder(app.arena, ex.source) catch null,
+    };
+}
+
+pub fn cmdSyncBin(app: *App) !u8 {
+    return syncBin(app, false);
+}
+
+/// syncBin makes ~/.nix/bin match the plan: install/refresh every declared
+/// export, delete manifest-owned files no longer declared, rewrite the
+/// manifest. quiet_when_empty suppresses the "nothing declared" note so
+/// `--sync` (which calls this after wrappers) stays silent on machines that
+/// don't use [bin]. Exit 1 on declaration problems — a collision must not
+/// pass silently just because the rest synced.
+pub fn syncBin(app: *App, quiet_when_empty: bool) !u8 {
+    const plan = try buildPlan(app);
+    const old = try loadManifest(app.arena, app.io, app.home);
+    if (plan.exports.len == 0 and plan.problems.len == 0 and old.len == 0) {
+        if (!quiet_when_empty) try app.err.writeAll("no [bin] exports declared (add a [bin] table to a project's .nix/actions.toml)\n");
+        return 0;
+    }
+    for (plan.problems) |p| try app.err.print("nix: {s}\n", .{p});
+
+    const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
+    try util.mkdirAll(app.io, bin);
+
+    var current: usize = 0;
+    var updated: usize = 0;
+    var locked: std.ArrayList([]const u8) = .empty;
+    for (plan.exports) |ex| {
+        if (!proc.pathExists(app.io, ex.source)) {
+            try app.err.print("nix: {s}: source missing — {s} (build it, then rerun `nix --sync-bin`)\n", .{ ex.file, ex.source });
+            continue; // still declared: stays in the manifest, doctor keeps flagging it
+        }
+        const content = installContent(app, ex) orelse {
+            try app.err.print("nix: {s}: cannot read {s}\n", .{ ex.file, ex.source });
+            continue;
+        };
+        const dst = try std.fs.path.join(app.arena, &.{ bin, ex.file });
+        if (readFileMaybe(app, dst)) |existing| {
+            if (std.mem.eql(u8, existing, content)) {
+                current += 1;
+                continue;
+            }
+        }
+        writeReplaceAtomic(app, dst, content) catch {
+            try locked.append(app.arena, ex.file);
+            continue;
+        };
+        updated += 1;
+        try app.err.print("  {s}  ← {s} ({s})\n", .{ ex.file, ex.alias, @tagName(ex.kind) });
+    }
+
+    // Prune: every manifest-owned file that no alias declares any more. Only
+    // manifest entries are ever deleted — nix never removes a file it didn't
+    // install. A locked file stays in the manifest so the next sync retries.
+    var manifest: std.ArrayList(Export) = .empty;
+    try manifest.appendSlice(app.arena, plan.exports);
+    var removed: usize = 0;
+    for (old) |m| {
+        if (planFile(plan, m.name) != null) continue;
+        const p = try std.fs.path.join(app.arena, &.{ bin, m.name });
+        if (proc.pathExists(app.io, p)) {
+            Io.Dir.cwd().deleteFile(app.io, p) catch {
+                try locked.append(app.arena, m.name);
+                try manifest.append(app.arena, .{ .name = m.name, .alias = m.command, .source = "", .file = m.name, .kind = .copy });
+                continue;
+            };
+            removed += 1;
+            try app.err.print("  removed {s} (was {s}'s; no longer declared)\n", .{ m.name, m.command });
+        }
+    }
+    try writeManifest(app, manifest.items);
+
+    try app.err.print("bin exports: {d} current ({d} updated), {d} removed  → {s}\n", .{ current + updated, updated, removed, bin });
+    if (locked.items.len > 0) {
+        try app.err.writeAll("warning: in use, not replaced:");
+        for (locked.items) |n| try app.err.print(" {s}", .{n});
+        try app.err.writeAll("\n  close the processes using them and rerun `nix --sync-bin`\n");
+    }
+    return if (plan.problems.len > 0) 1 else 0;
+}
+
+/// writeManifest records what nix installed, keyed by installed filename so a
+/// later sync (or doctor) knows exactly which files it owns.
+fn writeManifest(app: *App, list: []const Export) !void {
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(app.arena, "# nix bin exports — generated by `nix --sync-bin`; do not edit.\n# <installed file> = \"<owning alias>\"; drift is reported by `nix --doctor`.\n\n[exports]\n");
+    for (list) |ex| {
+        try b.appendSlice(app.arena, ex.file);
+        try b.appendSlice(app.arena, " = ");
+        try store.appendTomlString(app.arena, &b, ex.alias);
+        try b.append(app.arena, '\n');
+    }
+    try util.writeFileAtomic(app.arena, app.io, try manifestPath(app.arena, app.home), b.items);
+}
+
+/// writeReplaceAtomic is the exe-safe atomic write: temp + rename, temp cleaned
+/// on a rename refused by a running (locked) destination. Mirrors snippet.zig's
+/// wrapper install.
+fn writeReplaceAtomic(app: *App, dst: []const u8, data: []const u8) !void {
+    const tmp = try util.uniqueTmpName(app.arena, app.io, dst);
+    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = tmp, .data = data });
+    Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), dst, app.io) catch |e| {
+        Io.Dir.cwd().deleteFile(app.io, tmp) catch {};
+        return e;
+    };
+}
+
+// ---- doctor -----------------------------------------------------------------
+
+pub const Finding = struct { status: enum { ok, warn, note }, label: []const u8, detail: []const u8 };
+
+/// doctorFindings computes the drift report --doctor renders: declaration
+/// problems, declared-but-not-synced, gone alias / gone source / stale copy,
+/// and files in ~/.nix/bin that nothing declares. Read-only.
+pub fn doctorFindings(app: *App) ![]const Finding {
+    var out: std.ArrayList(Finding) = .empty;
+    const plan = try buildPlan(app);
+    const manifest = try loadManifest(app.arena, app.io, app.home);
+    const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
+
+    if (plan.exports.len == 0 and plan.problems.len == 0 and manifest.len == 0) {
+        try out.append(app.arena, .{ .status = .note, .label = "exports", .detail = "none — declare [bin] in a project's .nix/actions.toml, then `nix --sync-bin`" });
+        return out.items;
+    }
+
+    for (plan.problems) |p| {
+        try out.append(app.arena, .{ .status = .warn, .label = "declared", .detail = p });
+    }
+
+    for (plan.exports) |ex| {
+        var in_manifest = false;
+        for (manifest) |m| if (store.eqlFoldAscii(m.name, ex.file)) {
+            in_manifest = true;
+        };
+        const dst = try std.fs.path.join(app.arena, &.{ bin, ex.file });
+        if (!in_manifest and !proc.pathExists(app.io, dst)) {
+            try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "declared by {s} but not installed — run `nix --sync-bin`", .{ex.alias}) });
+            continue;
+        }
+        if (!proc.pathExists(app.io, ex.source)) {
+            try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "source missing: {s} (build {s}, then `nix --sync-bin`)", .{ ex.source, ex.alias }) });
+            continue;
+        }
+        const want = installContent(app, ex);
+        const have = readFileMaybe(app, dst);
+        if (want == null or have == null or !std.mem.eql(u8, want.?, have.?)) {
+            try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "stale — {s}'s source changed since the last sync; run `nix --sync-bin`", .{ex.alias}) });
+            continue;
+        }
+        try out.append(app.arena, .{ .status = .ok, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "← {s} ({s}, current)", .{ ex.alias, @tagName(ex.kind) }) });
+    }
+
+    // Manifest entries nothing declares any more: the alias is gone, or its
+    // [bin] line is — either way the file is orphaned until a sync prunes it.
+    for (manifest) |m| {
+        if (planFile(plan, m.name) != null) continue;
+        var alias_exists = false;
+        for (plan.aliases) |a| if (store.eqlFoldAscii(a.name, m.command)) {
+            alias_exists = true;
+        };
+        const why = if (alias_exists) "no longer declared by" else "declared by removed alias";
+        try out.append(app.arena, .{ .status = .warn, .label = m.name, .detail = try std.fmt.allocPrint(app.arena, "{s} \"{s}\" — run `nix --sync-bin` to remove it", .{ why, m.command }) });
+    }
+
+    // Files in ~/.nix/bin that neither the wrappers nor the manifest own —
+    // exactly the provenance-free rot [bin] exists to prevent.
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    var undeclared: std.ArrayList([]const u8) = .empty;
+    if (Io.Dir.cwd().openDir(app.io, bin, .{ .iterate = true })) |dir| {
+        var d = dir;
+        defer d.close(app.io);
+        var it = d.iterate();
+        while (it.next(app.io) catch null) |ent| {
+            if (ent.kind == .directory) continue;
+            if (std.ascii.endsWithIgnoreCase(ent.name, ".tmp")) continue; // interrupted atomic write
+            const stem = if (std.mem.lastIndexOfScalar(u8, ent.name, '.')) |i| ent.name[0..i] else ent.name;
+            if (isReservedName(app.arena, cfg, stem)) continue;
+            var owned = false;
+            for (manifest) |m| if (store.eqlFoldAscii(m.name, ent.name)) {
+                owned = true;
+            };
+            if (!owned) try undeclared.append(app.arena, try app.arena.dupe(u8, ent.name));
+        }
+    } else |_| {}
+    if (undeclared.items.len > 0) {
+        try out.append(app.arena, .{ .status = .warn, .label = "undeclared", .detail = try std.fmt.allocPrint(app.arena, "in {s} but owned by nothing: {s}", .{ bin, try std.mem.join(app.arena, ", ", undeclared.items) }) });
+    }
+    return out.items;
+}
+
+// ---- tests ------------------------------------------------------------------
+
+test "kindOf: exe copies, scripts forward, unknown refused" {
+    try std.testing.expectEqual(Kind.copy, kindOf("zig-out/bin/hoot.exe").?);
+    try std.testing.expectEqual(Kind.copy, kindOf("Tool.EXE").?); // case-insensitive
+    try std.testing.expectEqual(Kind.forward, kindOf("scripts/go.cmd").?);
+    try std.testing.expectEqual(Kind.forward, kindOf("go.BAT").?);
+    try std.testing.expectEqual(Kind.forward, kindOf("tasks.ps1").?);
+    try std.testing.expect(kindOf("data.json") == null);
+    try std.testing.expect(kindOf("notes.md") == null);
+}
+
+test "validateExportName: filename-safe keys only" {
+    try validateExportName("hoot");
+    try validateExportName("my-tool_2");
+    try std.testing.expectError(error.EmptyName, validateExportName(""));
+    try std.testing.expectError(error.BadCharInName, validateExportName("a.b")); // ext comes from the source
+    try std.testing.expectError(error.BadCharInName, validateExportName("a b"));
+    try std.testing.expectError(error.BadCharInName, validateExportName("a/b"));
+}
+
+test "renderForwarder: cmd call vs ps1 args" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cmd = try renderForwarder(a, "C:\\p\\go.cmd");
+    try std.testing.expectEqualStrings("@call \"C:\\p\\go.cmd\" %*\r\n", cmd);
+    const ps = try renderForwarder(a, "C:\\p\\tasks.ps1");
+    try std.testing.expect(std.mem.indexOf(u8, ps, "@args") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ps, "$LASTEXITCODE") != null);
+}
+
+test "isReservedName: wrappers, builtins under rename, canonical nix" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expect(isReservedName(a, .{}, "nix"));
+    try std.testing.expect(isReservedName(a, .{}, "R")); // builtin slot, case-folded
+    // A rename reserves BOTH spellings: the new name and the vacated builtin.
+    const cfg = config.Config{ .shortcuts = &.{.{ .builtin = "s", .custom = "show" }} };
+    try std.testing.expect(isReservedName(a, cfg, "show"));
+    try std.testing.expect(isReservedName(a, cfg, "s"));
+    try std.testing.expect(!isReservedName(a, cfg, "hoot"));
+}
+
+test "loadManifest parse shape via parseTable" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const list = try actions.parseTable(a,
+        \\# generated
+        \\[exports]
+        \\hoot.exe = 'cy'
+        \\go.cmd = "tools"
+        \\
+    , "exports");
+    try std.testing.expectEqual(@as(usize, 2), list.len);
+    try std.testing.expectEqualStrings("cy", actions.find(list, "hoot.exe").?);
+    try std.testing.expectEqualStrings("tools", actions.find(list, "go.cmd").?);
+}
