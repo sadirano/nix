@@ -72,10 +72,26 @@ jobs:
           Compress-Archive -Path zig-out/bin/nix.exe `
             -DestinationPath "nix-${{ github.ref_name }}-windows-amd64.zip" -Force
 
+      # A tag with a `-` suffix (v*-pre, v*-rc1, ...) is a pre-release: it must
+      # never show up as "Latest" or GitHub's /releases/latest endpoint hands
+      # it to Excavator's checkver, bumping the stable Scoop bucket to a pre.
+      - name: Determine pre-release status
+        id: prerelease
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if [[ "$tag" == *-* ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           # Publish immediately (hands-off); auto-generated notes from commits.
           draft: false
           generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.value }}
+          make_latest: ${{ steps.prerelease.outputs.value == 'false' }}
           files: nix-${{ github.ref_name }}-windows-amd64.zip

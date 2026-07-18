@@ -105,14 +105,13 @@ fn pasteContent(app: *App, alias: []const u8, target: []const u8, name: []const 
     const fname = try pasteFilename(app, name, default_ext);
     const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname }));
     try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = data });
-    const out = try store.toSlash(app.arena, dest);
-    try app.out.print("{s}\n", .{out});
+    try app.out.print("{s}\n", .{dest});
     try app.out.flush();
     // Clipboard gets the host-separator path: / is not always a valid
     // separator on Windows (cmd.exe, some dialogs), \ always is.
     clipboard.writeText(app.arena, app.io, dest) catch {};
     const kind = if (std.mem.eql(u8, default_ext, ".png")) "image" else "text";
-    notifyEvent(app, .paste, alias, target, try std.fmt.allocPrint(app.arena, "pasted {s} {s}", .{ kind, out }));
+    notifyEvent(app, .paste, alias, target, try std.fmt.allocPrint(app.arena, "pasted {s} {s}", .{ kind, dest }));
     return 0;
 }
 
@@ -140,7 +139,7 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
                 return 1;
             };
         }
-        try outs.append(app.arena, try store.toSlash(app.arena, dest));
+        try outs.append(app.arena, dest);
     }
     for (outs.items) |o| try app.out.print("{s}\n", .{o});
     try app.out.flush();
@@ -149,13 +148,13 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
     var joined: std.ArrayList(u8) = .empty;
     for (outs.items, 0..) |o, i| {
         if (i > 0) try joined.append(app.arena, '\n');
-        try joined.appendSlice(app.arena, try store.fromSlash(app.arena, o));
+        try joined.appendSlice(app.arena, o);
     }
     clipboard.writeText(app.arena, app.io, joined.items) catch {};
     const msg = if (outs.items.len == 1)
         try std.fmt.allocPrint(app.arena, "pasted {s}", .{outs.items[0]})
     else
-        try std.fmt.allocPrint(app.arena, "pasted {d} files into {s}", .{ outs.items.len, try store.toSlash(app.arena, target) });
+        try std.fmt.allocPrint(app.arena, "pasted {d} files into {s}", .{ outs.items.len, target });
     notifyEvent(app, .paste, alias, target, msg);
     return 0;
 }
