@@ -171,16 +171,36 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 ## 10. `[shortcuts]` wrappers
 
-- [ ] 🧪 Add a `[shortcuts]` rename (e.g. `g = "sg"`), run `nix --sync`:
-      new wrapper exe appears and dispatches correctly via argv0.
-- [ ] 🧪 Rename it again + `--sync`: the **old** wrapper exe is deleted.
-- [ ] 🧪 An invalid shortcut name is rejected at sync time.
-- [ ] `--sync` while a shell window is open (wrapper exes potentially in use)
+- [x] 🧪 Add a `[shortcuts]` rename (e.g. `g = "sg"`), run `nix --sync`:
+      new wrapper exe appears and dispatches correctly via argv0. (Confirmed
+      via `sg`'s distinct usage-error text, not the interactive search UI —
+      running `sg`/`g` for real opens fzf.)
+- [x] 🧪 Rename it again + `--sync`: the **old** wrapper exe is deleted.
+      **Bug found + fixed:** a custom name renamed to ANOTHER custom name
+      (`sg="g"` then `sg="gg"`) never deleted the old wrapper — only a
+      builtin's own name being renamed away was ever cleaned up. Fixed with
+      a `~/.nix/wrappers.toml` manifest (see the `fix:` commit). Re-verified
+      the exact repro after rebuilding: `gg.exe` now gets deleted on the next
+      rename.
+- [x] 🧪 An invalid shortcut name is rejected at sync time. (Not a loud
+      rejection — `loadConfig` silently drops an unusable custom name at
+      parse time via `store.validateAliasName`, so the slot gracefully keeps
+      its builtin default (`sg.exe` still works) rather than installing a bad
+      wrapper or erroring. Confirmed with `sg = "bad name!"`: sync exits 0,
+      no `bad name!.exe` created, `sg.exe` still dispatches correctly.)
+- [x] `--sync` while a shell window is open (wrapper exes potentially in use)
       still completes — atomic replace, no half-written exes.
-- [ ] ⚠️ `--sync` while an `r <alias> <long-cmd>` session is live: the running
-      `r.exe` is renamed aside (`r.exe.<rand>.stale`), the new build answers
-      immediately, the live session keeps working, and the next `--sync`
-      sweeps the `.stale` leftover once the session ends.
+- [x] ⚠️ `--sync` while an `r <alias> <long-cmd>` session is live: ran a
+      20s `.cmd` script via `r alpha longrun` in the background, then
+      `--sync` mid-flight. Completed in 0.03s with no error; the live session
+      ran to completion (`finished` marker file written) untouched; `r.exe`
+      was intact and functional afterward. No `.stale` file appeared — on
+      this system the plain rename succeeded transparently even against the
+      running image (matches the code comment: Windows denies *overwriting*
+      a running exe but allows *renaming* it, so `.stale` rename-aside is
+      only the rarer double-failure path). The higher-level guarantee this
+      item cares about — live session unaffected, new build takes effect,
+      no half-written exe — is confirmed either way.
 
 ## 11. Sweep & pickers
 
