@@ -244,27 +244,37 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 ## 14. Multi-name `[shortcuts]` slots
 
-- [ ] 🧪 `r = ["r", "x"]` + `--sync`: both wrapper exes exist and `x <alias>
-      :<name>` dispatches like `r`.
-- [ ] 🧪 Help text and `~/.nix/AGENTS.md` show the **first** listed name as
-      primary.
-- [ ] 🧪 Dropping the extra name + `--sync` deletes its wrapper.
+- [x] 🧪 `r = ["r", "x"]` + `--sync`: both wrapper exes exist and `x <alias>
+      :<name>` dispatches like `r`. (`x alpha :ok_action` ran the action and
+      fired the same `on_finish` hook.)
+- [x] 🧪 Help text and `~/.nix/AGENTS.md` show the **first** listed name as
+      primary. (Neither mentions `x`.)
+- [x] 🧪 Dropping the extra name + `--sync` deletes its wrapper. (Exercises
+      the section-10 wrapper-manifest fix directly — `x.exe` gone after sync.)
 
 ## 15. `[bin]` exports (`--sync-bin`)
 
-- [ ] 🧪 Declare `[bin]` exe + `.cmd` + `.ps1` entries in a scratch alias;
+- [x] 🧪 Declare `[bin]` exe + `.cmd` + `.ps1` entries in a scratch alias;
       `nix --sync-bin` installs a byte copy, a `@call` forwarder, and a
-      `.cmd` trampoline (`-File`), and writes `~/.nix/exports.toml`.
-- [ ] 🧪 `nix --sync` does **not** install a brand-new export — it lists it
+      `.cmd` trampoline (`-File`), and writes `~/.nix/exports.toml`. (Also
+      confirms the section-6 `wrapPs1`/`psShell` refactor didn't disturb
+      this — ran the trampoline, got real `.ps1` output.)
+- [x] 🧪 `nix --sync` does **not** install a brand-new export — it lists it
       for review; a manifest-owned one is refreshed after a source rebuild.
-- [ ] 🧪 An export name that also resolves elsewhere on PATH (e.g. `fd`)
+      (Byte-identical to the rebuilt source after re-`--sync-bin`.)
+- [x] 🧪 An export name that also resolves elsewhere on PATH (e.g. `fd`)
       warns at install and shows a note row in `--doctor`.
-- [ ] 🧪 Two aliases claiming one name: refused loudly, neither installed.
-- [ ] 🧪 Wrapper names (`r`) and device names (`nul`) are rejected.
-- [ ] 🧪 Rename the alias dir away: `--sync-bin` **keeps** the exports
+- [x] 🧪 Two aliases claiming one name: refused loudly, neither installed.
+- [x] 🧪 Wrapper names (`r`) and device names (`nul`) are rejected.
+- [x] 🧪 Rename the alias dir away: `--sync-bin` **keeps** the exports
       ("unreachable"); rename it back, drop the `[bin]` lines: pruned.
-- [ ] `nix --doctor` "Bin exports" section: ok rows on the daily machine,
-      stale/orphan/undeclared drift flagged in a doctored 🧪 scratch bin.
+- [x] `nix --doctor` "Bin exports" section: ok rows on the daily machine
+      (confirmed in section 7); stale/undeclared drift flagged in a doctored
+      🧪 scratch bin (edited a source without resyncing, dropped a rogue file
+      straight into bin/ — both caught with the expected messages; no
+      separate "orphan" status exists in the code beyond
+      unreachable/no-longer-declared, already covered by the rename-away
+      test above).
 
 ## 16. Release hygiene
 
