@@ -64,6 +64,7 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
             }
         }
     }
+    resolved = try wrapPs1(app, resolved);
     const env = try aliasRunEnv(app, alias, target);
     try app.out.flush();
     if (outside) {
@@ -135,6 +136,25 @@ pub fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
         }
     }
     return null;
+}
+
+/// wrapPs1 rewrites a resolved argv whose exe is a `.ps1` into an invocation
+/// through PowerShell — CreateProcess can't launch a `.ps1` directly (it's not
+/// a native executable), unlike the `.cmd`/`.bat`/`.exe` candidates resolveScript
+/// and the extension probe above also produce. Mirrors bin_exports.renderForwarder's
+/// `.ps1` handling for `[bin]` trampolines.
+fn wrapPs1(app: *App, resolved: [][]const u8) ![][]const u8 {
+    if (resolved.len == 0 or !std.ascii.eqlIgnoreCase(std.fs.path.extension(resolved[0]), ".ps1")) return resolved;
+    const shell = proc.psShell(app.arena, app.io, app.env);
+    var out = try app.arena.alloc([]const u8, resolved.len + 5);
+    out[0] = shell;
+    out[1] = "-NoProfile";
+    out[2] = "-ExecutionPolicy";
+    out[3] = "Bypass";
+    out[4] = "-File";
+    out[5] = resolved[0];
+    @memcpy(out[6..], resolved[1..]);
+    return out;
 }
 
 /// resolveAction looks up a named action for an alias: project-local
