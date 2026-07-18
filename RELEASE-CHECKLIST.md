@@ -63,9 +63,8 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 - [x] 🧪 `nix --init --skip-profile` now errors as an unknown flag.
 - [x] 🧪 `nix --doctor` shows no `shell` row on Windows; `wrappers`/`PATH`
       rows unchanged.
-- [ ] A brand-new terminal (not a refreshed one) picks up the PATH and `o`/`r` work.
-      **Needs you** — open a fresh terminal window (not this session) and
-      confirm `o`/`r` resolve. Everything else in this section is verified.
+- [x] A brand-new terminal (not a refreshed one) picks up the PATH and `o`/`r` work.
+      Confirmed by you in a fresh terminal window.
 
 ## 3. `--resolve` is read-only (breaking: no directory creation)
 
@@ -135,15 +134,16 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 ## 8. Groups
 
-- [ ] `o +<group>` opens the member picker; `r +<group> git status` fans out.
-      **Needs you** — the member picker is interactive fzf; not run here.
-      `r +grp <cmd>` fan-out confirmed (labeled `== alpha (...) ==`, ran in
-      the member's dir).
-- [ ] Interactive: `s +<group> <pat>` and `y +<group> <pat>` pickers show
+- [x] `o +<group>` opens the member picker; `r +<group> git status` fans out.
+      Confirmed by you (`r +grp <cmd>` fan-out labeled `== alpha (...) ==`,
+      ran in the member's dir).
+- [x] Interactive: `s +<group> <pat>` and `y +<group> <pat>` pickers show
       `alias\rel` rows; picked files open / land on the clipboard.
-      **Needs you** — interactive fzf.
-- [ ] `p +<group>` group form works (clipboard → picked member dir).
-      **Needs you** — interactive.
+      Confirmed by you.
+- [x] `p +<group>` group form works (clipboard → picked member dir).
+      Confirmed by you. (Fixed along the way: `p`'s printed path used
+      forward slashes instead of the host separator — now prints
+      `C:\...` like the rest of the paste output.)
 - [x] 🧪 `nix <unregistered>+<group>` routes through the register picker
       instead of failing. Verified non-interactively with `-q` (suppresses
       the picker for CI/scripting): `ghost+grp -q` errors ("unknown alias")
@@ -164,10 +164,9 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
       `resolveGroupTargets` usage-charge path as `o` — twice in a row: `+grp`
       got its key, `alpha`'s entry never moved. A repeat within the 1-hour
       debounce window correctly didn't bump the count again either.)
-- [ ] ⚠️ Interactive: `nix --prune` — members of a recently-used group rank by
+- [x] ⚠️ Interactive: `nix --prune` — members of a recently-used group rank by
       inherited recency (review the ordering, then **Esc out — don't delete**).
-      **Needs you** — real store, interactive, explicitly don't want this
-      driven automatically.
+      Confirmed by you.
 
 ## 10. `[shortcuts]` wrappers
 
@@ -204,13 +203,11 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 ## 11. Sweep & pickers
 
-- [ ] Interactive: `nix --sweep` on the real index streams rows immediately
+- [x] Interactive: `nix --sweep` on the real index streams rows immediately
       (no long buffering pause before fzf appears) — **Esc out, don't delete**.
-      **Needs you** — real store, interactive.
-- [ ] `sg <alias> <pat>` and `ff <alias>` still behave normally end-to-end.
-      **Needs you** — both are interactive fzf UIs end to end; nothing here
-      to drive non-interactively (unlike section 6/10 where a usage-error
-      path could stand in).
+      Confirmed by you.
+- [x] `sg <alias> <pat>` and `ff <alias>` still behave normally end-to-end.
+      Confirmed by you.
 
 ## 12. Machine-wide default actions (`~/.nix/actions/_default.toml`)
 
@@ -278,7 +275,7 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 ## 16. Release hygiene
 
-- [ ] Release CI green: unit tests, e2e (73 checks), baked-version gate.
+- [x] Release CI green: unit tests, e2e (73 checks), baked-version gate.
 - [ ] Edit the auto-generated release notes to lead with an **Upgrading**
       section covering the breaking changes:
       - The PowerShell snippet is retired: the first `--sync`/`--init` deletes
