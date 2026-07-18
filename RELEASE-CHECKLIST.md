@@ -206,27 +206,41 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 - [ ] Interactive: `nix --sweep` on the real index streams rows immediately
       (no long buffering pause before fzf appears) — **Esc out, don't delete**.
+      **Needs you** — real store, interactive.
 - [ ] `sg <alias> <pat>` and `ff <alias>` still behave normally end-to-end.
+      **Needs you** — both are interactive fzf UIs end to end; nothing here
+      to drive non-interactively (unlike section 6/10 where a usage-error
+      path could stand in).
 
 ## 12. Machine-wide default actions (`~/.nix/actions/_default.toml`)
 
-- [ ] 🧪 Create `_default.toml` with a `[actions]` entry; `r <any-alias> :<name>`
+- [x] 🧪 Create `_default.toml` with a `[actions]` entry; `r <any-alias> :<name>`
       runs it and `r <alias> :` lists it.
-- [ ] 🧪 A project-local or central per-alias action of the same name wins.
-- [ ] 🧪 `nix _default <path>` is rejected ("reserved").
-- [ ] 🧪 `nix --export` includes `[actions._default]`; re-import restores it.
+- [x] 🧪 A project-local or central per-alias action of the same name wins.
+      (Checked both independently: project-local `.nix/actions.toml` and
+      central `~/.nix/actions/<alias>.toml` each overrode the default.)
+- [x] 🧪 `nix _default <path>` is rejected ("reserved").
+- [x] 🧪 `nix --export` includes `[actions._default]`; re-import restores it.
 
 ## 13. `[notify]` hooks (on_finish / on_paste / on_yank)
 
-- [ ] With the real hoot configured in `~/.nix/config.toml`: a successful
-      `r <alias> :<action>` logs quietly; a failing one raises the level
-      (check `{status}`/`{exit}`/`{duration}` render in the message).
-- [ ] A literal command (`r <alias> <cmd>`) and a detached run (`-o`) do
-      **not** fire on_finish.
-- [ ] `y <alias>` / `p <alias>` record their result via on_yank / on_paste;
+- [x] With the real hoot configured (scratch config pointed at the real
+      `hoot`, `hoot log --json` inspected directly instead of watching
+      toasts): a successful `r <alias> :<action>` logged at `info`
+      (`:ok_action finished in 75ms`); a failing one raised to `warn`
+      (`:fail_action failed (exit 7) after 75ms`) — exit code and duration
+      both render.
+- [x] A literal command (`r <alias> <cmd>`) and a detached run (`-o`) do
+      **not** fire on_finish. Confirmed — no new hoot entries after either.
+- [x] `y <alias>` / `p <alias>` record their result via on_yank / on_paste;
       a quoted `{message}` stays one argument (spawned directly, no cmd /c).
-- [ ] `nix --doctor` shows the notify-hook rows; with the notifier renamed
+      Proved the no-`cmd /c` claim concretely: pasted to a filename
+      containing `&` (`weird & name.txt`) and the full literal string came
+      through in the hoot message intact — `cmd /c` would have split it.
+- [x] `nix --doctor` shows the notify-hook rows; with the notifier renamed
       away it flags "not found — the hook will fail every time it fires".
+      (Pointed scratch `on_finish` at a nonexistent command rather than
+      touching the real hoot.exe — exact message matched.)
 
 ## 14. Multi-name `[shortcuts]` slots
 
