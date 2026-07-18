@@ -115,35 +115,59 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 
 ## 7. `--doctor`
 
-- [ ] `nix --doctor` full report: all sections green on the daily machine.
-- [ ] `nix --doctor -q` shows only problems + summary (empty-ish when healthy).
-- [ ] `nix --doctor --json | ConvertFrom-Json` parses; sections present.
-- [ ] With Everything running: doctor's `es` probe passes **and** `ff <alias>` /
-      `s <alias> <pat>` actually return results (probe now uses the picker's
-      exact `/ad` switches — these must agree).
-- [ ] Stop Everything: doctor flags `es` as broken instead of passing falsely.
-- [ ] Doctor flags duplicate alias sections in a deliberately doctored
+- [x] `nix --doctor` full report: all sections green on the daily machine.
+- [x] `nix --doctor -q` shows only problems + summary (empty-ish when healthy).
+- [x] `nix --doctor --json | ConvertFrom-Json` parses; sections present.
+- [x] With Everything running: doctor's `es` probe passes (confirmed the
+      `/ad`/`-n` switch shape in doctor.zig:271 matches picker.zig:48,249
+      exactly, and ran `es <term> /ad -n 5` directly — real directory results
+      came back).
+      **Needs you** — `ff <alias>` / `s <alias> <pat>` returning results is an
+      interactive fzf session; not run here.
+- [x] Stop Everything: doctor flags `es` as broken instead of passing falsely.
+      (Two Windows services *and* a separate Scoop-launched console-session
+      Everything.exe were all running — had to stop all three before `es`
+      actually lost its backend. Doctor then correctly warned `present but
+      Everything service not running` and reported the fd fallback. Restarted
+      everything afterward; confirmed healthy again.)
+- [x] Doctor flags duplicate alias sections in a deliberately doctored
       🧪 scratch `aliases.toml`.
 
 ## 8. Groups
 
 - [ ] `o +<group>` opens the member picker; `r +<group> git status` fans out.
+      **Needs you** — the member picker is interactive fzf; not run here.
+      `r +grp <cmd>` fan-out confirmed (labeled `== alpha (...) ==`, ran in
+      the member's dir).
 - [ ] Interactive: `s +<group> <pat>` and `y +<group> <pat>` pickers show
       `alias\rel` rows; picked files open / land on the clipboard.
+      **Needs you** — interactive fzf.
 - [ ] `p +<group>` group form works (clipboard → picked member dir).
-- [ ] 🧪 `nix <unregistered>+<group>` routes through the register picker
-      instead of failing.
-- [ ] 🧪 `nix +g+g` (self-referencing add) is rejected.
-- [ ] `o +nope` / `o +bad+token` errors — must **not** fall through to the picker.
-- [ ] 🧪 Alias/group names with TOML metacharacters (`[`, `"`, `=`, …) are
+      **Needs you** — interactive.
+- [x] 🧪 `nix <unregistered>+<group>` routes through the register picker
+      instead of failing. Verified non-interactively with `-q` (suppresses
+      the picker for CI/scripting): `ghost+grp -q` errors ("unknown alias")
+      and records nothing. **Needs you** — actually seeing the picker open
+      (no `-q`) wasn't run here.
+- [x] 🧪 `nix +g+g` (self-referencing add) is rejected.
+- [x] `o +nope` / `o +bad+token` errors — must **not** fall through to the
+      picker. (Used `o alpha+`, the actual malformed-token shape covered by
+      e2e.zig:433 — `EmptyGroupName` — since `+bad+token` alone is valid
+      nested-group-add syntax, not malformed.)
+- [x] 🧪 Alias/group names with TOML metacharacters (`[`, `"`, `=`, …) are
       rejected with the friendly message.
 
 ## 9. Group usage & prune
 
-- [ ] Use `o +<group>` once; the `usage` file gains a `+<group>` key and member
-      aliases are *not* individually bumped.
+- [x] Use `o +<group>` once; the `usage` file gains a `+<group>` key and member
+      aliases are *not* individually bumped. (Used `r +grp <cmd>` — same
+      `resolveGroupTargets` usage-charge path as `o` — twice in a row: `+grp`
+      got its key, `alpha`'s entry never moved. A repeat within the 1-hour
+      debounce window correctly didn't bump the count again either.)
 - [ ] ⚠️ Interactive: `nix --prune` — members of a recently-used group rank by
       inherited recency (review the ordering, then **Esc out — don't delete**).
+      **Needs you** — real store, interactive, explicitly don't want this
+      driven automatically.
 
 ## 10. `[shortcuts]` wrappers
 
