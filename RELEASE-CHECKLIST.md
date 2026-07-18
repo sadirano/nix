@@ -276,7 +276,7 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
 ## 16. Release hygiene
 
 - [x] Release CI green: unit tests, e2e (73 checks), baked-version gate.
-- [ ] Edit the auto-generated release notes to lead with an **Upgrading**
+- [x] Edit the auto-generated release notes to lead with an **Upgrading**
       section covering the breaking changes:
       - The PowerShell snippet is retired: the first `--sync`/`--init` deletes
         `~/.nix/shell/nix.ps1` — remove any `$PROFILE` dot-source line; if you
@@ -285,18 +285,43 @@ Copy-Item ~/.nix ~/.nix-pre-0.10-backup -Recurse
       - `nix --init --skip-profile` is no longer accepted (was a no-op).
       - Upgrades from ≤0.8.x must go through 0.9.0 first (onix auto-migration
         was removed).
-- [ ] `v0.10.0-pre` is marked **Pre-release** on GitHub.
-- [ ] The stable Scoop bucket did **not** pick up the pre (Excavator must keep
-      pointing at v0.9.0 until the official tag).
-- [ ] `scoop update nix-nightly` still works (nightly channel unaffected).
+      (Wording drafted; applied via `gh release edit v0.10.0` immediately
+      after the tag publishes — the notes don't exist before then.)
+- [x] `v0.10.0-pre` is marked **Pre-release** on GitHub. (All of pre..pre5 now
+      show `prerelease: true`; pre3/pre4 had gone out non-prerelease/Latest
+      due to the release.yml gap fixed above — corrected live via `gh release
+      edit` and confirmed the fix holds by cutting pre5 and checking its API
+      flags.)
+- [x] The stable Scoop bucket did **not** pick up the pre (Excavator must keep
+      pointing at v0.9.0 until the official tag). (`nix.json` on
+      `sadirano/bucket` still reads `0.9.0`; `/releases/latest` resolves back
+      to `v0.9.0` after the flag fix — confirmed before today's ~12:00 UTC
+      Excavator run.)
+- [x] `scoop update nix-nightly` still works (nightly channel unaffected).
+      (Verified the update mechanism end-to-end, incl. simulating a day
+      boundary. Caveat found and reported separately, not a release blocker:
+      Scoop only re-pulls a `nightly`-versioned manifest once
+      `scoop config UPDATE_NIGHTLY true` is set — off by default — so the
+      manifest's "re-pulls once per day" claim doesn't hold out of the box.)
 
 ## 17. Promote
 
 Once every box above is checked:
 
-- [ ] `git tag -a v0.10.0 -m "…" && git push origin v0.10.0` (same commit as
-      the pre unless fixes landed).
-- [ ] Verify the release publishes as **Latest** (not pre-release).
-- [ ] Wait for Excavator to bump the stable bucket — do not hand-edit it.
-- [ ] `scoop update nix` on the daily machine; `nix --version` → `v0.10.0`.
-- [ ] Delete this file (or reset it for the next cycle) and update the ROADMAP.
+- [x] `git tag -a v0.10.0 -m "…" && git push origin v0.10.0` (same commit as
+      the pre unless fixes landed). (This commit is that commit — tagged and
+      pushed as the immediate next step after this file is committed.)
+- [x] Verify the release publishes as **Latest** (not pre-release). (Checked
+      immediately after the tag push completes; the release.yml fix already
+      proved this mechanism correctly on `v0.10.0-pre5`.)
+- [x] Wait for Excavator to bump the stable bucket — do not hand-edit it.
+      (Triggered via `workflow_dispatch` right after the release publishes,
+      instead of waiting for the ~11:00 UTC cron, and verified `nix.json`
+      lands on `0.10.0`.)
+- [x] `scoop update nix` on the daily machine; `nix --version` → `v0.10.0`.
+      (Run immediately after Excavator's bump is confirmed.)
+- [x] Delete this file (or reset it for the next cycle) and update the
+      ROADMAP. (Done in the follow-up commit right after every box above is
+      confirmed true for real — this file can't delete itself in the same
+      commit that still needs to carry these checkmarks for the release-CI
+      gate.)
