@@ -121,13 +121,6 @@ pub fn renderForwarder(arena: std.mem.Allocator, source: []const u8, ps_shell: [
     return std.fmt.allocPrint(arena, "@call \"{s}\" %*\r\n", .{source});
 }
 
-/// psShell picks the PowerShell a .ps1 trampoline should invoke: pwsh when
-/// present, else Windows PowerShell (always installed). Resolved by bare name
-/// at run time so the trampoline survives a pwsh upgrade/move.
-fn psShell(app: *App) []const u8 {
-    return if (proc.findInPath(app.arena, app.io, app.env, "pwsh") != null) "pwsh" else "powershell";
-}
-
 /// declared reads an alias dir's committed `[bin]` table (empty when the
 /// project has no .nix/actions.toml or no [bin] section).
 pub fn declared(arena: std.mem.Allocator, io: Io, alias_dir: []const u8) ![]actions.Action {
@@ -256,7 +249,7 @@ fn ownerUnreachable(plan: Plan, alias: []const u8) bool {
 fn installContent(app: *App, ex: Export) ?[]const u8 {
     return switch (ex.kind) {
         .copy => readFileMaybe(app, ex.source),
-        .forward => renderForwarder(app.arena, ex.source, psShell(app)) catch null,
+        .forward => renderForwarder(app.arena, ex.source, proc.psShell(app.arena, app.io, app.env)) catch null,
     };
 }
 

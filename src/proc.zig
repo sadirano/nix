@@ -103,6 +103,13 @@ pub fn runDetachedEnv(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_win
     _ = &child;
 }
 
+/// psShell picks the PowerShell a `.ps1` should be invoked through: `pwsh`
+/// when present, else Windows PowerShell (always installed). Resolved by bare
+/// name at run time so callers survive a pwsh upgrade/move.
+pub fn psShell(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map) []const u8 {
+    return if (findInPath(arena, io, env, "pwsh") != null) "pwsh" else "powershell";
+}
+
 /// findInPath returns the absolute path to `name` if found on PATH (trying
 /// PATHEXT extensions on Windows), else null. Mirrors exec.LookPath's "is it
 /// available" use in resolveEditor.
