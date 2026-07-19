@@ -161,10 +161,14 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 
 ## Backlog
 
-- 💤 **POSIX shell-function parity (low priority — nix is Windows-first).**
-  POSIX `o` is a shell function that cd's the exe's stdout (no subshell), so
-  (a) `o +group` routes to `--list` instead of navigating, (b) `o <alias>`
-  can't get `.nix/scripts` scoped on PATH, and (c) since `--resolve` went
-  read-only, a registered-but-deleted dir no longer reappears on `o`. All
-  need a navigate verb the function calls for these cases. Deferred —
-  revisit only if non-Windows use becomes important.
+- **Secret placeholders in actions (`${secret:NAME}`).** Per-alias actions
+  are the natural home for launch commands carrying credentials, but today
+  they're either inline in a committed `.nix/actions.toml` (leaks into the
+  repo) or in the central per-machine file (git-safe, but plaintext on disk
+  and echoed verbatim by `r <alias> :` and `--export`). Proposal: resolve
+  `${secret:NAME}` placeholders at spawn time from the OS-native credential
+  store (Windows Credential Manager / macOS Keychain / Linux Secret Service),
+  via `nix --secret set|rm|list`. Listings, `--help`, `--export`, and
+  `[notify]` messages always show the placeholder, never the resolved value;
+  an unresolved secret aborts before spawn. Full proposal:
+  `owl/thril/feedback/2026-07-18_022501.md`.
