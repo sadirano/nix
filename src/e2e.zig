@@ -2,8 +2,9 @@
 //! scratch NIX_HOME (ROADMAP: scripted end-to-end harness). Covers the
 //! dispatch/IO seam the unit tests can't reach: add/resolve/remove, groups,
 //! actions, segments, export→import, and the read-only --resolve guarantee.
-//! Interactive paths (fzf pickers, navigation subshells) and --init (it edits
-//! the real user PATH) are deliberately out of scope.
+//! Interactive paths (fzf pickers, navigation subshells), --init (it edits
+//! the real user PATH), and --secret (it edits the real Windows Credential
+//! Manager) are deliberately out of scope.
 //!
 //! Run with `zig build e2e`; argv[1] is the nix exe to test.
 

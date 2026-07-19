@@ -11,6 +11,7 @@ const actions = @import("actions.zig");
 const resolve = @import("resolve.zig");
 const config = @import("config.zig");
 const notify = @import("notify.zig");
+const secret = @import("secret.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -209,11 +210,25 @@ pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
 /// sh -c elsewhere) in `dir`, so `&&`, pipes, and redirects work. `alias` names
 /// the alias context for NIX_ALIAS; `outside` runs it detached (a new window),
 /// mirroring `r --outside`.
+///
+/// `${secret:NAME}` placeholders (see secret.zig) are expanded here — the one
+/// choke point every named action passes through, foreground or detached — so
+/// a resolved credential exists only for the duration of this call and never
+/// reaches listings, --export, or [notify] messages (those all read the raw,
+/// unexpanded command string). An unresolved name aborts before spawn.
 pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, outside: bool) !u8 {
+    var cred_ctx = secret.CredResolveCtx{ .arena = app.arena };
+    const cmd = switch (try secret.expandSecrets(app.arena, command, secret.credentialResolver(&cred_ctx))) {
+        .ok => |s| s,
+        .missing => |name| {
+            try app.err.print("nix: unknown secret \"{s}\" — run: nix --secret set {s}\n", .{ name, name });
+            return 1;
+        },
+    };
     const shell_argv: []const []const u8 = if (proc.is_windows)
-        &.{ app.env.get("COMSPEC") orelse "cmd.exe", "/c", command }
+        &.{ app.env.get("COMSPEC") orelse "cmd.exe", "/c", cmd }
     else
-        &.{ "/bin/sh", "-c", command };
+        &.{ "/bin/sh", "-c", cmd };
     const env = try aliasRunEnv(app, alias, dir);
     try app.out.flush();
     if (outside) {
