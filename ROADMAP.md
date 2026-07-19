@@ -157,18 +157,37 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
 - **`usage` excluded** (machine-local churn); project-local
   `.nix/actions.toml` files travel with their repos and are out of scope.
 
+### Secret placeholders in actions (`${secret:NAME}`)
+
+- **Windows Credential Manager only, no cross-platform seam.** Per the
+  Windows-first stance, v1 skips macOS Keychain / Linux Secret Service
+  entirely rather than building an abstraction for backends nobody's using
+  yet. Generic credentials under a flat `nix/<NAME>` target-name namespace,
+  `CRED_PERSIST_LOCAL_MACHINE`. advapi32 is lazy-loaded (`LoadLibraryA`/
+  `GetProcAddress`, like winpath.zig's registry calls and clipboard.zig's
+  user32 calls) so the rare `--secret` call doesn't tax every invocation's
+  startup.
+- **One choke point, not one per call site.** Expansion happens inside
+  `run.zig`'s `runShellString`, which both `cmdRun` (`r <alias> :name`) and
+  the group fan-out (`cmd_groups.zig`) funnel through — foreground and
+  `--outside` alike — so every named-action path is covered by a single
+  `expandSecrets` call. Literal ad-hoc commands (`r <alias> <cmd>` without a
+  leading `:`) are deliberately untouched; placeholders are a named-actions
+  concept.
+- **Placeholder-safety needed no extra code.** Listings (`r <alias> :`),
+  `--export`/`--import`, and `[notify]` messages all read the raw action
+  string or build their own message text — none of them touch
+  `expandSecrets` — so they show the literal `${secret:NAME}` text or nothing
+  at all, by construction, not by a special case.
+- **Interactive no-echo prompt only** for `nix --secret set NAME` — no
+  stdin/pipe input path in v1. Requires a real console (`GetConsoleMode`
+  failing, e.g. piped stdin, is a hard error, not a silent fallback).
+- **Deferred:** a `--doctor` check for actions referencing a missing secret —
+  `doctor.zig` doesn't walk per-alias `.nix/actions.toml` files today, so
+  this is new surface, not a small addition.
+
 ---
 
 ## Backlog
 
-- **Secret placeholders in actions (`${secret:NAME}`).** Per-alias actions
-  are the natural home for launch commands carrying credentials, but today
-  they're either inline in a committed `.nix/actions.toml` (leaks into the
-  repo) or in the central per-machine file (git-safe, but plaintext on disk
-  and echoed verbatim by `r <alias> :` and `--export`). Proposal: resolve
-  `${secret:NAME}` placeholders at spawn time from the OS-native credential
-  store (Windows Credential Manager / macOS Keychain / Linux Secret Service),
-  via `nix --secret set|rm|list`. Listings, `--help`, `--export`, and
-  `[notify]` messages always show the placeholder, never the resolved value;
-  an unresolved secret aborts before spawn. Full proposal:
-  `owl/thril/feedback/2026-07-18_022501.md`.
+Nothing queued right now.
