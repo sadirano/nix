@@ -109,6 +109,17 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8) !*std.process.
         try app.env.put("NIX_ALIAS", alias);
         try app.env.put("NIX_ALIAS_PATH", dir);
     }
+    // Context-source variables (context.zig). Names are arbitrary, so unlike
+    // PATH they can't be rebuilt from an original — remove what the previous
+    // call injected first, or a group fan-out would carry one member's context
+    // into the next.
+    for (app.ctx_injected) |k| _ = app.env.orderedRemove(k);
+    var injected: std.ArrayList([]const u8) = .empty;
+    for (app.ctx_vars) |kv| {
+        try app.env.put(kv.key, kv.value);
+        try injected.append(app.arena, kv.key);
+    }
+    app.ctx_injected = injected.items;
     return app.env;
 }
 
@@ -144,7 +155,7 @@ pub fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
 /// a native executable), unlike the `.cmd`/`.bat`/`.exe` candidates resolveScript
 /// and the extension probe above also produce. Mirrors bin_exports.renderForwarder's
 /// `.ps1` handling for `[bin]` trampolines.
-fn wrapPs1(app: *App, resolved: [][]const u8) ![][]const u8 {
+pub fn wrapPs1(app: *App, resolved: [][]const u8) ![][]const u8 {
     if (resolved.len == 0 or !std.ascii.eqlIgnoreCase(std.fs.path.extension(resolved[0]), ".ps1")) return resolved;
     const shell = proc.psShell(app.arena, app.io, app.env);
     var out = try app.arena.alloc([]const u8, resolved.len + 5);

@@ -6,14 +6,29 @@ const std = @import("std");
 const Io = std.Io;
 const eqlFold = @import("util.zig").eqlFoldAscii;
 
-pub const EnvKV = struct { key: []const u8, value: []const u8 };
+pub const Var = struct { key: []const u8, value: []const u8 };
 
 pub const ContextDef = struct {
     segment: []const u8 = "",
     scope: []const u8 = "",
     param: []const u8 = "",
     source_template: []const u8 = "",
-    env: std.ArrayList(EnvKV) = .empty,
+    /// Static `${}` defaults from the block's `[contexts.vars]` sub-table.
+    /// These are TEMPLATE variables, not environment variables: they feed
+    /// source-template and the `run` line, and never reach a child process.
+    /// Lowest precedence of all sources, so a same-named environment variable
+    /// overrides one without editing config.
+    vars: std.ArrayList(Var) = .empty,
+    /// `run` makes this a context SOURCE (context.zig): a command template
+    /// expanded with the pre-script vars, executed to produce more vars for
+    /// source-template and the child environment. Empty for a static context.
+    run: []const u8 = "",
+    /// `cache` is the TTL for this source's result ("10m", "1h", "0" to
+    /// disable). Empty means the default (context.default_ttl_secs).
+    cache: []const u8 = "",
+    /// origin is the file this block was read from — carried so the trust
+    /// ledger can hash the exact declaration that asked to run something.
+    origin: []const u8 = "",
 };
 
 pub const ParsedSegment = struct {
@@ -69,39 +84,47 @@ pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8
 // ---- [[contexts]] parser ----------------------------------------------------
 
 /// loadSegmentsFile parses the [[contexts]] array-of-tables. Missing file →
-/// empty. Handles `[contexts.env]` sub-tables for the env map.
+/// empty. Handles `[contexts.vars]` sub-tables for the static variable map.
 pub fn loadSegmentsFile(arena: std.mem.Allocator, io: Io, path: []const u8) ![]ContextDef {
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |e| switch (e) {
         error.FileNotFound => return &.{},
         else => return e,
     };
+    return parseInto(arena, data, path);
+}
+
+/// parseInto is loadSegmentsFile's pure half: `origin` is stamped on every
+/// block so the trust ledger can hash the exact file that asked to run
+/// something. Split out so the array-of-tables and sub-table scoping rules are
+/// testable without touching the filesystem.
+pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) ![]ContextDef {
     var contexts: std.ArrayList(ContextDef) = .empty;
     var cur: ?usize = null;
-    var in_env = false;
+    var in_vars = false;
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |l0| {
         const line = std.mem.trim(u8, l0, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (std.mem.eql(u8, line, "[[contexts]]")) {
-            try contexts.append(arena, .{});
+            try contexts.append(arena, .{ .origin = path });
             cur = contexts.items.len - 1;
-            in_env = false;
+            in_vars = false;
             continue;
         }
-        if (std.mem.eql(u8, line, "[contexts.env]")) {
-            in_env = true;
+        if (std.mem.eql(u8, line, "[contexts.vars]")) {
+            in_vars = true;
             continue;
         }
         if (line[0] == '[') {
-            in_env = false;
+            in_vars = false;
             continue;
         }
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const val = parseTomlString(arena, std.mem.trim(u8, line[eq + 1 ..], " \t")) orelse continue;
         const idx = cur orelse continue;
-        if (in_env) {
-            try contexts.items[idx].env.append(arena, .{ .key = try arena.dupe(u8, key), .value = val });
+        if (in_vars) {
+            try contexts.items[idx].vars.append(arena, .{ .key = try arena.dupe(u8, key), .value = val });
         } else if (std.mem.eql(u8, key, "segment")) {
             contexts.items[idx].segment = val;
         } else if (std.mem.eql(u8, key, "scope")) {
@@ -110,6 +133,10 @@ pub fn loadSegmentsFile(arena: std.mem.Allocator, io: Io, path: []const u8) ![]C
             contexts.items[idx].param = val;
         } else if (std.mem.eql(u8, key, "source-template")) {
             contexts.items[idx].source_template = val;
+        } else if (std.mem.eql(u8, key, "run")) {
+            contexts.items[idx].run = val;
+        } else if (std.mem.eql(u8, key, "cache")) {
+            contexts.items[idx].cache = val;
         }
     }
     return contexts.items;
@@ -251,7 +278,7 @@ test "parseSegmentedAlias: inline value, empty value, and whitespace" {
     try std.testing.expectEqualStrings("docs", spaced.segs[0].name);
 }
 
-fn testLookup(map: []const EnvKV, name: []const u8) ?[]const u8 {
+fn testLookup(map: []const Var, name: []const u8) ?[]const u8 {
     for (map) |kv| if (std.mem.eql(u8, kv.key, name)) return kv.value;
     return null;
 }
@@ -260,8 +287,8 @@ test "expandTemplate: passthrough, substitution, and errors" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const vars_arr = [_]EnvKV{ .{ .key = "tasks", .value = "432" }, .{ .key = "x", .value = "Y" } };
-    const vars: []const EnvKV = &vars_arr;
+    const vars_arr = [_]Var{ .{ .key = "tasks", .value = "432" }, .{ .key = "x", .value = "Y" } };
+    const vars: []const Var = &vars_arr;
 
     // No ${} → returned verbatim.
     try std.testing.expectEqualStrings("/documentation", try expandTemplate(a, "/documentation", vars, testLookup));
@@ -293,6 +320,34 @@ test "guardFragment: rejects traversal and absolute escapes" {
     try std.testing.expect(!guardFragment("~"));
     try std.testing.expect(!guardFragment("C:\\windows")); // drive-absolute
     try std.testing.expect(!guardFragment("a\x00b")); // embedded NUL
+}
+
+test "parse: [contexts.vars] binds to the PRECEDING block, run/cache read" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const data =
+        \\[[contexts]]
+        \\segment = "a"
+        \\run = "lookup ${a}"
+        \\cache = "1h"
+        \\
+        \\[contexts.vars]
+        \\region = "eu-west"
+        \\
+        \\[[contexts]]
+        \\segment = "b"
+        \\
+    ;
+    const ctxs = try parseInto(a, data, "F");
+    try std.testing.expectEqual(@as(usize, 2), ctxs.len);
+    try std.testing.expectEqualStrings("lookup ${a}", ctxs[0].run);
+    try std.testing.expectEqualStrings("1h", ctxs[0].cache);
+    try std.testing.expectEqualStrings("F", ctxs[0].origin); // for the trust hash
+    // The vars table attaches to "a"; "b", declared after it, gets none.
+    try std.testing.expectEqual(@as(usize, 1), ctxs[0].vars.items.len);
+    try std.testing.expectEqualStrings("eu-west", ctxs[0].vars.items[0].value);
+    try std.testing.expectEqual(@as(usize, 0), ctxs[1].vars.items.len);
 }
 
 test "lookupContext / lookupGlobalContext: fold match and global scope gate" {

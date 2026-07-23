@@ -222,6 +222,32 @@ fn captureOutputImpl(arena: std.mem.Allocator, io: Io, argv: []const []const u8,
     return out;
 }
 
+/// runCaptured spawns argv in cwd with an explicit env and returns its stdout
+/// plus exit code, with stdin ignored. For context sources (context.zig): the
+/// script's stdout is CAPTURED rather than inherited so it can be relayed to
+/// stderr by the caller — nix's own stdout carries the resolved path that shell
+/// wrappers read, and a chatty script must never land in the middle of it.
+/// stdin is ignored so a script that tries to prompt gets EOF instead of
+/// hanging a navigation.
+pub fn runCaptured(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8, env: ?*const std.process.Environ.Map) !FilterResult {
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .inherit,
+        .environ_map = env,
+    });
+    var buf: [4096]u8 = undefined;
+    var r = child.stdout.?.reader(io, &buf);
+    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
+    const term = try child.wait(io);
+    return .{ .output = out, .code = switch (term) {
+        .exited => |c| c,
+        else => 1,
+    } };
+}
+
 /// LineSink is forEachLine's consumer: called once per stdout line (newline
 /// stripped, trailing CR trimmed). The slice is only valid during the call —
 /// dupe anything kept.
