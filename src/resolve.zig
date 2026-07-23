@@ -8,6 +8,8 @@ const app_zig = @import("app.zig");
 const store = @import("store.zig");
 const usage = @import("usage.zig");
 const segments = @import("segments.zig");
+const context = @import("context.zig");
+const run_zig = @import("run.zig");
 const groups = @import("groups.zig");
 const picker = @import("picker.zig");
 const util = @import("util.zig");
@@ -96,27 +98,61 @@ pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     return try addAlias(app, name, pick);
 }
 
-/// SegLookup is the variable-resolution context for a source-template:
-/// inline value (bound to the segment's param), then the context's env map,
-/// then the process environment.
+/// SegLookup is the variable-resolution context for a source-template, highest
+/// priority first: the inline value (bound to the segment's param), variables a
+/// `run` source produced, the process environment, then the block's static
+/// [contexts.vars] as the last-resort default.
 const SegLookup = struct {
     app: *App,
     cd: *const segments.ContextDef,
     ps: segments.ParsedSegment,
     param: []const u8,
+    /// Variables a `run` source returned. Highest precedence after the inline
+    /// value: the script was asked the question, its answer wins over a static
+    /// default in [contexts.vars] and over an unrelated same-named env var.
+    produced: []const segments.Var = &.{},
     fn get(self: SegLookup, name: []const u8) ?[]const u8 {
         if (self.ps.has_value and std.mem.eql(u8, name, self.param)) return self.ps.value;
-        for (self.cd.env.items) |kv| if (std.mem.eql(u8, kv.key, name)) return kv.value;
-        return self.app.env.get(name);
+        for (self.produced) |kv| if (std.mem.eql(u8, kv.key, name)) return kv.value;
+        // The environment outranks [contexts.vars] so a value can be overridden
+        // per shell without editing config. The cost is real and deliberate: a
+        // variable left over in your environment silently changes where you
+        // land, and common names (TEMP, USER, PATH) are already taken. Keep
+        // [contexts.vars] names specific for that reason.
+        if (self.app.env.get(name)) |v| return v;
+        for (self.cd.vars.items) |kv| if (std.mem.eql(u8, kv.key, name)) return kv.value;
+        return null;
     }
 };
 
-fn evalSegment(app: *App, cd: *const segments.ContextDef, ps: segments.ParsedSegment) ![]const u8 {
+/// evalSegment turns one segment into its path fragment. With a `run` line the
+/// source executes first (context.zig: trust-gated, cached) and its variables
+/// join the lookup for source-template AND accumulate on app.ctx_vars, which
+/// aliasRunEnv exports into whatever `o`/`r` starts next.
+///
+/// Ordering note: the source runs BEFORE the template expands but AFTER the
+/// inline value is known, which is what lets `run = "set_vars ${task}"` receive
+/// the 123 in `task:123@project`.
+fn evalSegment(app: *App, cd: *const segments.ContextDef, ps: segments.ParsedSegment, alias: []const u8, dir: []const u8) ![]const u8 {
     const param = if (cd.param.len > 0) cd.param else cd.segment;
-    if (cd.source_template.len > 0) {
-        const lk: SegLookup = .{ .app = app, .cd = cd, .ps = ps, .param = param };
-        return segments.expandTemplate(app.arena, cd.source_template, lk, SegLookup.get);
+    var lk: SegLookup = .{ .app = app, .cd = cd, .ps = ps, .param = param };
+
+    if (cd.run.len > 0) {
+        // Pre-script vars, split by precedence: the inline value outranks the
+        // environment, [contexts.vars] falls below it. Deliberately excludes
+        // another segment's output — composition is issue #3, not v1.
+        var high: std.ArrayList(segments.Var) = .empty;
+        if (ps.has_value) try high.append(app.arena, .{ .key = param, .value = ps.value });
+        const produced = (try context.run(app, cd, alias, dir, ps, high.items, cd.vars.items, run_zig)) orelse
+            return error.ContextSourceFailed;
+        lk.produced = produced;
+        var merged: std.ArrayList(segments.Var) = .empty;
+        try merged.appendSlice(app.arena, app.ctx_vars);
+        try merged.appendSlice(app.arena, produced);
+        app.ctx_vars = merged.items;
     }
+
+    if (cd.source_template.len > 0) return segments.expandTemplate(app.arena, cd.source_template, lk, SegLookup.get);
     if (ps.has_value) return error.InlineValueNoTemplate;
     return "";
 }
@@ -153,6 +189,9 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
 
     var target: std.ArrayList(u8) = .empty;
     try target.appendSlice(app.arena, std.mem.trimEnd(u8, base.?, "/"));
+    // Host-separator form of the alias root: the cwd a context source runs in,
+    // and the root its `.nix/scripts` lookup starts from.
+    const run_dir = try store.fromSlash(app.arena, std.mem.trimEnd(u8, base.?, "/"));
 
     var i = parsed.segs.len;
     while (i > 0) {
@@ -181,8 +220,13 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
                 return null;
             }
         }
-        const fragment = evalSegment(app, cd.?, ps) catch |e| {
-            try app.err.print("nix: segment \"{s}\": {s}\n", .{ ps.name, @errorName(e) });
+        const fragment = evalSegment(app, cd.?, ps, parsed.alias, run_dir) catch |e| {
+            // A failed context source has already explained itself in detail
+            // (untrusted, missing script, non-zero exit); don't bury that under
+            // a second generic line.
+            if (e != error.ContextSourceFailed) {
+                try app.err.print("nix: segment \"{s}\": {s}\n", .{ ps.name, @errorName(e) });
+            }
             return null;
         };
         if (fragment.len == 0) continue;
@@ -226,7 +270,7 @@ pub fn cmdContexts(app: *App) !u8 {
     var rows: std.ArrayList(Row) = .empty;
     for (contexts) |cd| {
         var keys: std.ArrayList([]const u8) = .empty;
-        for (cd.env.items) |kv| try keys.append(app.arena, kv.key);
+        for (cd.vars.items) |kv| try keys.append(app.arena, kv.key);
         std.mem.sort([]const u8, keys.items, {}, struct {
             fn lt(_: void, a: []const u8, b: []const u8) bool {
                 return std.mem.lessThan(u8, a, b);
@@ -241,20 +285,26 @@ pub fn cmdContexts(app: *App) !u8 {
             }
             env_str = jb.items;
         }
-        const src = if (cd.source_template.len > 0)
+        // A `run` context is worth seeing at a glance — it is the one kind that
+        // executes something, so show its command line ahead of the template.
+        const src = if (cd.run.len > 0 and cd.source_template.len > 0)
+            try std.fmt.allocPrint(app.arena, "run={s}  template={s}", .{ cd.run, cd.source_template })
+        else if (cd.run.len > 0)
+            try std.fmt.allocPrint(app.arena, "run={s}", .{cd.run})
+        else if (cd.source_template.len > 0)
             try std.fmt.allocPrint(app.arena, "template={s}", .{cd.source_template})
         else
             "-";
         try rows.append(app.arena, .{ .seg = cd.segment, .env = env_str, .src = src });
     }
     var w1: usize = "SEGMENT".len;
-    var w2: usize = "ENV".len;
+    var w2: usize = "VARS".len;
     for (rows.items) |r| {
         w1 = @max(w1, r.seg.len);
         w2 = @max(w2, r.env.len);
     }
     try padPrint(app.out, "SEGMENT", w1 + 2);
-    try padPrint(app.out, "ENV", w2 + 2);
+    try padPrint(app.out, "VARS", w2 + 2);
     try app.out.writeAll("SOURCE\n");
     for (rows.items) |r| {
         try padPrint(app.out, r.seg, w1 + 2);

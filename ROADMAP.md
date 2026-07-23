@@ -18,9 +18,12 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   (e.g. `groups.toml`), never by adding shapes the simple readers can't handle.
   nix homes at `~/.nix` (the transitional `~/.onix` migration and
   `ONIX_HOME`/`ONIX_SHELL` fallbacks were removed after v0.9.0).
-- **Read-only queries stay read-only.** `--resolve` (alias and group forms)
+- **Read-only queries never write.** `--resolve` (alias and group forms)
   prints paths without creating directories; only navigation and actions
-  materialize missing dirs.
+  materialize missing dirs. A context source's `run` is the deliberate
+  exception to "does nothing": executing it is how the path is *computed*, so
+  `--resolve` runs it on a cache miss like every other form. It still writes
+  nothing but the result cache.
 - **nix never rewrites files it doesn't own.** `--init` never touches shell
   profiles — on Windows the wrappers on PATH are the whole integration (the
   retired `nix.ps1` snippet is deleted by `--sync`), and on POSIX the rc line
@@ -186,8 +189,63 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   `doctor.zig` doesn't walk per-alias `.nix/actions.toml` files today, so
   this is new surface, not a small addition.
 
+### Context sources (`run` in `[[contexts]]`)
+
+- **One `[[contexts]]` key, no discriminator.** `run = "set_vars ${task}"` is
+  self-describing; a `source = "script"` alongside it would be a key with one
+  legal value. A second source kind can add the discriminator later — the
+  segments reader is lenient, so new keys are additive.
+- **The script returns through `$NIX_CONTEXT_OUT`, never stdout.** A `.cmd`
+  without `@echo off`, or any tool it invokes printing a banner, would
+  otherwise inject variables — and these variables become a directory that
+  gets built in. stdout is relayed to stderr instead, which also keeps the
+  resolved path on nix's own stdout clean for shell wrappers. (GitHub Actions
+  made this same migration away from `::set-env`.) A leading UTF-8 BOM is
+  stripped, because Windows PowerShell 5.1's `Out-File -Encoding utf8`
+  writes one.
+- **Two variable phases, one precedence order.** The `run` line sees the inline
+  value, the environment, and `[contexts.vars]`; `source-template` additionally
+  sees what the script produced. This is what lets `run = "set_vars ${task}"`
+  receive the `123` in `task:123@project`. Both phases resolve names the same
+  way (`resolve.SegLookup` and `context.expandArgv` are kept in step
+  deliberately) — a name meaning one thing in the command and another in the
+  path it produces would be a vicious bug. Tokens split before `${}` expands
+  (as in `nav.buildTerminalArgv`), so a value with spaces stays one argument
+  and cannot inject extra ones.
+- **`[contexts.vars]` ranks BELOW the environment**, so a default can be
+  overridden per shell (`region=us-east o thing@proj`) without editing config.
+  The accepted cost is that a leftover environment variable silently changes
+  where you land; the guidance is to keep var names specific and avoid ones the
+  OS already defines.
+- **`run` is a bare script name**, resolved through `run.resolveScript`
+  (project `.nix/scripts`, then central) so a context script is just a project
+  script, with `.ps1` wrapping inherited for free.
+- **Cache key = `sha(expanded argv) + sha(script)`.** Every input that mattered
+  is in the expanded argv by construction — no dependency declarations, and it
+  self-maintains when the run line changes. Deliberately NOT keyed on the
+  alias, so the same lookup from two projects is one answer; that also keeps
+  the key correct when named producers land (issue #3). Per-context `cache`
+  TTL, default 10m, `"0"` disables. A cache that cannot be written is not
+  fatal.
+- **Trust is content, not filename.** A `.nix/segments.toml` arrives with a
+  `git clone`, so a context declared outside `~/.nix` may not execute until
+  `nix --trust <alias> [segment]` records `sha(declaration) + sha(script)`.
+  Hashing BOTH closes the hole where a pull rewrites only the script and the
+  approved filename still points at it. Implicit trust only when declaration
+  AND script both live under `~/.nix` — a central declaration pointing at a
+  cloned script is still cloned code. Refusal prints what to review and exits;
+  it never prompts inline, since resolution happens inside fzf pickers and
+  agent `--resolve` calls.
+- **Only produced variables export to the child**, not `[contexts.vars]` —
+  those stay template inputs, as they were before this feature.
+- **Deferred to issue #3:** all composition (named `[[producers]]` reusable
+  across aliases, var accumulation along a segment chain). v1 is one script per
+  segment, no sharing.
+
 ---
 
 ## Backlog
 
-Nothing queued right now.
+- **Composable contexts / named producers** — GitHub issue #3. Splits the
+  reusable "produce facts" half of a `[[contexts]]` block from the
+  project-local "shape a path" half, so one lookup serves many repos.

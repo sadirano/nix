@@ -1,0 +1,41 @@
+# Sample <project>/.nix/segments.toml for a context source.
+#
+# Pairs with set_vars.cmd / set_vars.ps1 in this directory, which belong in
+# <project>/.nix/scripts/.
+#
+# `o task:123@project` will:
+#   1. bind ${task} = "123"          (the inline value, from the segment name)
+#   2. run `set_vars 123`            (in the project dir, .nix/scripts first)
+#   3. read client_name=acme         (from the file at $NIX_CONTEXT_OUT)
+#   4. cd <project>/acme/123
+#   5. export task and client_name into the shell it opens
+#
+# Because this file lives in the project (and so arrives with a git clone), the
+# first run refuses and prints what to review. Approve with:
+#
+#   nix --trust project task
+#
+# The approval covers the exact bytes of BOTH this file and the script, so a
+# later pull that changes either one asks again.
+
+[[contexts]]
+segment = "task"
+
+# A command template. Tokens are split before ${} expands, so a value
+# containing spaces stays a single argument. Only pre-script variables are
+# available here: the inline value, the environment, and [contexts.vars]
+# below. ${client_name} would be an error - it does not exist yet.
+run = "set_vars ${task}"
+
+# Expanded after the script returns, so it may use what the script produced.
+source-template = "/${client_name}/${task}"
+
+# How long a result stays good. "30s" / "10m" / "2h" / "1d", a bare number of
+# seconds, or "0" to run every time. Omit for the default of 10m.
+# A ticket's client rarely changes, so an hour is comfortable here.
+cache = "1h"
+
+# Optional static defaults. Visible to both the run line and the template;
+# anything the script returns with the same name wins.
+[contexts.vars]
+tracker = "https://tracker.example.com"
