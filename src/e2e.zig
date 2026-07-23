@@ -471,6 +471,49 @@ pub fn main(init: std.process.Init) !void {
         c.check(!proc.pathExists(io, expected), "segmented --resolve does not create the directory", r);
     }
 
+    // --- context sources (run + trust + cache) ------------------------------------
+    // Declared project-locally, so it must refuse until approved. The script
+    // writes to $NIX_CONTEXT_OUT and prints to stdout, proving the noise on
+    // stdout never becomes a variable.
+    {
+        const scripts = join(&c, &.{ pa, ".nix", "scripts" });
+        util.mkdirAll(io, scripts) catch {};
+        try writeFile(&c, join(&c, &.{ scripts, "lookup.cmd" }),
+            \\@echo off
+            \\echo client_name=NOT_THIS
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=acme
+            \\
+        );
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "segments.toml" }),
+            \\[[contexts]]
+            \\segment = "task"
+            \\run = "lookup ${task}"
+            \\source-template = "/${client_name}/${task}"
+            \\
+        );
+        var r = try c.run(&.{ "task:123@pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null, "an unapproved context source refuses and says how to approve", r);
+
+        r = try c.run(&.{ "--trust", "pa", "task" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "approved") != null, "--trust approves the context source", r);
+
+        const expected = join(&c, &.{ pa, "acme", "123" });
+        r = try c.run(&.{ "task:123@pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), expected), "a context source's variable feeds source-template", r);
+        // The script echoed client_name=NOT_THIS on stdout; only the
+        // $NIX_CONTEXT_OUT value may reach the path.
+        c.check(std.mem.indexOf(u8, r.out, "NOT_THIS") == null, "script stdout never becomes a variable", r);
+
+        // Editing the script must invalidate the approval, not just the cache.
+        try writeFile(&c, join(&c, &.{ scripts, "lookup.cmd" }),
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=other
+            \\
+        );
+        r = try c.run(&.{ "task:123@pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null, "editing the script re-arms the trust gate", r);
+    }
+
     // --- read-only --resolve ------------------------------------------------------
     {
         const pc = join(&c, &.{ root, "proj", "pc" });

@@ -6,6 +6,7 @@
 const std = @import("std");
 const Io = std.Io;
 const proc = @import("proc.zig");
+const segments = @import("segments.zig");
 
 pub const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -33,6 +34,15 @@ pub const App = struct {
     /// (the run/navigate paths only) so the resolve hot path does zero extra work.
     /// aliasRunEnv rebuilds from this each call, so scripts dirs never accumulate.
     orig_path: ?[]const u8 = null,
+    /// Variables a context source returned during segment resolution, exported
+    /// into the child environment by aliasRunEnv. Set by resolve.evalSegment;
+    /// empty for every non-segmented target, so nothing pays for this feature
+    /// unless a `run` context was actually used.
+    ctx_vars: []const segments.Var = &.{},
+    /// Names aliasRunEnv injected from ctx_vars last call, removed before the
+    /// next injection so a group fan-out never leaks one member's context into
+    /// the next (the same discipline PATH gets via orig_path).
+    ctx_injected: []const []const u8 = &.{},
 };
 
 /// exePath returns the real on-disk image path, computed lazily and cached. The

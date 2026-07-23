@@ -30,6 +30,7 @@ const cmd_groups = @import("cmd_groups.zig");
 const paste = @import("paste.zig");
 const bin_exports = @import("bin_exports.zig");
 const secret = @import("secret.zig");
+const context = @import("context.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
@@ -184,6 +185,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "export")) return init_zig.cmdExport(app, rest);
     if (eql(verb, "import")) return init_zig.cmdImport(app, rest);
     if (eql(verb, "secret")) return secret.cmdSecret(app, rest);
+    if (eql(verb, "trust")) return context.cmdTrust(app, rest, resolve, run_zig);
     if (eql(verb, "init")) {
         for (rest) |a| {
             try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
@@ -839,7 +841,7 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
         .{ .k = "--preview", .v = "preview" },           .{ .k = "--version", .v = "version" },
         .{ .k = "--export", .v = "export" },             .{ .k = "--import", .v = "import" },
         .{ .k = "--rga-preview", .v = "rga-preview" },   .{ .k = "-v", .v = "version" },
-        .{ .k = "--secret", .v = "secret" },
+        .{ .k = "--secret", .v = "secret" },             .{ .k = "--trust", .v = "trust" },
     };
     for (map) |m| if (eql(flag, m.k)) return m.v;
     return null;
@@ -923,6 +925,7 @@ fn printUsage(app: *App) !void {
         \\  --sync,    -S        regenerate wrappers and generated files
         \\  --sync-bin           install projects' [bin] exports into ~/.nix/bin
         \\  --secret  set|rm|list [NAME]   manage ${secret:NAME} values for actions (Windows Credential Manager)
+        \\  --trust   <alias> [segment]    approve a context source's current bytes so its `run` may execute
         \\  --export  [file]     write a portable backup (aliases/groups/config/actions; stdout if no file)
         \\  --import  <file>     merge a backup (skips existing; --replace for a full restore)
         \\  --version, -v        print version and platform
@@ -1131,6 +1134,7 @@ test "flag maps: systemVerb, aliasAction, actionFlag" {
     try std.testing.expectEqualStrings("groups", systemVerb("--groups").?);
     try std.testing.expectEqualStrings("groups", systemVerb("-G").?);
     try std.testing.expectEqualStrings("secret", systemVerb("--secret").?);
+    try std.testing.expectEqualStrings("trust", systemVerb("--trust").?);
 }
 
 test "setGlobalFlags: stops at the first action flag and at --" {
