@@ -1,4 +1,4 @@
-//! `${secret:NAME}` placeholders in actions (ROADMAP backlog, proposal at
+//! `${secret:NAME}` placeholders in actions (proposal at
 //! an internal proposal note): credentials for per-alias
 //! actions live in the Windows Credential Manager instead of plaintext in
 //! actions.toml. `nix --secret set|rm|list` manages them; runShellString

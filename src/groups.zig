@@ -3,7 +3,7 @@
 //! no section headers). Members are alias names; a `+name` member references
 //! another group, expanded recursively (with cycle detection, a depth guard, and
 //! dedupe). aliases.toml stays byte-for-byte onix-compatible — groups live in
-//! their own file. See ROADMAP.md §1.
+//! their own file.
 
 const std = @import("std");
 const Io = std.Io;
