@@ -60,19 +60,60 @@ pub const Plan = struct {
     unreachable_aliases: []const []const u8,
 };
 
+/// Installed is one recorded export in the manifest: the file nix wrote into
+/// ~/.nix/bin, the alias that owns it, and the hash of the exact bytes the user
+/// consented to. The hash is empty only for a manifest written by an older nix
+/// (pre-fingerprint) - adopted silently on the next sync when the on-disk file
+/// still matches the source, so upgrading never forces a round of re-review.
+pub const Installed = struct {
+    file: []const u8,
+    alias: []const u8,
+    hash: []const u8,
+};
+
 pub fn manifestPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ home, "exports.toml" });
 }
 
-/// loadManifest reads the installed-exports record: `<filename> = "<alias>"`
-/// pairs (Action.name = filename, Action.command = alias). Absent file = empty.
-pub fn loadManifest(arena: std.mem.Allocator, io: Io, home: []const u8) ![]actions.Action {
+/// hashHex fingerprints the exact installed bytes (a truncated SHA-256 - 128
+/// bits, ample for detecting an accidental or hand edit; this is a provenance
+/// check, not an authentication boundary). The fingerprint is what makes both
+/// "is this a new version I haven't allowed?" and "was this file edited in
+/// place?" answerable from the manifest alone.
+pub fn hashHex(arena: std.mem.Allocator, data: []const u8) ![]const u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest[0..16].*, .lower);
+    return arena.dupe(u8, &hex);
+}
+
+/// loadManifest reads the installed-exports record: `<filename> = "<alias> <hash>"`
+/// (the trailing hash is absent in manifests written before fingerprinting).
+/// Absent file = empty.
+pub fn loadManifest(arena: std.mem.Allocator, io: Io, home: []const u8) ![]Installed {
     const p = try manifestPath(arena, home);
     const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
         error.FileNotFound => return &.{},
         else => return e,
     };
-    return actions.parseTable(arena, data, "exports");
+    const raw = try actions.parseTable(arena, data, "exports");
+    var out: std.ArrayList(Installed) = .empty;
+    for (raw) |a| {
+        // Value is "<alias>" or "<alias> <hash>". Alias names are space-free
+        // (store.validateAliasName), so the first token is always the alias.
+        var it = std.mem.tokenizeScalar(u8, a.command, ' ');
+        const alias = it.next() orelse continue;
+        const hash = it.next() orelse "";
+        try out.append(arena, .{ .file = a.name, .alias = alias, .hash = hash });
+    }
+    return out.items;
+}
+
+/// findInstalled looks up a manifest entry by installed filename (case-folded,
+/// like the wrappers).
+fn findInstalled(list: []const Installed, file: []const u8) ?Installed {
+    for (list) |m| if (store.eqlFoldAscii(m.file, file)) return m;
+    return null;
 }
 
 /// kindOf classifies a source path by extension, or null for types nix can't
@@ -290,15 +331,22 @@ pub fn cmdSyncBin(app: *App) !u8 {
 }
 
 /// syncBin makes ~/.nix/bin match the plan: install/refresh declared exports,
-/// delete manifest-owned files no longer declared, rewrite the manifest.
-/// `implicit` is the `--sync` mode: it only refreshes exports the manifest
-/// already owns — a NEW export must be installed by an explicit `--sync-bin`,
-/// so registering someone else's repo can never put commands on PATH as a side
-/// effect of routine syncing. It also stays silent when nothing is declared.
-/// Exit 1 on declaration problems — a collision must not pass silently just
-/// because the rest synced.
+/// heal exports edited in place, delete manifest-owned files no longer
+/// declared, apply the foreign-file policy, rewrite the manifest.
+///
+/// Consent is per-VERSION, recorded as a content fingerprint in the manifest.
+/// `implicit` is the `--sync` mode: it installs neither a NEW export nor a
+/// CHANGED version - both are listed for review and land only on an explicit
+/// `--sync-bin`, so a routine sync (or registering someone else's repo) can
+/// never put a command, or a command's new build, on PATH as a side effect.
+/// An export whose consented version is unchanged but whose file was edited in
+/// ~/.nix/bin is healed back in BOTH modes (nix owns that file; restoring it is
+/// not new consent) with a "don't edit exports by hand" warning. It stays
+/// silent when nothing is declared. Exit 1 on declaration problems - a
+/// collision must not pass silently just because the rest synced.
 pub fn syncBin(app: *App, implicit: bool) !u8 {
     const plan = try buildPlan(app);
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     const old = try loadManifest(app.arena, app.io, app.home);
     if (plan.exports.len == 0 and plan.problems.len == 0 and old.len == 0) {
         if (!implicit) try app.err.writeAll("no [bin] exports declared (add a [bin] table to a project's .nix/actions.toml)\n");
@@ -312,36 +360,94 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
 
     var current: usize = 0;
     var updated: usize = 0;
+    var restored: usize = 0;
     var locked: std.ArrayList([]const u8) = .empty;
-    var skipped_new: std.ArrayList([]const u8) = .empty;
-    var manifest: std.ArrayList(Export) = .empty;
+    var pending: std.ArrayList([]const u8) = .empty;
+    var manifest: std.ArrayList(Installed) = .empty;
     for (plan.exports) |ex| {
-        if (implicit and actions.find(old, ex.file) == null) {
-            try skipped_new.append(app.arena, try std.fmt.allocPrint(app.arena, "{s} ({s})", .{ ex.file, ex.alias }));
-            continue; // not consented yet: not installed, not manifest-owned
-        }
-        try manifest.append(app.arena, ex);
+        const dst = try std.fs.path.join(app.arena, &.{ bin, ex.file });
+        const prior = findInstalled(old, ex.file);
+
         if (!proc.pathExists(app.io, ex.source)) {
-            try app.err.print("nix: {s}: source missing - {s} (build it, then rerun `nix --sync-bin`)\n", .{ ex.file, ex.source });
-            continue; // still declared: stays in the manifest, doctor keeps flagging it
+            // Still declared: keep any prior manifest entry so doctor keeps
+            // flagging it; report only when the user asked (explicit sync-bin).
+            if (prior) |m| try manifest.append(app.arena, m);
+            if (!implicit) try app.err.print("nix: {s}: source missing - {s} (build it, then rerun `nix --sync-bin`)\n", .{ ex.file, ex.source });
+            continue;
         }
         const content = installContent(app, ex) orelse {
+            if (prior) |m| try manifest.append(app.arena, m);
             try app.err.print("nix: {s}: cannot read {s}\n", .{ ex.file, ex.source });
             continue;
         };
-        const dst = try std.fs.path.join(app.arena, &.{ bin, ex.file });
-        if (readFileMaybe(app, dst)) |existing| {
-            if (std.mem.eql(u8, existing, content)) {
+        const want_hash = try hashHex(app.arena, content);
+        const on_disk = readFileMaybe(app, dst);
+
+        // Is this exact version already consented? A prior entry with no
+        // recorded hash (older nix) that still matches on disk is adopted as
+        // consented, so upgrading nix never forces a re-review.
+        var consented = false;
+        if (prior) |m| {
+            if (m.hash.len > 0 and std.mem.eql(u8, m.hash, want_hash)) consented = true;
+            if (m.hash.len == 0) {
+                if (on_disk) |have| if (std.mem.eql(u8, have, content)) {
+                    consented = true;
+                };
+            }
+        }
+
+        if (!consented) {
+            // New name or new version: needs explicit consent. Implicit --sync
+            // installs nothing new - it lists it and leaves any prior version
+            // (and its manifest entry) untouched.
+            if (implicit) {
+                if (prior) |m| try manifest.append(app.arena, m);
+                const what = if (prior == null) "new" else "changed";
+                try pending.append(app.arena, try std.fmt.allocPrint(app.arena, "{s} ({s}, {s})", .{ ex.file, ex.alias, what }));
+                continue;
+            }
+            // Explicit --sync-bin: this call IS the consent.
+        }
+
+        // From here we intend on-disk == content, recorded at want_hash.
+        if (on_disk) |have| {
+            if (std.mem.eql(u8, have, content)) {
+                try manifest.append(app.arena, .{ .file = ex.file, .alias = ex.alias, .hash = want_hash });
                 current += 1;
                 continue;
             }
+            // On-disk differs. If the consented version is unchanged, the file
+            // itself was edited in place (tampered) - heal it and warn.
+            const tampered = consented;
+            writeReplaceAtomic(app, dst, content) catch {
+                try locked.append(app.arena, ex.file);
+                if (prior) |m| try manifest.append(app.arena, m); // keep truthful prior state
+                continue;
+            };
+            try manifest.append(app.arena, .{ .file = ex.file, .alias = ex.alias, .hash = want_hash });
+            if (tampered) {
+                restored += 1;
+                try app.err.print("  restored {s} - it was edited in {s}; do not change exports by hand, edit {s}'s source and run `nix --sync-bin`\n", .{ ex.file, bin, ex.alias });
+            } else {
+                updated += 1;
+                try app.err.print("  {s}  <- {s} ({s})\n", .{ ex.file, ex.alias, @tagName(ex.kind) });
+            }
+            if (shadowed(app, probe_env, ex.name)) |other| {
+                try app.err.print("  warning: \"{s}\" also resolves to {s} - PATH order decides which answers\n", .{ ex.name, other });
+            }
+            continue;
         }
+
+        // Not on disk yet: fresh install (explicit consent, or restoring a
+        // consented export someone deleted).
         writeReplaceAtomic(app, dst, content) catch {
             try locked.append(app.arena, ex.file);
+            if (prior) |m| try manifest.append(app.arena, m);
             continue;
         };
+        try manifest.append(app.arena, .{ .file = ex.file, .alias = ex.alias, .hash = want_hash });
         updated += 1;
-        try app.err.print("  {s}  ← {s} ({s})\n", .{ ex.file, ex.alias, @tagName(ex.kind) });
+        try app.err.print("  {s}  <- {s} ({s})\n", .{ ex.file, ex.alias, @tagName(ex.kind) });
         if (shadowed(app, probe_env, ex.name)) |other| {
             try app.err.print("  warning: \"{s}\" also resolves to {s} - PATH order decides which answers\n", .{ ex.name, other });
         }
@@ -354,28 +460,52 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
     // the next sync retries.
     var removed: usize = 0;
     for (old) |m| {
-        if (planFile(plan, m.name) != null) continue;
-        if (ownerUnreachable(plan, m.command)) {
-            try manifest.append(app.arena, .{ .name = m.name, .alias = m.command, .source = "", .file = m.name, .kind = .copy });
-            try app.err.print("  keeping {s} - {s}'s directory is unreachable (reconnect it, or remove the alias to drop the export)\n", .{ m.name, m.command });
+        if (planFile(plan, m.file) != null) continue;
+        if (ownerUnreachable(plan, m.alias)) {
+            try manifest.append(app.arena, m);
+            try app.err.print("  keeping {s} - {s}'s directory is unreachable (reconnect it, or remove the alias to drop the export)\n", .{ m.file, m.alias });
             continue;
         }
-        const p = try std.fs.path.join(app.arena, &.{ bin, m.name });
+        const p = try std.fs.path.join(app.arena, &.{ bin, m.file });
         if (proc.pathExists(app.io, p)) {
             Io.Dir.cwd().deleteFile(app.io, p) catch {
-                try locked.append(app.arena, m.name);
-                try manifest.append(app.arena, .{ .name = m.name, .alias = m.command, .source = "", .file = m.name, .kind = .copy });
+                try locked.append(app.arena, m.file);
+                try manifest.append(app.arena, m);
                 continue;
             };
             removed += 1;
-            try app.err.print("  removed {s} (was {s}'s; no longer declared)\n", .{ m.name, m.command });
+            try app.err.print("  removed {s} (was {s}'s; no longer declared)\n", .{ m.file, m.alias });
         }
     }
+
+    // Foreign files: anything in ~/.nix/bin nix never installed (not a wrapper,
+    // not manifest-owned). `.warn` reports; `.purge` deletes them so the
+    // directory stays nix-managed only. Never touches a manifest-owned or
+    // reserved name (that is the prune loop's and the wrappers' turf).
+    const foreign = try scanForeign(app, cfg, bin, manifest.items);
+    var purged: usize = 0;
+    if (foreign.len > 0) {
+        if (cfg.bin_foreign == .purge) {
+            for (foreign) |f| {
+                const p = try std.fs.path.join(app.arena, &.{ bin, f });
+                Io.Dir.cwd().deleteFile(app.io, p) catch {
+                    try locked.append(app.arena, f);
+                    continue;
+                };
+                purged += 1;
+                try app.err.print("  purged {s} - it was not installed by nix (foreign = \"purge\")\n", .{f});
+            }
+            try app.err.print("do not add files to {s} by hand; declare a project's [bin] and run `nix --sync-bin`\n", .{bin});
+        } else {
+            try app.err.print("warning: {s} holds files nix didn't install: {s}\n  remove them by hand, or set [bin] foreign = \"purge\" in config.toml; declare exports via a project's [bin]\n", .{ bin, try std.mem.join(app.arena, ", ", foreign) });
+        }
+    }
+
     try writeManifest(app, manifest.items);
 
-    try app.err.print("bin exports: {d} current ({d} updated), {d} removed  -> {s}\n", .{ current + updated, updated, removed, bin });
-    if (skipped_new.items.len > 0) {
-        try app.err.print("new [bin] exports not installed by --sync: {s}\n  review them, then run `nix --sync-bin` to install\n", .{try std.mem.join(app.arena, ", ", skipped_new.items)});
+    try app.err.print("bin exports: {d} current ({d} updated, {d} restored), {d} removed  -> {s}\n", .{ current + updated + restored, updated, restored, removed + purged, bin });
+    if (pending.items.len > 0) {
+        try app.err.print("not installed by --sync (needs your OK): {s}\n  review them, then run `nix --sync-bin` to allow\n", .{try std.mem.join(app.arena, ", ", pending.items)});
     }
     if (locked.items.len > 0) {
         try app.err.writeAll("warning: in use, not replaced:");
@@ -385,15 +515,44 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
     return if (plan.problems.len > 0) 1 else 0;
 }
 
+/// scanForeign lists files in ~/.nix/bin that neither a command wrapper nor the
+/// (post-sync) manifest owns - the provenance-free rot [bin] exists to prevent.
+/// Shared shape with doctor's undeclared scan; skips interrupted-write and
+/// parked-live-image sentinels.
+fn scanForeign(app: *App, cfg: config.Config, bin: []const u8, owned: []const Installed) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var dir = Io.Dir.cwd().openDir(app.io, bin, .{ .iterate = true }) catch return out.items;
+    defer dir.close(app.io);
+    var it = dir.iterate();
+    while (it.next(app.io) catch null) |ent| {
+        if (ent.kind == .directory) continue;
+        if (std.ascii.endsWithIgnoreCase(ent.name, ".tmp")) continue; // interrupted atomic write
+        if (std.ascii.endsWithIgnoreCase(ent.name, ".stale")) continue; // parked live wrapper image
+        const stem = if (std.mem.lastIndexOfScalar(u8, ent.name, '.')) |i| ent.name[0..i] else ent.name;
+        if (isReservedName(app.arena, cfg, stem)) continue;
+        var is_owned = false;
+        for (owned) |m| if (store.eqlFoldAscii(m.file, ent.name)) {
+            is_owned = true;
+        };
+        if (!is_owned) try out.append(app.arena, try app.arena.dupe(u8, ent.name));
+    }
+    return out.items;
+}
+
 /// writeManifest records what nix installed, keyed by installed filename so a
-/// later sync (or doctor) knows exactly which files it owns.
-fn writeManifest(app: *App, list: []const Export) !void {
+/// later sync (or doctor) knows exactly which files - and which version of each
+/// - it owns.
+fn writeManifest(app: *App, list: []const Installed) !void {
     var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(app.arena, "# nix bin exports - generated by `nix --sync-bin`; do not edit.\n# <installed file> = \"<owning alias>\"; drift is reported by `nix --doctor`.\n\n[exports]\n");
+    try b.appendSlice(app.arena, "# nix bin exports - generated by `nix --sync-bin`; do not edit.\n# <installed file> = \"<owning alias> <content hash>\"; drift is reported by `nix --doctor`.\n\n[exports]\n");
     for (list) |ex| {
         try b.appendSlice(app.arena, ex.file);
         try b.appendSlice(app.arena, " = ");
-        try store.appendTomlString(app.arena, &b, ex.alias);
+        const val = if (ex.hash.len > 0)
+            try std.fmt.allocPrint(app.arena, "{s} {s}", .{ ex.alias, ex.hash })
+        else
+            ex.alias;
+        try store.appendTomlString(app.arena, &b, val);
         try b.append(app.arena, '\n');
     }
     try util.writeFileAtomic(app.arena, app.io, try manifestPath(app.arena, app.home), b.items);
@@ -416,11 +575,13 @@ fn writeReplaceAtomic(app: *App, dst: []const u8, data: []const u8) !void {
 pub const Finding = struct { status: enum { ok, warn, note }, label: []const u8, detail: []const u8 };
 
 /// doctorFindings computes the drift report --doctor renders: declaration
-/// problems, declared-but-not-synced, gone alias / gone source / stale copy,
-/// and files in ~/.nix/bin that nothing declares. Read-only.
+/// problems, declared-but-not-allowed / changed versions awaiting consent,
+/// gone alias / gone source, files edited in place (tampered), and files in
+/// ~/.nix/bin that nothing declares. Read-only.
 pub fn doctorFindings(app: *App) ![]const Finding {
     var out: std.ArrayList(Finding) = .empty;
     const plan = try buildPlan(app);
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     const manifest = try loadManifest(app.arena, app.io, app.home);
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
 
@@ -435,23 +596,34 @@ pub fn doctorFindings(app: *App) ![]const Finding {
 
     const probe_env = envWithoutOwnBin(app);
     for (plan.exports) |ex| {
-        var in_manifest = false;
-        for (manifest) |m| if (store.eqlFoldAscii(m.name, ex.file)) {
-            in_manifest = true;
-        };
+        const prior = findInstalled(manifest, ex.file);
         const dst = try std.fs.path.join(app.arena, &.{ bin, ex.file });
-        if (!in_manifest and !proc.pathExists(app.io, dst)) {
+        if (prior == null and !proc.pathExists(app.io, dst)) {
             try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "declared by {s} but not installed - review it, then run `nix --sync-bin`", .{ex.alias}) });
         } else if (!proc.pathExists(app.io, ex.source)) {
             try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "source missing: {s} (build {s}, then `nix --sync-bin`)", .{ ex.source, ex.alias }) });
         } else blk: {
             const want = installContent(app, ex);
             const have = readFileMaybe(app, dst);
-            if (want == null or have == null or !std.mem.eql(u8, want.?, have.?)) {
-                try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "stale - {s}'s source changed since the last sync; run `nix --sync-bin`", .{ex.alias}) });
+            const want_hash = if (want) |w| hashHex(app.arena, w) catch "" else "";
+            const consented = if (prior) |m| m.hash else "";
+            // Consented version changed at the source: a new version the user
+            // hasn't allowed. Not installed by --sync; needs an explicit OK.
+            if (consented.len > 0 and want_hash.len > 0 and !std.mem.eql(u8, consented, want_hash)) {
+                try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "new version from {s} not yet allowed - review it, then run `nix --sync-bin`", .{ex.alias}) });
                 break :blk;
             }
-            try out.append(app.arena, .{ .status = .ok, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "← {s} ({s}, current)", .{ ex.alias, @tagName(ex.kind) }) });
+            if (want == null or have == null or !std.mem.eql(u8, want.?, have.?)) {
+                // Consented version unchanged but the file differs on disk: it
+                // was edited in place. Heals on the next `nix --sync`.
+                if (consented.len > 0 and want_hash.len > 0 and std.mem.eql(u8, consented, want_hash)) {
+                    try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "edited in {s} by hand - run `nix --sync` to restore {s}'s version (do not edit exports directly)", .{ bin, ex.alias }) });
+                    break :blk;
+                }
+                try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "out of date with {s}'s source - run `nix --sync-bin`", .{ex.alias}) });
+                break :blk;
+            }
+            try out.append(app.arena, .{ .status = .ok, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "<- {s} ({s}, current)", .{ ex.alias, @tagName(ex.kind) }) });
         }
         // Shadowing is a note, not a warn: overriding a scoop-installed tool
         // with your own build is legitimate — but it should never be a surprise.
@@ -464,42 +636,29 @@ pub fn doctorFindings(app: *App) ![]const Finding {
     // line is, or its directory is unreachable — only the first two are prune
     // material; unknown is not undeclared.
     for (manifest) |m| {
-        if (planFile(plan, m.name) != null) continue;
-        if (ownerUnreachable(plan, m.command)) {
-            try out.append(app.arena, .{ .status = .warn, .label = m.name, .detail = try std.fmt.allocPrint(app.arena, "{s}'s directory is unreachable - export kept (reconnect it, or remove the alias)", .{m.command}) });
+        if (planFile(plan, m.file) != null) continue;
+        if (ownerUnreachable(plan, m.alias)) {
+            try out.append(app.arena, .{ .status = .warn, .label = m.file, .detail = try std.fmt.allocPrint(app.arena, "{s}'s directory is unreachable - export kept (reconnect it, or remove the alias)", .{m.alias}) });
             continue;
         }
         var alias_exists = false;
-        for (plan.aliases) |a| if (store.eqlFoldAscii(a.name, m.command)) {
+        for (plan.aliases) |a| if (store.eqlFoldAscii(a.name, m.alias)) {
             alias_exists = true;
         };
         const why = if (alias_exists) "no longer declared by" else "declared by removed alias";
-        try out.append(app.arena, .{ .status = .warn, .label = m.name, .detail = try std.fmt.allocPrint(app.arena, "{s} \"{s}\" - run `nix --sync-bin` to remove it", .{ why, m.command }) });
+        try out.append(app.arena, .{ .status = .warn, .label = m.file, .detail = try std.fmt.allocPrint(app.arena, "{s} \"{s}\" - run `nix --sync-bin` to remove it", .{ why, m.alias }) });
     }
 
     // Files in ~/.nix/bin that neither the wrappers nor the manifest own —
-    // exactly the provenance-free rot [bin] exists to prevent.
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
-    var undeclared: std.ArrayList([]const u8) = .empty;
-    if (Io.Dir.cwd().openDir(app.io, bin, .{ .iterate = true })) |dir| {
-        var d = dir;
-        defer d.close(app.io);
-        var it = d.iterate();
-        while (it.next(app.io) catch null) |ent| {
-            if (ent.kind == .directory) continue;
-            if (std.ascii.endsWithIgnoreCase(ent.name, ".tmp")) continue; // interrupted atomic write
-            if (std.ascii.endsWithIgnoreCase(ent.name, ".stale")) continue; // parked live image (--sync replaces running wrappers by renaming them aside)
-            const stem = if (std.mem.lastIndexOfScalar(u8, ent.name, '.')) |i| ent.name[0..i] else ent.name;
-            if (isReservedName(app.arena, cfg, stem)) continue;
-            var owned = false;
-            for (manifest) |m| if (store.eqlFoldAscii(m.name, ent.name)) {
-                owned = true;
-            };
-            if (!owned) try undeclared.append(app.arena, try app.arena.dupe(u8, ent.name));
-        }
-    } else |_| {}
-    if (undeclared.items.len > 0) {
-        try out.append(app.arena, .{ .status = .warn, .label = "undeclared", .detail = try std.fmt.allocPrint(app.arena, "in {s} but owned by nothing: {s}", .{ bin, try std.mem.join(app.arena, ", ", undeclared.items) }) });
+    // exactly the provenance-free rot [bin] exists to prevent. The advice
+    // follows the configured policy: `.purge` removes them on the next sync.
+    const foreign = try scanForeign(app, cfg, bin, manifest);
+    if (foreign.len > 0) {
+        const detail = if (cfg.bin_foreign == .purge)
+            try std.fmt.allocPrint(app.arena, "in {s} but nix didn't install them: {s} - `nix --sync` will purge them (foreign = \"purge\")", .{ bin, try std.mem.join(app.arena, ", ", foreign) })
+        else
+            try std.fmt.allocPrint(app.arena, "in {s} but nix didn't install them: {s} - remove by hand, or set [bin] foreign = \"purge\"", .{ bin, try std.mem.join(app.arena, ", ", foreign) });
+        try out.append(app.arena, .{ .status = .warn, .label = "foreign", .detail = detail });
     }
     return out.items;
 }
@@ -553,18 +712,40 @@ test "isReservedName: wrappers, builtins under rename, canonical nix" {
     try std.testing.expect(!isReservedName(a, cfg, "hoot"));
 }
 
-test "loadManifest parse shape via parseTable" {
+test "manifest value splits into alias + optional hash" {
+    // loadManifest tokenizes each parsed value into "<alias> [<hash>]"; a value
+    // written by an older nix has no hash (empty), which sync adopts silently.
+    const cases = [_]struct { value: []const u8, alias: []const u8, hash: []const u8 }{
+        .{ .value = "cy 3f8ab2", .alias = "cy", .hash = "3f8ab2" },
+        .{ .value = "tools", .alias = "tools", .hash = "" }, // pre-fingerprint
+    };
+    for (cases) |c| {
+        var it = std.mem.tokenizeScalar(u8, c.value, ' ');
+        const alias = it.next().?;
+        const hash = it.next() orelse "";
+        try std.testing.expectEqualStrings(c.alias, alias);
+        try std.testing.expectEqualStrings(c.hash, hash);
+    }
+}
+
+test "findInstalled: case-folded lookup by installed filename" {
+    const list = [_]Installed{
+        .{ .file = "hoot.exe", .alias = "cy", .hash = "aa" },
+        .{ .file = "go.cmd", .alias = "tools", .hash = "bb" },
+    };
+    try std.testing.expectEqualStrings("cy", findInstalled(&list, "HOOT.EXE").?.alias);
+    try std.testing.expectEqualStrings("bb", findInstalled(&list, "go.cmd").?.hash);
+    try std.testing.expect(findInstalled(&list, "nope.exe") == null);
+}
+
+test "hashHex: deterministic, distinguishes content, 32 hex chars" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const list = try actions.parseTable(a,
-        \\# generated
-        \\[exports]
-        \\hoot.exe = 'cy'
-        \\go.cmd = "tools"
-        \\
-    , "exports");
-    try std.testing.expectEqual(@as(usize, 2), list.len);
-    try std.testing.expectEqualStrings("cy", actions.find(list, "hoot.exe").?);
-    try std.testing.expectEqualStrings("tools", actions.find(list, "go.cmd").?);
+    const h1 = try hashHex(a, "hello world");
+    const h2 = try hashHex(a, "hello world");
+    const h3 = try hashHex(a, "hello worlD");
+    try std.testing.expectEqual(@as(usize, 32), h1.len); // 16 bytes, lower hex
+    try std.testing.expectEqualStrings(h1, h2); // same bytes -> same fingerprint
+    try std.testing.expect(!std.mem.eql(u8, h1, h3)); // one flipped bit -> different
 }

@@ -13,6 +13,13 @@ const lower = util.lowerDup;
 
 pub const Shortcut = struct { builtin: []const u8, custom: []const u8 };
 
+/// ForeignPolicy: what `--sync-bin`/`--sync` do with a file in ~/.nix/bin that
+/// nix never installed (not a command wrapper, not a manifest-owned [bin]
+/// export). `.warn` (default) reports it but never deletes - the standing rule
+/// that nix only removes files it installed. `.purge` deletes it, keeping the
+/// directory nix-managed only for users who want that guarantee.
+pub const ForeignPolicy = enum { warn, purge };
+
 pub const Config = struct {
     /// null means "key absent" → use defaults; an explicit empty slice means
     /// "no filtering".
@@ -43,6 +50,9 @@ pub const Config = struct {
     /// a re-check. Placeholders: {alias} {message} {status} {level}.
     notify_on_paste: []const u8 = "",
     notify_on_yank: []const u8 = "",
+    /// [bin] foreign: strictness for files in ~/.nix/bin that nix didn't
+    /// install (see ForeignPolicy). Default warn.
+    bin_foreign: ForeignPolicy = .warn,
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -124,8 +134,8 @@ pub fn sweptPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 }
 
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
-/// [grep] all, [nav] terminal, and [notify] on_finish. Unknown sections are
-/// ignored. A missing file yields the zero Config.
+/// [grep] all, [nav] terminal, [notify] on_finish, and [bin] foreign. Unknown
+/// sections are ignored. A missing file yields the zero Config.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     const p = try configPath(arena, home);
     const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
@@ -189,6 +199,15 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         }
         if (std.mem.eql(u8, section, "grep")) {
             if (std.mem.eql(u8, key, "all")) cfg.grep_all = parseBool(stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "bin")) {
+            // value is "warn" or "purge"; anything unrecognized keeps the safe
+            // default so a typo can never silently start deleting files.
+            if (std.mem.eql(u8, key, "foreign")) {
+                const v = stripQuotes(val_start);
+                if (std.ascii.eqlIgnoreCase(v, "purge")) cfg.bin_foreign = .purge else cfg.bin_foreign = .warn;
+            }
             continue;
         }
         if (std.mem.eql(u8, section, "nav")) {
