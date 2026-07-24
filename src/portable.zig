@@ -1,4 +1,4 @@
-//! Portable export/import (ROADMAP §3): bundle the central ~/.nix stores into
+//! Portable export/import: bundle the central ~/.nix stores into
 //! one TOML "export v1" document, and parse one back for merge/restore.
 //!
 //! The document is a single, greppable file with a flat sub-table per store:
@@ -8,7 +8,7 @@
 //!   [config] / [config.*]  the machine's config.toml, re-sectioned, lossless
 //!   [actions.<alias>]      name = 'command'         (central per-alias actions)
 //!
-//! Locked decisions (ROADMAP §3): merge skips existing names (--replace does a
+//! Locked decisions: merge skips existing names (--replace does a
 //! full restore); the machine-local `usage` ranking — the per-alias lines and
 //! the `+name` group-usage lines alike — is deliberately NOT exported
 //! (churny, non-portable); single TOML over an archive (matches nix's simple,

@@ -144,7 +144,7 @@ fn removeLegacyPwshSnippet(app: *App) !void {
 
 /// cmdExport writes a portable backup of the central stores (aliases, groups,
 /// config, per-alias actions) to a file, or to stdout when no path is given.
-/// ROADMAP §3.
+///
 pub fn cmdExport(app: *App, rest: [][]const u8) !u8 {
     var file: ?[]const u8 = null;
     for (rest) |a| {
@@ -173,7 +173,7 @@ pub fn cmdExport(app: *App, rest: [][]const u8) !u8 {
 /// existing alias/group/action names are kept and only new ones are added, and an
 /// existing config.toml is left untouched. `--replace` does a full restore:
 /// aliases/groups/config and each alias's central actions are overwritten from the
-/// file (stores absent from the file are left alone). ROADMAP §3.
+/// file (stores absent from the file are left alone).
 pub fn cmdImport(app: *App, rest: [][]const u8) !u8 {
     var file: ?[]const u8 = null;
     var replace = false;

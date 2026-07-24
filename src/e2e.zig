@@ -1,5 +1,5 @@
 //! End-to-end harness: drives the real nix exe as a child process against a
-//! scratch NIX_HOME (ROADMAP: scripted end-to-end harness). Covers the
+//! scratch NIX_HOME. Covers the
 //! dispatch/IO seam the unit tests can't reach: add/resolve/remove, groups,
 //! actions, segments, export→import, and the read-only --resolve guarantee.
 //! Interactive paths (fzf pickers, navigation subshells), --init (it edits

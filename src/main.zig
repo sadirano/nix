@@ -260,7 +260,7 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     return cmdResolve(app, alias);
 }
 
-// ---- groups (ROADMAP §1b) ---------------------------------------------------
+// ---- groups ---------------------------------------------------
 
 const isGlobalFlag = app_zig.isGlobalFlag;
 const nameErrorText = resolve.nameErrorText;
