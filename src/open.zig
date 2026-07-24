@@ -33,6 +33,42 @@ pub fn prefixedProducers(app: *App, targets: []const GroupTarget, argv: []const 
     return prods.items;
 }
 
+/// printProducerRows runs a picker's row producer WITHOUT the picker, writing
+/// its rows to stdout — the `--no-prompt` form of every fzf command, matching
+/// what `--prune`/`--sweep` already do under the same flag. Rows keep the
+/// picker's shape (multi-root stays `alias\rel`), so what prints is exactly
+/// what would have been offered to pick from.
+///
+/// The producer runs with stdin ignored (runCaptured), so a tool that would
+/// prompt gets EOF instead of hanging the caller. Returns 0 when anything
+/// printed, 1 when nothing matched — a search that found nothing is a failed
+/// query, not a failed command, but callers script on the code either way.
+pub fn printProducerRows(app: *App, targets: []const GroupTarget, argv: []const []const u8) !u8 {
+    var any = false;
+    for (targets) |t| {
+        const res = try proc.runCaptured(app.arena, app.io, argv, t.path, null);
+        var lines = std.mem.splitScalar(u8, res.output, '\n');
+        while (lines.next()) |line0| {
+            const line = std.mem.trimEnd(u8, line0, "\r");
+            if (line.len == 0) continue;
+            // POSIX find emits "./rel"; drop it so rows read like the picker's.
+            const row = if (std.mem.startsWith(u8, line, "./")) line[2..] else line;
+            if (targets.len > 1) {
+                try app.out.print("{s}{c}{s}\n", .{ t.name, store.sep, row });
+            } else {
+                try app.out.print("{s}\n", .{row});
+            }
+            any = true;
+        }
+    }
+    try app.out.flush();
+    if (!any) {
+        try app.err.writeAll("nix: no matches\n");
+        return 1;
+    }
+    return 0;
+}
+
 /// expandPrefixedSelection maps multi-root picker rows (`alias\rel[:line:…]`)
 /// back to absolute rows using the resolved group targets. Absolute rows and
 /// rows whose first component isn't a known member pass through unchanged.

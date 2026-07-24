@@ -10,6 +10,7 @@ const config = @import("config.zig");
 const segments = @import("segments.zig");
 const snippet = @import("snippet.zig");
 const agents = @import("agents.zig");
+const agentdocs = @import("agentdocs.zig");
 const portable = @import("portable.zig");
 const groups = @import("groups.zig");
 const actions = @import("actions.zig");
@@ -126,13 +127,13 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
 /// flags (--json/-j, --no-prompt/-q). The scan stops at `--` and at the first
 /// action flag: everything after `--run`/`--grep`/... belongs to that action's
 /// command or pattern and must not flip nix's own switches (`r a build -q`
-/// hands -q to build; `sg a pat --json` hands --json to rg).
+/// hands --no-prompt to build; `sg a pat --json` hands --json to rg).
 fn setGlobalFlags(app: *App, args: []const []const u8) void {
     for (args) |a| {
         if (eql(a, "--")) break;
         if (aliasAction(a) != null) break;
         if (eql(a, "--json") or eql(a, "-j")) app.json = true;
-        if (eql(a, "--no-prompt") or eql(a, "-q")) app.no_prompt = true;
+        if (eql(a, "--no-prompt")) app.no_prompt = true;
     }
 }
 
@@ -186,6 +187,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "import")) return init_zig.cmdImport(app, rest);
     if (eql(verb, "secret")) return secret.cmdSecret(app, rest);
     if (eql(verb, "trust")) return context.cmdTrust(app, rest, resolve, run_zig);
+    if (eql(verb, "agent")) return cmdAgent(app, rest);
     if (eql(verb, "init")) {
         for (rest) |a| {
             try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
@@ -222,7 +224,7 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
 
     const pre = rest[0..action_idx];
     const action_args = rest[action_idx + 1 ..];
-    // Global flags are legal before the action (`nix a -q --run cmd`); anything
+    // Global flags are legal before the action (`nix a --no-prompt --run cmd`); anything
     // else there is a mistake. After the action, tokens belong to the action.
     for (pre) |a| if (!isGlobalFlag(a)) {
         try app.err.print("nix: unexpected positional \"{s}\" before --{s}\n", .{ a, action.? });
@@ -245,7 +247,7 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
 fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     var path: ?[]const u8 = null;
     for (rest) |a| {
-        if (eql(a, "--no-prompt") or eql(a, "-q") or eql(a, "--json") or eql(a, "-j")) continue;
+        if (isGlobalFlag(a)) continue;
         if (startsWithDash(a)) {
             try app.err.print("nix: unknown flag \"{s}\" on add form\n", .{a});
             return 1;
@@ -485,6 +487,7 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         .selected => |sel| exploreSelections(app, dir, sel),
         .cancelled => 0,
         .failed => 1,
+        .printed => |c| c,
     };
 }
 
@@ -705,6 +708,7 @@ fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         .selected => |sel| paste.yankSelectionFiles(app, alias, target, sel),
         .cancelled => 0,
         .failed => 1,
+        .printed => |c| c,
     };
 }
 
@@ -752,7 +756,22 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
         }
         return .{ .args = &.{}, .nav_alias = "", .is_nav = false };
     }
-    if (startsWithDash(args[0])) return .{ .args = args, .nav_alias = "", .is_nav = false };
+    if (startsWithDash(args[0])) {
+        // `y --agent` renders y's OWN spec: the wrapper knows which slot it is,
+        // and that identity is lost the moment the flag reaches the canonical
+        // grammar (where `nix --agent` alone means the topic index). Rewriting
+        // it here is the whole integration. Sole-argument only, so the flag can
+        // never shadow an alias, a pattern, or a `--run` passthrough token.
+        if (args.len == 1 and eql(args[0], "--agent")) {
+            if (actionSlot(action)) |slot| {
+                const a = try arena.alloc([]const u8, 2);
+                a[0] = "--agent";
+                a[1] = slot;
+                return .{ .args = a, .nav_alias = "", .is_nav = false };
+            }
+        }
+        return .{ .args = args, .nav_alias = "", .is_nav = false };
+    }
     const alias = args[0];
     const rest = args[1..];
     if (eql(action, "navigate")) {
@@ -788,6 +807,15 @@ fn slotAction(slot: []const u8) ?[]const u8 {
         .{ .k = "sg", .v = "grep" },    .{ .k = "ff", .v = "find" },
     };
     for (map) |m| if (eql(slot, m.k)) return m.v;
+    return null;
+}
+
+/// actionSlot is slotAction's inverse: the wrapper slot an action came from, so
+/// `y --agent` can name the spec to render.
+fn actionSlot(action: []const u8) ?[]const u8 {
+    for (config.builtinShortcuts()) |b| {
+        if (slotAction(b.builtin)) |a| if (eql(a, action)) return b.builtin;
+    }
     return null;
 }
 
@@ -842,23 +870,71 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
         .{ .k = "--export", .v = "export" },             .{ .k = "--import", .v = "import" },
         .{ .k = "--rga-preview", .v = "rga-preview" },   .{ .k = "-v", .v = "version" },
         .{ .k = "--secret", .v = "secret" },             .{ .k = "--trust", .v = "trust" },
+        .{ .k = "--agent", .v = "agent" },
     };
     for (map) |m| if (eql(flag, m.k)) return m.v;
     return null;
 }
 
-const ShortcutHelp = struct { slot: []const u8, args: []const u8, desc: []const u8 };
+/// cmdAgent renders a command spec for an agent. Bare `nix --agent` lists the
+/// topics; `nix --agent <topic>` renders one; a wrapper's `<cmd> --agent`
+/// arrives here already rewritten to its slot by desugarMultiCall.
+fn cmdAgent(app: *App, rest: [][]const u8) !u8 {
+    // Best-effort: specs name this machine's renamed commands; defaults on error.
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    var topic: ?[]const u8 = null;
+    for (rest) |a| {
+        if (isGlobalFlag(a)) continue;
+        if (topic != null) {
+            try app.err.print("nix: --agent takes one topic; got \"{s}\"\n", .{a});
+            return 1;
+        }
+        topic = a;
+    }
+    const name = topic orelse {
+        try app.out.writeAll(try agentdocs.renderIndex(app.arena, cfg));
+        try app.out.flush();
+        return 0;
+    };
+    const spec = agentdocs.find(name) orelse {
+        try app.err.print("nix: no agent spec for \"{s}\" (run `nix --agent` to list topics)\n", .{name});
+        return 1;
+    };
+    const facts = try agentFacts(app, spec);
+    try app.out.writeAll(try agentdocs.renderTopic(app.arena, cfg, spec, facts));
+    try app.out.flush();
+    return 0;
+}
 
-const shortcut_help = [_]ShortcutHelp{
-    .{ .slot = "o", .args = "<alias> [path]", .desc = "cd into the alias dir; bare `o` opens ~/.nix" },
-    .{ .slot = "e", .args = "<alias> [file]", .desc = "open the dir (or a file) in your editor" },
-    .{ .slot = "s", .args = "<alias> [pat]", .desc = "open the dir in the file manager; with a pattern, pick files to open" },
-    .{ .slot = "y", .args = "<alias> [pat]", .desc = "copy the path; with a pattern, pick files and copy the files" },
-    .{ .slot = "p", .args = "<alias> [name]", .desc = "save clipboard contents into the alias dir" },
-    .{ .slot = "r", .args = "<alias> <cmd…>", .desc = "run a command at the alias dir" },
-    .{ .slot = "sg", .args = "<alias> <pat>", .desc = "ripgrep search under the alias dir (fzf UI)" },
-    .{ .slot = "ff", .args = "<alias> [pat]", .desc = "fuzzy-find files under the alias dir" },
-};
+/// agentFacts gathers the "On this machine" block: which of the topic's tools
+/// are missing, plus the alias/group inventory when the topic is about those.
+/// Everything here is cheap and non-blocking — no picker, no prompt, and no
+/// context-source `run` — because a spec is documentation, not an action.
+fn agentFacts(app: *App, spec: *const agentdocs.Spec) !agentdocs.Facts {
+    var missing: std.ArrayList([]const u8) = .empty;
+    for (spec.needs_tools) |t| {
+        if (proc.findInPath(app.arena, app.io, app.env, t) == null) {
+            try missing.append(app.arena, t);
+        }
+    }
+    var facts: agentdocs.Facts = .{ .missing_tools = missing.items };
+
+    if (eql(spec.topic, "--list") or eql(spec.topic, "state") or eql(spec.topic, "o")) {
+        const data = store.readAliasesFile(app.arena, app.io, app.home) catch "";
+        if (store.loadAliases(app.arena, data)) |al| {
+            facts.alias_count = al.items.len;
+        } else |_| {}
+    }
+    if (eql(spec.topic, "groups")) {
+        const data = groups.readGroupsFile(app.arena, app.io, app.home) catch "";
+        if (groups.loadGroups(app.arena, data)) |gs| {
+            var names: std.ArrayList([]const u8) = .empty;
+            for (gs.items) |g| try names.append(app.arena, g.name);
+            facts.group_names = names.items;
+        } else |_| {}
+    }
+    return facts;
+}
 
 fn printUsage(app: *App) !void {
     const w = app.out;
@@ -866,7 +942,7 @@ fn printUsage(app: *App) !void {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
 
     try w.writeAll(
-        \\nix — fast directory alias resolver (Zig port of onix)
+        \\nix - fast directory alias resolver (Zig port of onix)
         \\
         \\USAGE
         \\  nix <alias>                 resolve an alias to its absolute path
@@ -879,32 +955,35 @@ fn printUsage(app: *App) !void {
         \\
     );
 
-    // Names reflect config.toml [shortcuts] overrides; pad to a shared column
-    // so descriptions stay aligned whatever the (possibly renamed) names are.
-    // Widths are in display columns (UTF-8 aware) so the `…` glyph lines up.
+    // Rows come from the agentdocs spec table, so --help, ~/.nix/AGENTS.md and
+    // `<cmd> --agent` can't drift apart. Names reflect config.toml [shortcuts]
+    // overrides; pad to a shared column so descriptions stay aligned whatever
+    // the (possibly renamed) names are. Widths are in display columns.
+    var wbuf: [8]*const agentdocs.Spec = undefined;
+    const rows = agentdocs.wrapperSpecs(&wbuf);
     var name_w: usize = 0;
     var args_w: usize = 0;
-    for (shortcut_help) |sh| {
+    for (rows) |sh| {
         name_w = @max(name_w, dispWidth(config.shortcutFor(cfg, sh.slot)));
         args_w = @max(args_w, dispWidth(sh.args));
     }
-    for (shortcut_help) |sh| {
+    for (rows) |sh| {
         const name = config.shortcutFor(cfg, sh.slot);
         try w.writeAll("  ");
         try w.writeAll(name);
         try writeSpaces(w, name_w + 1 - dispWidth(name));
         try w.writeAll(sh.args);
         try writeSpaces(w, args_w + 2 - dispWidth(sh.args));
-        try w.print("{s}\n", .{sh.desc});
+        try w.print("{s}\n", .{sh.summary});
     }
     try w.writeByte('\n');
 
     try w.writeAll(
-        \\ACTIONS  (nix <alias> --<action> …)
+        \\ACTIONS  (nix <alias> --<action> ...)
         \\  --resolve            print the resolved path
         \\  --edit,    -e        open in your editor
-        \\  --explore, -x [pat]  open in the file manager; with a pattern, pick files → open them
-        \\  --yank,    -y [pat]  copy the path; with a pattern, pick files → copy the files
+        \\  --explore, -x [pat]  open in the file manager; with a pattern, pick files -> open them
+        \\  --yank,    -y [pat]  copy the path; with a pattern, pick files -> copy the files
         \\  --paste,   -p        save the clipboard into the dir
         \\  --run,     -r <cmd>  run a command at the dir (`:name` runs a saved action)
         \\  --grep,    -g <pat>  ripgrep search (add --all/-a to search via rga)
@@ -928,6 +1007,7 @@ fn printUsage(app: *App) !void {
         \\  --trust   <alias> [segment]    approve a context source's current bytes so its `run` may execute
         \\  --export  [file]     write a portable backup (aliases/groups/config/actions; stdout if no file)
         \\  --import  <file>     merge a backup (skips existing; --replace for a full restore)
+        \\  --agent   [topic]    full command spec for an agent (`<cmd> --agent` works too)
         \\  --version, -v        print version and platform
         \\  --help,    -h        show this help
         \\
@@ -937,7 +1017,7 @@ fn printUsage(app: *App) !void {
         \\  nix +<group> [--list]       list a group's members
         \\  nix +<group> --remove       delete the group
         \\  o  +<group>                 pick members (fzf): first cd's here, rest open windows
-        \\  sg/ff/r +<group> …          search / run across every member
+        \\  sg/ff/r +<group> ...        search / run across every member
         \\  s/y +<group> [pat]          open / copy member dirs; with a pattern, pick files
         \\  p  +<group> [name]          pick ONE member, paste the clipboard there
         \\
@@ -973,7 +1053,42 @@ test {
     _ = nav;
     _ = cmd_groups;
     _ = bin_exports;
+    _ = agentdocs;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
+}
+
+test "desugarMultiCall: a wrapper's lone --agent names its own slot" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // `y --agent` -> `nix --agent y`: the wrapper identity is recovered here or
+    // not at all, since the canonical grammar can't tell which wrapper ran.
+    var argv = [_][]const u8{"--agent"};
+    const d = try desugarMultiCall(a, "yank", &argv);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--agent", "y" }), d.args);
+
+    // `sg --agent` -> `nix --agent sg` (multi-character slot).
+    const d2 = try desugarMultiCall(a, "grep", &argv);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--agent", "sg" }), d2.args);
+
+    // `o --agent` too, even though navigate is otherwise special-cased.
+    const d3 = try desugarMultiCall(a, "navigate", &argv);
+    try std.testing.expect(!d3.is_nav);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--agent", "o" }), d3.args);
+
+    // Sole-argument only: `y --agent extra` is NOT the spec form, so --agent
+    // passes through untouched rather than shadowing a pattern.
+    var argv2 = [_][]const u8{ "--agent", "extra" };
+    const d4 = try desugarMultiCall(a, "yank", &argv2);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--agent", "extra" }), d4.args);
+}
+
+test "actionSlot inverts slotAction for every builtin" {
+    for (config.builtinShortcuts()) |b| {
+        const action = slotAction(b.builtin).?;
+        try std.testing.expectEqualStrings(b.builtin, actionSlot(action).?);
+    }
 }
 
 test "desugarMultiCall navigate: bare alias navigates" {
@@ -1142,18 +1257,24 @@ test "setGlobalFlags: stops at the first action flag and at --" {
     app.json = false;
     app.no_prompt = false;
     // Before the action flag: counted.
-    setGlobalFlags(&app, &.{ "myalias", "-q", "--run", "build", "--json" });
+    setGlobalFlags(&app, &.{ "myalias", "--no-prompt", "--run", "build", "--json" });
     try std.testing.expect(app.no_prompt);
     try std.testing.expect(!app.json); // --json belongs to the run command
 
     app.json = false;
     app.no_prompt = false;
     // After `--`: not counted.
-    setGlobalFlags(&app, &.{ "--", "-q", "--json" });
+    setGlobalFlags(&app, &.{ "--", "--no-prompt", "--json" });
     try std.testing.expect(!app.no_prompt);
     try std.testing.expect(!app.json);
 
     // System command tails still count (no action flag involved).
-    setGlobalFlags(&app, &.{ "--prune", "-q" });
+    setGlobalFlags(&app, &.{ "--prune", "--no-prompt" });
     try std.testing.expect(app.no_prompt);
+
+    // `-q` is not a global flag: it belongs to whatever command it lands on
+    // (`--doctor -q` is doctor's quiet mode, `--grep pat -q` is ripgrep's).
+    app.no_prompt = false;
+    setGlobalFlags(&app, &.{ "--doctor", "-q" });
+    try std.testing.expect(!app.no_prompt);
 }
