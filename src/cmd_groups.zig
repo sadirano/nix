@@ -1,4 +1,4 @@
-//! The `+group` command layer (ROADMAP: alias groups): dispatching group
+//! The `+group` command layer: dispatching group
 //! references and `member+group` adds, and fanning every command family
 //! across the resolved members — one picker over all roots for sg/ff, a
 //! per-dir run for r, open/copy-all for s/y, pick-one for p.

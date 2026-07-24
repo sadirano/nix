@@ -1,4 +1,4 @@
-//! Per-alias named actions (ROADMAP §2): a small `[actions]` TOML table mapping
+//! Per-alias named actions: a small `[actions]` TOML table mapping
 //! action names to shell-command strings, run as `r <alias> :<name>` (and across
 //! a group with `r +<group> :<name>`). Loaded from three places — project-local
 //! `<alias-dir>/.nix/actions.toml` (travels with the repo) overriding central
