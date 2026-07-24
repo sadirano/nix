@@ -221,7 +221,7 @@ pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: 
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);
         if ((try store.scanForAlias(app.arena, adata, member)) == null) {
             if (app.no_prompt) {
-                try app.err.print("nix: unknown alias \"{s}\" — not added to +{s} (register it: nix {s} <path>)\n", .{ member, group, member });
+                try app.err.print("nix: unknown alias \"{s}\" - not added to +{s} (register it: nix {s} <path>)\n", .{ member, group, member });
                 return 1;
             }
             const pick = (try picker.pickDirectory(app, member)) orelse return 1;
@@ -272,6 +272,7 @@ fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
             .selected => |sel| paste.yankSelectionFiles(app, group_label, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
             .cancelled => 0,
             .failed => 1,
+            .printed => |c| c,
         };
     }
     var buf: std.ArrayList(u8) = .empty;
@@ -317,6 +318,12 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
     }
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     if (targets.len == 1) return paste.pasteClipboardInto(app, targets[0].name, targets[0].path, name);
+    // A paste has exactly one destination, and nothing can choose it for us.
+    // A single-member group above needs no pick, so it still pastes.
+    if (app.no_prompt) {
+        try app.err.print("nix: +{s} has {d} members and a paste needs one destination; name a member instead (`nix <member> --paste`)\n", .{ group, targets.len });
+        return 1;
+    }
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick +{s}'s paste destination (or `p <member>`)\n", .{group});
         return 1;
@@ -353,6 +360,7 @@ fn cmdGroupExplore(app: *App, group: []const u8, args: [][]const u8) !u8 {
         .selected => |sel| exploreSelections(app, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
         .cancelled => 0,
         .failed => 1,
+        .printed => |c| c,
     };
 }
 
@@ -388,7 +396,7 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
         try app.err.flush();
         if (action_name) |n| {
             const cmd = (try resolveAction(app, t.name, t.path, n)) orelse {
-                try app.err.print("   (no action :{s} — skipped)\n", .{n});
+                try app.err.print("   (no action :{s} - skipped)\n", .{n});
                 continue;
             };
             const code = try runAction(app, cmd, t.name, t.path, n, false);

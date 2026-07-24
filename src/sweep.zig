@@ -12,6 +12,7 @@ const util = @import("util.zig");
 
 const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
+const isGlobalFlag = app_zig.isGlobalFlag;
 const lowerDup = util.lowerDup;
 
 fn eql(a: []const u8, b: []const u8) bool {
@@ -27,7 +28,7 @@ pub fn cmdSweep(app: *App, rest: [][]const u8) !u8 {
     var i: usize = 0;
     while (i < rest.len) : (i += 1) {
         const a = rest[i];
-        if (eql(a, "--no-prompt") or eql(a, "-q") or eql(a, "--json") or eql(a, "-j")) continue;
+        if (isGlobalFlag(a)) continue;
         if (eql(a, "--min")) {
             if (i + 1 >= rest.len) {
                 try app.err.writeAll("nix: --min needs a number\n");
@@ -189,7 +190,7 @@ fn sweepRank(arena: std.mem.Allocator, counts: *std.StringHashMap(i64), alias_pa
             try next.append(arena, .{ .path = parent, .count = sum });
             cands = next;
             changed = true;
-            break :collapse; // indices invalidated — regroup
+            break :collapse; // indices invalidated - regroup
         }
     }
 

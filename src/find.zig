@@ -44,20 +44,24 @@ pub fn findIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
         },
         .cancelled => 0,
         .failed => 1,
+        .printed => |c| c,
     };
 }
 
 /// FindPick is the outcome of running the `ff` picker: a selection (newline-
-/// separated paths, relative to roots[0] unless absolute), a clean cancel, or a
-/// setup failure (message already printed).
-pub const FindPick = union(enum) { selected: []const u8, cancelled, failed };
+/// separated paths, relative to roots[0] unless absolute), a clean cancel, a
+/// setup failure (message already printed), or `printed` — the --no-prompt
+/// path, where the rows went to stdout and there is nothing left to act on.
+pub const FindPick = union(enum) { selected: []const u8, cancelled, failed, printed: u8 };
 
 /// findPick runs the fuzzy file picker over one or more targets and returns the
 /// selection without acting on it — shared by `ff` (which opens) and `y <alias>
 /// <pat>` (which copies the files to the clipboard). Multi-root rows come back
 /// alias-prefixed (`alias\rel`); callers expand them via expandPrefixedSelection.
 pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !FindPick {
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    // Under --no-prompt the rows go to stdout, so fzf is not required at all —
+    // check for it only on the interactive path.
+    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return .failed;
     }
@@ -67,7 +71,8 @@ pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !Fi
 
     var prod: std.ArrayList([]const u8) = .empty;
     if (proc.findInPath(app.arena, app.io, app.env, "fd") != null) {
-        try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", "always" });
+        // Colour is for fzf's --ansi; printed rows must stay clean for parsing.
+        try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (app.no_prompt) "never" else "always" });
         for (extras) |x| try prod.append(app.arena, x);
         if (query.len > 0) try prod.append(app.arena, query);
         // Rows stay cwd-relative (no path arg): single root runs in the alias
@@ -90,6 +95,8 @@ pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !Fi
             try app.err.writeAll("nix: no file finder found (install fd)\n");
         return .failed;
     }
+
+    if (app.no_prompt) return .{ .printed = try open_zig.printProducerRows(app, targets, prod.items) };
 
     const preview = if (proc.is_windows)
         try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})

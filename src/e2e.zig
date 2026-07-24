@@ -218,11 +218,11 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "+work", "--resolve" });
         c.check(r.code == 0 and hasLine(r.out, pa) and hasLine(r.out, pb), "+group --resolve prints every member path", r);
 
-        // Adding an unregistered member picker-routes; -q (no picker) must
-        // error without recording a dead member.
-        r = try c.run(&.{ "ghost+work", "-q" });
+        // Adding an unregistered member picker-routes; --no-prompt (no picker)
+        // must error without recording a dead member.
+        r = try c.run(&.{ "ghost+work", "--no-prompt" });
         const gl = try c.run(&.{ "+work", "--list" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "unknown alias") != null and !hasRow(gl.out, "ghost"), "-q add of an unregistered member errors, records nothing", r);
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "unknown alias") != null and !hasRow(gl.out, "ghost"), "--no-prompt add of an unregistered member errors, records nothing", r);
 
         // Nested groups: hand-edit groups.toml (a documented, supported format).
         const gpath = join(&c, &.{ home, "groups.toml" });
@@ -255,7 +255,7 @@ pub fn main(init: std.process.Init) !void {
         // as protected — inherited recency with a (via +work) marker.
         const now_s = @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s);
         try writeFile(&c, upath, try std.fmt.allocPrint(arena, "+work 1 {d}\n", .{now_s}));
-        r = try c.run(&.{ "--prune", "-q" });
+        r = try c.run(&.{ "--prune", "--no-prompt" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "(via +work)") != null and
             std.mem.indexOf(u8, r.out, "today") != null, "prune ranks members by inherited group recency", r);
         c.check(std.mem.indexOf(u8, r.out, "never") == null, "no +work member ranks as never-used", r);
@@ -641,6 +641,65 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and pathEql(trim(res.out), pa), "--import --replace restores the exported path", res);
 
         try c.env.put("NIX_HOME", home);
+    }
+
+    // --- --agent specs -----------------------------------------------------------------
+    {
+        var r = try c.run(&.{"--agent"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "# nix agent specs") != null and
+            std.mem.indexOf(u8, r.out, "`sg`") != null, "--agent lists the topics", r);
+
+        r = try c.run(&.{ "--agent", "y" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "# y <alias> [pat]") != null and
+            std.mem.indexOf(u8, r.out, "Agent safety: user-surface") != null and
+            std.mem.indexOf(u8, r.out, "Safe form:") != null, "--agent y renders the full spec", r);
+
+        // Concept topics are addressable, and system ones with or without dashes.
+        r = try c.run(&.{ "--agent", "actions" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "actions.toml") != null, "--agent actions renders a concept topic", r);
+        r = try c.run(&.{ "--agent", "list" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "--list-names") != null, "--agent list resolves the dashless form", r);
+
+        r = try c.run(&.{ "--agent", "nosuchtopic" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no agent spec") != null, "--agent rejects an unknown topic", r);
+    }
+
+    // --- --no-prompt: the pickers print instead of blocking -----------------------------
+    // These are the first tests of the search commands at all: with fzf in the
+    // pipeline they would hang the harness waiting for a keypress.
+    {
+        try writeFile(&c, join(&c, &.{ pa, "haystack.txt" }), "alpha\nneedle-here\nomega\n");
+
+        if (proc.findInPath(arena, io, c.env, "fd") != null) {
+            var r = try c.run(&.{ "pa", "--no-prompt", "--find", "haystack" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "haystack.txt") != null and
+                std.mem.indexOf(u8, r.out, "\x1b[") == null, "--no-prompt --find prints uncoloured rows", r);
+
+            r = try c.run(&.{ "pa", "--no-prompt", "--find", "zzznomatchzzz" });
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "no matches") != null, "--no-prompt --find reports no matches with exit 1", r);
+        }
+
+        if (proc.findInPath(arena, io, c.env, "rg") != null) {
+            var r = try c.run(&.{ "pa", "--no-prompt", "--grep", "needle-here" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "haystack.txt") != null and
+                std.mem.indexOf(u8, r.out, "needle-here") != null and
+                std.mem.indexOf(u8, r.out, "\x1b[") == null, "--no-prompt --grep prints uncoloured file:line:text", r);
+
+            r = try c.run(&.{ "pa", "--no-prompt", "--grep", "zzznomatchzzz" });
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "no matches") != null, "--no-prompt --grep reports no matches with exit 1", r);
+        }
+
+        // Picking a paste destination has no non-interactive equivalent, so the
+        // group form refuses rather than guessing a member. Build a fresh group
+        // here: earlier sections leave +work's existence up in the air.
+        // Re-register both first: an unregistered member would picker-route the
+        // add. --no-prompt keeps that impossible even if this drifts again.
+        _ = try c.run(&.{ "pa", pa });
+        _ = try c.run(&.{ "pb", pb });
+        _ = try c.run(&.{ "pa+np", "--no-prompt" });
+        _ = try c.run(&.{ "pb+np", "--no-prompt" });
+        const r2 = try c.run(&.{ "+np", "--no-prompt", "--paste" });
+        c.check(r2.code != 0 and std.mem.indexOf(u8, r2.err, "one destination") != null, "p +group refuses under --no-prompt", r2);
     }
 
     // --- doctor: full, quiet, json -----------------------------------------------------

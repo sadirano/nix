@@ -15,6 +15,7 @@ const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
 const exePath = app_zig.exePath;
 const startsWithDash = app_zig.startsWithDash;
+const isGlobalFlag = app_zig.isGlobalFlag;
 const absPath = app_zig.absPath;
 const lowerDup = util.lowerDup;
 
@@ -224,7 +225,7 @@ pub fn excludedBy(arena: std.mem.Allocator, path: []const u8, excludes: []const 
 pub fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
     var name: ?[]const u8 = null;
     for (rest) |a| {
-        if (eql(a, "--no-prompt") or eql(a, "-q") or eql(a, "--json") or eql(a, "-j")) continue;
+        if (isGlobalFlag(a)) continue;
         if (startsWithDash(a)) {
             try app.err.print("nix: unknown flag for --picker-check: \"{s}\"\n", .{a});
             return 1;
@@ -270,7 +271,7 @@ pub fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
     }
     try app.out.print("\n{d} Everything hit(s) for \"{s}\": {d} shown, {d} excluded, {d} past the cap\n", .{ total, q, shown, excluded, capped });
     if (total == 0) {
-        try app.out.print("(none — check \"{s}\" is a substring of the path, the drive is indexed, and Everything is running)\n", .{q});
+        try app.out.print("(none - check \"{s}\" is a substring of the path, the drive is indexed, and Everything is running)\n", .{q});
     }
     try app.out.flush();
     return 0;

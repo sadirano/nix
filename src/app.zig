@@ -61,8 +61,11 @@ pub fn exePath(app: *App) []const u8 {
 /// isGlobalFlag reports the process-wide flags any sub-parser silently accepts
 /// (parsed up front into app.json / app.no_prompt) so they don't read as an
 /// unexpected argument to a group command.
+/// `-q` is deliberately NOT a spelling of --no-prompt: `--doctor -q` is
+/// doctor's own quiet flag, and `rg -q` is ripgrep's, so the short form read
+/// as three different things depending on where it landed.
 pub fn isGlobalFlag(a: []const u8) bool {
-    return std.mem.eql(u8, a, "--no-prompt") or std.mem.eql(u8, a, "-q") or
+    return std.mem.eql(u8, a, "--no-prompt") or
         std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "-j");
 }
 
