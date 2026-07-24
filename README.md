@@ -233,7 +233,35 @@ Never having to remember which client ticket 123 belonged to is the point.
 
 **Results are cached** on a hash of the fully expanded command line plus the script's contents, so `task:123` and `task:124` are separate entries and editing the script invalidates both. Set the lifetime per context with `cache` (`"30s"`, `"10m"`, `"2h"`, `"1d"`, a bare number of seconds, or `"0"` to run every time); the default is 10 minutes.
 
-**Executing needs approval.** A `.nix/segments.toml` travels with a `git clone`, so a context declared outside `~/.nix` refuses to run until you approve it:
+### Named producers — one lookup, many projects
+
+A `[[contexts]]` block does two unrelated jobs: *produce facts* (org-wide — "which client owns ticket 123" is the same question from every repo) and *shape a path* (project-local — one repo wants `client/123`, another wants `tickets/123-client`). Split them with a named producer and `uses`:
+
+```toml
+# ~/.nix/segments.toml — written once, by you
+[[producers]]
+name = "ticket"
+run = "set_vars ${task}"
+cache = "1h"
+```
+
+```toml
+# <projA>/.nix/segments.toml            # <projB>/.nix/segments.toml
+[[contexts]]                            [[contexts]]
+segment = "task"                        segment = "task"
+uses = "ticket"                         uses = "ticket"
+source-template = "/${client_name}/${task}"   source-template = "/tickets/${task}-${client_name}"
+```
+
+`task:123@projA` lands in `projA/acme/123`; `task:123@projB` in `projB/tickets/123-acme`. One script wiring, two shapes.
+
+The producer owns the command; the context supplies the values its `${}` references resolve against, so no parameter-passing mechanism is needed. A context's own `cache` overrides the producer's. An inline `run` wins over `uses`, so a command written on the context is never silently ignored. Producers merge by name across the same three files as contexts (project, central, global), nearest first — so a project can shadow a central lookup without editing it.
+
+**The cache is shared.** Keyed on the expanded command line and script hash, not the alias — so asking about ticket 123 from `projA` and then `projB` is one lookup and one hit.
+
+**A `uses` reference needs no approval.** A project file containing only `segment`, `uses`, and `source-template` is inert data: it can only invoke producers *you* declared, with values *you* typed, into a path `guardFragment` already fences. A repo shipping its own `[[producers]]` with a `run` line still goes through the ledger below.
+
+**Executing needs approval.** A `.nix/segments.toml` travels with a `git clone`, so a `run` line declared outside `~/.nix` refuses to run until you approve it:
 
 ```powershell
 nix --trust project task        # approve one segment

@@ -1,0 +1,44 @@
+# Sample ~/.nix/segments.toml using a NAMED PRODUCER.
+#
+# Use this shape when the same lookup serves more than one project. The
+# producer holds the command (org-wide: "which client owns this ticket" is the
+# same question everywhere); each project holds only the path shape.
+#
+# Pairs with set_vars.cmd / set_vars.ps1 in this directory, which belong in
+# ~/.nix/scripts/ when the producer is central like this.
+
+[[producers]]
+name = "ticket"
+# The producer owns the command. Its ${} references resolve in the scope of
+# whichever context uses it, so the calling segment supplies the values and no
+# parameter-passing syntax is needed.
+run = "set_vars ${task}"
+# Default TTL for this lookup. A context may override it with its own `cache`.
+cache = "1h"
+
+# A global context, usable from any alias (the global file requires the opt-in).
+[[contexts]]
+segment = "task"
+scope = "global"
+uses = "ticket"
+source-template = "/${client_name}/${task}"
+
+
+# ---------------------------------------------------------------------------
+# A project that wants the same lookup with a different layout puts ONLY this
+# in <project>/.nix/segments.toml. No run line, so nothing to approve - it can
+# invoke producers you declared, with values you typed, and guardFragment still
+# fences the resulting path.
+#
+#   [[contexts]]
+#   segment = "task"
+#   uses = "ticket"
+#   source-template = "/tickets/${task}-${client_name}"
+#
+# Results are cached on the expanded command line, not the alias, so asking
+# about ticket 123 from one project and then the other is a single lookup.
+#
+# A project may also declare its OWN [[producers]] block - that ships a command
+# with the repo, so it goes through `nix --trust <alias> <segment>` like any
+# other run line.
+# ---------------------------------------------------------------------------

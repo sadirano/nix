@@ -26,9 +26,34 @@ pub const ContextDef = struct {
     /// `cache` is the TTL for this source's result ("10m", "1h", "0" to
     /// disable). Empty means the default (context.default_ttl_secs).
     cache: []const u8 = "",
+    /// `uses` names a `[[producers]]` block to run instead of an inline `run`
+    /// line (issue #3). The producer owns the command; this context supplies
+    /// the values its `${}` references resolve against. `run` wins if both are
+    /// set, so an inline command is never silently ignored.
+    uses: []const u8 = "",
     /// origin is the file this block was read from — carried so the trust
     /// ledger can hash the exact declaration that asked to run something.
     origin: []const u8 = "",
+};
+
+/// ProducerDef is the reusable half of a context source: a named command that
+/// several contexts (in several projects) can share. Splitting it out is what
+/// lets one "which client owns this ticket" lookup serve every repo, and it
+/// keeps the executing declaration in a file the machine owner wrote while the
+/// path-shaping half travels with the project.
+pub const ProducerDef = struct {
+    name: []const u8 = "",
+    run: []const u8 = "",
+    /// Default TTL for this producer's results; a context's own `cache`
+    /// overrides it.
+    cache: []const u8 = "",
+    origin: []const u8 = "",
+};
+
+/// SegFile is one parsed segments.toml: its contexts and its producers.
+pub const SegFile = struct {
+    contexts: []ContextDef = &.{},
+    producers: []ProducerDef = &.{},
 };
 
 pub const ParsedSegment = struct {
@@ -83,11 +108,12 @@ pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8
 
 // ---- [[contexts]] parser ----------------------------------------------------
 
-/// loadSegmentsFile parses the [[contexts]] array-of-tables. Missing file →
-/// empty. Handles `[contexts.vars]` sub-tables for the static variable map.
-pub fn loadSegmentsFile(arena: std.mem.Allocator, io: Io, path: []const u8) ![]ContextDef {
+/// loadSegmentsFile parses one segments.toml into its [[contexts]] and
+/// [[producers]] array-of-tables. Missing file → empty. Handles
+/// `[contexts.vars]` sub-tables for the static variable map.
+pub fn loadSegmentsFile(arena: std.mem.Allocator, io: Io, path: []const u8) !SegFile {
     const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => return &.{},
+        error.FileNotFound => return .{},
         else => return e,
     };
     return parseInto(arena, data, path);
@@ -97,9 +123,11 @@ pub fn loadSegmentsFile(arena: std.mem.Allocator, io: Io, path: []const u8) ![]C
 /// block so the trust ledger can hash the exact file that asked to run
 /// something. Split out so the array-of-tables and sub-table scoping rules are
 /// testable without touching the filesystem.
-pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) ![]ContextDef {
+pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !SegFile {
     var contexts: std.ArrayList(ContextDef) = .empty;
+    var producers: std.ArrayList(ProducerDef) = .empty;
     var cur: ?usize = null;
+    var cur_prod: ?usize = null;
     var in_vars = false;
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |l0| {
@@ -108,6 +136,14 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
         if (std.mem.eql(u8, line, "[[contexts]]")) {
             try contexts.append(arena, .{ .origin = path });
             cur = contexts.items.len - 1;
+            cur_prod = null;
+            in_vars = false;
+            continue;
+        }
+        if (std.mem.eql(u8, line, "[[producers]]")) {
+            try producers.append(arena, .{ .origin = path });
+            cur_prod = producers.items.len - 1;
+            cur = null;
             in_vars = false;
             continue;
         }
@@ -122,6 +158,16 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const val = parseTomlString(arena, std.mem.trim(u8, line[eq + 1 ..], " \t")) orelse continue;
+        if (cur_prod) |pidx| {
+            if (std.mem.eql(u8, key, "name")) {
+                producers.items[pidx].name = val;
+            } else if (std.mem.eql(u8, key, "run")) {
+                producers.items[pidx].run = val;
+            } else if (std.mem.eql(u8, key, "cache")) {
+                producers.items[pidx].cache = val;
+            }
+            continue;
+        }
         const idx = cur orelse continue;
         if (in_vars) {
             try contexts.items[idx].vars.append(arena, .{ .key = try arena.dupe(u8, key), .value = val });
@@ -137,9 +183,17 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
             contexts.items[idx].run = val;
         } else if (std.mem.eql(u8, key, "cache")) {
             contexts.items[idx].cache = val;
+        } else if (std.mem.eql(u8, key, "uses")) {
+            contexts.items[idx].uses = val;
         }
     }
-    return contexts.items;
+    return .{ .contexts = contexts.items, .producers = producers.items };
+}
+
+/// lookupProducer finds a producer by name (case-insensitive, like segments).
+pub fn lookupProducer(list: []const ProducerDef, name: []const u8) ?*const ProducerDef {
+    for (list) |*p| if (eqlFold(p.name, name)) return p;
+    return null;
 }
 
 fn parseTomlString(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 {
@@ -339,7 +393,7 @@ test "parse: [contexts.vars] binds to the PRECEDING block, run/cache read" {
         \\segment = "b"
         \\
     ;
-    const ctxs = try parseInto(a, data, "F");
+    const ctxs = (try parseInto(a, data, "F")).contexts;
     try std.testing.expectEqual(@as(usize, 2), ctxs.len);
     try std.testing.expectEqualStrings("lookup ${a}", ctxs[0].run);
     try std.testing.expectEqualStrings("1h", ctxs[0].cache);
@@ -348,6 +402,37 @@ test "parse: [contexts.vars] binds to the PRECEDING block, run/cache read" {
     try std.testing.expectEqual(@as(usize, 1), ctxs[0].vars.items.len);
     try std.testing.expectEqualStrings("eu-west", ctxs[0].vars.items[0].value);
     try std.testing.expectEqual(@as(usize, 0), ctxs[1].vars.items.len);
+}
+
+test "parse: [[producers]] alongside contexts, uses reference, no bleed" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const data =
+        \\[[producers]]
+        \\name = "ticket"
+        \\run = "set_vars ${task}"
+        \\cache = "1h"
+        \\
+        \\[[contexts]]
+        \\segment = "task"
+        \\uses = "ticket"
+        \\source-template = "/${client_name}/${task}"
+        \\
+    ;
+    const sf = try parseInto(a, data, "F");
+    try std.testing.expectEqual(@as(usize, 1), sf.producers.len);
+    try std.testing.expectEqualStrings("ticket", sf.producers[0].name);
+    try std.testing.expectEqualStrings("set_vars ${task}", sf.producers[0].run);
+    try std.testing.expectEqualStrings("1h", sf.producers[0].cache);
+    try std.testing.expectEqualStrings("F", sf.producers[0].origin); // hashed for trust
+    try std.testing.expectEqual(@as(usize, 1), sf.contexts.len);
+    try std.testing.expectEqualStrings("ticket", sf.contexts[0].uses);
+    // A producer's `run`/`cache` must not leak into the context that follows it.
+    try std.testing.expectEqualStrings("", sf.contexts[0].run);
+    try std.testing.expectEqualStrings("", sf.contexts[0].cache);
+    try std.testing.expect(lookupProducer(sf.producers, "TICKET") != null); // fold match
+    try std.testing.expect(lookupProducer(sf.producers, "nope") == null);
 }
 
 test "lookupContext / lookupGlobalContext: fold match and global scope gate" {
