@@ -203,7 +203,7 @@ pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
         }
     }
     if (merged.items.len == 0) {
-        try app.out.print("no actions for \"{s}\" — define them in {s}\n", .{ alias, pp });
+        try app.out.print("no actions for \"{s}\" - define them in {s}\n", .{ alias, pp });
         return 0;
     }
     var width: usize = "ACTION".len;
@@ -232,7 +232,7 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     const cmd = switch (try secret.expandSecrets(app.arena, command, secret.credentialResolver(&cred_ctx))) {
         .ok => |s| s,
         .missing => |name| {
-            try app.err.print("nix: unknown secret \"{s}\" — run: nix --secret set {s}\n", .{ name, name });
+            try app.err.print("nix: unknown secret \"{s}\" - run: nix --secret set {s}\n", .{ name, name });
             return 1;
         },
     };
