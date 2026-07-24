@@ -306,7 +306,7 @@ pub fn cmdContexts(app: *App) !u8 {
     const sf = try segments.loadSegmentsFile(app.arena, app.io, gpath);
     const contexts = sf.contexts;
     if (contexts.len == 0 and sf.producers.len == 0) {
-        try app.out.writeAll("(no contexts defined — add [[contexts]] blocks to ~/.nix/segments.toml)\n");
+        try app.out.writeAll("(no contexts defined - add [[contexts]] blocks to ~/.nix/segments.toml)\n");
         try app.out.writeAll("run: nix --edit segments.toml\n");
         return 0;
     }
@@ -561,7 +561,7 @@ test "whichAlias: host separators and (on Windows) case-insensitivity" {
     }
 }
 
-test "whichAlias: two aliases on the same dir — first in file order wins" {
+test "whichAlias: two aliases on the same dir - first in file order wins" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();

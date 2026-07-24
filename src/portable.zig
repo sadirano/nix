@@ -43,7 +43,7 @@ pub const Doc = struct {
 pub fn render(arena: std.mem.Allocator, io: Io, home: []const u8) ![]const u8 {
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena,
-        \\# nix export v1 — portable backup of ~/.nix (aliases, groups, config, actions)
+        \\# nix export v1 - portable backup of ~/.nix (aliases, groups, config, actions)
         \\# Restore with `nix --import <file>` (merge, skips existing names);
         \\# add --replace for a full restore. The local usage ranking is not included.
         \\

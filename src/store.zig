@@ -112,7 +112,7 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
     }.lt);
 
     var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(arena, "# nix aliases — edit with care, prefer `nix <name> <path>` / `nix <name> --remove`\n\n");
+    try b.appendSlice(arena, "# nix aliases - edit with care, prefer `nix <name> <path>` / `nix <name> --remove`\n\n");
     for (aliases) |a| {
         try b.appendSlice(arena, "[");
         try b.appendSlice(arena, a.name);
@@ -323,7 +323,7 @@ test "scanForAlias: unknown alias returns null" {
     try std.testing.expect((try scanForAlias(a, "[acme]\npath = 'x'\n", "nope")) == null);
 }
 
-test "scanForAlias: section isolation — no path bleed from next section" {
+test "scanForAlias: section isolation - no path bleed from next section" {
     // [acme] has no path of its own; the next section's path must not leak in.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();

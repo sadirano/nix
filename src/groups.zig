@@ -101,7 +101,7 @@ pub fn saveGroups(arena: std.mem.Allocator, io: Io, home: []const u8, groups: []
     }.lt);
 
     var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(arena, "# nix alias groups — members are alias names; a +name member references another group\n");
+    try b.appendSlice(arena, "# nix alias groups - members are alias names; a +name member references another group\n");
     try b.appendSlice(arena, "# edit with care, prefer `nix <member>+<group>` / `nix <member>+<group> --remove`\n\n");
     for (groups) |g| {
         if (g.members.len == 0) continue;
@@ -288,7 +288,7 @@ test "loadGroups: comment lines inside a multi-line array are ignored" {
     const toml =
         \\all = [
         \\  "pa",
-        \\  # "commented-out" — must not become a member, nor its ] end things: ]
+        \\  # "commented-out" - must not become a member, nor its ] end things: ]
         \\  "pb",
         \\]
         \\
