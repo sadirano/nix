@@ -514,6 +514,63 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null, "editing the script re-arms the trust gate", r);
     }
 
+    // --- named producers (issue #3) -----------------------------------------------
+    // The producer and its script are central (the machine owner's), so a
+    // project file that merely `uses` it is inert data and needs no approval.
+    {
+        util.mkdirAll(io, join(&c, &.{ home, "scripts" })) catch {};
+        try writeFile(&c, join(&c, &.{ home, "scripts", "ticket.cmd" }),
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=acme
+            \\
+        );
+        try writeFile(&c, join(&c, &.{ home, "segments.toml" }),
+            \\[[producers]]
+            \\name = "ticket"
+            \\run = "ticket ${t}"
+            \\
+        );
+        // Two aliases, one producer, two different path shapes.
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }),
+            \\[[contexts]]
+            \\segment = "t"
+            \\uses = "ticket"
+            \\source-template = "/${client_name}/${t}"
+            \\
+        );
+        try writeFile(&c, join(&c, &.{ pb, ".nix", "segments.toml" }),
+            \\[[contexts]]
+            \\segment = "t"
+            \\uses = "ticket"
+            \\source-template = "/tickets/${t}-${client_name}"
+            \\
+        );
+        var r = try c.run(&.{ "t:9@pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ pa, "acme", "9" })), "a context resolves through a named producer", r);
+
+        r = try c.run(&.{ "t:9@pb", "--resolve" });
+        c.check(
+            r.code == 0 and pathEql(trim(r.out), join(&c, &.{ pb, "tickets", "9-acme" })),
+            "a project-local context reuses a central producer with its own shape, unapproved",
+            r,
+        );
+
+        // A project shipping its OWN producer still hits the ledger.
+        try writeFile(&c, join(&c, &.{ pb, ".nix", "segments.toml" }),
+            \\[[producers]]
+            \\name = "own"
+            \\run = "ticket ${t}"
+            \\
+            \\[[contexts]]
+            \\segment = "t"
+            \\uses = "own"
+            \\source-template = "/${client_name}"
+            \\
+        );
+        r = try c.run(&.{ "t:9@pb", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null, "a project-declared producer still needs approval", r);
+    }
+
     // --- read-only --resolve ------------------------------------------------------
     {
         const pc = join(&c, &.{ root, "proj", "pc" });

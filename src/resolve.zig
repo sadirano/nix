@@ -133,17 +133,42 @@ const SegLookup = struct {
 /// Ordering note: the source runs BEFORE the template expands but AFTER the
 /// inline value is known, which is what lets `run = "set_vars ${task}"` receive
 /// the 123 in `task:123@project`.
-fn evalSegment(app: *App, cd: *const segments.ContextDef, ps: segments.ParsedSegment, alias: []const u8, dir: []const u8) ![]const u8 {
+///
+/// The command comes from an inline `run` line or, via `uses`, from a shared
+/// `[[producers]]` block — the producer owns the command, this context supplies
+/// the values its `${}` references resolve against, which is what lets one
+/// lookup serve several projects with different path shapes.
+fn evalSegment(
+    app: *App,
+    cd: *const segments.ContextDef,
+    producers: []const segments.ProducerDef,
+    ps: segments.ParsedSegment,
+    alias: []const u8,
+    dir: []const u8,
+) ![]const u8 {
     const param = if (cd.param.len > 0) cd.param else cd.segment;
     var lk: SegLookup = .{ .app = app, .cd = cd, .ps = ps, .param = param };
 
-    if (cd.run.len > 0) {
+    // An inline `run` wins over `uses`, so a command written here is never
+    // silently ignored in favour of a producer.
+    const src: ?context.Source = if (cd.run.len > 0)
+        try context.fromContext(app.arena, cd)
+    else if (cd.uses.len > 0) blk: {
+        const p = segments.lookupProducer(producers, cd.uses) orelse {
+            try app.err.print("nix: segment \"{s}\": unknown producer \"{s}\"\n", .{ cd.segment, cd.uses });
+            try app.err.writeAll("  (declare it as a [[producers]] block, e.g. in ~/.nix/segments.toml)\n");
+            return error.ContextSourceFailed;
+        };
+        break :blk try context.fromProducer(app.arena, p, cd);
+    } else null;
+
+    if (src) |s| {
         // Pre-script vars, split by precedence: the inline value outranks the
         // environment, [contexts.vars] falls below it. Deliberately excludes
-        // another segment's output — composition is issue #3, not v1.
+        // another segment's output — chained-segment sharing stays in issue #3.
         var high: std.ArrayList(segments.Var) = .empty;
         if (ps.has_value) try high.append(app.arena, .{ .key = param, .value = ps.value });
-        const produced = (try context.run(app, cd, alias, dir, ps, high.items, cd.vars.items, run_zig)) orelse
+        const produced = (try context.run(app, s, cd, alias, dir, ps, high.items, cd.vars.items, run_zig)) orelse
             return error.ContextSourceFailed;
         lk.produced = produced;
         var merged: std.ArrayList(segments.Var) = .empty;
@@ -155,6 +180,21 @@ fn evalSegment(app: *App, cd: *const segments.ContextDef, ps: segments.ParsedSeg
     if (cd.source_template.len > 0) return segments.expandTemplate(app.arena, cd.source_template, lk, SegLookup.get);
     if (ps.has_value) return error.InlineValueNoTemplate;
     return "";
+}
+
+/// mergeProducers flattens the three segment files' `[[producers]]` blocks by
+/// name, nearest-first (local, central, global) — the same precedence contexts
+/// get, so a project can shadow a central lookup without editing it.
+fn mergeProducers(app: *App, local: segments.SegFile, central: segments.SegFile, global: segments.SegFile) ![]segments.ProducerDef {
+    var out: std.ArrayList(segments.ProducerDef) = .empty;
+    for ([_]segments.SegFile{ local, central, global }) |sf| {
+        next: for (sf.producers) |p| {
+            if (p.name.len == 0) continue;
+            for (out.items) |m| if (util.eqlFoldAscii(m.name, p.name)) continue :next;
+            try out.append(app.arena, p);
+        }
+    }
+    return out.items;
 }
 
 /// resolveSegmented resolves `seg@alias` into a host path, mirroring
@@ -186,6 +226,9 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
     var sf_global = try segments.loadSegmentsFile(app.arena, app.io, gpath);
     var sf_local = try segments.loadSegmentsFile(app.arena, app.io, lpath);
     var sf_central = try segments.loadSegmentsFile(app.arena, app.io, cpath);
+    // Producers merge by name across the same three files, nearest first, so a
+    // project may shadow a central lookup without editing it.
+    var producers = try mergeProducers(app, sf_local, sf_central, sf_global);
 
     var target: std.ArrayList(u8) = .empty;
     try target.appendSlice(app.arena, std.mem.trimEnd(u8, base.?, "/"));
@@ -197,9 +240,9 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
     while (i > 0) {
         i -= 1;
         const ps = parsed.segs[i];
-        var cd = segments.lookupContext(sf_local, ps.name) orelse
-            segments.lookupContext(sf_central, ps.name) orelse
-            segments.lookupGlobalContext(sf_global, ps.name);
+        var cd = segments.lookupContext(sf_local.contexts, ps.name) orelse
+            segments.lookupContext(sf_central.contexts, ps.name) orelse
+            segments.lookupGlobalContext(sf_global.contexts, ps.name);
         if (cd == null) {
             if (app.no_prompt) {
                 try app.err.print("nix: segment \"{s}\" is not defined in segments.toml\n", .{ps.name});
@@ -212,15 +255,16 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
             sf_local = try segments.loadSegmentsFile(app.arena, app.io, lpath);
             sf_central = try segments.loadSegmentsFile(app.arena, app.io, cpath);
             sf_global = try segments.loadSegmentsFile(app.arena, app.io, gpath);
-            cd = segments.lookupContext(sf_local, ps.name) orelse
-                segments.lookupContext(sf_central, ps.name) orelse
-                segments.lookupGlobalContext(sf_global, ps.name);
+            producers = try mergeProducers(app, sf_local, sf_central, sf_global);
+            cd = segments.lookupContext(sf_local.contexts, ps.name) orelse
+                segments.lookupContext(sf_central.contexts, ps.name) orelse
+                segments.lookupGlobalContext(sf_global.contexts, ps.name);
             if (cd == null) {
                 try app.err.print("nix: segment \"{s}\": defined but not loadable\n", .{ps.name});
                 return null;
             }
         }
-        const fragment = evalSegment(app, cd.?, ps, parsed.alias, run_dir) catch |e| {
+        const fragment = evalSegment(app, cd.?, producers, ps, parsed.alias, run_dir) catch |e| {
             // A failed context source has already explained itself in detail
             // (untrusted, missing script, non-zero exit); don't bury that under
             // a second generic line.
@@ -259,8 +303,9 @@ fn autoDefineSegment(app: *App, alias: []const u8, ps: segments.ParsedSegment) !
 
 pub fn cmdContexts(app: *App) !u8 {
     const gpath = try segments.globalPath(app.arena, app.home);
-    const contexts = try segments.loadSegmentsFile(app.arena, app.io, gpath);
-    if (contexts.len == 0) {
+    const sf = try segments.loadSegmentsFile(app.arena, app.io, gpath);
+    const contexts = sf.contexts;
+    if (contexts.len == 0 and sf.producers.len == 0) {
         try app.out.writeAll("(no contexts defined — add [[contexts]] blocks to ~/.nix/segments.toml)\n");
         try app.out.writeAll("run: nix --edit segments.toml\n");
         return 0;
@@ -287,10 +332,16 @@ pub fn cmdContexts(app: *App) !u8 {
         }
         // A `run` context is worth seeing at a glance — it is the one kind that
         // executes something, so show its command line ahead of the template.
-        const src = if (cd.run.len > 0 and cd.source_template.len > 0)
-            try std.fmt.allocPrint(app.arena, "run={s}  template={s}", .{ cd.run, cd.source_template })
-        else if (cd.run.len > 0)
+        const cmd: []const u8 = if (cd.run.len > 0)
             try std.fmt.allocPrint(app.arena, "run={s}", .{cd.run})
+        else if (cd.uses.len > 0)
+            try std.fmt.allocPrint(app.arena, "uses={s}", .{cd.uses})
+        else
+            "";
+        const src = if (cmd.len > 0 and cd.source_template.len > 0)
+            try std.fmt.allocPrint(app.arena, "{s}  template={s}", .{ cmd, cd.source_template })
+        else if (cmd.len > 0)
+            cmd
         else if (cd.source_template.len > 0)
             try std.fmt.allocPrint(app.arena, "template={s}", .{cd.source_template})
         else
@@ -310,6 +361,23 @@ pub fn cmdContexts(app: *App) !u8 {
         try padPrint(app.out, r.seg, w1 + 2);
         try padPrint(app.out, r.env, w2 + 2);
         try app.out.print("{s}\n", .{r.src});
+    }
+    // Producers are the shared half — listed separately because they belong to
+    // no single segment and several contexts (in several projects) may use one.
+    if (sf.producers.len > 0) {
+        var pw: usize = "PRODUCER".len;
+        for (sf.producers) |p| pw = @max(pw, p.name.len);
+        try app.out.writeAll("\n");
+        try padPrint(app.out, "PRODUCER", pw + 2);
+        try app.out.writeAll("RUN\n");
+        for (sf.producers) |p| {
+            try padPrint(app.out, p.name, pw + 2);
+            if (p.cache.len > 0) {
+                try app.out.print("{s}  (cache={s})\n", .{ p.run, p.cache });
+            } else {
+                try app.out.print("{s}\n", .{p.run});
+            }
+        }
     }
     return 0;
 }
