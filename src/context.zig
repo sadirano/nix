@@ -84,7 +84,10 @@ pub fn parseDuration(s: []const u8) ?u64 {
     const digits = if (mult == 0) t else t[0 .. t.len - 1];
     if (digits.len == 0) return null;
     const n = std.fmt.parseInt(u64, digits, 10) catch return null;
-    return n * (if (mult == 0) @as(u64, 1) else mult);
+    // Checked: `cache = "999999999999999d"` would otherwise overflow u64 and
+    // panic. An absurd TTL is a typo, and a typo must fall back to the default,
+    // never crash a navigation.
+    return std.math.mul(u64, n, if (mult == 0) @as(u64, 1) else mult) catch null;
 }
 
 /// splitRunLine tokenizes a run template on whitespace, honouring double quotes
@@ -209,7 +212,17 @@ pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
 
 // ---- result cache -----------------------------------------------------------
 
-const CacheEntry = struct { key: []const u8, at: u64, vars: []Var };
+/// Hard ceiling on stored entries, enforced newest-first on every write. The
+/// per-entry TTL already expires rows, but a long TTL (`cache = "30d"`) across
+/// many distinct lookups would otherwise let the file grow unbounded, and every
+/// write rewrites the whole thing.
+pub const max_cache_entries: usize = 512;
+
+/// `at` is when the entry was stored; `ttl` is the lifetime it was stored
+/// under, kept so the reap can drop exactly the expired rows. Without it the
+/// janitor had to guess, and a fixed one-day guess silently capped every
+/// longer TTL.
+const CacheEntry = struct { key: []const u8, at: u64, ttl: u64, vars: []Var };
 
 /// loadCache parses the `[cache.<key>]` sections. Same lenient posture as every
 /// other reader here: anything unparseable is simply absent, which costs a
@@ -228,7 +241,7 @@ fn loadCache(app: *App) ![]CacheEntry {
             const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
             const name = line[1..end];
             if (!std.mem.startsWith(u8, name, "cache.")) continue;
-            try out.append(app.arena, .{ .key = name["cache.".len..], .at = 0, .vars = &.{} });
+            try out.append(app.arena, .{ .key = name["cache.".len..], .at = 0, .ttl = default_ttl_secs, .vars = &.{} });
             cur = out.items.len - 1;
             continue;
         }
@@ -238,6 +251,10 @@ fn loadCache(app: *App) ![]CacheEntry {
         const val = util.stripQuotes(std.mem.trim(u8, line[eq + 1 ..], " \t"));
         if (std.mem.eql(u8, key, "_at")) {
             out.items[idx].at = std.fmt.parseInt(u64, val, 10) catch 0;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "_ttl")) {
+            out.items[idx].ttl = std.fmt.parseInt(u64, val, 10) catch default_ttl_secs;
             continue;
         }
         var vars: std.ArrayList(Var) = .empty;
@@ -268,21 +285,39 @@ fn cacheGet(app: *App, key: []const u8, ttl: u64) ?[]Var {
     return null;
 }
 
-/// cachePut replaces the entry for `key` and drops entries older than a day, so
-/// the file cannot grow without bound across many ticket numbers.
-fn cachePut(app: *App, key: []const u8, vars: []const Var) !void {
+/// reapable reports whether an entry has outlived the TTL it was stored under.
+/// Judged per entry, not against a fixed age: a `cache = "30d"` result must not
+/// be evicted by an unrelated lookup happening to write the file tomorrow.
+fn reapable(now: u64, e: CacheEntry) bool {
+    return now > e.at and now - e.at > e.ttl;
+}
+
+fn newerFirst(_: void, a: CacheEntry, b: CacheEntry) bool {
+    return a.at > b.at;
+}
+
+/// cachePut replaces the entry for `key`, drops expired entries, and caps the
+/// file at max_cache_entries (newest kept) so it cannot grow without bound
+/// across many distinct lookups even under long TTLs.
+fn cachePut(app: *App, key: []const u8, vars: []const Var, ttl: u64) !void {
     const entries = try loadCache(app);
     const now = nowSecs(app);
+    var keep: std.ArrayList(CacheEntry) = .empty;
+    try keep.append(app.arena, .{ .key = key, .at = now, .ttl = ttl, .vars = @constCast(vars) });
+    for (entries) |e| {
+        if (std.mem.eql(u8, e.key, key)) continue; // replaced by the fresh one above
+        if (reapable(now, e)) continue;
+        try keep.append(app.arena, e);
+    }
+    std.mem.sort(CacheEntry, keep.items, {}, newerFirst);
+    const rows = keep.items[0..@min(keep.items.len, max_cache_entries)];
+
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(app.arena, "# nix context result cache. Safe to delete.\n");
-    for (entries) |e| {
-        if (std.mem.eql(u8, e.key, key)) continue; // replaced below
-        if (now > e.at and now - e.at > 86400) continue; // reap
-        try buf.print(app.arena, "\n[cache.{s}]\n_at = {d}\n", .{ e.key, e.at });
+    for (rows) |e| {
+        try buf.print(app.arena, "\n[cache.{s}]\n_at = {d}\n_ttl = {d}\n", .{ e.key, e.at, e.ttl });
         for (e.vars) |kv| try buf.print(app.arena, "{s} = \"{s}\"\n", .{ kv.key, kv.value });
     }
-    try buf.print(app.arena, "\n[cache.{s}]\n_at = {d}\n", .{ key, now });
-    for (vars) |kv| try buf.print(app.arena, "{s} = \"{s}\"\n", .{ kv.key, kv.value });
     try util.writeFileAtomic(app.arena, app.io, try cachePath(app.arena, app.home), buf.items);
 }
 
@@ -473,7 +508,7 @@ pub fn run(
         try app.err.writeAll("  (write KEY=VALUE lines to the file named by NIX_CONTEXT_OUT)\n");
         return null;
     }
-    if (ttl > 0) cachePut(app, key, vars) catch {}; // a cache we cannot write is not fatal
+    if (ttl > 0) cachePut(app, key, vars, ttl) catch {}; // a cache we cannot write is not fatal
     return vars;
 }
 
@@ -604,6 +639,24 @@ test "parseDuration: units, bare seconds, disable forms, junk" {
     // making the directory unreachable over a typo.
     try std.testing.expectEqual(@as(?u64, null), parseDuration("soon"));
     try std.testing.expectEqual(@as(?u64, null), parseDuration(""));
+    // An absurd TTL must fall back, not overflow u64 and panic mid-navigation.
+    try std.testing.expectEqual(@as(?u64, null), parseDuration("999999999999999d"));
+    try std.testing.expectEqual(@as(?u64, null), parseDuration("18446744073709551615h"));
+    try std.testing.expectEqual(@as(?u64, 18446744073709551615), parseDuration("18446744073709551615"));
+}
+
+test "reapable: judged against the entry's OWN ttl, not a fixed age" {
+    const day: u64 = 86400;
+    const long = CacheEntry{ .key = "k", .at = 1000, .ttl = 30 * day, .vars = &.{} };
+    // Two days on, a 30-day entry is still live — an unrelated write must not
+    // evict it (the bug a hardcoded one-day reap caused).
+    try std.testing.expect(!reapable(1000 + 2 * day, long));
+    try std.testing.expect(reapable(1000 + 31 * day, long));
+    const short = CacheEntry{ .key = "k", .at = 1000, .ttl = 600, .vars = &.{} };
+    try std.testing.expect(!reapable(1500, short));
+    try std.testing.expect(reapable(2000, short));
+    // A clock that moved backwards never reaps.
+    try std.testing.expect(!reapable(0, short));
 }
 
 test "splitRunLine: whitespace, quoted spans, empty" {
