@@ -299,46 +299,81 @@ pub const Located = struct {
     implicit_trust: bool,
 };
 
+/// Source is "a thing that executes", flattened. An inline `run` on a context
+/// and a named `[[producers]]` block collapse to the same four fields, so
+/// locate/run/trust have exactly one shape to handle and the producer split
+/// (issue #3) added no second code path. `origin` is the file that declared the
+/// COMMAND — that is what the trust record hashes, so a project file merely
+/// saying `uses = "ticket"` carries no authority and needs no approval.
+pub const Source = struct {
+    /// Human label for errors: `segment "task"` or `producer "ticket"`.
+    label: []const u8,
+    run: []const u8,
+    cache: []const u8,
+    origin: []const u8,
+};
+
+/// fromContext builds the Source for a context's own inline `run` line.
+pub fn fromContext(arena: std.mem.Allocator, cd: *const segments.ContextDef) !Source {
+    return .{
+        .label = try std.fmt.allocPrint(arena, "segment \"{s}\"", .{cd.segment}),
+        .run = cd.run,
+        .cache = cd.cache,
+        .origin = cd.origin,
+    };
+}
+
+/// fromProducer builds the Source for a `uses = "<name>"` reference. The
+/// context may override the producer's TTL; everything else is the producer's.
+pub fn fromProducer(arena: std.mem.Allocator, p: *const segments.ProducerDef, cd: *const segments.ContextDef) !Source {
+    return .{
+        .label = try std.fmt.allocPrint(arena, "producer \"{s}\" (segment \"{s}\")", .{ p.name, cd.segment }),
+        .run = p.run,
+        .cache = if (cd.cache.len > 0) cd.cache else p.cache,
+        .origin = p.origin,
+    };
+}
+
 /// locate resolves the run target and computes its trust record. `run` is a
 /// BARE name resolved through the project's `.nix/scripts` then `~/.nix/scripts`
 /// (run.resolveScript), so a context script is just a project script like any
 /// other; a name containing a separator is taken relative to the alias dir.
 /// `.ps1` is wrapped through PowerShell by the caller, as CreateProcess cannot
 /// launch one directly.
-pub fn locate(app: *App, cd: *const segments.ContextDef, dir: []const u8, run_zig: anytype) !?Located {
-    const tokens = try splitRunLine(app.arena, cd.run);
+pub fn locate(app: *App, src: Source, dir: []const u8, run_zig: anytype) !?Located {
+    const tokens = try splitRunLine(app.arena, src.run);
     if (tokens.len == 0) return null;
     // Only token 0 is needed here, and a run target naming itself through a
     // variable would be unresolvable at approval time anyway.
     const name = tokens[0];
     if (std.mem.indexOf(u8, name, "${") != null) {
-        try app.err.print("nix: segment \"{s}\": the run target itself may not be a variable (\"{s}\")\n", .{ cd.segment, name });
+        try app.err.print("nix: {s}: the run target itself may not be a variable (\"{s}\")\n", .{ src.label, name });
         return null;
     }
     const script = run_zig.resolveScript(app, dir, name) orelse blk: {
         const rel = std.fs.path.join(app.arena, &.{ dir, name }) catch return null;
         if (proc.fileExists(app.io, rel)) break :blk rel;
-        try app.err.print("nix: segment \"{s}\": run target \"{s}\" not found\n", .{ cd.segment, name });
+        try app.err.print("nix: {s}: run target \"{s}\" not found\n", .{ src.label, name });
         try app.err.print("  (looked in {s}{c}.nix{c}scripts, {s}{c}scripts, and {s})\n", .{ dir, std.fs.path.sep, std.fs.path.sep, app.home, std.fs.path.sep, dir });
         return null;
     };
     const script_hash = try sha256Hex(app.arena, app_zig.readFileMaybe(app, script) orelse "");
-    const decl_hash = try sha256Hex(app.arena, app_zig.readFileMaybe(app, cd.origin) orelse "");
+    const decl_hash = try sha256Hex(app.arena, app_zig.readFileMaybe(app, src.origin) orelse "");
     return .{
         .script = script,
         .script_hash = script_hash,
         .record = try trustRecord(app.arena, decl_hash, script_hash),
         // Implicit only when BOTH halves are the user's own: a central
         // declaration pointing at a cloned script is still cloned code.
-        .implicit_trust = underHome(app.home, cd.origin) and underHome(app.home, script),
+        .implicit_trust = underHome(app.home, src.origin) and underHome(app.home, script),
     };
 }
 
 /// expandArgv builds the command line. Tokens are split BEFORE `${}` expands
 /// (same order as nav.buildTerminalArgv's `{dir}`), so a value containing
 /// spaces stays one argument and can never inject extra ones.
-fn expandArgv(app: *App, cd: *const segments.ContextDef, script: []const u8, high: []const Var, low: []const Var) !?[][]const u8 {
-    const tokens = try splitRunLine(app.arena, cd.run);
+fn expandArgv(app: *App, src: Source, script: []const u8, high: []const Var, low: []const Var) !?[][]const u8 {
+    const tokens = try splitRunLine(app.arena, src.run);
     var argv = try app.arena.alloc([]const u8, tokens.len);
     argv[0] = script;
     // Same precedence as resolve.SegLookup: inline value, environment, then
@@ -355,7 +390,7 @@ fn expandArgv(app: *App, cd: *const segments.ContextDef, script: []const u8, hig
     };
     for (tokens[1..], 1..) |tok, i| {
         argv[i] = segments.expandTemplate(app.arena, tok, Ctx{ .high = high, .low = low, .app = app }, Ctx.get) catch |e| {
-            try app.err.print("nix: segment \"{s}\": run line: {s} in \"{s}\"\n", .{ cd.segment, @errorName(e), tok });
+            try app.err.print("nix: {s}: run line: {s} in \"{s}\"\n", .{ src.label, @errorName(e), tok });
             if (e == error.Unresolved) {
                 try app.err.writeAll("  (the run line may only use the inline value, [contexts.vars], and the environment)\n");
             }
@@ -369,6 +404,7 @@ fn expandArgv(app: *App, cd: *const segments.ContextDef, script: []const u8, hig
 /// printing why not. Cache hits skip both the trust check's IO and the spawn.
 pub fn run(
     app: *App,
+    src: Source,
     cd: *const segments.ContextDef,
     alias: []const u8,
     dir: []const u8,
@@ -377,20 +413,28 @@ pub fn run(
     low: []const Var,
     run_zig: anytype,
 ) !?[]Var {
-    const r = (try locate(app, cd, dir, run_zig)) orelse return null;
-    const expanded = (try expandArgv(app, cd, r.script, high, low)) orelse return null;
-    const key = try cacheKey(app.arena, expanded, r.script_hash);
-    const ttl = parseDuration(cd.cache) orelse default_ttl_secs;
-    if (cacheGet(app, key, ttl)) |vars| return vars;
+    const r = (try locate(app, src, dir, run_zig)) orelse return null;
 
+    // Trust is checked BEFORE the cache, deliberately. A cached value is
+    // legitimate (an approved run of this exact command produced it), but
+    // letting a hit skip the gate would make refusal depend on cache state:
+    // the same untrusted declaration would work or not depending on what you
+    // happened to look up earlier. The gate has to mean one thing. locate()
+    // already read and hashed both files for the cache key, so this costs one
+    // extra read of trusted.toml.
     if (!r.implicit_trust and !isTrusted(app, r.record)) {
-        try app.err.print("nix: segment \"{s}\" wants to run: {s}\n", .{ cd.segment, cd.run });
-        try app.err.print("  declared in {s}\n", .{cd.origin});
+        try app.err.print("nix: {s} wants to run: {s}\n", .{ src.label, src.run });
+        try app.err.print("  declared in {s}\n", .{src.origin});
         try app.err.print("  script      {s}\n", .{r.script});
         try app.err.writeAll("  This has not been approved. Review both files, then run:\n");
         try app.err.print("    nix --trust {s} {s}\n", .{ alias, cd.segment });
         return null;
     }
+
+    const expanded = (try expandArgv(app, src, r.script, high, low)) orelse return null;
+    const key = try cacheKey(app.arena, expanded, r.script_hash);
+    const ttl = parseDuration(src.cache) orelse default_ttl_secs;
+    if (cacheGet(app, key, ttl)) |vars| return vars;
 
     // The script writes KEY=VALUE here. stdout stays free for its own logging
     // (forwarded to stderr below) so echo noise can never become a variable.
@@ -398,7 +442,7 @@ pub fn run(
         try tmpDir(app), std.fs.path.sep, key[0..16],
     });
     Io.Dir.cwd().writeFile(app.io, .{ .sub_path = out_file, .data = "" }) catch |e| {
-        try app.err.print("nix: segment \"{s}\": create {s}: {s}\n", .{ cd.segment, out_file, @errorName(e) });
+        try app.err.print("nix: {s}: create {s}: {s}\n", .{ src.label, out_file, @errorName(e) });
         return null;
     };
     defer Io.Dir.cwd().deleteFile(app.io, out_file) catch {};
@@ -412,20 +456,20 @@ pub fn run(
     const argv = try run_zig.wrapPs1(app, expanded);
     try app.out.flush();
     const res = proc.runCaptured(app.arena, app.io, argv, dir, app.env) catch |e| {
-        try app.err.print("nix: segment \"{s}\": run {s}: {s}\n", .{ cd.segment, r.script, @errorName(e) });
+        try app.err.print("nix: {s}: run {s}: {s}\n", .{ src.label, r.script, @errorName(e) });
         return null;
     };
     // Relay the script's own output to stderr — visible to the user, never
     // mixed into the resolved path on stdout.
     if (res.output.len > 0) try app.err.writeAll(res.output);
     if (res.code != 0) {
-        try app.err.print("nix: segment \"{s}\": {s} exited {d}\n", .{ cd.segment, std.fs.path.basename(r.script), res.code });
+        try app.err.print("nix: {s}: {s} exited {d}\n", .{ src.label, std.fs.path.basename(r.script), res.code });
         return null;
     }
     const body = app_zig.readFileMaybe(app, out_file) orelse "";
     const vars = try parseKvLines(app.arena, body);
     if (vars.len == 0) {
-        try app.err.print("nix: segment \"{s}\": {s} returned no variables\n", .{ cd.segment, std.fs.path.basename(r.script) });
+        try app.err.print("nix: {s}: {s} returned no variables\n", .{ src.label, std.fs.path.basename(r.script) });
         try app.err.writeAll("  (write KEY=VALUE lines to the file named by NIX_CONTEXT_OUT)\n");
         return null;
     }
@@ -448,12 +492,24 @@ pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: an
     }
     const alias = rest[0];
     const dir = (try resolve_zig.resolveAliasPath(app, alias)) orelse return 1;
-    const defs = try loadContextsFor(app, alias, dir);
+    const merged = try loadContextsFor(app, alias, dir);
     var approved: usize = 0;
-    for (defs) |cd| {
-        if (cd.run.len == 0) continue;
+    for (merged.contexts) |cd| {
         if (rest.len == 2 and !util.eqlFoldAscii(cd.segment, rest[1])) continue;
-        const r = (try locate(app, &cd, dir, run_zig)) orelse continue;
+        // Resolve exactly as resolution will: an inline `run` wins, else the
+        // producer named by `uses`. A context with neither executes nothing and
+        // has nothing to approve.
+        const src = if (cd.run.len > 0)
+            try fromContext(app.arena, &cd)
+        else if (cd.uses.len > 0) blk: {
+            const p = segments.lookupProducer(merged.producers, cd.uses) orelse {
+                try app.err.print("{s}: unknown producer \"{s}\"\n", .{ cd.segment, cd.uses });
+                continue;
+            };
+            break :blk try fromProducer(app.arena, p, &cd);
+        } else continue;
+
+        const r = (try locate(app, src, dir, run_zig)) orelse continue;
         if (r.implicit_trust) {
             try app.out.print("{s}: already trusted (declared and scripted under {s})\n", .{ cd.segment, app.home });
             continue;
@@ -473,20 +529,27 @@ pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: an
 
 /// loadContextsFor merges an alias's context files in the same precedence order
 /// resolveSegmented uses, so `--trust` sees exactly what resolution will.
-fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) ![]segments.ContextDef {
-    var out: std.ArrayList(segments.ContextDef) = .empty;
+/// Producers merge by name across the same three files.
+pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.SegFile {
+    var ctxs: std.ArrayList(segments.ContextDef) = .empty;
+    var prods: std.ArrayList(segments.ProducerDef) = .empty;
     const paths = [_][]const u8{
         try segments.localPath(app.arena, try dirToSlash(app.arena, dir)),
         try segments.centralPath(app.arena, app.home, alias),
         try segments.globalPath(app.arena, app.home),
     };
     for (paths) |p| {
-        outer: for (try segments.loadSegmentsFile(app.arena, app.io, p)) |cd| {
-            for (out.items) |m| if (util.eqlFoldAscii(m.segment, cd.segment)) continue :outer;
-            try out.append(app.arena, cd);
+        const sf = try segments.loadSegmentsFile(app.arena, app.io, p);
+        outer: for (sf.contexts) |cd| {
+            for (ctxs.items) |m| if (util.eqlFoldAscii(m.segment, cd.segment)) continue :outer;
+            try ctxs.append(app.arena, cd);
+        }
+        next: for (sf.producers) |pd| {
+            for (prods.items) |m| if (util.eqlFoldAscii(m.name, pd.name)) continue :next;
+            try prods.append(app.arena, pd);
         }
     }
-    return out.items;
+    return .{ .contexts = ctxs.items, .producers = prods.items };
 }
 
 fn dirToSlash(arena: std.mem.Allocator, dir: []const u8) ![]const u8 {

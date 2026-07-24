@@ -238,14 +238,43 @@ work. Fix history and implementation play-by-play live in `git log`, not here.
   agent `--resolve` calls.
 - **Only produced variables export to the child**, not `[contexts.vars]` —
   those stay template inputs, as they were before this feature.
-- **Deferred to issue #3:** all composition (named `[[producers]]` reusable
-  across aliases, var accumulation along a segment chain). v1 is one script per
-  segment, no sharing.
+- **Trust is checked BEFORE the cache.** A cached value is legitimate (an
+  approved run of that exact command produced it), but letting a hit skip the
+  gate would make refusal depend on cache state — the same untrusted
+  declaration working or not depending on what you looked up earlier. The gate
+  has to mean one thing. `locate` already hashes both files for the cache key,
+  so the check costs one extra read of `trusted.toml`.
+
+### Named producers (`[[producers]]` + `uses`, issue #3)
+
+- **Splits the two jobs a context block was doing:** producing facts (org-wide,
+  the same lookup from every repo) and shaping a path (project-local). Named
+  producers make the reusable half reusable; without it, a second project meant
+  duplicating the `run` line and the script wiring.
+- **The producer owns the command, the context owns the values.** A producer's
+  `run = "set_vars ${task}"` expands in the CALLING context's variable scope,
+  so no parameter-passing mechanism was needed. A context's `cache` overrides
+  the producer's; an inline `run` wins over `uses`, so a command written on the
+  context is never silently ignored.
+- **`Source` is the one shape.** An inline `run` and a producer collapse to
+  `{label, run, cache, origin}` in context.zig, so locate/run/trust have a
+  single code path and the split added no second one.
+- **Trust follows the PRODUCER's declaring file**, since that is what holds the
+  command. A project file containing only `segment`/`uses`/`source-template` is
+  inert data — it can only invoke producers the machine owner declared, with
+  values the user typed, into a path `guardFragment` fences — so it needs no
+  approval. A repo shipping its own `[[producers]]` with a `run` line still
+  goes through the ledger.
+- **The cache is shared across aliases** as a direct consequence of keying on
+  the expanded command line rather than the alias: two projects asking the same
+  question pay for one lookup.
+- **Still deferred:** `uses = [...]` (multiple producers per context) and var
+  accumulation along a segment chain (`task:123@sprint:7@project`). The latter
+  stays speculative until a real two-axis workflow shows up; it can land later
+  as pure behaviour with no schema change.
 
 ---
 
 ## Backlog
 
-- **Composable contexts / named producers** — GitHub issue #3. Splits the
-  reusable "produce facts" half of a `[[contexts]]` block from the
-  project-local "shape a path" half, so one lookup serves many repos.
+Nothing queued right now.
