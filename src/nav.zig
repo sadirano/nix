@@ -77,6 +77,13 @@ pub fn isCmdShell(shell: []const u8) bool {
 pub fn navigateGroup(app: *App, group: []const u8) !u8 {
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     if (targets.len == 1) return enterDir(app, targets[0].name, targets[0].path);
+    // Navigation has no non-interactive form: picking is the whole command, and
+    // "cd to all of them" isn't a thing. A single-member group above needs no
+    // pick, so it still navigates under --no-prompt.
+    if (app.no_prompt) {
+        try app.err.print("nix: +{s} has {d} members and picking one is interactive; resolve a member instead (`nix <member>`)\n", .{ group, targets.len });
+        return 1;
+    }
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick among +{s}'s members (or `o <member>`)\n", .{group});
         return 1;

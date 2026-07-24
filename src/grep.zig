@@ -82,7 +82,8 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
     }
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    // Under --no-prompt the rows go to stdout, so fzf isn't needed.
+    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return 1;
     }
@@ -97,14 +98,20 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     }
 
     var rg: std.ArrayList([]const u8) = .empty;
-    try rg.appendSlice(app.arena, &.{ "rg", "--smart-case", "--color=always", "--line-number", "--no-heading" });
+    // Colour exists for fzf's --ansi; printed rows stay clean so `file:line:text`
+    // survives being parsed.
+    try rg.appendSlice(app.arena, &.{ "rg", "--smart-case", if (app.no_prompt) "--color=never" else "--color=always", "--line-number", "--no-heading" });
     if (relaxed) try rg.append(app.arena, "--no-unicode");
-    for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
-        try rg.append(app.arena, "--colors");
-        try rg.append(app.arena, spec);
+    if (!app.no_prompt) {
+        for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
+            try rg.append(app.arena, "--colors");
+            try rg.append(app.arena, spec);
+        }
     }
     for (extras) |x| try rg.append(app.arena, x);
     if (query.len > 0) try rg.append(app.arena, query);
+
+    if (app.no_prompt) return open_zig.printProducerRows(app, targets, rg.items);
 
     // Single root: rows are cwd-relative (`file:line:text`), so fzf's `:`-split
     // fields feed bat directly. Multi root (a group): each member's rg runs IN
@@ -153,7 +160,8 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
     }
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    // Under --no-prompt the rows go to stdout, so fzf isn't needed.
+    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return 1;
     }
@@ -170,15 +178,20 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     }
 
     var rga: std.ArrayList([]const u8) = .empty;
-    try rga.appendSlice(app.arena, &.{ "rga", "--smart-case", "--color=always", "--line-number", "--no-heading" });
+    // Colour exists for fzf's --ansi; printed rows stay clean for parsing.
+    try rga.appendSlice(app.arena, &.{ "rga", "--smart-case", if (app.no_prompt) "--color=never" else "--color=always", "--line-number", "--no-heading" });
     if (relaxed) try rga.append(app.arena, "--no-unicode");
-    for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
-        try rga.append(app.arena, "--colors");
-        try rga.append(app.arena, spec);
+    if (!app.no_prompt) {
+        for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
+            try rga.append(app.arena, "--colors");
+            try rga.append(app.arena, spec);
+        }
     }
     for (extras) |x| try rga.append(app.arena, x);
     try rga.append(app.arena, "-e");
     try rga.append(app.arena, query);
+
+    if (app.no_prompt) return open_zig.printProducerRows(app, targets, rga.items);
 
     // Preview gets the whole highlighted row ({}) and parses file:line itself,
     // via our `--rga-preview` verb. Passing the full row (rather than separate
