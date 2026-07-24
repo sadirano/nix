@@ -244,7 +244,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             try d.cont("a wrapper in use couldn't be replaced; run `nix --sync` from a fresh shell");
         }
     } else {
-        try d.row(.warn, "wrappers", try std.fmt.allocPrint(app.arena, "none installed at {s} — run `nix --init`", .{bin}));
+        try d.row(.warn, "wrappers", try std.fmt.allocPrint(app.arena, "none installed at {s} - run `nix --init`", .{bin}));
     }
     if (pathContains(app, bin)) {
         try d.row(.ok, "PATH", try std.fmt.allocPrint(app.arena, "{s} on PATH", .{bin}));
@@ -259,7 +259,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "fzf")) |p| {
         try d.row(.ok, "fzf", p);
     } else {
-        try d.row(.fail, "fzf", "not found — the picker can't run (install fzf)");
+        try d.row(.fail, "fzf", "not found - the picker can't run (install fzf)");
     }
 
     // es — present AND functional? es.exe installs fine from GitHub but is dead
@@ -274,10 +274,10 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             try d.row(.ok, "es", try std.fmt.allocPrint(app.arena, "Everything index working  ({s})", .{p}));
         } else {
             try d.row(.warn, "es", try std.fmt.allocPrint(app.arena, "present but Everything service not running  ({s})", .{p}));
-            try d.cont("→ picker can't use es; falling back to fd/find");
+            try d.cont("-> picker can't use es; falling back to fd/find");
         }
     } else {
-        try d.row(.note, "es", "not installed (optional — gives instant whole-system reach)");
+        try d.row(.note, "es", "not installed (optional - gives instant whole-system reach)");
     }
 
     // fd — present AND real? A .cmd/.bat shadowing real fd is the trap, so detect
@@ -285,7 +285,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     var fd_ok = false;
     if (proc.findInPath(app.arena, app.io, app.env, "fd")) |p| {
         if (isScriptShim(p)) {
-            try d.row(.fail, "fd", try std.fmt.allocPrint(app.arena, "NOT real fd — resolves to a script: {s}", .{p}));
+            try d.row(.fail, "fd", try std.fmt.allocPrint(app.arena, "NOT real fd - resolves to a script: {s}", .{p}));
             try d.cont("a shim shadows the real fd.exe; fix PATH or rename the shim");
         } else {
             const ver = std.mem.trim(u8, proc.probeOutput(app.arena, app.io, &.{ "fd", "--version" }, ".") catch "", " \t\r\n");
@@ -297,7 +297,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             }
         }
     } else {
-        try d.row(.fail, "fd", "not found — install fd (the picker's fallback finder)");
+        try d.row(.fail, "fd", "not found - install fd (the picker's fallback finder)");
     }
 
     // find — only a real fallback off Windows (System32 find is not a file finder).
@@ -313,13 +313,13 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     // from (the es→fd→find fallback, resolved), mirroring pickerSource so the
     // report matches reality. The bottom line of the section.
     if (es_ok) {
-        try d.row(.ok, "=> uses", "es — Everything's instant, whole-system index");
+        try d.row(.ok, "=> uses", "es - Everything's instant, whole-system index");
     } else if (fd_ok) {
-        try d.row(.ok, "=> uses", "fd — walks the search roots below");
+        try d.row(.ok, "=> uses", "fd - walks the search roots below");
     } else if (find_ok) {
-        try d.row(.ok, "=> uses", "find — walks the search roots below");
+        try d.row(.ok, "=> uses", "find - walks the search roots below");
     } else {
-        try d.row(.fail, "=> uses", "NONE — no working finder; the picker will fail");
+        try d.row(.fail, "=> uses", "NONE - no working finder; the picker will fail");
     }
 
     try d.section("Search scope  (used only when the picker falls back to fd/find)");
@@ -341,7 +341,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             if (app.env.get("HOME")) |h| try roots.append(app.arena, h);
         }
         if (roots.items.len == 0) {
-            try d.row(.warn, "", "no roots resolved — the fd/find fallback has nothing to walk");
+            try d.row(.warn, "", "no roots resolved - the fd/find fallback has nothing to walk");
         }
         for (roots.items) |r| {
             // A configured root that doesn't exist is a misconfiguration worth a
@@ -363,7 +363,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             if (proc.findInPath(app.arena, app.io, app.env, t.name)) |p| {
                 try d.row(.ok, t.name, try std.fmt.allocPrint(app.arena, "{s}  ({s})", .{ t.feature, p }));
             } else {
-                try d.row(.warn, t.name, try std.fmt.allocPrint(app.arena, "not found — {s} unavailable", .{t.feature}));
+                try d.row(.warn, t.name, try std.fmt.allocPrint(app.arena, "not found - {s} unavailable", .{t.feature}));
             }
         }
         // editor backs `e`/`s`: $EDITOR, $VISUAL, then nvim/vim/code/nano/notepad.
@@ -383,14 +383,14 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             try d.row(.ok, "config.toml", cfg_path);
             try d.cont(try std.fmt.allocPrint(app.arena, "grep_all={}, shortcut overrides={d}, search_roots={d}", .{ cfg.grep_all, cfg.shortcuts.len, cfg.picker_search_roots.len }));
         } else {
-            try d.row(.note, "config.toml", "none — using built-in defaults");
+            try d.row(.note, "config.toml", "none - using built-in defaults");
         }
         if (cfg.nav_terminal.len > 0) {
             try d.row(.ok, "nav terminal", cfg.nav_terminal);
         } else if (proc.is_windows) {
-            try d.row(.note, "nav terminal", "unset — `o +group` extras use `wt -d`, else `start`");
+            try d.row(.note, "nav terminal", "unset - `o +group` extras use `wt -d`, else `start`");
         } else {
-            try d.row(.note, "nav terminal", "unset — set [nav] terminal for `o +group` extra windows");
+            try d.row(.note, "nav terminal", "unset - set [nav] terminal for `o +group` extra windows");
         }
         {
             const hooks = [_]struct { key: []const u8, template: []const u8 }{
@@ -409,10 +409,10 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
                 if (proc.findInPath(app.arena, app.io, app.env, exe)) |p| {
                     try d.row(.ok, "notify hook", try std.fmt.allocPrint(app.arena, "{s} reports via {s}  ({s})", .{ h.key, exe, p }));
                 } else {
-                    try d.row(.warn, "notify hook", try std.fmt.allocPrint(app.arena, "[notify] {s}: \"{s}\" not found — the hook will fail every time it fires", .{ h.key, exe }));
+                    try d.row(.warn, "notify hook", try std.fmt.allocPrint(app.arena, "[notify] {s}: \"{s}\" not found - the hook will fail every time it fires", .{ h.key, exe }));
                 }
             }
-            if (!any) try d.row(.note, "notify hook", "unset — set [notify] on_finish/on_paste/on_yank to record outcomes (e.g. hoot)");
+            if (!any) try d.row(.note, "notify hook", "unset - set [notify] on_finish/on_paste/on_yank to record outcomes (e.g. hoot)");
         }
 
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);
@@ -438,7 +438,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         }
         if (dups.items.len > 0) {
             try d.row(.warn, "duplicates", try std.fmt.allocPrint(app.arena, "defined more than once: {s}", .{try std.mem.join(app.arena, ", ", dups.items)}));
-            try d.cont("hand-edited aliases.toml? the first entry wins — remove the extras");
+            try d.cont("hand-edited aliases.toml? the first entry wins - remove the extras");
         }
 
         // Windows needs no snippet — the wrappers/PATH rows above cover it.
@@ -447,12 +447,12 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             if (proc.pathExists(app.io, snip)) {
                 try d.row(.ok, "shell", try std.fmt.allocPrint(app.arena, "integration snippet present  ({s})", .{snip}));
             } else {
-                try d.row(.warn, "shell", try std.fmt.allocPrint(app.arena, "snippet missing ({s}) — run `nix --init`", .{snip}));
+                try d.row(.warn, "shell", try std.fmt.allocPrint(app.arena, "snippet missing ({s}) - run `nix --init`", .{snip}));
             }
         }
     }
 
-    try d.section("Bin exports  ([bin] → ~/.nix/bin)");
+    try d.section("Bin exports  ([bin] -> ~/.nix/bin)");
     {
         // The drift logic lives with the sync (bin_exports.zig) so the report
         // and `--sync-bin` can never disagree about what counts as current.

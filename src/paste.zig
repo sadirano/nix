@@ -194,7 +194,7 @@ pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, sele
                 try buf.appendSlice(app.arena, p);
             }
             clipboard.writeText(app.arena, app.io, buf.items) catch {};
-            try app.err.writeAll("note: file-drop clipboard is Windows-only — copied the paths as text\n");
+            try app.err.writeAll("note: file-drop clipboard is Windows-only - copied the paths as text\n");
         } else {
             try app.err.print("nix: clipboard file copy failed: {s}\n", .{@errorName(e)});
             return 1;

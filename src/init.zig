@@ -26,14 +26,14 @@ const readFileMaybe = app_zig.readFileMaybe;
 fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
-const starter_aliases = "# nix aliases — edit with care, prefer 'nix <name> <path>' / 'nix <name> --remove'\n";
+const starter_aliases = "# nix aliases - edit with care, prefer 'nix <name> <path>' / 'nix <name> --remove'\n";
 const starter_config =
     \\# nix configuration.
     \\#
     \\# After editing, run: nix --sync  (then restart your shell)
     \\#
     \\# [shortcuts] renames the built-in command functions
-    \\# (o, e, s, y, p, r, sg, ff). An array gives a slot several names —
+    \\# (o, e, s, y, p, r, sg, ff). An array gives a slot several names -
     \\# every listed one answers, the first is the primary (e.g. keep `r`
     \\# and add `x` for shells whose built-in `r` alias shadows it):
     \\#
@@ -41,7 +41,7 @@ const starter_config =
     \\#   s = "show"
     \\#   r = ["r", "x"]
     \\#
-    \\# Prefer spelled-out names to the letters? Uncomment this full preset — a
+    \\# Prefer spelled-out names to the letters? Uncomment this full preset - a
     \\# friendlier setup that trades each short name for a word (findfile, not
     \\# find, so it never clashes with the built-in find.exe):
     \\#
@@ -56,7 +56,7 @@ const starter_config =
     \\#   ff = "findfile"   # fuzzy-find files under the dir
     \\#
     \\# [grep] tunes the sg search. `all = true` makes sg search with
-    \\# ripgrep-all (rga) by default — same as passing --all on every search:
+    \\# ripgrep-all (rga) by default - same as passing --all on every search:
     \\#
     \\#   [grep]
     \\#   all = true
@@ -72,7 +72,7 @@ const starter_config =
     \\#
     \\# [notify] on_finish runs a notifier after every foreground `r <alias>
     \\# :action` finishes, with {alias} {action} {exit} {status} {duration}
-    \\# {level} {message} expanded — so long builds report completion (and
+    \\# {level} {message} expanded - so long builds report completion (and
     \\# especially failure) without per-action boilerplate. With a notifier
     \\# like hoot, success logs quietly and failure toasts. on_paste / on_yank
     \\# record what `p` / `y` actually did ({alias} {message} {status} {level}),
@@ -115,7 +115,7 @@ pub fn cmdSync(app: *App) !u8 {
             .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),
             .already => {},
         } else |e| {
-            try app.err.print("nix: could not add {s} to the user PATH ({s}) — add it manually\n", .{ bin, @errorName(e) });
+            try app.err.print("nix: could not add {s} to the user PATH ({s}) - add it manually\n", .{ bin, @errorName(e) });
         }
         try removeLegacyPwshSnippet(app);
         try app.err.writeAll("restart your shell to pick up changes\n");
@@ -133,7 +133,7 @@ fn removeLegacyPwshSnippet(app: *App) !void {
     const ps = try std.fs.path.join(app.arena, &.{ app.home, "shell", "nix.ps1" });
     if (!proc.pathExists(app.io, ps)) return;
     Io.Dir.cwd().deleteFile(app.io, ps) catch |e| {
-        try app.err.print("nix: could not remove the retired {s} ({s}) — delete it manually\n", .{ ps, @errorName(e) });
+        try app.err.print("nix: could not remove the retired {s} ({s}) - delete it manually\n", .{ ps, @errorName(e) });
         return;
     };
     if (std.fs.path.dirname(ps)) |d| Io.Dir.cwd().deleteDir(app.io, d) catch {};
@@ -304,7 +304,7 @@ fn writeFileAtomic(app: *App, path: []const u8, data: []const u8) !void {
 /// creating ~/.nix/actions as needed. Atomic via temp + rename.
 fn writeActionsFile(app: *App, path: []const u8, list: []const actions.Action) !void {
     var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(app.arena, "# nix per-alias actions — run with `r <alias> :<name>`\n\n[actions]\n");
+    try b.appendSlice(app.arena, "# nix per-alias actions - run with `r <alias> :<name>`\n\n[actions]\n");
     for (list) |ac| {
         try b.appendSlice(app.arena, ac.name);
         try b.appendSlice(app.arena, " = ");
@@ -356,7 +356,7 @@ pub fn cmdInit(app: *App) !u8 {
             .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),
             .already => {},
         } else |e| {
-            try app.err.print("nix: could not add {s} to the user PATH ({s}) — add it manually\n", .{ bin, @errorName(e) });
+            try app.err.print("nix: could not add {s} to the user PATH ({s}) - add it manually\n", .{ bin, @errorName(e) });
         }
         try removeLegacyPwshSnippet(app);
     }
@@ -367,7 +367,7 @@ pub fn cmdInit(app: *App) !u8 {
         try app.err.writeAll("restart your shell to activate o/e/s/y/p/r, sg/ff\n");
         // PowerShell resolves aliases before PATH exes, and `r` is a built-in
         // alias (Invoke-History) — the one wrapper pwsh silently shadows.
-        try app.err.writeAll("PowerShell users: the built-in `r` alias shadows r.exe — add to $PROFILE:  Remove-Item Alias:r -Force\n");
+        try app.err.writeAll("PowerShell users: the built-in `r` alias shadows r.exe - add to $PROFILE:  Remove-Item Alias:r -Force\n");
     } else {
         const sh = try snippet.bashPath(app.arena, app.home);
         try app.err.print("add to your shell rc:  [ -f '{s}' ] && . '{s}'\n", .{ sh, sh });
