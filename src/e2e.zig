@@ -379,10 +379,11 @@ pub fn main(init: std.process.Init) !void {
         c.check(std.mem.indexOf(u8, man, "greet.cmd") != null and std.mem.indexOf(u8, man, "tool.exe") != null and
             std.mem.indexOf(u8, man, "task.cmd") != null, "the exports manifest records every install", r);
 
-        // A rebuild leaves the copy stale: doctor flags it, resync refreshes it.
+        // A rebuild is a new, unconsented version: doctor flags it as pending,
+        // and `--sync-bin` (the explicit allow) refreshes the copy.
         try writeFile(&c, src_exe, "MZfake-v2");
         r = try c.run(&.{"--doctor"});
-        c.check(std.mem.indexOf(u8, r.out, "Bin exports") != null and std.mem.indexOf(u8, r.out, "stale") != null, "--doctor flags a stale export copy", r);
+        c.check(std.mem.indexOf(u8, r.out, "Bin exports") != null and std.mem.indexOf(u8, r.out, "not yet allowed") != null, "--doctor flags a rebuilt export as a new version pending consent", r);
         r = try c.run(&.{"--sync-bin"});
         c.check(r.code == 0 and std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v2"), "resync refreshes a rebuilt exe copy", r);
 
