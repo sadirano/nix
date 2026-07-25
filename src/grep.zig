@@ -142,6 +142,9 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, rg.items), &fzf, cwd, fzfEnv(app))
     else
         try proc.runPipeline(app.arena, app.io, rg.items, &fzf, cwd, fzfEnv(app));
+    // The preview subprocess was the only reader. Drop it before the editor
+    // spawn below, so the user's editor doesn't inherit a stray search pattern.
+    _ = app.env.orderedRemove("NIX_RGA_QUERY");
     if (res.code != 0) return 0; // cancelled / nothing selected
     const sel = if (multi) try expandPrefixedSelection(app.arena, targets, res.output) else res.output;
     return openSelectionsInEditor(app, cwd, sel, true);
@@ -215,6 +218,8 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, rga.items), &fzf, cwd, fzfEnv(app))
     else
         try proc.runPipeline(app.arena, app.io, rga.items, &fzf, cwd, fzfEnv(app));
+    // Preview-only variable: drop it before anything else is spawned below.
+    _ = app.env.orderedRemove("NIX_RGA_QUERY");
     if (res.code != 0) return 0; // cancelled / nothing selected
     const sel = if (multi) try expandPrefixedSelection(app.arena, targets, res.output) else res.output;
     return openRgaSelections(app, cwd, sel);
