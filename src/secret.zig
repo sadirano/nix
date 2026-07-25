@@ -1,8 +1,7 @@
-//! `${secret:NAME}` placeholders in actions (proposal at
-//! an internal proposal note): credentials for per-alias
-//! actions live in the Windows Credential Manager instead of plaintext in
-//! actions.toml. `nix --secret set|rm|list` manages them; runShellString
-//! (run.zig) expands `${secret:NAME}` in an action's command at spawn time.
+//! `${secret:NAME}` placeholders in actions: credentials for per-alias actions
+//! live in the Windows Credential Manager instead of plaintext in actions.toml.
+//! `nix --secret set|rm|list` manages them; runShellString (run.zig) expands
+//! `${secret:NAME}` in an action's command at spawn time.
 //!
 //! Two independent halves: the Credential Manager backend (real IO, Windows
 //! only) below, and expandSecrets (pure, unit tested) at the bottom.
@@ -187,12 +186,26 @@ fn usageError(app: *App) !u8 {
     return 1;
 }
 
+/// referenceable reports whether `${secret:NAME}` can name this secret at all.
+/// expandSecrets ends the placeholder at the first '}', so a name containing
+/// one could be stored and listed but never used - a credential the user
+/// believes is wired up and silently is not. Checked on `set` only: `rm` and
+/// `list` must still reach a name stored before this rule existed.
+pub fn referenceable(name: []const u8) bool {
+    return name.len > 0 and std.mem.indexOfScalar(u8, name, '}') == null;
+}
+
 pub fn cmdSecret(app: *App, rest: [][]const u8) !u8 {
     if (rest.len == 0) return usageError(app);
     const sub = rest[0];
     if (eql(sub, "set")) {
         if (rest.len != 2) return usageError(app);
         const name = rest[1];
+        if (!referenceable(name)) {
+            try app.err.print("nix: invalid secret name \"{s}\"\n", .{name});
+            try app.err.writeAll("  (a name must be non-empty and free of '}', or ${secret:NAME} could never reference it)\n");
+            return 1;
+        }
         const value = readSecretValue(app.arena, app.out) catch |e| {
             try app.err.print("nix: --secret set: {s}\n", .{@errorName(e)});
             return 1;
@@ -300,6 +313,15 @@ const TestResolver = struct {
     }
 };
 
+test "referenceable: only names ${secret:NAME} can actually reach" {
+    try std.testing.expect(referenceable("db-password"));
+    try std.testing.expect(referenceable("DEPLOY_TOKEN"));
+    // A '}' ends the placeholder early, so the stored name is unreachable.
+    try std.testing.expect(!referenceable("bad}name"));
+    try std.testing.expect(!referenceable("}"));
+    try std.testing.expect(!referenceable(""));
+}
+
 test "expandSecrets: no placeholders pass through unchanged" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -314,8 +336,8 @@ test "expandSecrets: single placeholder resolved" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var r = TestResolver{ .names = &.{"db-password"}, .values = &.{"hunter2"} };
-    const result = try expandSecrets(a, "runner -pp ${secret:db-password} -x", r.resolver());
-    try std.testing.expectEqualStrings("runner -pp hunter2 -x", result.ok);
+    const result = try expandSecrets(a, "deploy --password ${secret:db-password} --verbose", r.resolver());
+    try std.testing.expectEqualStrings("deploy --password hunter2 --verbose", result.ok);
 }
 
 test "expandSecrets: unknown name aborts with .missing" {
@@ -323,7 +345,7 @@ test "expandSecrets: unknown name aborts with .missing" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var r = TestResolver{ .names = &.{}, .values = &.{} };
-    const result = try expandSecrets(a, "runner -pp ${secret:nope}", r.resolver());
+    const result = try expandSecrets(a, "deploy --password ${secret:nope}", r.resolver());
     try std.testing.expectEqualStrings("nope", result.missing);
 }
 

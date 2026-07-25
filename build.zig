@@ -24,7 +24,11 @@ pub fn build(b: *std.Build) void {
     ) orelse (optimize != .Debug);
     build_options.addOption([]const u8, "build_date", if (baked_date) buildDate(b) else "dev");
 
-    // Library module: the tool's subsystems (store/groups/…), importable as `nix`.
+    // Library module: the tool's subsystems (store/groups/…), importable as
+    // `nix` by a dependent package. The exe does NOT import it — main.zig
+    // reaches the same files directly by path, so importing it here would only
+    // compile a second copy. It stays for dependents and for `zig build test`,
+    // whose refAllDecls over root.zig compile-checks the whole surface.
     const mod = b.addModule("nix", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -37,7 +41,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "nix", .module = mod },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),

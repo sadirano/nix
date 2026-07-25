@@ -64,6 +64,29 @@ pub fn parseKvLines(arena: std.mem.Allocator, data: []const u8) ![]Var {
     return out.items;
 }
 
+/// Variable names a context source may not define. Two kinds: PATH, which
+/// aliasRunEnv rebuilds each call to put the scripts dirs in front (a context
+/// var of that name would both win over it and, worse, get REMOVED as stale
+/// context on the next group member, leaving the child with no PATH at all),
+/// and the protocol variables nix sets for the script itself - a source
+/// redefining those would be talking back over its own input channel.
+const reserved_vars = [_][]const u8{
+    "PATH",
+    "NIX_ALIAS",
+    "NIX_ALIAS_PATH",
+    "NIX_CONTEXT_OUT",
+    "NIX_SEGMENT",
+    "NIX_SEGMENT_VALUE",
+};
+
+/// isReservedVar reports whether a context source may not define `key`. Matched
+/// case-insensitively: Windows environment names are, so accepting "Path" would
+/// let the same clobber through the back door.
+pub fn isReservedVar(key: []const u8) bool {
+    for (reserved_vars) |r| if (std.ascii.eqlIgnoreCase(key, r)) return true;
+    return false;
+}
+
 /// parseDuration reads "30s" / "10m" / "2h" / "1d", a bare number (seconds), or
 /// "0"/"off"/"no" meaning "never cache". Returns null when unparseable, which
 /// callers treat as "use the default" rather than as an error — a typo in a TTL
@@ -224,6 +247,47 @@ pub const max_cache_entries: usize = 512;
 /// longer TTL.
 const CacheEntry = struct { key: []const u8, at: u64, ttl: u64, vars: []Var };
 
+/// escapeCacheValue makes a value safe to store as one `key = "value"` line.
+/// Values are arbitrary script output, so a newline in one would otherwise end
+/// the line and let the rest be re-read as further keys - or, with a leading
+/// '[', as a whole fake `[cache.…]` section that the reader would then trust.
+/// Backslash goes first so the escape is reversible.
+fn escapeCacheValue(arena: std.mem.Allocator, v: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (v) |c| switch (c) {
+        '\\' => try out.appendSlice(arena, "\\\\"),
+        '"' => try out.appendSlice(arena, "\\\""),
+        '\n' => try out.appendSlice(arena, "\\n"),
+        '\r' => try out.appendSlice(arena, "\\r"),
+        else => try out.append(arena, c),
+    };
+    return out.items;
+}
+
+/// unescapeCacheValue reverses escapeCacheValue. An unknown escape keeps the
+/// character that followed it (`\x` -> `x`) and a trailing lone backslash is
+/// dropped: the lenient posture again, since a hand-edited cache must degrade
+/// to a wrong-but-harmless string rather than an error on a navigation path.
+fn unescapeCacheValue(arena: std.mem.Allocator, v: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, v, '\\') == null) return v;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < v.len) : (i += 1) {
+        if (v[i] != '\\') {
+            try out.append(arena, v[i]);
+            continue;
+        }
+        i += 1;
+        if (i >= v.len) break;
+        try out.append(arena, switch (v[i]) {
+            'n' => '\n',
+            'r' => '\r',
+            else => v[i],
+        });
+    }
+    return out.items;
+}
+
 /// loadCache parses the `[cache.<key>]` sections. Same lenient posture as every
 /// other reader here: anything unparseable is simply absent, which costs a
 /// re-run and never a wrong answer.
@@ -259,7 +323,7 @@ fn loadCache(app: *App) ![]CacheEntry {
         }
         var vars: std.ArrayList(Var) = .empty;
         try vars.appendSlice(app.arena, out.items[idx].vars);
-        try vars.append(app.arena, .{ .key = key, .value = val });
+        try vars.append(app.arena, .{ .key = key, .value = try unescapeCacheValue(app.arena, val) });
         out.items[idx].vars = vars.items;
     }
     return out.items;
@@ -316,7 +380,10 @@ fn cachePut(app: *App, key: []const u8, vars: []const Var, ttl: u64) !void {
     try buf.appendSlice(app.arena, "# nix context result cache. Safe to delete.\n");
     for (rows) |e| {
         try buf.print(app.arena, "\n[cache.{s}]\n_at = {d}\n_ttl = {d}\n", .{ e.key, e.at, e.ttl });
-        for (e.vars) |kv| try buf.print(app.arena, "{s} = \"{s}\"\n", .{ kv.key, kv.value });
+        for (e.vars) |kv| try buf.print(app.arena, "{s} = \"{s}\"\n", .{
+            kv.key,
+            try escapeCacheValue(app.arena, kv.value),
+        });
     }
     try util.writeFileAtomic(app.arena, app.io, try cachePath(app.arena, app.home), buf.items);
 }
@@ -482,11 +549,21 @@ pub fn run(
     };
     defer Io.Dir.cwd().deleteFile(app.io, out_file) catch {};
 
+    // The protocol variables belong to THIS script's invocation only. app.env is
+    // the map every later spawn inherits (the `r` command, the `o` subshell, the
+    // next segment's source), so they are removed again as soon as the script
+    // exits - otherwise a command would see an NIX_CONTEXT_OUT naming a deleted
+    // temp file, and a second segment would see the first one's NIX_SEGMENT.
+    // NIX_ALIAS/NIX_ALIAS_PATH are exempt: aliasRunEnv sets those for the child
+    // anyway, and they describe the alias, not this call.
     try app.env.put("NIX_CONTEXT_OUT", out_file);
     try app.env.put("NIX_SEGMENT", cd.segment);
     try app.env.put("NIX_SEGMENT_VALUE", if (ps.has_value) ps.value else "");
     try app.env.put("NIX_ALIAS", alias);
     try app.env.put("NIX_ALIAS_PATH", dir);
+    defer for ([_][]const u8{ "NIX_CONTEXT_OUT", "NIX_SEGMENT", "NIX_SEGMENT_VALUE" }) |k| {
+        _ = app.env.orderedRemove(k);
+    };
 
     const argv = try run_zig.wrapPs1(app, expanded);
     try app.out.flush();
@@ -502,7 +579,20 @@ pub fn run(
         return null;
     }
     const body = app_zig.readFileMaybe(app, out_file) orelse "";
-    const vars = try parseKvLines(app.arena, body);
+    const parsed = try parseKvLines(app.arena, body);
+    // Drop (loudly) anything that would overwrite an environment name nix owns.
+    // Refusing the whole run would be harsher than the mistake deserves: the
+    // other variables are still good, and the script is told exactly what was
+    // ignored rather than being left to wonder why its PATH had no effect.
+    var kept: std.ArrayList(Var) = .empty;
+    for (parsed) |kv| {
+        if (isReservedVar(kv.key)) {
+            try app.err.print("nix: {s}: ignoring reserved variable \"{s}\" (nix owns that name)\n", .{ src.label, kv.key });
+            continue;
+        }
+        try kept.append(app.arena, kv);
+    }
+    const vars = kept.items;
     if (vars.len == 0) {
         try app.err.print("nix: {s}: {s} returned no variables\n", .{ src.label, std.fs.path.basename(r.script) });
         try app.err.writeAll("  (write KEY=VALUE lines to the file named by NIX_CONTEXT_OUT)\n");
@@ -625,6 +715,47 @@ test "parseKvLines: a UTF-8 BOM does not become part of the first key" {
     // What Windows PowerShell 5.1's `Out-File -Encoding utf8` actually writes.
     const vars = try parseKvLines(a, "\xEF\xBB\xBFclient_name=acme\n");
     try std.testing.expectEqualStrings("acme", findVar(vars, "client_name").?);
+}
+
+test "isReservedVar: names nix owns, case-insensitively" {
+    try std.testing.expect(isReservedVar("PATH"));
+    // Windows env names fold case, so the lowercase spelling clobbers just as hard.
+    try std.testing.expect(isReservedVar("Path"));
+    try std.testing.expect(isReservedVar("path"));
+    try std.testing.expect(isReservedVar("NIX_ALIAS"));
+    try std.testing.expect(isReservedVar("NIX_CONTEXT_OUT"));
+    try std.testing.expect(isReservedVar("NIX_SEGMENT_VALUE"));
+    // Ordinary context variables, including near-misses, stay allowed.
+    try std.testing.expect(!isReservedVar("client_name"));
+    try std.testing.expect(!isReservedVar("PATHS"));
+    try std.testing.expect(!isReservedVar("NIX_SEGMENTS"));
+    try std.testing.expect(!isReservedVar(""));
+}
+
+test "cache value escaping: round-trips, and a newline cannot forge a section" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cases = [_][]const u8{
+        "plain",
+        "C:\\repo\\acme",
+        "has \"quotes\" inside",
+        "line1\nline2",
+        "\n[cache.forged]\n_at = 99\nstolen = \"yes\"",
+        "trailing\\",
+        "",
+    };
+    for (cases) |c| {
+        const esc = try escapeCacheValue(a, c);
+        // Whatever the input held, the stored form is a single line with no
+        // bare quote to end it early.
+        try std.testing.expect(std.mem.indexOfScalar(u8, esc, '\n') == null);
+        try std.testing.expect(std.mem.indexOfScalar(u8, esc, '\r') == null);
+        try std.testing.expectEqualStrings(c, try unescapeCacheValue(a, esc));
+    }
+    // A hand-written unknown escape degrades to the plain character.
+    try std.testing.expectEqualStrings("x", try unescapeCacheValue(a, "\\x"));
+    try std.testing.expectEqualStrings("ab", try unescapeCacheValue(a, "ab\\"));
 }
 
 test "parseDuration: units, bare seconds, disable forms, junk" {

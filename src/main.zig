@@ -140,17 +140,24 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
 // ---- grammar ----------------------------------------------------------------
 
 fn dispatch(app: *App, args: [][]const u8) !u8 {
-    if (args.len == 0) {
+    // Global flags may LEAD the command: setGlobalFlags has already read them
+    // wherever they sit, so skipping them here makes `nix --no-prompt --prune`
+    // the same command as `nix --prune --no-prompt`. Without this the first
+    // dashed token is taken for the verb, and the natural spelling (modifier
+    // first, the way every other CLI accepts it) died on "unknown flag".
+    var rest = args;
+    while (rest.len > 0 and isGlobalFlag(rest[0])) rest = rest[1..];
+    if (rest.len == 0) {
         try printUsage(app);
         return 0;
     }
-    const first = args[0];
+    const first = rest[0];
     if (eql(first, "--help") or eql(first, "-h")) {
         try printUsage(app);
         return 0;
     }
     if (startsWithDash(first)) {
-        return dispatchSystem(app, first, args[1..]);
+        return dispatchSystem(app, first, rest[1..]);
     }
     // Group grammar (`+group …` / `member+group …`) — `+` is reserved in names,
     // so any `+` in the first token means a group operation, not an alias.
@@ -159,10 +166,10 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
         return 1;
     }) {
         .none => {},
-        .reference => |g| return dispatchGroupRef(app, g, args[1..]),
-        .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, args[1..]),
+        .reference => |g| return dispatchGroupRef(app, g, rest[1..]),
+        .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]),
     }
-    return dispatchAlias(app, first, args[1..]);
+    return dispatchAlias(app, first, rest[1..]);
 }
 
 fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
@@ -264,46 +271,30 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
 
 // ---- groups ---------------------------------------------------
 
+// Short names for the handlers main dispatches to. Only what main.zig itself
+// calls belongs here: a re-export nothing below uses is dead weight that reads
+// like a seam between the modules when there isn't one.
 const isGlobalFlag = app_zig.isGlobalFlag;
+const aliasAction = app_zig.aliasAction;
 const nameErrorText = resolve.nameErrorText;
 const addAlias = resolve.addAlias;
 const resolveAliasPath = resolve.resolveAliasPath;
 const resolveSegmented = resolve.resolveSegmented;
 const cmdContexts = resolve.cmdContexts;
 const cmdWhich = resolve.cmdWhich;
-const GroupTarget = resolve.GroupTarget;
-const resolveGroupTargets = resolve.resolveGroupTargets;
-const rowPath = resolve.rowPath;
-const prefixedProducers = open_zig.prefixedProducers;
-const expandPrefixedSelection = open_zig.expandPrefixedSelection;
-const expandAliasRowPath = open_zig.expandAliasRowPath;
-const stripCmdCarets = open_zig.stripCmdCarets;
-const opensWithDefaultApp = open_zig.opensWithDefaultApp;
-const absUnder = open_zig.absUnder;
-const openSelectionsInEditor = open_zig.openSelectionsInEditor;
-const spawnEditor = open_zig.spawnEditor;
 const cmdPreview = open_zig.cmdPreview;
 const exploreSelections = open_zig.exploreSelections;
 const exploreTarget = open_zig.exploreTarget;
-const splitGrepRow = open_zig.splitGrepRow;
 const cmdGrep = grep.cmdGrep;
-const grepIn = grep.grepIn;
 const cmdRgaPreview = grep.cmdRgaPreview;
 const cmdFind = find.cmdFind;
-const findIn = find.findIn;
 const findPick = find.findPick;
 const cmdRun = run_zig.cmdRun;
-const aliasRunEnv = run_zig.aliasRunEnv;
-const resolveAction = run_zig.resolveAction;
-const resolveScript = run_zig.resolveScript;
-const listActions = run_zig.listActions;
-const runShellString = run_zig.runShellString;
 const enterDir = nav.enterDir;
 const navigateGroup = nav.navigateGroup;
 const cmdGroups = cmd_groups.cmdGroups;
 const dispatchGroupRef = cmd_groups.dispatchGroupRef;
 const dispatchGroupAdd = cmd_groups.dispatchGroupAdd;
-const aliasAction = app_zig.aliasAction;
 
 // ---- Tier 1 commands --------------------------------------------------------
 

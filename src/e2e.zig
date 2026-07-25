@@ -181,6 +181,15 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{"--list-names"});
         c.check(r.code == 0 and hasLine(r.out, "pa") and hasLine(r.out, "pb"), "--list-names prints bare names", r);
+
+        // A global flag may lead the command, not only trail it: the first
+        // dashed token used to be taken for the verb, so the natural spelling
+        // died on "unknown flag --no-prompt".
+        r = try c.run(&.{ "--no-prompt", "--list-names" });
+        c.check(r.code == 0 and hasLine(r.out, "pa"), "a leading global flag doesn't shadow the command", r);
+
+        r = try c.run(&.{ "--no-prompt", "--which", pa });
+        c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pa"), "a leading global flag keeps the verb's own args", r);
     }
 
     // --- which (reverse lookup) ----------------------------------------------
