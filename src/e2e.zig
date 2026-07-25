@@ -342,6 +342,41 @@ pub fn main(init: std.process.Init) !void {
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ pb, ".nix", "actions.toml" })) catch {};
     }
 
+    // --- action descriptions (the comment above an action) ----------------------
+    {
+        // Nothing is documented yet, so the listing keeps its old two columns.
+        var r = try c.run(&.{ "pa", "--run", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "DESCRIPTION") == null, "no descriptions means no DESCRIPTION column", r);
+
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }),
+            "# file header, separated by a blank line\n\n[actions]\n" ++
+                "# Portable build: keeps it\n# runnable anywhere.\n" ++
+                "hello = \"echo from-project\"\n" ++
+                "plain = \"echo undocumented\"\n" ++
+                "# This description is deliberately far longer than the column can hold, so it has to be cut.\n" ++
+                "wordy = \"echo verbose\"\n");
+
+        r = try c.run(&.{ "pa", "--run", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "DESCRIPTION") != null and
+            std.mem.indexOf(u8, r.out, "Portable build") != null, "a comment above an action becomes its description", r);
+        // Multi-line runs join into one line: "keeps it" ends the first comment
+        // line and "runnable" starts the second.
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "keeps it runnable anywhere.") != null, "a multi-line comment joins into one description", r);
+        // Prose is unbounded, so the column is capped and the cut is marked.
+        // (Where exactly it lands is the unit test's business, not this one's.)
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "deliberately far longer") != null and
+            std.mem.indexOf(u8, r.out, "has to be cut.") == null and
+            std.mem.indexOf(u8, r.out, "...") != null, "a long description is truncated to keep COMMAND visible", r);
+        // The header comment is cut off by a blank line, so it describes nothing.
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "file header") == null, "a blank line detaches a comment from the action below", r);
+
+        // The palette shows them too, and its pattern searches the prose - the
+        // whole point of writing a description.
+        r = try c.run(&.{ "--no-prompt", "--actions", "runnable" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":hello") != null and
+            std.mem.indexOf(u8, r.out, ":plain") == null, "--actions matches on description text alone", r);
+    }
+
     // --- notify hook ([notify] on_finish fires after :actions) -----------------
     {
         try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-project\"\nbad = \"exit 3\"\n");
@@ -620,8 +655,14 @@ pub fn main(init: std.process.Init) !void {
     // --- export (before the removal tests mutate state) ---------------------------
     const backup = join(&c, &.{ root, "backup.toml" });
     {
+        // A described central action, so the backup has one to carry.
+        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }),
+            "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n");
         const r = try c.run(&.{ "--export", backup });
         c.check(r.code == 0 and proc.pathExists(io, backup), "--export writes the backup file", r);
+        // Descriptions are written back as the comment they were read from -
+        // without this, --import --replace would silently discard them.
+        c.check(std.mem.indexOf(u8, readFileOr(&c, backup, ""), "# Wipes the cache") != null, "--export carries action descriptions", r);
     }
 
     // --- removals -------------------------------------------------------------------
@@ -676,6 +717,9 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "--import", backup, "--replace" });
         res = try c.run(&.{ "pa", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(res.out), pa), "--import --replace restores the exported path", res);
+        // --replace overwrites each central actions file, so this is where a
+        // description would be lost if the round trip dropped it.
+        c.check(std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home2, "actions", "pa.toml" }), ""), "# Wipes the cache") != null, "--import --replace restores action descriptions", res);
 
         try c.env.put("NIX_HOME", home);
     }

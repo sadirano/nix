@@ -306,6 +306,13 @@ fn writeActionsFile(app: *App, path: []const u8, list: []const actions.Action) !
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(app.arena, "# nix per-alias actions - run with `r <alias> :<name>`\n\n[actions]\n");
     for (list) |ac| {
+        // Descriptions are comments above their action - the format they were
+        // read from, so an import writes back what the export carried.
+        if (ac.description.len > 0) {
+            try b.appendSlice(app.arena, "# ");
+            try b.appendSlice(app.arena, ac.description);
+            try b.append(app.arena, '\n');
+        }
         try b.appendSlice(app.arena, ac.name);
         try b.appendSlice(app.arena, " = ");
         try store.appendTomlString(app.arena, &b, ac.command);

@@ -1,9 +1,9 @@
-# nix project actions — run with `r <alias> :<name>` (list with `r <alias> :`).
+# nix project actions - run with `r <alias> :<name>` (list with `r <alias> :`).
 
 [actions]
 # Portable build: -Dcpu=baseline avoids baking the dev machine's CPU
 # extensions into the binary. A native build (the default) crashes with an
-# illegal instruction on any machine whose CPU lacks those extensions —
+# illegal instruction on any machine whose CPU lacks those extensions -
 # this is what broke the Scoop-bucket install on a fresh machine.
 build = "zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline"
 # Deploy the freshly built exe into ~/.nix/bin (nix + every wrapper copy,

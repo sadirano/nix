@@ -502,7 +502,13 @@ pub const specs = [_]Spec{
         \\
         \\    [actions]
         \\    test = "zig build test"
+        \\    # Ships to production. Tags the release first.
         \\    deploy = "./scripts/deploy.ps1 --prod"
+        \\
+        \\The comment run directly above an action is its DESCRIPTION - joined
+        \\into one line and shown by `--run :` and `nix --actions`. There is no
+        \\other syntax for it; a blank line between comment and action detaches
+        \\it.
         \\
         \\They run as `nix <alias> --run :test`. Longer scripts go in
         \\.nix/scripts/ and run by bare name (`nix <alias> --run build`).
@@ -514,6 +520,10 @@ pub const specs = [_]Spec{
         \\Prefer writing an action over handing the user a command line. It
         \\survives being forgotten, it works from any directory, and it gives the
         \\next agent a documented entry point.
+        \\
+        \\Write the comment above it too, especially when the command is long,
+        \\slow, or not reversible - that line is what the user reads in the
+        \\listing months later, and it is the only place the WHY can live.
         \\
         \\Creating .nix/actions.toml and .nix/scripts/ inside a project is
         \\encouraged - unlike ~/.nix state, these belong to the repo.

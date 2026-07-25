@@ -326,8 +326,22 @@ Save named commands per alias and run them from anywhere with `r <alias> :<name>
 [actions]
 test   = "zig build test"
 serve  = "npm run dev"
+
+# Builds, then mirrors dist/ to the live host. Not reversible - it
+# deletes anything on the target that isn't in dist/.
 deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
 ```
+
+**Descriptions come from the comment above an action.** The command says what runs; the comment says *why*, and listings show it in a DESCRIPTION column:
+
+```
+ACTION  DESCRIPTION                                        COMMAND
+deploy  Builds, then mirrors dist/ to the live host. No...  ./scripts/build.sh && rsync -a dist/ host:/srv
+serve                                                      npm run dev
+test                                                       zig build test
+```
+
+There's no new syntax to learn: a run of `#` lines directly above an action is joined into one line of prose and becomes its description, so files that were already commented this way gain descriptions without being touched. A blank line between the comment and the action detaches it (that's how a file-header comment avoids describing the first action), a banner rule of dashes is never mistaken for prose, and the column only appears when something actually has one. `nix --actions` searches descriptions too — `nix --actions "not reversible"` finds the dangerous ones — and `--export`/`--import` carry them, so a `--replace` restore can't quietly drop them.
 
 ```powershell
 r acme :test         # run acme's `test` action in acme's dir

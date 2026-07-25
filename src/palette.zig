@@ -24,17 +24,20 @@ const Entry = struct {
     alias: []const u8,
     name: []const u8,
     command: []const u8,
+    description: []const u8 = "",
     row: []const u8 = "",
 };
 
 /// matches reports whether an entry should survive the `[pat]` pre-filter.
-/// Substring, case-insensitive, over all three columns: `nix --actions build`
-/// finds the alias called build, the :build actions, and the ones that run a
-/// build. Deliberately NOT fuzzy - nix resolves what you typed, and fzf is
-/// still there to narrow interactively.
+/// Substring, case-insensitive, over every column INCLUDING the description:
+/// `nix --actions release` should find the action whose prose says "release"
+/// even when neither its name nor its command contains the word - that is most
+/// of the point of writing descriptions. Deliberately NOT fuzzy: nix resolves
+/// what you typed, and fzf is still there to narrow interactively.
 fn matches(e: Entry, pat: []const u8) bool {
     if (pat.len == 0) return true;
-    return containsFold(e.alias, pat) or containsFold(e.name, pat) or containsFold(e.command, pat);
+    return containsFold(e.alias, pat) or containsFold(e.name, pat) or
+        containsFold(e.command, pat) or containsFold(e.description, pat);
 }
 
 fn containsFold(haystack: []const u8, needle: []const u8) bool {
@@ -117,7 +120,7 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
     for (aliases.items) |al| {
         const dir = try store.fromSlash(app.arena, al.path);
         for (try run_zig.mergedActions(app, al.name, dir, false)) |a| {
-            const e: Entry = .{ .alias = al.name, .name = a.name, .command = a.command };
+            const e: Entry = .{ .alias = al.name, .name = a.name, .command = a.command, .description = a.description };
             if (!matches(e, pat)) continue;
             try out.append(app.arena, e);
         }
@@ -126,20 +129,27 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
     return out.items;
 }
 
-/// render lays the entries out as a padded `ALIAS  ACTION  COMMAND` table and
-/// records each line back onto its entry. The header is a row too: fzf keeps it
-/// pinned via --header-lines, and a plain listing wants it anyway.
+/// render lays the entries out as a padded `ALIAS  ACTION  [DESCRIPTION]
+/// COMMAND` table and records each line back onto its entry. The header is a
+/// row too: fzf keeps it pinned via --header-lines, and a plain listing wants
+/// it anyway. The DESCRIPTION column appears only when some action carries one,
+/// so an undocumented machine sees exactly the table it saw before.
 fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 {
     var alias_w: usize = "ALIAS".len;
     var name_w: usize = "ACTION".len;
+    var desc_w: usize = 0;
     for (entries) |e| {
         alias_w = @max(alias_w, e.alias.len);
         name_w = @max(name_w, e.name.len + 1); // the ':' the row shows
+        if (e.description.len > 0) desc_w = @max(desc_w, @min(e.description.len, app_zig.max_description_cols));
     }
+    const described = desc_w > 0;
+    if (described) desc_w = @max(desc_w, "DESCRIPTION".len);
     var buf: std.ArrayList(u8) = .empty;
     if (header) {
         try padInto(arena, &buf, "ALIAS", alias_w + 2);
         try padInto(arena, &buf, "ACTION", name_w + 2);
+        if (described) try padInto(arena, &buf, "DESCRIPTION", desc_w + 2);
         try buf.appendSlice(arena, "COMMAND\n");
     }
     for (entries) |*e| {
@@ -149,6 +159,7 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 
         var row: std.ArrayList(u8) = .empty;
         try padInto(arena, &row, e.alias, alias_w + 2);
         try padInto(arena, &row, try std.fmt.allocPrint(arena, ":{s}", .{e.name}), name_w + 2);
+        if (described) try padInto(arena, &row, app_zig.ellipsize(arena, e.description), desc_w + 2);
         try row.appendSlice(arena, e.command);
         e.row = row.items;
         try buf.appendSlice(arena, row.items);

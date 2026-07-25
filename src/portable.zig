@@ -124,6 +124,15 @@ fn appendActionSet(arena: std.mem.Allocator, io: Io, home: []const u8, b: *std.A
     try b.appendSlice(arena, name);
     try b.appendSlice(arena, "]\n");
     for (acts) |ac| {
+        // A description is written back the way it is read: as the comment
+        // directly above its action. Without this an `--import --replace`,
+        // which overwrites each central actions file, would silently discard
+        // every description the user wrote.
+        if (ac.description.len > 0) {
+            try b.appendSlice(arena, "# ");
+            try b.appendSlice(arena, ac.description);
+            try b.append(arena, '\n');
+        }
         try b.appendSlice(arena, ac.name);
         try b.appendSlice(arena, " = ");
         try store.appendTomlString(arena, b, ac.command);
@@ -227,7 +236,7 @@ fn flushActions(
     var acts: std.ArrayList(actions.Action) = .empty;
     for (try parseFlatTable(arena, body)) |kv| {
         if (kv.val.len == 0) continue;
-        try acts.append(arena, .{ .name = kv.key, .command = kv.val });
+        try acts.append(arena, .{ .name = kv.key, .command = kv.val, .description = kv.desc });
     }
     if (acts.items.len == 0) return;
     try sets.append(arena, .{ .alias = try lowerDup(arena, alias), .actions = acts.items });
@@ -235,21 +244,37 @@ fn flushActions(
 
 // ---- flat-table parsing -----------------------------------------------------
 
-const KV = struct { key: []const u8, val: []const u8 };
+const KV = struct { key: []const u8, val: []const u8, desc: []const u8 = "" };
 
-/// parseFlatTable reads `key = <quoted>` lines (blanks and #-comments skipped),
-/// dequoting values in the two styles appendTomlString emits: literal
-/// single-quoted, or double-quoted with `\"`/`\\` escapes.
+/// parseFlatTable reads `key = <quoted>` lines, dequoting values in the two
+/// styles appendTomlString emits: literal single-quoted, or double-quoted with
+/// `\"`/`\\` escapes. The comment run above an entry is carried on `desc` under
+/// the same rule actions.parseTable uses (blank line or entry ends a run), so
+/// an exported action's description survives the round trip. Readers that have
+/// no use for it - the aliases table - simply ignore the field.
 fn parseFlatTable(arena: std.mem.Allocator, body: []const u8) ![]KV {
     var out: std.ArrayList(KV) = .empty;
+    var pending: std.ArrayList([]const u8) = .empty;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
+        if (line.len == 0) {
+            pending = .empty;
+            continue;
+        }
+        if (line[0] == '#') {
+            if (actions.commentText(line)) |t| try pending.append(arena, t);
+            continue;
+        }
+        defer pending = .empty;
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         if (key.len == 0) continue;
-        try out.append(arena, .{ .key = key, .val = try dequote(arena, std.mem.trim(u8, line[eq + 1 ..], " \t")) });
+        try out.append(arena, .{
+            .key = key,
+            .val = try dequote(arena, std.mem.trim(u8, line[eq + 1 ..], " \t")),
+            .desc = try std.mem.join(arena, " ", pending.items),
+        });
     }
     return out.items;
 }

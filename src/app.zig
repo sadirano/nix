@@ -118,6 +118,31 @@ pub fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
     while (i < width) : (i += 1) try w.writeByte(' ');
 }
 
+/// Widest a DESCRIPTION column gets. Names and paths are naturally short, but a
+/// description is prose with no bound - left alone, one wordy action would push
+/// the COMMAND column off the screen for every row.
+pub const max_description_cols: usize = 52;
+
+/// ellipsize shortens prose to max_description_cols, marking the cut with "..."
+/// (ASCII: a `…` renders as mojibake on a legacy Windows code page). Text that
+/// fits is returned untouched, so nothing is allocated in the common case.
+pub fn ellipsize(arena: std.mem.Allocator, s: []const u8) []const u8 {
+    if (s.len <= max_description_cols) return s;
+    // Back off to a codepoint boundary: cutting mid-sequence would emit a
+    // broken glyph for any description that isn't pure ASCII.
+    var keep = max_description_cols - 3;
+    while (keep > 0 and s[keep] & 0xC0 == 0x80) keep -= 1;
+    // Then back off to a word boundary, so the cut reads as a shortened phrase
+    // rather than a broken word - but not so far that a single long token eats
+    // most of the column, in which case the hard cut is the honest one.
+    const floor = keep - @min(keep, max_description_cols / 3);
+    if (std.mem.lastIndexOfScalar(u8, s[0..keep], ' ')) |sp| {
+        if (sp > floor) keep = sp;
+    }
+    const text = std.mem.trimEnd(u8, s[0..keep], " \t");
+    return std.fmt.allocPrint(arena, "{s}...", .{text}) catch text;
+}
+
 pub fn writeSpaces(w: *Io.Writer, n: usize) !void {
     var i: usize = 0;
     while (i < n) : (i += 1) try w.writeByte(' ');
@@ -164,4 +189,32 @@ pub fn fzfEnv(app: *App) *std.process.Environ.Map {
     copy.* = app.env.clone(app.arena) catch return app.env;
     copy.put("FZF_DEFAULT_OPTS", fzf_tokyonight_theme) catch return app.env;
     return copy;
+}
+
+test "ellipsize: fits untouched, cuts on a word boundary, marks the cut" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Short enough to fit: returned as-is, nothing allocated.
+    const short = "Ship it.";
+    try std.testing.expectEqualStrings(short, ellipsize(a, short));
+
+    // Long prose: cut at a space, no trailing blank before the marker.
+    const long = "Portable build: -Dcpu=baseline avoids baking the dev machine's CPU extensions in.";
+    const cut = ellipsize(a, long);
+    try std.testing.expect(cut.len <= max_description_cols);
+    try std.testing.expect(std.mem.endsWith(u8, cut, "..."));
+    try std.testing.expect(!std.mem.endsWith(u8, cut, " ..."));
+    // The kept text is a prefix of the original, ending at a word boundary.
+    const kept = cut[0 .. cut.len - 3];
+    try std.testing.expect(std.mem.startsWith(u8, long, kept));
+    try std.testing.expectEqual(@as(u8, ' '), long[kept.len]);
+
+    // One unbroken token has no boundary to find: the hard cut still applies
+    // rather than collapsing the column to nothing.
+    const token = "a" ** 80;
+    const hard = ellipsize(a, token);
+    try std.testing.expect(hard.len <= max_description_cols);
+    try std.testing.expect(hard.len > max_description_cols / 2);
 }
