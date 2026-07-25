@@ -222,11 +222,21 @@ pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
         return 0;
     }
     var width: usize = "ACTION".len;
-    for (merged) |a| width = @max(width, a.name.len);
+    var desc_w: usize = 0;
+    for (merged) |a| {
+        width = @max(width, a.name.len);
+        if (a.description.len > 0) desc_w = @max(desc_w, @min(a.description.len, app_zig.max_description_cols));
+    }
+    // The DESCRIPTION column appears only when something has one, so a file
+    // that documents nothing still prints exactly the table it printed before.
+    const described = desc_w > 0;
+    if (described) desc_w = @max(desc_w, "DESCRIPTION".len);
     try padPrint(app.out, "ACTION", width + 2);
+    if (described) try padPrint(app.out, "DESCRIPTION", desc_w + 2);
     try app.out.writeAll("COMMAND\n");
     for (merged) |a| {
         try padPrint(app.out, a.name, width + 2);
+        if (described) try padPrint(app.out, app_zig.ellipsize(app.arena, a.description), desc_w + 2);
         try app.out.print("{s}\n", .{a.command});
     }
     return 0;

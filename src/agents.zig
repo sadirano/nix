@@ -87,7 +87,8 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   command) - check there before writing a command line of your own.
         \\   If a project needs a
         \\   recurring build/test/serve/deploy command, add it to the project's
-        \\   `.nix/actions.toml` under `[actions]` and point the user at
+        \\   `.nix/actions.toml` under `[actions]` - with a `#` comment above it,
+        \\   which nix shows as the action's description - and point the user at
         \\   `{[r]s} <alias> :<name>`. Full scripts go in the project's `.nix/scripts/`
         \\   and run by bare name: `{[r]s} <alias> build`. Personal machine-wide
         \\   actions live in `~/.nix/actions/_default.toml` (lowest precedence,
