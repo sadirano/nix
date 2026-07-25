@@ -30,6 +30,7 @@ const nav = @import("nav.zig");
 const cmd_groups = @import("cmd_groups.zig");
 const paste = @import("paste.zig");
 const bin_exports = @import("bin_exports.zig");
+const palette = @import("palette.zig");
 const secret = @import("secret.zig");
 const context = @import("context.zig");
 
@@ -187,6 +188,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "doctor")) return doctor.cmdDoctor(app, rest);
     if (eql(verb, "groups")) return cmdGroups(app);
     if (eql(verb, "contexts")) return cmdContexts(app);
+    if (eql(verb, "actions")) return palette.cmdActions(app, rest);
     if (eql(verb, "sweep")) return sweep.cmdSweep(app, rest);
     if (eql(verb, "sync")) return init_zig.cmdSync(app);
     if (eql(verb, "sync-bin")) return bin_exports.cmdSyncBin(app);
@@ -861,7 +863,8 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
         .{ .k = "--export", .v = "export" },             .{ .k = "--import", .v = "import" },
         .{ .k = "--rga-preview", .v = "rga-preview" },   .{ .k = "-v", .v = "version" },
         .{ .k = "--secret", .v = "secret" },             .{ .k = "--trust", .v = "trust" },
-        .{ .k = "--agent", .v = "agent" },
+        .{ .k = "--agent", .v = "agent" },               .{ .k = "--actions", .v = "actions" },
+        .{ .k = "-A", .v = "actions" },
     };
     for (map) |m| if (eql(flag, m.k)) return m.v;
     return null;
@@ -990,6 +993,7 @@ fn printUsage(app: *App) !void {
         \\  --picker-check <name>   show why dirs are shown/hidden in the `o` picker
         \\  --doctor,  -D        check tools/config and what the picker will use
         \\  --groups,  -G        list alias groups  (+<group> --list shows members)
+        \\  --actions, -A [pat]  every alias's actions in one picker; Enter runs the pick
         \\  --contexts, -c       list global @-segment contexts
         \\  --init,    -I        set up ~/.nix, wrappers, and PATH
         \\  --sync,    -S        regenerate wrappers and generated files
@@ -1032,6 +1036,7 @@ test {
     _ = util;
     _ = app_zig;
     _ = sweep;
+    _ = palette;
     _ = paste;
     _ = init_zig;
     _ = picker;

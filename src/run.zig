@@ -190,27 +190,42 @@ fn actionPaths(app: *App, alias: []const u8, dir: []const u8) ![]const []const u
     return paths;
 }
 
+/// mergedActions flattens an alias's action layers into what `r <alias> :name`
+/// would actually resolve: project-local, then central, then machine-wide, with
+/// the earliest layer winning per name. `include_default` drops that last layer,
+/// which the palette (`nix --actions`) does - a machine-wide default is not
+/// per-project wiring, and listing it once per alias would bury the real rows.
+///
+/// A layer that cannot be read contributes nothing instead of failing the whole
+/// listing: an alias pointing at an unplugged drive should cost you its project
+/// layer, not the other aliases' actions.
+pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_default: bool) ![]actions.Action {
+    const paths = try actionPaths(app, alias, dir);
+    var merged: std.ArrayList(actions.Action) = .empty;
+    for (if (include_default) paths else paths[0..2]) |p| {
+        outer: for (actions.loadFile(app.arena, app.io, p) catch continue) |a| {
+            for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // earlier layer wins
+            try merged.append(app.arena, a);
+        }
+    }
+    return merged.items;
+}
+
 /// listActions prints an alias's actions (project-local merged over central,
 /// over machine-wide defaults) as a padded NAME/COMMAND table — the
 /// `r <alias> :` form.
 pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
     const pp = try actions.projectPath(app.arena, dir);
-    var merged: std.ArrayList(actions.Action) = .empty;
-    for (try actionPaths(app, alias, dir)) |p| {
-        outer: for (try actions.loadFile(app.arena, app.io, p)) |a| {
-            for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // earlier layer wins
-            try merged.append(app.arena, a);
-        }
-    }
-    if (merged.items.len == 0) {
+    const merged = try mergedActions(app, alias, dir, true);
+    if (merged.len == 0) {
         try app.out.print("no actions for \"{s}\" - define them in {s}\n", .{ alias, pp });
         return 0;
     }
     var width: usize = "ACTION".len;
-    for (merged.items) |a| width = @max(width, a.name.len);
+    for (merged) |a| width = @max(width, a.name.len);
     try padPrint(app.out, "ACTION", width + 2);
     try app.out.writeAll("COMMAND\n");
-    for (merged.items) |a| {
+    for (merged) |a| {
         try padPrint(app.out, a.name, width + 2);
         try app.out.print("{s}\n", .{a.command});
     }

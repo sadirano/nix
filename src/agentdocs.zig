@@ -386,6 +386,41 @@ pub const specs = [_]Spec{
         .see_also = &.{ "--list", "o" },
     },
     .{
+        .topic = "--actions",
+        .args = "[pattern]",
+        .summary = "every alias's actions in one picker; Enter runs the pick",
+        .safety = .blocks,
+        .safe_form = "nix --no-prompt --actions [pattern]",
+        .needs_tools = &.{"fzf"},
+        .detail =
+        \\Actions are declared per alias but invoked from anywhere, so the thing
+        \\that gets forgotten is WHICH alias owns one. `nix --actions` gathers
+        \\them all into a single fzf view (`alias  :name  command`); Enter runs
+        \\the pick in its own alias dir, exactly as `nix <alias> --run :<name>`
+        \\would. An optional pattern pre-filters by alias, action name, or
+        \\command text - plain case-insensitive substring, not fuzzy.
+        \\
+        \\Machine-wide `_default` actions are deliberately absent: the palette
+        \\maps deliberate per-project wiring, and a default would otherwise
+        \\repeat under every alias. They stay reachable as
+        \\`nix <any-alias> --run :<name>`.
+        ,
+        .agent_use =
+        \\The safe form is a genuinely useful survey: it prints every action
+        \\wired up on this machine, which is the fastest way to learn what a
+        \\project can already do before writing a command of your own.
+        \\
+        \\Don't run the bare form - it blocks on fzf, and a pick RUNS something.
+        ,
+        .suggest = "When the user has a command wired up somewhere they may not recall: `nix --actions <pattern>`.",
+        .examples = &.{
+            "`nix --no-prompt --actions` - list every action, run nothing",
+            "`nix --no-prompt --actions deploy` - what deploys, and where",
+            "`nix --actions` - pick one and run it",
+        },
+        .see_also = &.{ "actions", "r" },
+    },
+    .{
         .topic = "--doctor",
         .args = "[-q]",
         .summary = "check tools/config and what the picker will use",
@@ -488,7 +523,7 @@ pub const specs = [_]Spec{
             "`${cmd:r} acme :` - list this project's actions",
             "`${cmd:r} acme :test` - run one",
         },
-        .see_also = &.{ "r", "--secret", "--sync-bin" },
+        .see_also = &.{ "r", "--actions", "--secret", "--sync-bin" },
     },
     .{
         .topic = "groups",
@@ -589,10 +624,19 @@ pub const specs = [_]Spec{
 
 // ---- lookup -----------------------------------------------------------------
 
+/// find resolves a topic name to its spec. Exact matches are resolved FIRST,
+/// across every spec, before the dashless convenience form is considered:
+/// `--agent actions` must reach the `actions` CONCEPT even though the
+/// `--actions` command would answer to the same bare word, and only
+/// `--agent --actions` reaches the command. Without the two passes, declaration
+/// order decides - which means adding a `--foo` command silently steals the
+/// `foo` topic from a concept that already owned the name.
 pub fn find(topic: []const u8) ?*const Spec {
     for (&specs) |*s| {
         if (std.mem.eql(u8, s.topic, topic)) return s;
-        // `--agent list` and `--agent --list` both reach the same spec.
+    }
+    // `--agent list` and `--agent --list` both reach the same spec.
+    for (&specs) |*s| {
         if (std.mem.startsWith(u8, s.topic, "--") and std.mem.eql(u8, s.topic[2..], topic)) return s;
     }
     return null;
@@ -778,6 +822,16 @@ test "find matches system topics with and without dashes" {
     try std.testing.expect(find("--list") != null);
     try std.testing.expect(find("list") == find("--list"));
     try std.testing.expect(find("nope") == null);
+}
+
+test "find: an exact topic beats another spec's dashless form" {
+    // "actions" (the concept) and "--actions" (the palette) both answer to the
+    // bare word. The exact name must win, whatever the declaration order.
+    const concept = find("actions").?;
+    const command = find("--actions").?;
+    try std.testing.expect(concept != command);
+    try std.testing.expectEqualStrings("actions", concept.topic);
+    try std.testing.expectEqualStrings("--actions", command.topic);
 }
 
 test "index lists every topic" {

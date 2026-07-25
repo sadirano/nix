@@ -82,7 +82,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   `$NIX_ALIAS_PATH` are already set. Use the alias that maps to the directory
         \\   you worked in - don't invent names. If none covers it, suggest registering
         \\   one: `nix <name> <path>`.
-        \\3. **Prefer saved actions for repeatable commands.** If a project needs a
+        \\3. **Prefer saved actions for repeatable commands.** `nix --no-prompt --actions`
+        \\   lists every action already wired up on this machine (alias, name,
+        \\   command) - check there before writing a command line of your own.
+        \\   If a project needs a
         \\   recurring build/test/serve/deploy command, add it to the project's
         \\   `.nix/actions.toml` under `[actions]` and point the user at
         \\   `{[r]s} <alias> :<name>`. Full scripts go in the project's `.nix/scripts/`
@@ -97,7 +100,7 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   to get the path, then use the absolute path. `{[r]s} <alias> <cmd>` works
         \\   fine from agent shells.
         \\5. **Add `--no-prompt` instead of avoiding the pickers.** `{[sg]s}`, `{[ff]s}`,
-        \\   patterned `{[s]s}`/`{[y]s}`, and `nix --prune`/`--sweep` open fzf and would block a
+        \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, and `nix --prune`/`--sweep` open fzf and would block a
         \\   non-interactive shell. With `--no-prompt` they print what they would have
         \\   offered and act on nothing: `nix <alias> --no-prompt --grep <pat>`,
         \\   `nix <alias> --no-prompt --find <pat>`. The flag goes BEFORE the action
