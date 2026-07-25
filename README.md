@@ -338,6 +338,25 @@ r +work :test        # run each member's own `test` action (members without it a
 
 Actions resolve from three places, most specific winning: `<alias-dir>/.nix/actions.toml` (travels with the repo) overrides `~/.nix/actions/<alias>.toml` (private, per-machine), which overrides `~/.nix/actions/_default.toml` — **machine-wide defaults** for personal cross-project actions (`claude`, `git status`, …) defined once and available via `r <any-alias> :<name>` without leaking into committed repos (`_default` is reserved; it can't be registered as an alias). A leading `:` is what marks a saved action — without it, `r <alias> <cmd>` still runs `<cmd>` literally.
 
+### The palette (`nix --actions`)
+
+Actions are declared per alias but invoked from anywhere, so the thing you forget is rarely the command — it's *which alias owns it*. `nix --actions` (`-A`) gathers every alias's actions into one fzf view and runs the pick in its own directory:
+
+```powershell
+nix --actions                    # pick from everything wired up on this machine
+nix --actions deploy             # pre-filter by alias, action name, or command text
+nix --no-prompt --actions        # just print the table, run nothing
+```
+
+```
+ALIAS  ACTION    COMMAND
+acme   :build    zig build -Doptimize=ReleaseFast
+acme   :test     zig build test
+beta   :deploy   npm run deploy && echo shipped
+```
+
+Enter runs the pick exactly as `r <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `r` would run. The pattern is a plain case-insensitive substring across all three columns, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `r <any-alias> :<name>`).
+
 ### Completion notifications
 
 Long actions launched via `r` finish silently — and `long-cmd && notify` misses the one case that most deserves a notification (failure). Set a `[notify] on_finish` hook in `~/.nix/config.toml` and **every** foreground `:action` reports its outcome through it, single runs and `r +group :build` fan-outs alike:

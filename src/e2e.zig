@@ -315,6 +315,33 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[actions._default]") != null, "--export includes the machine-wide default actions", r);
     }
 
+    // --- action palette (nix --actions) ----------------------------------------
+    {
+        // A second alias with an overlapping action name, so the palette has to
+        // keep both rows apart by their owning alias.
+        try writeFile(&c, join(&c, &.{ pb, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-pb\"\nship = \"echo shipping\"\n");
+
+        var r = try c.run(&.{ "--no-prompt", "--actions" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":ship") != null and
+            std.mem.indexOf(u8, r.out, ":only") != null, "--actions gathers every alias's actions", r);
+        // The _default layer is the one thing the palette drops: it is not
+        // per-project wiring, and it would otherwise repeat under every alias.
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":defonly") == null, "--actions suppresses machine-wide _default actions", r);
+        c.check(r.code == 0 and std.mem.count(u8, r.out, ":hello") == 2, "a name two aliases share lists once per alias", r);
+        // Same merge as `r <alias> :`, so the project layer still wins.
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null and
+            std.mem.indexOf(u8, r.out, "from-central") == null, "--actions shows what `r` would actually run", r);
+
+        r = try c.run(&.{ "--no-prompt", "--actions", "ship" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":ship") != null and
+            std.mem.indexOf(u8, r.out, ":only") == null, "a pattern pre-filters the palette", r);
+
+        r = try c.run(&.{ "--no-prompt", "--actions", "no-such-action" });
+        c.check(r.code == 1, "a pattern matching nothing exits 1", r);
+
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ pb, ".nix", "actions.toml" })) catch {};
+    }
+
     // --- notify hook ([notify] on_finish fires after :actions) -----------------
     {
         try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-project\"\nbad = \"exit 3\"\n");
