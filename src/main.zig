@@ -128,6 +128,20 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     const argv0 = raw_args[0];
     var args = try preprocessArgs(app.arena, raw_args[1..]);
 
+    // A leading bare `:` means "show me the actions", from ANY command: `r :`,
+    // `o :`, `nix :`. It is what the hand types when the question is "what can I
+    // run", and it reads as the alias-less form of `r <alias> :` - the same
+    // colon, one scope wider. Checked before multicall desugaring so every
+    // wrapper gets it from one place rather than each having to learn it.
+    //
+    // Nothing is given up: ':' is not a legal alias name (validateAliasName
+    // refuses it), so this token could not previously mean anything else - it
+    // was an "unknown alias" error.
+    if (bareColon(args)) |pat| {
+        setGlobalFlags(app, args);
+        return palette.cmdActions(app, pat);
+    }
+
     const mc_action = multicallAction(argv0) orelse blk: {
         // Not a builtin wrapper and not `nix` itself: it may be a [shortcuts]
         // rename, whose wrapper is installed under the custom name. Config is
@@ -156,6 +170,21 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
 
     setGlobalFlags(app, args);
     return dispatch(app, args);
+}
+
+/// bareColon reports whether the first non-global token is exactly `:`, and if
+/// so returns whatever follows it - the palette's optional pattern, so `r : test`
+/// narrows the same way `nix --actions test` does.
+///
+/// Only a LEADING colon counts. `r acme :` still lists acme's own actions: there
+/// the colon has an alias in front of it and already means something.
+fn bareColon(args: [][]const u8) ?[][]const u8 {
+    for (args, 0..) |a, i| {
+        if (isGlobalFlag(a)) continue;
+        if (!eql(a, ":")) return null;
+        return args[i + 1 ..];
+    }
+    return null; // nothing but global flags: not the colon form
 }
 
 /// setGlobalFlags scans the tokens nix itself consumes for the process-wide

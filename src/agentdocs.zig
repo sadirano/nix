@@ -419,6 +419,11 @@ pub const specs = [_]Spec{
         \\alias, action name, command, or description text - plain
         \\case-insensitive substring, not fuzzy.
         \\
+        \\A leading bare `:` is the same thing from any command: `nix :`, `r :`,
+        \\`o :`, with anything after it as the pattern (`r : deploy`). It is the
+        \\alias-less form of `nix <alias> --run :` - with an alias the colon lists
+        \\that project's actions, without one it lists every project's.
+        \\
         \\Tab marks several. They then start in PARALLEL, each in a shell of its
         \\own (a new console window on Windows), and nix returns at once - two
         \\actions cannot share one terminal. A fan-out fires no [notify] hook and
