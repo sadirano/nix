@@ -79,9 +79,9 @@ pub const max_refs: usize = 8;
 /// cannot be reviewed by opening it, so including one would add churn and no
 /// information at once.
 const script_exts = [_][]const u8{
-    ".py",  ".sh",  ".bash", ".zsh", ".ps1", ".psm1", ".cmd", ".bat",
-    ".js",  ".mjs", ".cjs",  ".ts",  ".rb",  ".pl",   ".lua", ".php",
-    ".r",   ".jl",  ".tcl",  ".awk", ".fish",
+    ".py", ".sh",  ".bash", ".zsh", ".ps1",  ".psm1", ".cmd", ".bat",
+    ".js", ".mjs", ".cjs",  ".ts",  ".rb",   ".pl",   ".lua", ".php",
+    ".r",  ".jl",  ".tcl",  ".awk", ".fish",
 };
 
 fn reviewable(path: []const u8) bool {

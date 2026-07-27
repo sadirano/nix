@@ -583,8 +583,7 @@ pub fn main(init: std.process.Init) !void {
         const i_left = std.mem.indexOf(u8, r.out, "built-left");
         const i_right = std.mem.indexOf(u8, r.out, "built-right");
         const i_app = std.mem.indexOf(u8, r.out, "built-app");
-        c.check(r.code == 0 and i_core != null and i_left != null and i_right != null and i_app != null,
-            "--deps runs every alias in the graph", r);
+        c.check(r.code == 0 and i_core != null and i_left != null and i_right != null and i_app != null, "--deps runs every alias in the graph", r);
         c.check(i_core != null and i_left != null and i_right != null and i_app != null and
             i_core.? < i_left.? and i_core.? < i_right.? and
             i_left.? < i_app.? and i_right.? < i_app.?, "a dependency runs before what needs it, the invoked alias last", r);
@@ -666,13 +665,12 @@ pub fn main(init: std.process.Init) !void {
         var r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "DESCRIPTION") == null, "no descriptions means no DESCRIPTION column", r);
 
-        try writeActions(&c, "pa", pa,
-            "# file header, separated by a blank line\n\n[actions]\n" ++
-                "# Portable build: keeps it\n# runnable anywhere.\n" ++
-                "hello = \"echo from-project\"\n" ++
-                "plain = \"echo undocumented\"\n" ++
-                "# This description is deliberately far longer than the column can hold, so it has to be cut.\n" ++
-                "wordy = \"echo verbose\"\n");
+        try writeActions(&c, "pa", pa, "# file header, separated by a blank line\n\n[actions]\n" ++
+            "# Portable build: keeps it\n# runnable anywhere.\n" ++
+            "hello = \"echo from-project\"\n" ++
+            "plain = \"echo undocumented\"\n" ++
+            "# This description is deliberately far longer than the column can hold, so it has to be cut.\n" ++
+            "wordy = \"echo verbose\"\n");
 
         r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "DESCRIPTION") != null and
@@ -981,8 +979,7 @@ pub fn main(init: std.process.Init) !void {
     const backup = join(&c, &.{ root, "backup.toml" });
     {
         // A described central action, so the backup has one to carry.
-        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }),
-            "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n");
+        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }), "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n");
         const r = try c.run(&.{ "--export", backup });
         c.check(r.code == 0 and proc.pathExists(io, backup), "--export writes the backup file", r);
         // Descriptions are written back as the comment they were read from -
