@@ -13,6 +13,7 @@ const store = @import("store.zig");
 const util = @import("util.zig");
 const run_zig = @import("run.zig");
 const resolve = @import("resolve.zig");
+const provenance = @import("provenance.zig");
 
 const App = app_zig.App;
 const isGlobalFlag = app_zig.isGlobalFlag;
@@ -206,8 +207,10 @@ fn padInto(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8, wid
 /// exactly as a direct run does) and then runAction (so [notify] fires).
 fn runPicked(app: *App, e: Entry) !u8 {
     const dir = (try resolve.resolveAliasPath(app, e.alias)) orelse return 1;
-    const cmd = (try freshCommand(app, e, dir)) orelse return 1;
-    return run_zig.runAction(app, cmd, e.alias, dir, e.name, false);
+    const r = (try freshCommand(app, e, dir)) orelse return 1;
+    // A single pick runs here, in this terminal, so the gate can ask here too.
+    if (!try provenance.gateAction(app, e.alias, dir, e.name, r.command, r.from_project, run_zig.stripSudo(r.command) != null, .may_prompt)) return 1;
+    return run_zig.runAction(app, r.command, e.alias, dir, e.name, false);
 }
 
 /// startAll launches several picks at once, each in its own shell, and returns
@@ -226,13 +229,22 @@ fn startAll(app: *App, picks: []const Entry) !u8 {
             code = 1;
             continue;
         };
-        const cmd = (try freshCommand(app, e, dir)) orelse {
+        const r = (try freshCommand(app, e, dir)) orelse {
             code = 1;
             continue;
         };
+        // A fan-out has no terminal to ask in - each action is about to get a
+        // window of its own and nix returns at once - so the gate refuses rather
+        // than prompting somewhere nobody is looking. Approve it with
+        // `nix --trust <alias>`, or run it as a single pick, and it fans out
+        // freely after that.
+        if (!try provenance.gateAction(app, e.alias, dir, e.name, r.command, r.from_project, run_zig.stripSudo(r.command) != null, .never_prompt)) {
+            code = 1;
+            continue;
+        }
         // startInNewShell prints the "started ..." line itself, so an elevated
         // pick is reported as elevated wherever it was launched from.
-        if (try run_zig.startInNewShell(app, cmd, e.alias, dir, e.name) != 0) code = 1;
+        if (try run_zig.startInNewShell(app, r.command, e.alias, dir, e.name) != 0) code = 1;
     }
     return code;
 }
@@ -240,7 +252,7 @@ fn startAll(app: *App, picks: []const Entry) !u8 {
 /// freshCommand re-reads the picked action from its file rather than trusting
 /// the rendered row: the palette may have been open a while, and what runs must
 /// be what actions.toml says now.
-fn freshCommand(app: *App, e: Entry, dir: []const u8) !?[]const u8 {
+fn freshCommand(app: *App, e: Entry, dir: []const u8) !?run_zig.Resolved {
     return (try run_zig.resolveAction(app, e.alias, dir, e.name)) orelse {
         try app.err.print("nix: alias \"{s}\" no longer has an action \":{s}\"\n", .{ e.alias, e.name });
         return null;

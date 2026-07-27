@@ -546,11 +546,25 @@ pub const specs = [_]Spec{
         \\A command starting with `sudo` is ELEVATED: it prompts through UAC and
         \\runs in an administrator console of its own. Write it when the command
         \\genuinely needs admin, and never to "make sure" something works.
+        \\
+        \\PROVENANCE: a project's actions.toml and .nix/scripts arrive with a
+        \\clone, so the first run of an unapproved file shows the command and
+        \\asks. `nix --trust <alias>` approves the file's current bytes; any edit
+        \\re-arms it. Central and _default files are never gated - they live
+        \\under ~/.nix and the user wrote them. An ELEVATED action is confirmed
+        \\on EVERY run and cannot be pre-approved: UAC names the shell, not the
+        \\command, so that prompt is the only place its line is ever shown.
         ,
         .agent_use =
         \\Prefer writing an action over handing the user a command line. It
         \\survives being forgotten, it works from any directory, and it gives the
         \\next agent a documented entry point.
+        \\
+        \\An action you just wrote in a project is unapproved code like any
+        \\other: running it non-interactively refuses with the `--trust`
+        \\instruction. That is working as intended - ask the user to approve it,
+        \\and never run `--trust` yourself. An elevated action you cannot run at
+        \\all; hand it to the user.
         \\
         \\Write the comment above it too, especially when the command is long,
         \\slow, or not reversible - that line is what the user reads in the
@@ -621,7 +635,10 @@ pub const specs = [_]Spec{
         \\--contexts` lists the global segments.
         \\
         \\Do not run `--trust` on the user's behalf. It is an approval gesture,
-        \\and approving a script you just wrote defeats the check entirely.
+        \\and approving a script you just wrote defeats the check entirely. The
+        \\bare `nix --trust <alias>` form now covers the alias's project actions
+        \\and scripts as well as its context sources, so it is even less yours to
+        \\run: it is the user saying they have read the repo.
         ,
         .examples = &.{
             "`nix docs@acme` - resolve a segment to its path",

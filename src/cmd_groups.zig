@@ -16,6 +16,7 @@ const open_zig = @import("open.zig");
 const grep = @import("grep.zig");
 const find = @import("find.zig");
 const run_zig = @import("run.zig");
+const provenance = @import("provenance.zig");
 const nav = @import("nav.zig");
 const paste = @import("paste.zig");
 const picker = @import("picker.zig");
@@ -399,11 +400,19 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
         try app.err.flush();
         if (call) |c| {
             for (c.names) |n| {
-                const cmd = (try resolveAction(app, t.name, t.path, n)) orelse {
+                const r = (try resolveAction(app, t.name, t.path, n)) orelse {
                     try app.err.print("   (no action :{s} - skipped)\n", .{n});
                     continue;
                 };
-                const code = try runAction(app, try run_zig.applyArgs(app.arena, cmd, c.args), t.name, t.path, n, false);
+                const cmd = try run_zig.applyArgs(app.arena, r.command, c.args);
+                // A group runs its members one at a time in this terminal, so
+                // the gate can ask - and asks per member, since each has its own
+                // cloned actions.toml. A refusal counts as that member failing.
+                if (!try provenance.gateAction(app, t.name, t.path, n, cmd, r.from_project, run_zig.stripSudo(cmd) != null, .may_prompt)) {
+                    rc = 1;
+                    break;
+                }
+                const code = try runAction(app, cmd, t.name, t.path, n, false);
                 if (code != 0) {
                     rc = code;
                     break; // the rest of THIS member's chain; other members still run
@@ -413,7 +422,13 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
             // Each member resolves its own `.nix/scripts` command and runs with
             // that dir on PATH.
             var rargv = try app.arena.dupe([]const u8, argv);
-            if (resolveScript(app, t.path, argv[0])) |s| rargv[0] = s;
+            if (resolveScript(app, t.path, argv[0])) |s| {
+                if (!try provenance.gateScript(app, t.name, s, .may_prompt)) {
+                    rc = 1;
+                    continue;
+                }
+                rargv[0] = s;
+            }
             const env = try aliasRunEnv(app, t.name, t.path);
             const code = proc.runInheritEnv(app.io, rargv, t.path, env) catch |e| blk: {
                 try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });

@@ -13,6 +13,7 @@ const snippet = @import("snippet.zig");
 const picker = @import("picker.zig");
 const bin_exports = @import("bin_exports.zig");
 const util = @import("util.zig");
+const provenance = @import("provenance.zig");
 
 // Version baked by build.zig (git describe).
 const build_version = @import("build_options").version;
@@ -439,6 +440,20 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         if (dups.items.len > 0) {
             try d.row(.warn, "duplicates", try std.fmt.allocPrint(app.arena, "defined more than once: {s}", .{try std.mem.join(app.arena, ", ", dups.items)}));
             try d.cont("hand-edited aliases.toml? the first entry wins - remove the extras");
+        }
+
+        // Project actions awaiting approval. Not a problem to fix - a fresh
+        // clone is supposed to look like this - but it is the answer to "why
+        // did :build refuse", and it names the aliases to review.
+        {
+            var pending: std.ArrayList([]const u8) = .empty;
+            for (aliases.items) |a| {
+                if (provenance.unapproved(app, a.path)) try pending.append(app.arena, a.name);
+            }
+            if (pending.items.len > 0) {
+                try d.row(.note, "unapproved", try std.fmt.allocPrint(app.arena, "project actions awaiting review: {s}", .{try std.mem.join(app.arena, ", ", pending.items)}));
+                try d.cont("read the file, then `nix --trust <alias>` (an edit re-arms it)");
+            }
         }
 
         // Windows needs no snippet — the wrappers/PATH rows above cover it.

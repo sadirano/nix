@@ -26,6 +26,7 @@ const proc = @import("proc.zig");
 const segments = @import("segments.zig");
 const actions = @import("actions.zig");
 const util = @import("util.zig");
+const provenance = @import("provenance.zig");
 
 const App = app_zig.App;
 const Var = segments.Var;
@@ -612,13 +613,16 @@ fn tmpDir(app: *App) ![]const u8 {
 
 pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: anytype) !u8 {
     if (rest.len < 1 or rest.len > 2) {
-        try app.err.writeAll("usage: nix --trust <alias> [segment]   (approve a context source's current bytes)\n");
+        try app.err.writeAll("usage: nix --trust <alias> [segment]   (approve an alias's project actions, scripts and context sources as they stand)\n");
         return 1;
     }
     const alias = rest[0];
     const dir = (try resolve_zig.resolveAliasPath(app, alias)) orelse return 1;
     const merged = try loadContextsFor(app, alias, dir);
-    var approved: usize = 0;
+    // Project actions and scripts approve alongside context sources: one clone,
+    // one review, one command. Named-segment form (`--trust acme seg`) is asking
+    // about that segment specifically, so it leaves the action file alone.
+    var approved: usize = if (rest.len == 2) 0 else try provenance.approveProject(app, alias, dir);
     for (merged.contexts) |cd| {
         if (rest.len == 2 and !util.eqlFoldAscii(cd.segment, rest[1])) continue;
         // Resolve exactly as resolution will: an inline `run` wins, else the
