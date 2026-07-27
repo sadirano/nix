@@ -315,6 +315,53 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[actions._default]") != null, "--export includes the machine-wide default actions", r);
     }
 
+    // --- action arguments and chains -------------------------------------------
+    {
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\n" ++
+            "one = \"echo one\"\n" ++
+            "two = \"echo two\"\n" ++
+            "mid = \"echo before {args} after\"\n" ++
+            "boom = \"exit 3\"\n");
+
+        // Arguments append to the command, with or without the `--` separator.
+        var r = try c.run(&.{ "pa", "--run", ":one", "--", "tail" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one tail"), "arguments append to an action's command", r);
+        r = try c.run(&.{ "pa", "--run", ":one", "tail" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one tail"), "the `--` separator is optional", r);
+        // A word that was one word in the caller's shell stays one word.
+        r = try c.run(&.{ "pa", "--run", ":one", "--", "two words" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one \"two words\""), "a spaced argument is re-quoted, not split", r);
+        // {args} takes them instead, wherever it sits in the command.
+        r = try c.run(&.{ "pa", "--run", ":mid", "--", "X" });
+        c.check(r.code == 0 and hasLineFold(r.out, "before X after"), "{args} substitutes in place of appending", r);
+
+        // A chain runs in order, in this terminal.
+        r = try c.run(&.{ "pa", "--run", ":one", ":two" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one") and hasLineFold(r.out, "two") and
+            std.mem.indexOf(u8, r.out, "one").? < std.mem.indexOf(u8, r.out, "two").?, "a chain runs the actions in order", r);
+        c.check(std.mem.indexOf(u8, r.err, "==> pa :two") != null, "each link of a chain is announced", r);
+
+        // ...and stops at the first failure, like the `&&` it stands in for.
+        r = try c.run(&.{ "pa", "--run", ":boom", ":two" });
+        c.check(r.code == 3 and std.mem.indexOf(u8, r.out, "two") == null and
+            std.mem.indexOf(u8, r.err, "stopping") != null, "a failing link stops the chain and keeps its exit code", r);
+
+        // Which action would the argument belong to? No answer, so it is refused.
+        r = try c.run(&.{ "pa", "--run", ":one", ":two", "--", "x" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "chain") != null, "arguments are refused for a chain", r);
+
+        // Quotes reach the shell as written. This is what makes the re-quoting
+        // above safe, and it is why the foreground run builds its own command
+        // line rather than handing argv to std (which would send cmd `\"`).
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nquoted = 'echo \"inner quotes\"'\n");
+        r = try c.run(&.{ "pa", "--run", ":quoted" });
+        c.check(r.code == 0 and hasLineFold(r.out, "\"inner quotes\"") and
+            std.mem.indexOf(u8, r.out, "\\\"") == null, "a command's own quotes are not mangled", r);
+
+        // Put back what the blocks after this one expect to find.
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-project\"\n");
+    }
+
     // --- action palette (nix --actions) ----------------------------------------
     {
         // A second alias with an overlapping action name, so the palette has to
@@ -366,9 +413,16 @@ pub fn main(init: std.process.Init) !void {
         // (Where exactly it lands is the unit test's business, not this one's.)
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "deliberately far longer") != null and
             std.mem.indexOf(u8, r.out, "has to be cut.") == null and
-            std.mem.indexOf(u8, r.out, "...") != null, "a long description is truncated to keep COMMAND visible", r);
+            std.mem.indexOf(u8, r.out, "...") != null, "a long description is capped, and the cut is marked", r);
         // The header comment is cut off by a blank line, so it describes nothing.
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "file header") == null, "a blank line detaches a comment from the action below", r);
+
+        // The prose is the footnote, so it goes last - after the command, which
+        // is what the row is actually about.
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "COMMAND").? < std.mem.indexOf(u8, r.out, "DESCRIPTION").?, "DESCRIPTION is the last column", r);
+        // An undocumented action ends at its command instead of trailing off
+        // into the blank padding of a column it has nothing to put in.
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "echo undocumented\n") != null, "an undescribed row ends at its command", r);
 
         // The palette shows them too, and its pattern searches the prose - the
         // whole point of writing a description.

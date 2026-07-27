@@ -103,6 +103,211 @@ pub fn runDetachedEnv(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_win
     _ = &child;
 }
 
+/// spawnNewConsole starts `command` in a shell of its own, in a NEW console
+/// window, and returns without waiting - the palette's multi-pick path, where
+/// each selected action needs a terminal it does not have to share.
+///
+/// Windows: CreateProcessW with CREATE_NEW_CONSOLE, which `std.process.spawn`
+/// does not expose (its create_no_window is the opposite knob), so the call is
+/// made directly. Building the command line by hand is not incidental either:
+/// `cmd /k <command>` must reach cmd VERBATIM, and the MSVC-style escaping std
+/// applies to argv (a `"` becomes `\"`) is not what cmd's parser reads, so a
+/// command containing quotes would arrive mangled. Everything after `/k` is
+/// copied untouched, and cmd sees exactly what the user typed into actions.toml.
+/// `/k` rather than `/c`: the window is the point, and it must survive the
+/// command so its output can still be read.
+///
+/// Elsewhere there is no portable "open a terminal", so the command is simply
+/// detached with its output discarded, the `--outside` shape.
+pub fn spawnNewConsole(
+    arena: std.mem.Allocator,
+    io: Io,
+    command: []const u8,
+    cwd: []const u8,
+    env: ?*const std.process.Environ.Map,
+) !void {
+    if (!is_windows) return runDetachedEnv(io, &.{ "/bin/sh", "-c", command }, cwd, false, env);
+    const w = std.os.windows;
+    const comspec = if (env) |m| m.get("COMSPEC") orelse "cmd.exe" else "cmd.exe";
+    // The shell is named in the command line and NOT as lpApplicationName: a
+    // partial application name is resolved against the current directory only,
+    // never the search path, so a machine without an absolute COMSPEC would get
+    // "file not found". Quoting the first token keeps a spaced path unambiguous.
+    const line = try std.fmt.allocPrint(arena, "\"{s}\" /k {s}", .{ comspec, command });
+    const line_w = try std.unicode.wtf8ToWtf16LeAllocZ(arena, line);
+    const cwd_w = try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd);
+    // The child gets the alias run environment (NIX_ALIAS, the scripts dirs on
+    // PATH) exactly as a foreground run would - a new window must not mean a
+    // different environment.
+    const block: ?std.process.Environ.WindowsBlock = if (env) |m| try m.createWindowsBlock(arena, .{}) else null;
+    var si: w.STARTUPINFOW = std.mem.zeroes(w.STARTUPINFOW);
+    si.cb = @sizeOf(w.STARTUPINFOW);
+    var pi: w.PROCESS.INFORMATION = undefined;
+    const ok = w.kernel32.CreateProcessW(
+        null,
+        line_w.ptr,
+        null,
+        null,
+        .FALSE, // its own console, so there is nothing of ours to inherit
+        .{ .create_new_console = true, .create_unicode_environment = block != null },
+        if (block) |b| b.slice.ptr else null,
+        cwd_w.ptr,
+        &si,
+        &pi,
+    ).toBool();
+    if (!ok) return error.SpawnFailed;
+    // Detached: we never wait on it, so release both handles now. Dropping them
+    // does not touch the process - only our claim on it.
+    w.CloseHandle(pi.hThread);
+    w.CloseHandle(pi.hProcess);
+}
+
+extern "kernel32" fn WaitForSingleObject(hHandle: *anyopaque, dwMilliseconds: u32) callconv(.winapi) u32;
+extern "kernel32" fn GetExitCodeProcess(hProcess: *anyopaque, lpExitCode: *u32) callconv(.winapi) i32;
+extern "kernel32" fn GetStdHandle(nStdHandle: u32) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn SetHandleInformation(hObject: *anyopaque, dwMask: u32, dwFlags: u32) callconv(.winapi) i32;
+
+/// inheritableStdHandle returns one of this process's standard handles, marked
+/// inheritable so a child spawned with bInheritHandles can actually use it.
+///
+/// This is the part std.process.spawn does for you and a hand-rolled
+/// CreateProcessW must do itself. Without it a child inherits the CONSOLE fine
+/// (which is why it looks correct when you try it by hand) but loses a
+/// redirected stdout: `r acme :build > log.txt` and any pipe would silently
+/// drop the command's output.
+fn inheritableStdHandle(which: u32) ?*anyopaque {
+    const h = GetStdHandle(which) orelse return null;
+    if (@intFromPtr(h) == std.math.maxInt(usize)) return null; // INVALID_HANDLE_VALUE
+    _ = SetHandleInformation(h, 1, 1); // HANDLE_FLAG_INHERIT
+    return h;
+}
+
+/// runShellInherit runs `command` through the shell in THIS console, waits for
+/// it, and returns its exit code - the foreground counterpart of
+/// spawnNewConsole, and built by hand for the same reason.
+///
+/// Routing the command through std's argv escaping would rewrite every `"` as
+/// `\"`, and cmd does not unescape that - it prints it. So an action as ordinary
+/// as `git commit -m "wip"` arrived at cmd as `-m \"wip\"`. Here the command
+/// line is assembled exactly as `cmd /c <command>` and cmd parses the string the
+/// user actually wrote. POSIX has no such problem: exec takes the argv as given.
+pub fn runShellInherit(
+    arena: std.mem.Allocator,
+    io: Io,
+    command: []const u8,
+    cwd: []const u8,
+    env: ?*const std.process.Environ.Map,
+) !u8 {
+    if (!is_windows) return runInheritEnv(io, &.{ "/bin/sh", "-c", command }, cwd, env);
+    const w = std.os.windows;
+    const comspec = if (env) |m| m.get("COMSPEC") orelse "cmd.exe" else "cmd.exe";
+    const line = try std.fmt.allocPrint(arena, "\"{s}\" /c {s}", .{ comspec, command });
+    const line_w = try std.unicode.wtf8ToWtf16LeAllocZ(arena, line);
+    const cwd_w = try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd);
+    const block: ?std.process.Environ.WindowsBlock = if (env) |m| try m.createWindowsBlock(arena, .{}) else null;
+    var si: w.STARTUPINFOW = std.mem.zeroes(w.STARTUPINFOW);
+    si.cb = @sizeOf(w.STARTUPINFOW);
+    // Hand the child this process's own stdio explicitly, so a redirected
+    // stream reaches it and not just the console behind it.
+    si.dwFlags = 0x00000100; // STARTF_USESTDHANDLES
+    si.hStdInput = inheritableStdHandle(0xFFFF_FFF6); // STD_INPUT_HANDLE  (-10)
+    si.hStdOutput = inheritableStdHandle(0xFFFF_FFF5); // STD_OUTPUT_HANDLE (-11)
+    si.hStdError = inheritableStdHandle(0xFFFF_FFF4); // STD_ERROR_HANDLE  (-12)
+    var pi: w.PROCESS.INFORMATION = undefined;
+    const ok = w.kernel32.CreateProcessW(
+        null,
+        line_w.ptr,
+        null,
+        null,
+        .TRUE, // this console and its stdio are exactly what the child should get
+        .{ .create_unicode_environment = block != null },
+        if (block) |b| b.slice.ptr else null,
+        cwd_w.ptr,
+        &si,
+        &pi,
+    ).toBool();
+    if (!ok) return error.SpawnFailed;
+    defer {
+        w.CloseHandle(pi.hThread);
+        w.CloseHandle(pi.hProcess);
+    }
+    _ = WaitForSingleObject(pi.hProcess, 0xFFFFFFFF); // INFINITE
+    var code: u32 = 1;
+    if (GetExitCodeProcess(pi.hProcess, &code) == 0) return error.SpawnFailed;
+    // Exit codes are a byte here as everywhere else in nix; a status that
+    // truncates to zero must not be reported as success.
+    const low: u8 = @truncate(code);
+    return if (low == 0 and code != 0) 1 else low;
+}
+
+// ShellExecuteExW is the only way to raise privileges: elevation is a shell
+// service (it prompts through UAC and starts the process under a different
+// token), not something CreateProcess can ask for. shell32 is loaded lazily,
+// like the clipboard's user32 - a console app does not otherwise pull it in,
+// and the resolve hot path must not pay for a DLL that only `sudo` actions use.
+const SHELLEXECUTEINFOW = extern struct {
+    cbSize: u32,
+    fMask: u32,
+    hwnd: ?*anyopaque,
+    lpVerb: ?[*:0]const u16,
+    lpFile: ?[*:0]const u16,
+    lpParameters: ?[*:0]const u16,
+    lpDirectory: ?[*:0]const u16,
+    nShow: i32,
+    hInstApp: ?*anyopaque,
+    lpIDList: ?*anyopaque,
+    lpClass: ?[*:0]const u16,
+    hkeyClass: ?*anyopaque,
+    dwHotKey: u32,
+    hIcon: ?*anyopaque,
+    hProcess: ?*anyopaque,
+};
+const ShellExecuteExWFn = *const fn (*SHELLEXECUTEINFOW) callconv(.winapi) i32;
+extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GetLastError() callconv(.winapi) u32;
+
+/// spawnElevated starts `command` in an ELEVATED shell of its own, after the
+/// UAC prompt the user answers. It never waits: an elevated process runs under
+/// a different token and cannot write into this console, so it gets its own
+/// window (`/k`, so it stays up and its output can be read) and nix returns as
+/// soon as it is started.
+///
+/// error.ElevationDeclined is the ordinary outcome of answering "No" at the UAC
+/// prompt - a decision, not a fault, and callers report it as such.
+///
+/// There is no environment parameter because ShellExecuteEx has nowhere to put
+/// one: the elevated process is built by the shell, with the invoking user's
+/// own environment. Anything the command needs to inherit has to be written
+/// into the command string itself (see run.zig's elevated prelude).
+pub fn spawnElevated(arena: std.mem.Allocator, command: []const u8, cwd: []const u8, comspec: []const u8) !void {
+    if (!is_windows) return error.ElevationUnsupported;
+    const shell32 = LoadLibraryA("shell32.dll") orelse return error.ElevationUnsupported;
+    const exec: ShellExecuteExWFn = @ptrCast(@alignCast(GetProcAddress(shell32, "ShellExecuteExW") orelse
+        return error.ElevationUnsupported));
+
+    const params = try std.fmt.allocPrint(arena, "/k {s}", .{command});
+    var info: SHELLEXECUTEINFOW = std.mem.zeroes(SHELLEXECUTEINFOW);
+    info.cbSize = @sizeOf(SHELLEXECUTEINFOW);
+    // NOASYNC: nix usually exits within milliseconds of this call, and without
+    // it the elevation request can be abandoned with the process that made it.
+    // FLAG_NO_UI: the shell must not put up its own error dialog - a modal box
+    // nobody asked for blocks the terminal until someone clicks it, and nix
+    // reports the failure itself. It does not touch the UAC consent prompt,
+    // which is the whole point of the call and stays.
+    info.fMask = 0x00000100 | 0x00000400; // SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI
+    info.lpVerb = (try std.unicode.wtf8ToWtf16LeAllocZ(arena, "runas")).ptr;
+    info.lpFile = (try std.unicode.wtf8ToWtf16LeAllocZ(arena, comspec)).ptr;
+    info.lpParameters = (try std.unicode.wtf8ToWtf16LeAllocZ(arena, params)).ptr;
+    info.lpDirectory = (try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd)).ptr;
+    info.nShow = 1; // SW_SHOWNORMAL
+    if (exec(&info) != 0) return;
+    return switch (GetLastError()) {
+        1223 => error.ElevationDeclined, // ERROR_CANCELLED - "No" at the prompt
+        else => error.SpawnFailed,
+    };
+}
+
 /// psShell picks the PowerShell a `.ps1` should be invoked through: `pwsh`
 /// when present, else Windows PowerShell (always installed). Resolved by bare
 /// name at run time so callers survive a pwsh upgrade/move.

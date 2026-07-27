@@ -52,10 +52,15 @@ pub fn main(init: std.process.Init) !void {
     // mojibake under the default OEM code page (no-op elsewhere).
     proc.enableUtf8Console();
 
+    // Streaming, not positional: these streams are SHARED with the commands nix
+    // spawns. A positional writer tracks its own offset, so `r acme :build
+    // :test > log.txt 2>&1` would write a header, let the child append after it,
+    // then write the next header back over the child's output. Appending is the
+    // only mode that agrees with a file pointer other processes also move.
     var out_buf: [4096]u8 = undefined;
-    var out_fw: Io.File.Writer = .init(.stdout(), io, &out_buf);
+    var out_fw: Io.File.Writer = .initStreaming(.stdout(), io, &out_buf);
     var err_buf: [1024]u8 = undefined;
-    var err_fw: Io.File.Writer = .init(.stderr(), io, &err_buf);
+    var err_fw: Io.File.Writer = .initStreaming(.stderr(), io, &err_buf);
     const out = &out_fw.interface;
     const err = &err_fw.interface;
     defer out.flush() catch {};

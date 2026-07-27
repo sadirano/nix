@@ -12,6 +12,7 @@ const resolve = @import("resolve.zig");
 const config = @import("config.zig");
 const notify = @import("notify.zig");
 const secret = @import("secret.zig");
+const segments = @import("segments.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -34,20 +35,15 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `r <alias> :`)\n");
         return 1;
     }
-    // Named action: a leading ':' on the first token (`r <alias> :test`). A bare
-    // ':' lists the alias's actions. Runs as a shell string in the alias dir.
+    // Named action(s): a leading ':' on the first token (`r <alias> :test`). A
+    // bare ':' lists the alias's actions. Runs as a shell string in the alias dir.
     if (argv[0].len > 0 and argv[0][0] == ':') {
-        const name = argv[0][1..];
-        if (name.len == 0) return listActions(app, alias, target);
-        if (argv.len > 1) {
-            try app.err.print("nix: a named action (:{s}) takes no extra args\n", .{name});
-            return 1;
-        }
-        const cmd = (try resolveAction(app, alias, target, name)) orelse {
-            try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `r {s} :`)\n", .{ alias, name, alias });
-            return 1;
+        const call = switch (try parseActionCall(app, argv)) {
+            .invalid => return 1,
+            .list => return listActions(app, alias, target),
+            .call => |c| c,
         };
-        return runAction(app, cmd, alias, target, name, outside);
+        return runCall(app, call, alias, target, outside);
     }
     // Resolve the command: a project script in `.nix/scripts` (then central
     // `~/.nix/scripts`) wins, so `r <alias> build` runs the project's build;
@@ -79,6 +75,122 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
         return 1;
     };
+}
+
+/// One `:action` invocation parsed off a command line: the names to run, in the
+/// order given, and the arguments they were called with.
+pub const ActionCall = struct {
+    names: []const []const u8,
+    args: []const []const u8,
+};
+
+pub const ParsedCall = union(enum) { list, invalid, call: ActionCall };
+
+/// parseActionCall reads the leading run of `:name` tokens and whatever follows
+/// them. Several names chain (`r acme :build :test`); a bare `:` on its own
+/// lists the alias's actions.
+///
+/// Arguments are refused for a chain: `r acme :build :test --release` has no
+/// honest answer to "which action gets the flag", and picking one would be the
+/// kind of guess nix does not make. Name one action, or pass none.
+pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
+    var n: usize = 0;
+    while (n < argv.len and argv[n].len > 1 and argv[n][0] == ':') n += 1;
+    if (n == 0) {
+        if (argv.len == 1) return .list; // a bare ':' is the listing form
+        try app.err.writeAll("nix: name the action after ':' (e.g. r <alias> :test)\n");
+        return .invalid;
+    }
+    var args = argv[n..];
+    // `--` separates nix's words from the action's. It is optional, and exactly
+    // one leading marker is consumed, so `:test -- --json` reaches the command
+    // as `--json` rather than losing the flag to nix's own parsing.
+    if (args.len > 0 and eql(args[0], "--")) args = args[1..];
+    for (args) |a| if (eql(a, ":")) {
+        try app.err.writeAll("nix: name the action after ':' (e.g. r <alias> :test)\n");
+        return .invalid;
+    };
+    if (n > 1 and args.len > 0) {
+        try app.err.writeAll("nix: arguments go to a single action, not a chain of them\n");
+        return .invalid;
+    }
+    const names = try app.arena.alloc([]const u8, n);
+    for (names, argv[0..n]) |*name, tok| name.* = tok[1..];
+    return .{ .call = .{ .names = names, .args = args } };
+}
+
+/// runCall runs a parsed call: one action exactly as it always ran, or a chain
+/// in order, stopping at the first failure - `&&` semantics, because `&&` is
+/// what you would have typed otherwise. Each link resolves and runs as if it
+/// had been invoked alone, under a header so a chain's transcript can be read
+/// back afterwards.
+fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outside: bool) !u8 {
+    const chained = call.names.len > 1;
+    for (call.names, 0..) |name, i| {
+        const cmd = (try resolveAction(app, alias, dir, name)) orelse {
+            try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `r {s} :`)\n", .{ alias, name, alias });
+            return 1;
+        };
+        if (chained) {
+            try app.out.flush();
+            try app.err.print("==> {s} :{s}\n", .{ alias, name });
+            try app.err.flush();
+        }
+        const code = try runAction(app, try applyArgs(app.arena, cmd, call.args), alias, dir, name, outside);
+        if (code != 0) {
+            if (i + 1 < call.names.len) try app.err.print("nix: :{s} failed (exit {d}) - stopping\n", .{ name, code });
+            return code;
+        }
+    }
+    return 0;
+}
+
+/// applyArgs splices a call's arguments into a command string: into every
+/// `{args}` placeholder if the command has one, else onto the end. Appending is
+/// the default because that is what a command line does anyway; the placeholder
+/// exists for the actions whose arguments belong in the middle.
+///
+/// The arguments arrive already split by the user's shell, so one containing a
+/// space is re-quoted - it was a single word when they typed it, and must stay
+/// one word for the shell this string is handed to.
+pub fn applyArgs(arena: std.mem.Allocator, command: []const u8, args: []const []const u8) ![]const u8 {
+    const joined = try joinArgs(arena, args);
+    if (std.mem.indexOf(u8, command, "{args}") != null)
+        return std.mem.replaceOwned(u8, arena, command, "{args}", joined);
+    if (joined.len == 0) return command;
+    return std.fmt.allocPrint(arena, "{s} {s}", .{ command, joined });
+}
+
+fn joinArgs(arena: std.mem.Allocator, args: []const []const u8) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    for (args, 0..) |a, i| {
+        if (i > 0) try buf.append(arena, ' ');
+        // An argument that already carries its own quotes is passed through:
+        // the user quoted it deliberately, and re-wrapping would nest them.
+        const needs = (a.len == 0 or std.mem.indexOfAny(u8, a, " \t") != null) and
+            std.mem.indexOfScalar(u8, a, '"') == null;
+        if (needs) try buf.append(arena, '"');
+        try buf.appendSlice(arena, a);
+        if (needs) try buf.append(arena, '"');
+    }
+    return buf.items;
+}
+
+/// stripSudo returns a command with its `sudo` marker removed, or null when it
+/// carries none. A leading `sudo` is how an action declares that it needs
+/// administrator rights: no syntax to learn, and listings show the word, so
+/// what the file says and what happens are the same thing.
+///
+/// The marker must be the FIRST token - it elevates the command, not one link
+/// of a `&&` chain. Off Windows it is not a marker at all: there `sudo` is a
+/// real program, and the honest thing is to run the line exactly as written.
+pub fn stripSudo(command: []const u8) ?[]const u8 {
+    if (!proc.is_windows) return null;
+    const t = std.mem.trimStart(u8, command, " \t");
+    if (t.len <= "sudo".len or !std.ascii.eqlIgnoreCase(t[0.."sudo".len], "sudo")) return null;
+    if (t["sudo".len] != ' ' and t["sudo".len] != '\t') return null;
+    const rest = std.mem.trimStart(u8, t["sudo".len..], " \t");
+    return if (rest.len == 0) null else rest;
 }
 
 /// aliasRunEnv returns the environment for running in an alias context — the
@@ -222,62 +334,156 @@ pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
         return 0;
     }
     var width: usize = "ACTION".len;
-    var desc_w: usize = 0;
+    var cmd_w: usize = "COMMAND".len;
+    var described = false;
     for (merged) |a| {
         width = @max(width, a.name.len);
-        if (a.description.len > 0) desc_w = @max(desc_w, @min(a.description.len, app_zig.max_description_cols));
+        cmd_w = @max(cmd_w, @min(a.command.len, app_zig.max_command_cols));
+        if (a.description.len > 0) described = true;
     }
     // The DESCRIPTION column appears only when something has one, so a file
     // that documents nothing still prints exactly the table it printed before.
-    const described = desc_w > 0;
-    if (described) desc_w = @max(desc_w, "DESCRIPTION".len);
+    // It goes last: the command is what the row is about, the prose is the
+    // footnote, and an undocumented action then just ends at its command.
     try padPrint(app.out, "ACTION", width + 2);
-    if (described) try padPrint(app.out, "DESCRIPTION", desc_w + 2);
-    try app.out.writeAll("COMMAND\n");
+    if (described) {
+        try padPrint(app.out, "COMMAND", cmd_w + 2);
+        try app.out.writeAll("DESCRIPTION\n");
+    } else try app.out.writeAll("COMMAND\n");
     for (merged) |a| {
         try padPrint(app.out, a.name, width + 2);
-        if (described) try padPrint(app.out, app_zig.ellipsize(app.arena, a.description), desc_w + 2);
-        try app.out.print("{s}\n", .{a.command});
+        if (described and a.description.len > 0) {
+            try padPrint(app.out, a.command, cmd_w + 2);
+            try app.out.print("{s}\n", .{app_zig.ellipsize(app.arena, a.description)});
+        } else try app.out.print("{s}\n", .{a.command});
     }
     return 0;
 }
 
 /// runShellString runs an action's command through the shell (cmd /c on Windows,
 /// sh -c elsewhere) in `dir`, so `&&`, pipes, and redirects work. `alias` names
-/// the alias context for NIX_ALIAS; `outside` runs it detached (a new window),
-/// mirroring `r --outside`.
+/// the alias context for NIX_ALIAS; `name` labels the action in messages ("" for
+/// a literal command); `outside` runs it in a window of its own.
 ///
 /// `${secret:NAME}` placeholders (see secret.zig) are expanded here — the one
 /// choke point every named action passes through, foreground or detached — so
 /// a resolved credential exists only for the duration of this call and never
 /// reaches listings, --export, or [notify] messages (those all read the raw,
 /// unexpanded command string). An unresolved name aborts before spawn.
-pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, outside: bool) !u8 {
-    var cred_ctx = secret.CredResolveCtx{ .arena = app.arena };
-    const cmd = switch (try secret.expandSecrets(app.arena, command, secret.credentialResolver(&cred_ctx))) {
-        .ok => |s| s,
-        .missing => |name| {
-            try app.err.print("nix: unknown secret \"{s}\" - run: nix --secret set {s}\n", .{ name, name });
-            return 1;
-        },
-    };
-    const shell_argv: []const []const u8 = if (proc.is_windows)
-        &.{ app.env.get("COMSPEC") orelse "cmd.exe", "/c", cmd }
-    else
-        &.{ "/bin/sh", "-c", cmd };
+pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool) !u8 {
+    const cmd = (try expandSecrets(app, command)) orelse return 1;
+    // An elevated action is never a foreground run, asked for or not: UAC hands
+    // back a separate process under a different token, and it cannot write into
+    // this console. It gets a window, like `--outside` does.
+    if (outside or stripSudo(cmd) != null) return startWindowed(app, cmd, alias, dir, name);
     const env = try aliasRunEnv(app, alias, dir);
     try app.out.flush();
-    if (outside) {
-        proc.runDetachedEnv(app.io, shell_argv, dir, false, env) catch |e| {
-            try app.err.print("nix: start action: {s}\n", .{@errorName(e)});
-            return 1;
-        };
-        return 0;
-    }
-    return proc.runInheritEnv(app.io, shell_argv, dir, env) catch |e| {
+    return proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
         try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
         return 1;
     };
+}
+
+/// startWindowed launches a command in a shell of its OWN - a new console
+/// window on Windows - and returns as soon as it is started. Three paths land
+/// here: `--outside`, a palette multi-pick, and every elevated action. It is
+/// what makes "detached, in a new window" true rather than aspirational: the
+/// old detached spawn inherited this console with its output routed to NUL, so
+/// the command ran where nobody could see it.
+fn startWindowed(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8) !u8 {
+    const env = try aliasRunEnv(app, alias, dir);
+    try app.out.flush();
+    if (stripSudo(command)) |bare| {
+        const comspec = env.get("COMSPEC") orelse "cmd.exe";
+        const line = try elevatedCommand(app.arena, app.home, app.ctx_vars, bare, alias, dir);
+        proc.spawnElevated(app.arena, line, dir, comspec) catch |e| {
+            switch (e) {
+                error.ElevationDeclined => try app.err.writeAll("nix: elevation declined - nothing was run\n"),
+                else => try app.err.print("nix: elevate: {s}\n", .{@errorName(e)}),
+            }
+            return 1;
+        };
+        return started(app, alias, name, true);
+    }
+    proc.spawnNewConsole(app.arena, app.io, command, dir, env) catch |e| {
+        try app.err.print("nix: start: {s}\n", .{@errorName(e)});
+        return 1;
+    };
+    return started(app, alias, name, false);
+}
+
+fn started(app: *App, alias: []const u8, name: []const u8, elevated: bool) !u8 {
+    const mark = if (elevated) " (elevated)" else "";
+    if (name.len > 0) {
+        try app.out.print("started {s} :{s}{s}\n", .{ alias, name, mark });
+    } else try app.out.print("started in {s}{s}\n", .{ alias, mark });
+    return 0;
+}
+
+/// elevatedCommand writes the alias context into the command as cmd `set`
+/// statements. ShellExecuteEx has nowhere to put an environment (see
+/// proc.spawnElevated), and a window that is elevated must not also quietly be
+/// a window with a different NIX_ALIAS or a different PATH.
+///
+/// PATH is EXTENDED, not replaced: `%PATH%` expands inside the elevated shell,
+/// whose own PATH is the administrator's. Prepending the script dirs to that is
+/// right; overwriting it with ours would be a lie about whose session this is.
+fn elevatedCommand(
+    arena: std.mem.Allocator,
+    home: []const u8,
+    ctx_vars: []const segments.Var,
+    command: []const u8,
+    alias: []const u8,
+    dir: []const u8,
+) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    const local = try std.fs.path.join(arena, &.{ dir, ".nix", "scripts" });
+    const central = try std.fs.path.join(arena, &.{ home, "scripts" });
+    try setVar(arena, &buf, "PATH", try std.fmt.allocPrint(arena, "{s};{s};%PATH%", .{ local, central }));
+    if (alias.len > 0) {
+        try setVar(arena, &buf, "NIX_ALIAS", alias);
+        try setVar(arena, &buf, "NIX_ALIAS_PATH", dir);
+    }
+    for (ctx_vars) |kv| try setVar(arena, &buf, kv.key, kv.value);
+    try buf.appendSlice(arena, command);
+    return buf.items;
+}
+
+/// setVar appends one `set "K=V" & ` statement. A value carrying a double quote
+/// is skipped rather than escaped: cmd's quoting rules would mangle it, and a
+/// missing variable is a better outcome than a command line that reparses into
+/// something nobody wrote - in a shell that is about to run as administrator.
+fn setVar(arena: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, value: []const u8) !void {
+    if (std.mem.indexOfScalar(u8, value, '"') != null) return;
+    try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "set \"{s}={s}\" & ", .{ key, value }));
+}
+
+/// expandSecrets resolves an action's `${secret:NAME}` placeholders, or reports
+/// the unknown name and returns null. Every path that spawns a command string
+/// goes through here, so a resolved credential exists only for the length of
+/// that spawn and never reaches a listing or a [notify] message.
+fn expandSecrets(app: *App, command: []const u8) !?[]const u8 {
+    var cred_ctx = secret.CredResolveCtx{ .arena = app.arena };
+    switch (try secret.expandSecrets(app.arena, command, secret.credentialResolver(&cred_ctx))) {
+        .ok => |s| return s,
+        .missing => |name| {
+            try app.err.print("nix: unknown secret \"{s}\" - run: nix --secret set {s}\n", .{ name, name });
+            return null;
+        },
+    }
+}
+
+/// startInNewShell launches an action in a shell of ITS OWN - a new console
+/// window on Windows - and returns as soon as it is started. This is what the
+/// palette does when several actions are picked at once: they cannot share one
+/// terminal, since their output would interleave into nonsense and only one of
+/// them could hold the keyboard.
+///
+/// Like `--outside`, no [notify] hook fires: nothing here observes the finish.
+/// An action marked `sudo` starts elevated, here as anywhere else.
+pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8) !u8 {
+    const cmd = (try expandSecrets(app, command)) orelse return 1;
+    return startWindowed(app, cmd, alias, dir, name);
 }
 
 /// runAction runs a named action (`r <alias> :name`) and, when config.toml has a
@@ -288,12 +494,15 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
 /// runs synchronously in the alias dir with the action's env (NIX_ALIAS, scripts
 /// dirs on PATH) plus NIX_ACTION / NIX_ACTION_EXIT / NIX_ACTION_DURATION_MS, and
 /// never changes the action's exit code.
+///
+/// An elevated (`sudo`) action is exempt for the same reason: it runs in its own
+/// window under a token we do not own, so there is no finish here to time.
 pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool) !u8 {
-    if (outside) return runShellString(app, command, alias, dir, true);
+    if (outside or stripSudo(command) != null) return runShellString(app, command, alias, dir, name, true);
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
-    if (cfg.notify_on_finish.len == 0) return runShellString(app, command, alias, dir, false);
+    if (cfg.notify_on_finish.len == 0) return runShellString(app, command, alias, dir, name, false);
     const t0 = Io.Clock.awake.now(app.io).nanoseconds;
-    const code = try runShellString(app, command, alias, dir, false);
+    const code = try runShellString(app, command, alias, dir, name, false);
     const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
     const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
     const ok = code == 0;
@@ -322,6 +531,70 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
         try app.err.print("nix: notify hook: {s}\n", .{@errorName(e)});
     };
     return code;
+}
+
+test "stripSudo: the marker is the first token, or it is not a marker" {
+    if (!proc.is_windows) return error.SkipZigTest; // off Windows sudo is a real program
+    try std.testing.expectEqualStrings("npm run deploy", stripSudo("sudo npm run deploy").?);
+    try std.testing.expectEqualStrings("npm run deploy", stripSudo("  SUDO   npm run deploy").?); // case, spacing
+    // Not a marker: a command that merely mentions it, or one that is only it.
+    try std.testing.expect(stripSudo("npm run deploy && sudo restart") == null);
+    try std.testing.expect(stripSudo("sudoku --solve") == null);
+    try std.testing.expect(stripSudo("sudo") == null);
+    try std.testing.expect(stripSudo("sudo   ") == null);
+    try std.testing.expect(stripSudo("") == null);
+}
+
+test "elevatedCommand: the alias context is carried in, PATH extended not replaced" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const line = try elevatedCommand(a, "H", &.{}, "install.ps1", "acme", "D");
+    // The command itself is last and untouched - everything before it is prelude.
+    try std.testing.expect(std.mem.endsWith(u8, line, "install.ps1"));
+    try std.testing.expect(std.mem.indexOf(u8, line, "set \"NIX_ALIAS=acme\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "set \"NIX_ALIAS_PATH=D\"") != null);
+    // %PATH% survives into the elevated shell, where it means the admin's PATH.
+    try std.testing.expect(std.mem.indexOf(u8, line, ";%PATH%\"") != null);
+
+    // A value that would break out of its own quotes is dropped, not escaped:
+    // this string is about to be parsed by a shell running as administrator.
+    const hostile = [_]segments.Var{.{ .key = "K", .value = "x\" & del /q *" }};
+    const guarded = try elevatedCommand(a, "H", &hostile, "install.ps1", "acme", "D");
+    try std.testing.expect(std.mem.indexOf(u8, guarded, "del /q") == null);
+}
+
+test "applyArgs: appended by default, substituted where the command asks" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const none: []const []const u8 = &.{};
+    try std.testing.expectEqualStrings("zig build test", try applyArgs(a, "zig build test", none));
+    try std.testing.expectEqualStrings(
+        "zig build test --summary all",
+        try applyArgs(a, "zig build test", &.{ "--summary", "all" }),
+    );
+    // A placeholder takes the args instead, wherever it sits - and every
+    // occurrence gets them, so a command can use them twice.
+    try std.testing.expectEqualStrings(
+        "npm run dev -- --port 8080 --open",
+        try applyArgs(a, "npm run dev -- --port {args} --open", &.{"8080"}),
+    );
+    try std.testing.expectEqualStrings("echo x x", try applyArgs(a, "echo {args} {args}", &.{"x"}));
+    // No args and a placeholder: it resolves to nothing, not to the literal text.
+    try std.testing.expectEqualStrings("zig build test ", try applyArgs(a, "zig build test {args}", none));
+    // A word that was one word in the user's shell stays one word in ours.
+    try std.testing.expectEqualStrings(
+        "git commit -m \"two words\"",
+        try applyArgs(a, "git commit", &.{ "-m", "two words" }),
+    );
+    // An argument that carries its own quotes is passed through untouched.
+    try std.testing.expectEqualStrings(
+        "echo \"already quoted\"",
+        try applyArgs(a, "echo", &.{"\"already quoted\""}),
+    );
 }
 
 test "runAction message shapes (via notify.expandTemplate pairs)" {

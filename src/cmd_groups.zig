@@ -377,30 +377,38 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
     // Named action (`r +<group> :test`): each member runs its OWN action (with the
     // machine-wide _default.toml as the last fallback); a member resolving nothing
     // is skipped with a note. Otherwise a literal command in each dir.
-    const action_name: ?[]const u8 = if (argv[0].len > 0 and argv[0][0] == ':') argv[0][1..] else null;
-    if (action_name) |n| {
-        if (n.len == 0) {
+    //
+    // Actions chain and take arguments here exactly as they do for one alias
+    // (`r +work :build :test`, `r +work :test -- --json`), parsed by the same
+    // reader so the two forms cannot drift. A chain stops inside the member that
+    // failed and the group moves on - which is what a group has always done with
+    // a member that failed.
+    const call: ?run_zig.ActionCall = if (argv[0].len > 0 and argv[0][0] == ':') switch (try run_zig.parseActionCall(app, argv)) {
+        .invalid => return 1,
+        .list => {
             try app.err.writeAll("nix: name the action after ':' (e.g. r +group :test)\n");
             return 1;
-        }
-        if (argv.len > 1) {
-            try app.err.print("nix: a named action (:{s}) takes no extra args\n", .{n});
-            return 1;
-        }
-    }
+        },
+        .call => |c| c,
+    } else null;
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
     var rc: u8 = 0;
     for (targets) |t| {
         try app.out.flush();
         try app.err.print("== {s}  ({s}) ==\n", .{ t.name, t.path });
         try app.err.flush();
-        if (action_name) |n| {
-            const cmd = (try resolveAction(app, t.name, t.path, n)) orelse {
-                try app.err.print("   (no action :{s} - skipped)\n", .{n});
-                continue;
-            };
-            const code = try runAction(app, cmd, t.name, t.path, n, false);
-            if (code != 0) rc = code;
+        if (call) |c| {
+            for (c.names) |n| {
+                const cmd = (try resolveAction(app, t.name, t.path, n)) orelse {
+                    try app.err.print("   (no action :{s} - skipped)\n", .{n});
+                    continue;
+                };
+                const code = try runAction(app, try run_zig.applyArgs(app.arena, cmd, c.args), t.name, t.path, n, false);
+                if (code != 0) {
+                    rc = code;
+                    break; // the rest of THIS member's chain; other members still run
+                }
+            }
         } else {
             // Each member resolves its own `.nix/scripts` command and runs with
             // that dir on PATH.

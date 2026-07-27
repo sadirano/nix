@@ -335,22 +335,51 @@ deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
 **Descriptions come from the comment above an action.** The command says what runs; the comment says *why*, and listings show it in a DESCRIPTION column:
 
 ```
-ACTION  DESCRIPTION                                        COMMAND
-deploy  Builds, then mirrors dist/ to the live host. No...  ./scripts/build.sh && rsync -a dist/ host:/srv
-serve                                                      npm run dev
-test                                                       zig build test
+ACTION  COMMAND                                        DESCRIPTION
+deploy  ./scripts/build.sh && rsync -a dist/ host:/srv  Builds, then mirrors dist/ to the live host. No...
+serve   npm run dev
+test    zig build test
 ```
 
 There's no new syntax to learn: a run of `#` lines directly above an action is joined into one line of prose and becomes its description, so files that were already commented this way gain descriptions without being touched. A blank line between the comment and the action detaches it (that's how a file-header comment avoids describing the first action), a banner rule of dashes is never mistaken for prose, and the column only appears when something actually has one. `nix --actions` searches descriptions too — `nix --actions "not reversible"` finds the dangerous ones — and `--export`/`--import` carry them, so a `--replace` restore can't quietly drop them.
 
 ```powershell
-r acme :test         # run acme's `test` action in acme's dir
-r acme :             # list acme's actions
-r acme -o :serve     # run the action detached, in a new window
-r +work :test        # run each member's own `test` action (members without it are skipped)
+r acme :test              # run acme's `test` action in acme's dir
+r acme :                  # list acme's actions
+r acme -o :serve          # start it in a window of its own and come straight back
+r acme :test -- --json    # pass arguments through to the command
+r acme :build :test       # a chain: in order, stopping at the first failure
+r +work :test             # run each member's own `test` action (members without it are skipped)
 ```
 
+**Arguments** are appended to the command, so `r acme :test -- --json` runs `zig build test --json`. The `--` is optional; it's there for when the argument would otherwise look like one of nix's own flags. If the command contains `{args}`, the arguments are substituted there instead of appended — for the ones whose arguments belong in the middle:
+
+```toml
+[actions]
+serve = "npm run dev -- --port {args} --open"
+```
+
+Words are re-quoted as they were typed: `r acme :commit -- -m "two words"` reaches the shell with `"two words"` intact, as one word. Quotes written *in* the command survive too — nix builds the shell's command line itself rather than handing it to a layer that would rewrite every `"` as `\"`.
+
+`-o` on an action now means what it always said: a real console window of its own, opened in the alias directory and left open so you can read it, with nix returning immediately. (On a literal command — `r acme -o some.exe` — `-o` still just starts the program detached and hands you back the prompt; that path is for launching apps, not for watching output.)
+
+**Chains** run several actions in order, in this terminal, stopping at the first failure — the `&&` you would otherwise have typed, without naming the alias twice. Each link runs exactly as it would alone, under a `==> acme :test` header so the transcript can be read back. Arguments are refused for a chain (`r acme :build :test -- --release` has no honest answer to *which* action gets the flag): name one action, or pass none.
+
 Actions resolve from three places, most specific winning: `<alias-dir>/.nix/actions.toml` (travels with the repo) overrides `~/.nix/actions/<alias>.toml` (private, per-machine), which overrides `~/.nix/actions/_default.toml` — **machine-wide defaults** for personal cross-project actions (`claude`, `git status`, …) defined once and available via `r <any-alias> :<name>` without leaking into committed repos (`_default` is reserved; it can't be registered as an alias). A leading `:` is what marks a saved action — without it, `r <alias> <cmd>` still runs `<cmd>` literally.
+
+### Actions that need administrator rights
+
+Write `sudo` in front of the command. That's the whole syntax:
+
+```toml
+[actions]
+# Rebinds the service account. Needs admin.
+install = "sudo .\\scripts\\install-service.ps1"
+```
+
+`r acme :install` raises a UAC prompt and, once you accept, runs the command in an **elevated console of its own** — elevation hands back a process under a different token, and that process cannot write into this terminal, so pretending otherwise would just lose the output. The window opens in the alias directory and stays open so you can read it; nix reports `started acme :install (elevated)` and returns immediately. There's no exit code to wait for and no `[notify]` hook, for the same reason `--outside` has neither.
+
+The marker has to be the first word — it elevates the command, not one link of a `&&` chain — and it survives into listings, so `r acme :` and the palette both show which actions will prompt. Since the elevated shell is the administrator's session, not yours, nix writes the alias context (`NIX_ALIAS`, `NIX_ALIAS_PATH`, and the `.nix/scripts` directories *prepended* to the admin's `PATH`) into the command as a `set` prelude. Answering "No" to UAC is reported as `elevation declined - nothing was run`. On non-Windows nothing is intercepted: there `sudo` is a real program and the line runs as written.
 
 ### The palette (`nix --actions`)
 
@@ -363,13 +392,22 @@ nix --no-prompt --actions        # just print the table, run nothing
 ```
 
 ```
-ALIAS  ACTION    COMMAND
-acme   :build    zig build -Doptimize=ReleaseFast
+ALIAS  ACTION    COMMAND                           DESCRIPTION
+acme   :build    zig build -Doptimize=ReleaseFast  Portable build: no native CPU extensions baked in.
 acme   :test     zig build test
 beta   :deploy   npm run deploy && echo shipped
 ```
 
-Enter runs the pick exactly as `r <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `r` would run. The pattern is a plain case-insensitive substring across all three columns, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `r <any-alias> :<name>`).
+Enter runs the pick exactly as `r <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `r` would run. The pattern is a plain case-insensitive substring across every column, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `r <any-alias> :<name>`).
+
+**Mark several with Tab and they all start, in parallel, each in a window of its own.** Two actions can't share one terminal — the output would interleave and only one of them could read the keyboard — so a multi-pick fans out into a new shell per action (a new console on Windows, opened in that action's directory with its `NIX_ALIAS` and scripts on `PATH`) and nix returns immediately. Build three projects, or bring up a server and its worker, from one picker:
+
+```
+started acme :build
+started beta :deploy
+```
+
+The single pick is unchanged: one action still runs right here, in the foreground, with its `[notify]` hook. A fan-out has no finish for nix to observe, so it reports only that everything started — the windows are where you watch them.
 
 ### Completion notifications
 
