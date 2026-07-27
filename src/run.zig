@@ -14,6 +14,7 @@ const notify = @import("notify.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
+const deps = @import("deps.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -27,8 +28,15 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     var argv = action_args;
     var outside = false;
-    if (argv.len > 0 and (eql(argv[0], "-o") or eql(argv[0], "--outside"))) {
-        outside = true;
+    var with_deps = false;
+    // Both flags sit before the action, and either order reads naturally, so
+    // accept them in either.
+    while (argv.len > 0) {
+        if (eql(argv[0], "-o") or eql(argv[0], "--outside")) {
+            outside = true;
+        } else if (eql(argv[0], "--deps")) {
+            with_deps = true;
+        } else break;
         argv = argv[1..];
     }
     if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
@@ -44,7 +52,15 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
             .list => return listActions(app, alias, target),
             .call => |c| c,
         };
+        if (with_deps) return runWithDeps(app, call, alias, target, outside);
         return runCall(app, call, alias, target, outside);
+    }
+    // `--deps` orders the aliases that define an action; a literal command has
+    // no action name to look for in each dependency, so there is nothing to
+    // order and the flag would be a silent no-op.
+    if (with_deps) {
+        try app.err.writeAll("nix: --deps needs a named action (e.g. r <alias> --deps :build)\n");
+        return 1;
     }
     // Resolve the command: a project script in `.nix/scripts` (then central
     // `~/.nix/scripts`) wins, so `r <alias> build` runs the project's build;
@@ -152,6 +168,84 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
         }
     }
     return 0;
+}
+
+/// runWithDeps runs an action across an alias's `[deps]` graph: every
+/// dependency's OWN action of that name, in dependency order, then the alias's.
+///
+/// STRICT, and strict up front. A `needs` naming an unregistered alias, or a
+/// dependency that does not define the action, aborts before anything runs -
+/// checked in a pre-flight pass over the whole order. The lenient
+/// skip-with-a-note policy is right for a group (`r +work git pull` over a set
+/// where one member is offline) and wrong here: a build chain IS its
+/// completeness, and half a world built is worse than none, because it looks
+/// like success. For the same reason it stops at the first failure rather than
+/// carrying on.
+fn runWithDeps(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outside: bool) !u8 {
+    if (call.names.len != 1) {
+        try app.err.writeAll("nix: --deps takes one action (a chain has no single name to look for in each dependency)\n");
+        return 1;
+    }
+    const name = call.names[0];
+    var lookup = deps.AliasLookup{ .app = app, .resolve_dir = resolveDirQuiet };
+    try lookup.dirs.append(app.arena, .{ .alias = alias, .dir = dir }); // already resolved, and already counted
+    var unknown: std.ArrayList([]const u8) = .empty;
+    const ordered = deps.order(app.arena, alias, lookup.lookup(), &unknown) catch |e| switch (e) {
+        deps.Error.DepsCycle => {
+            try app.err.print("nix: [deps] cycle reaching {s} - a repo cannot need itself, however indirectly\n", .{alias});
+            return 1;
+        },
+        deps.Error.DepsTooDeep => {
+            try app.err.print("nix: [deps] nested deeper than {d} - check for a cycle\n", .{deps.max_depth});
+            return 1;
+        },
+        else => return e,
+    };
+    if (unknown.items.len > 0) {
+        try app.err.print("nix: [deps] names {d} unregistered alias(es): {s}\n", .{ unknown.items.len, try std.mem.join(app.arena, ", ", unknown.items) });
+        try app.err.writeAll("  register them (`nix <name> <path>`) or drop them from needs - nothing was run\n");
+        return 1;
+    }
+    // Pre-flight: resolve every action before running any. Reporting all the
+    // gaps at once beats stopping three builds in with the fourth undefined.
+    var missing: std.ArrayList([]const u8) = .empty;
+    for (ordered) |a| {
+        const d = lookup.dirOf(a) orelse continue;
+        if ((try resolveAction(app, a, d, name)) == null) try missing.append(app.arena, a);
+    }
+    if (missing.items.len > 0) {
+        try app.err.print("nix: :{s} is not defined by: {s}\n", .{ name, try std.mem.join(app.arena, ", ", missing.items) });
+        try app.err.writeAll("  every alias in a --deps chain must define the action - nothing was run\n");
+        return 1;
+    }
+    for (ordered) |a| {
+        const d = lookup.dirOf(a).?;
+        const r = (try resolveAction(app, a, d, name)).?; // pre-flight proved it
+        const cmd = try applyArgs(app.arena, r.command, call.args);
+        try app.out.flush();
+        try app.err.print("==> {s} :{s}\n", .{ a, name });
+        try app.err.flush();
+        // Gated per dependency: a chain of fresh clones asks for each, which is
+        // exactly when reading the commands matters most.
+        if (!try provenance.gateAction(app, a, d, name, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
+        const code = try runAction(app, cmd, a, d, name, outside);
+        if (code != 0) {
+            try app.err.print("nix: {s} :{s} failed (exit {d}) - stopping\n", .{ a, name, code });
+            return code;
+        }
+    }
+    return 0;
+}
+
+/// resolveDirQuiet resolves an alias to its path for the dependency walk. It
+/// must NOT be resolveAliasPath: that one records usage, prints its own errors
+/// and materializes a missing directory, none of which belong in a graph walk
+/// that is still deciding whether the chain is runnable at all.
+fn resolveDirQuiet(app: *App, alias: []const u8) anyerror!?[]const u8 {
+    const data = try store.readAliasesFile(app.arena, app.io, app.home);
+    const list = try store.loadAliases(app.arena, data);
+    for (list.items) |a| if (store.eqlFoldAscii(a.name, alias)) return a.path;
+    return null;
 }
 
 /// applyArgs splices a call's arguments into a command string: into every

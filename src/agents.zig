@@ -109,6 +109,9 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   you just wrote will NOT run for you until the user approves it with
         \\   `nix --trust <alias>` - that is the check working, not a bug, and
         \\   `--trust` is never yours to run. Files under `~/.nix` are not gated.
+        \\   A project can declare `[deps] needs = ["other-alias"]`, and
+        \\   `{[r]s} <alias> --deps :build` then runs each dependency's own
+        \\   `:build` first, in order, aborting up front if any of them lacks it.
         \\4. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
         \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
         \\   to get the path, then use the absolute path. `{[r]s} <alias> <cmd>` works
