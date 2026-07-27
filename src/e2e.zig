@@ -166,10 +166,28 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "PA", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), pa), "alias lookup is case-insensitive", r);
 
+        // Repointing an existing alias destroys the only record of where it
+        // pointed, so unattended it REFUSES rather than silently overwriting -
+        // `o i :` used to cost people the alias. --force is the way to mean it.
         r = try c.run(&.{ "pa", pa2 });
-        const r2 = try c.run(&.{ "pa", "--resolve" });
-        c.check(r.code == 0 and pathEql(trim(r2.out), pa2), "re-register updates the path", r2);
-        _ = try c.run(&.{ "pa", pa }); // point it back
+        var r2 = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--force") != null and
+            pathEql(trim(r2.out), pa), "re-registering elsewhere refuses unattended and keeps the old path", r);
+        r = try c.run(&.{ "--force", "pa", pa2 });
+        r2 = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r2.out), pa2), "--force repoints the alias", r2);
+        // Re-registering the path it ALREADY has is a no-op, and must not nag.
+        r = try c.run(&.{ "pa", pa2 });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "--force") == null, "re-registering the same path asks nothing", r);
+        _ = try c.run(&.{ "--force", "pa", pa }); // point it back
+
+        // A token that cannot be a path never reaches aliases.toml. This is the
+        // `o i :` case: it used to resolve against the cwd, overwrite, save, and
+        // only then crash trying to enter it.
+        r = try c.run(&.{ "pa", ":" });
+        r2 = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not a usable path") != null and
+            pathEql(trim(r2.out), pa), "a non-path argument is refused and leaves the alias intact", r);
 
         r = try c.run(&.{ "pb", pb });
         c.check(r.code == 0, "second alias registers", r);

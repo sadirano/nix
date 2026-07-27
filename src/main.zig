@@ -198,6 +198,7 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
         if (aliasAction(a) != null) break;
         if (eql(a, "--json") or eql(a, "-j")) app.json = true;
         if (eql(a, "--no-prompt")) app.no_prompt = true;
+        if (eql(a, "--force")) app.force = true;
     }
 }
 
@@ -395,6 +396,17 @@ fn cmdAdd(app: *App, alias: []const u8, raw_path: []const u8) !u8 {
     _ = addAlias(app, alias, raw_path) catch |e| {
         if (nameErrorText(e)) |msg| {
             try app.err.print("nix: invalid alias \"{s}\": {s}\n", .{ alias, msg });
+        } else if (resolve.pathErrorText(e)) |msg| {
+            try app.err.print("nix: \"{s}\" is not a usable path: {s}\n", .{ raw_path, msg });
+            // The overwhelmingly common way to type a non-path here is to mean
+            // something else entirely, so name the thing they probably wanted.
+            if (eql(raw_path, ":")) {
+                const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+                try app.err.print("  to see what \"{s}\" can run, use `{s} {s} :`\n", .{ alias, config.shortcutFor(cfg, "r"), alias });
+            }
+        } else if (e == error.Cancelled) {
+            // confirmRepoint already explained itself; adding "nix: Cancelled"
+            // after it would only make a clear refusal look like a crash.
         } else {
             try app.err.print("nix: {s}\n", .{@errorName(e)});
         }

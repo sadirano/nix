@@ -134,7 +134,11 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\7. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
         \\   contents (`aliases.toml`, `groups.toml`, `usage`, ...) unless explicitly
         \\   asked; adding a project-local `.nix/actions.toml` or `.nix/scripts/`
-        \\   inside a project is fine and encouraged.
+        \\   inside a project is fine and encouraged. Registering a name that
+        \\   already exists REPOINTS it and forgets the path it had, so check
+        \\   `nix --list` first and pick an unused name. nix refuses this when it
+        \\   cannot ask (your shell included); `--force` overrides that refusal
+        \\   and is never yours to add.
         \\
         \\## Example phrasing
         \\

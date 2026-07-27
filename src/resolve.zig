@@ -12,6 +12,7 @@ const context = @import("context.zig");
 const run_zig = @import("run.zig");
 const groups = @import("groups.zig");
 const picker = @import("picker.zig");
+const proc = @import("proc.zig");
 const util = @import("util.zig");
 
 const App = app_zig.App;
@@ -40,6 +41,18 @@ pub fn nameErrorText(e: anyerror) ?[]const u8 {
     };
 }
 
+/// pathErrorText renders a rejected registration TARGET, the counterpart to
+/// nameErrorText. Kept separate because the fix differs: a bad name is retyped,
+/// a bad path usually means the argument was never a path at all.
+pub fn pathErrorText(e: anyerror) ?[]const u8 {
+    return switch (e) {
+        error.EmptyPath => "the path is empty",
+        error.BadCharInPath => "a path can't contain : < > \" | ? *",
+        error.ControlInPath => "a path can't contain control characters",
+        else => null,
+    };
+}
+
 /// addAlias registers (or updates) alias→path, creating the directory and
 /// recording usage, and prints onix's exact confirmation (path on stdout,
 /// "registered …" on stderr). Returns the absolute host path. Shared by the
@@ -47,9 +60,11 @@ pub fn nameErrorText(e: anyerror) ?[]const u8 {
 pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 {
     try store.validateAliasName(alias);
     const p = std.mem.trim(u8, raw_path, " \t");
+    // Checked BEFORE anything is written: a path that cannot name a directory
+    // must never reach aliases.toml, least of all by overwriting a good one.
+    try store.validateAliasPath(p);
     const expanded = try store.expandTilde(app.arena, app.env, p);
     const abs = try absPath(app, expanded);
-    store.mkdirAll(app.io, abs) catch {};
 
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     var aliases = try store.loadAliases(app.arena, data);
@@ -58,6 +73,16 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
     var replaced = false;
     for (aliases.items) |*a| {
         if (std.mem.eql(u8, a.name, lower)) {
+            // Re-pointing an existing alias DESTROYS the only record of where it
+            // used to point. Registering the path it already has is a no-op and
+            // asks nothing; changing it asks first, because the cost of a wrong
+            // "yes" is a path you now have to remember from memory.
+            if (!store.eqlFoldAscii(a.path, slashed)) {
+                if (!try confirmRepoint(app, lower, a.path, abs)) {
+                    try app.err.print("nix: {s} left pointing at {s}\n", .{ lower, try store.fromSlash(app.arena, a.path) });
+                    return error.Cancelled;
+                }
+            }
             a.path = slashed;
             replaced = true;
             break;
@@ -65,11 +90,41 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
     }
     if (!replaced) try aliases.append(app.arena, .{ .name = lower, .path = slashed });
     try store.saveAliases(app.arena, app.io, app.home, aliases.items);
+    store.mkdirAll(app.io, abs) catch {};
 
     try app.err.print("registered {s} -> {s}\n", .{ lower, abs });
     try app.out.print("{s}\n", .{abs});
     usage.record(app.arena, app.io, app.home, alias) catch {};
     return abs;
+}
+
+/// confirmRepoint asks before an existing alias is moved to a different path,
+/// showing both so the answer is informed by the thing about to be lost.
+///
+/// Unattended (--no-prompt, or stdin that isn't a console) it REFUSES rather
+/// than proceeding: the whole point is that a silent overwrite is how the path
+/// gets lost, and a script that meant it can say --force. Same discipline as the
+/// provenance gate - nothing approves a destructive act on the user's behalf.
+fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs: []const u8) !bool {
+    const old_host = try store.fromSlash(app.arena, old_slashed);
+    if (app.force) return true;
+    if (app.no_prompt or !proc.interactive()) {
+        try app.err.print(
+            "nix: \"{s}\" already points at {s}\n  refusing to repoint it to {s} without asking - rerun with --force if you meant it\n",
+            .{ alias, old_host, new_abs },
+        );
+        return false;
+    }
+    try app.out.flush();
+    try app.err.print("nix: \"{s}\" already points at:\n  {s}\nrepoint it to:\n  {s}\nThis forgets the old path. Repoint? [y/N] ", .{ alias, old_host, new_abs });
+    try app.err.flush();
+    var buf: [64]u8 = undefined;
+    var iov = [_][]u8{buf[0..]};
+    const n = Io.File.stdin().readStreaming(app.io, &iov) catch return false;
+    const line = buf[0..n];
+    const end = std.mem.indexOfScalar(u8, line, '\n') orelse line.len;
+    const ans = std.mem.trim(u8, line[0..end], " \t\r\n");
+    return std.ascii.eqlIgnoreCase(ans, "y") or std.ascii.eqlIgnoreCase(ans, "yes");
 }
 
 /// resolveAliasPath resolves an alias to its directory, creating it and
