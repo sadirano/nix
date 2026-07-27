@@ -407,6 +407,22 @@ Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.t
 
 **Nothing can approve on your behalf.** Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead. That's deliberate: an agent approving a repo it just cloned is the check approving itself.
 
+### Failures don't vanish from a shortcut
+
+Pin `r nix :build :sync` to the Start menu and Windows makes a console for it, then destroys that console the moment nix exits — so a failure prints its message and disappears in the same instant. When nix is the **only** process attached to its console, it knows the window is about to go with it, and waits:
+
+```
+nix: :build failed (exit 1) - stopping
+
+(this window was opened for nix and would close now - press Enter)
+```
+
+Launched from a shell you already had open, nothing happens: the shell is attached too, the window outlives nix, the error is still on screen, and stopping would just be in the way. That distinction — `GetConsoleProcessList` reporting exactly one process — is what lets this be the default instead of a flag you'd have to remember on the one run that fails.
+
+It's at nix's single exit point rather than per action, so a failing chain, a `--deps` abort, an unapproved action and a plain `unknown alias` all hold alike; from a shortcut each one is a window that blinks and is gone. Success never holds — there's nothing to read.
+
+Three things switch it off, each a case where holding would be wrong rather than merely unwanted: `--no-prompt` (the caller has declared that nothing may block), a stdin that isn't a console (a pipe answers instantly, so the hold would be a no-op that printed a confusing line), and a shared console. If you want to hold on *success* too — to read a build log you're about to overwrite — end the chain with a `:pause` action from `~/.nix/actions/_default.toml`, or launch through `cmd /k`.
+
 ### Building on other repos (`[deps]`)
 
 A group fans out over a *set*; a multi-repo build needs an *order*. Declare what a project builds on, and one command builds the world under it — with every repo keeping its own build definition:

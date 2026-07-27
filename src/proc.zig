@@ -6,6 +6,46 @@ const Io = std.Io;
 
 pub const is_windows = builtin.os.tag == .windows;
 
+// ---- console predicates ------------------------------------------------------
+
+const STD_INPUT_HANDLE: u32 = @bitCast(@as(i32, -10));
+// GetStdHandle is declared once, further down with the spawn helpers.
+extern "kernel32" fn GetConsoleMode(hConsoleHandle: *anyopaque, lpMode: *u32) callconv(.winapi) i32;
+extern "kernel32" fn GetConsoleProcessList(lpdwProcessList: [*]u32, dwProcessCount: u32) callconv(.winapi) u32;
+
+/// interactive reports whether stdin is a real console - the same test
+/// secret.readSecretValue makes. A redirected or piped stdin gets EOF rather
+/// than an answer, and reading "" as a decision would be a refusal (or a
+/// confirmation) dressed up as one.
+pub fn interactive() bool {
+    if (!is_windows) return std.posix.isatty(0);
+    const h = GetStdHandle(STD_INPUT_HANDLE) orelse return false;
+    var mode: u32 = 0;
+    return GetConsoleMode(h, &mode) != 0;
+}
+
+/// ownsConsole reports whether this process is the ONLY one attached to its
+/// console - which means the console was created for it and will be destroyed
+/// when it exits. That is the Start-menu/double-click case, where output nobody
+/// reads in time is output lost.
+///
+/// Launched from a shell, the shell is attached too and the count is at least
+/// two: the window outlives us, the text stays on screen, and there is nothing
+/// to hold for. This distinction is the whole reason hold-on-failure can be a
+/// default without turning every failed `r acme :test` in a terminal into a
+/// keypress.
+///
+/// Off Windows there is no equivalent (a terminal emulator is a separate
+/// process either way), so nothing is ever held.
+pub fn ownsConsole() bool {
+    if (!is_windows) return false;
+    var list: [4]u32 = undefined;
+    const n = GetConsoleProcessList(&list, list.len);
+    // 0 means no console at all. A count above our buffer still answers the
+    // question - it is more than one either way.
+    return n == 1;
+}
+
 /// enableUtf8Console switches the console's active output code page to UTF-8 so
 /// the program's UTF-8 text (em-dashes, the `->` arrows, etc.) renders as
 /// written instead of mojibake (`ΓÇö`) under the default OEM code page

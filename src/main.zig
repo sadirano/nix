@@ -90,7 +90,35 @@ pub fn main(init: std.process.Init) !void {
     };
     out.flush() catch {};
     err.flush() catch {};
-    if (code != 0) std.process.exit(@intCast(code));
+    if (code != 0) {
+        holdOnFailure(&app);
+        std.process.exit(@intCast(code));
+    }
+}
+
+/// holdOnFailure waits for Enter after a failed run, but only when this console
+/// belongs to nix and would be destroyed on exit - a shortcut, a double-click, a
+/// pinned taskbar entry. There, the error message and the window disappear
+/// together and the failure is invisible; everywhere else the text stays on
+/// screen and stopping would just be in the way.
+///
+/// Deliberately at the ONE exit point rather than per action, so it covers a
+/// failing chain, a --deps abort, an unapproved action, and "unknown alias"
+/// alike: from a shortcut, every one of those is a window that blinks and is
+/// gone. Success never holds - there is nothing to read.
+///
+/// Three things switch it off, and each is a case where holding would be wrong
+/// rather than merely unwanted: --no-prompt (the caller declared nothing may
+/// block), a non-console stdin (a pipe answers EOF instantly, so the "hold"
+/// would be a no-op that only prints a confusing line), and a shared console
+/// (the shell that launched us is still there, and so is the output).
+fn holdOnFailure(app: *App) void {
+    if (app.no_prompt or !proc.interactive() or !proc.ownsConsole()) return;
+    app.err.writeAll("\n(this window was opened for nix and would close now - press Enter)\n") catch {};
+    app.err.flush() catch {};
+    var buf: [8]u8 = undefined;
+    var iov = [_][]u8{buf[0..]};
+    _ = Io.File.stdin().readStreaming(app.io, &iov) catch {};
 }
 
 /// run dispatches argv and returns a process exit code.
