@@ -856,6 +856,12 @@ pub fn main(init: std.process.Init) !void {
         const man = readFileOr(&c, join(&c, &.{ home, "exports.toml" }), "");
         c.check(std.mem.indexOf(u8, man, ":ship") != null and std.mem.indexOf(u8, man, "pa ") != null, "the manifest records the alias and action an export runs", r);
 
+        // The action listing says which actions are also global, and under what
+        // name - the question `r pa :` could not answer before.
+        r = try c.run(&.{ "pa", "--run", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "GLOBAL") != null and
+            std.mem.indexOf(u8, r.out, "send") != null, "the action listing marks which actions are global commands", r);
+
         if (proc.is_windows) {
             const real_exe = c.exe;
             // The caller's words are the ACTION's, never nix's: --no-prompt is a

@@ -549,6 +549,38 @@ gw   = "scripts/gw.cmd"
 
 `nix --sync-bin` materializes the exports into `~/.nix/bin` — which nix already keeps on your PATH — so `hoot` becomes a global command with **zero PATH edits**. Exes are copied (the installed copy keeps working while you rebuild the source); `.cmd`/`.bat` get a one-line forwarder so script edits take effect live, and `.ps1` gets a `.cmd` trampoline (via `pwsh`, or `powershell` when pwsh isn't installed) so it launches from any shell, not just PowerShell. Rebuilt an exe? Re-run the sync (or append `&& nix --sync-bin` to the project's `:build` action).
 
+### Actions as global commands
+
+The thing worth making global is often not a file but an **action** — the command that already knows to run in the alias dir, take `{args}`, raise UAC, notify on finish, and hold a dying console. A `[bin]` value that starts with `:` names one:
+
+```toml
+[actions]
+deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
+
+[bin]
+hoot = "zig-out/bin/hoot.exe"   # a file
+ship = ":deploy"                # an action
+```
+
+`ship --prod` now runs acme's `:deploy`, in acme's directory, from anywhere — the whole of `r acme :deploy -- --prod` under a name of your choosing. What lands in `~/.nix/bin` is a copy of nix that recognizes the name it was invoked under, which is exactly how the `o`/`r`/`e` wrappers already work. That matters beyond tidiness: a `.cmd` trampoline would put `cmd.exe` on the console as a second process, and the [failure hold](#failures-dont-vanish-from-a-shortcut) — which fires only when nix is the *sole* process there — would silently stop working the day you pinned `ship` to the Start menu.
+
+**Your words go to the action, never to nix.** `ship --no-prompt` hands `--no-prompt` to the command; at the call site `ship` is a program, not a nix invocation wearing a program's name. The cost, deliberately accepted: `ship --help` is your script's help, and `nix --actions` is where you ask nix about it.
+
+The value is **one bare action name**. `-o :build :test` is refused rather than quietly read as a path, which keeps permitting flags and chains later a widening rather than a change of meaning.
+
+The same line in `~/.nix/actions/<alias>.toml` keeps the export private to this machine; in `~/.nix/actions/_default.toml` it becomes a **personal global with no alias directory**, so it runs in *the current* one — the case a loose `.cmd` on your PATH usually served, now declared in one greppable file that `--doctor` keeps honest:
+
+```toml
+# ~/.nix/actions/_default.toml
+[actions]
+gs = "git status -sb"
+
+[bin]
+gs = ":gs"
+```
+
+Consent works the same as for a file, with the action's **command text** as the fingerprint (the installed bytes are just nix, identical for every export) — so editing `:deploy`, or retargeting `ship` at a different action, re-arms it. And because choosing a *name* for a command is not consent to *run* it, an action that resolves out of a committed `.nix/actions.toml` will not install until you've reviewed it with `nix --trust <alias>`; `--sync-bin` reports what it withheld rather than asking, since it also runs unattended from `--sync`. An exported action whose command starts with an export name is refused outright — that one calls itself.
+
 Putting a binary on your PATH is always an explicit act, **per version**. `nix --sync` never installs on your behalf: a name it hasn't seen before, *and* a version whose source changed since you last allowed it, are only listed for review — you run `nix --sync-bin` to allow them. So registering an alias for someone else's repo never puts a command on PATH as a side effect of routine syncing, and a tool you use can't silently swap to a freshly-built binary underneath you. (The fingerprint that makes this work is a content hash recorded next to each export in the manifest.) And since an export can shadow a tool you already have (a scoop shim, a system binary), the sync warns whenever an export name also resolves elsewhere on PATH — legitimate when it's your own build overriding a packaged one, but never a surprise.
 
 Membership is declarative, so the bin can't rot: every installed file is recorded in `~/.nix/exports.toml` with its owning alias and content hash, removing the `[bin]` line (or the alias) removes the file on the next sync, and a name claimed by two aliases is refused loudly — nobody wins until one renames. Wrapper names (`o`, `r`, `nix`, …) and DOS device names (`nul`, `con`, …) are reserved. An alias whose directory is merely *unreachable* (unplugged drive, network share down) keeps its exports installed — unknown is not undeclared; only removing the alias or the `[bin]` line uninstalls.
@@ -587,7 +619,7 @@ Other tools can point at the same file wherever they take custom instructions.
 
 `nix --sweep` finds picker noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.nix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
 
-`nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, and central per-alias actions as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap.
+`nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, and central per-alias actions and `[bin]` declarations as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap. Exports travel as **declarations only** — the consent that puts them on PATH stays behind, so a restored backup is still one deliberate `nix --sync-bin` away from installing anything.
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 

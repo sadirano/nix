@@ -15,6 +15,7 @@ const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
 const deps = @import("deps.zig");
+const bin_exports = @import("bin_exports.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -512,31 +513,62 @@ pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
         try app.out.print("no actions for \"{s}\" - define them in {s}\n", .{ alias, pp });
         return 0;
     }
+    // Which of these actions are also global commands. Only this alias's own
+    // exports count: a machine-wide `_default` export belongs to no alias, and
+    // repeating it under every one would bury the real rows - the same reason
+    // the palette suppresses _default actions.
+    const installed = bin_exports.loadManifest(app.arena, app.io, app.home) catch &.{};
+
     var width: usize = "ACTION".len;
     var cmd_w: usize = "COMMAND".len;
+    var glob_w: usize = "GLOBAL".len;
     var described = false;
+    var any_global = false;
     for (merged) |a| {
         width = @max(width, a.name.len);
         cmd_w = @max(cmd_w, @min(a.command.len, app_zig.max_command_cols));
         if (a.description.len > 0) described = true;
+        if (globalName(installed, alias, a.name)) |g| {
+            any_global = true;
+            glob_w = @max(glob_w, g.len);
+        }
     }
     // The DESCRIPTION column appears only when something has one, so a file
     // that documents nothing still prints exactly the table it printed before.
     // It goes last: the command is what the row is about, the prose is the
     // footnote, and an undocumented action then just ends at its command.
     try padPrint(app.out, "ACTION", width + 2);
+    if (any_global) try padPrint(app.out, "GLOBAL", glob_w + 2);
     if (described) {
         try padPrint(app.out, "COMMAND", cmd_w + 2);
         try app.out.writeAll("DESCRIPTION\n");
     } else try app.out.writeAll("COMMAND\n");
     for (merged) |a| {
         try padPrint(app.out, a.name, width + 2);
+        if (any_global) try padPrint(app.out, globalName(installed, alias, a.name) orelse "", glob_w + 2);
         if (described and a.description.len > 0) {
             try padPrint(app.out, a.command, cmd_w + 2);
             try app.out.print("{s}\n", .{app_zig.ellipsize(app.arena, a.description)});
         } else try app.out.print("{s}\n", .{a.command});
     }
     return 0;
+}
+
+/// globalName returns the command name an alias's action is installed as on
+/// PATH (`[bin] ship = ":deploy"` -> "ship" for :deploy), or null. Read from
+/// the exports manifest, so it reports what is actually installed rather than
+/// what some file declares.
+fn globalName(installed: []const bin_exports.Installed, alias: []const u8, action: []const u8) ?[]const u8 {
+    for (installed) |m| {
+        if (m.action.len == 0) continue;
+        if (!store.eqlFoldAscii(m.alias, alias)) continue;
+        if (!store.eqlFoldAscii(m.action, action)) continue;
+        // The manifest keys by installed FILE ("ship.exe"); the command you
+        // type is that without the extension.
+        const dot = std.mem.lastIndexOfScalar(u8, m.file, '.');
+        return if (dot) |i| m.file[0..i] else m.file;
+    }
+    return null;
 }
 
 /// runShellString runs an action's command through the shell (cmd /c on Windows,
