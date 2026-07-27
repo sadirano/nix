@@ -7,6 +7,7 @@ const Io = std.Io;
 const util = @import("util.zig");
 
 pub const sep = std.fs.path.sep;
+const is_windows = @import("builtin").os.tag == .windows;
 
 // Shared helpers, re-exported so existing `store.` call sites keep working.
 pub const eqlFoldAscii = util.eqlFoldAscii;
@@ -230,6 +231,36 @@ pub fn validateAliasName(name: []const u8) !void {
     }
 }
 
+/// validateAliasPath rejects a registration target that cannot name a directory,
+/// BEFORE it is written to aliases.toml. `nix i :` used to resolve `:` against
+/// the cwd, overwrite i's real path with the result, save it, and only then
+/// crash trying to enter it - so a typo cost you the alias.
+///
+/// The check is on the shape of the path, deliberately, not on whether it
+/// exists: an alias may legitimately point at an unplugged drive or a network
+/// share that is down, and nix keeps such aliases (see bin_exports' unreachable
+/// handling). Only characters Windows can never put in a path are refused - on
+/// POSIX these are all legal in a filename, so the check applies where it is
+/// true.
+pub fn validateAliasPath(path: []const u8) !void {
+    const t = std.mem.trim(u8, path, " \t\r\n");
+    if (t.len == 0) return error.EmptyPath;
+    if (!is_windows) return;
+    // Strip the prefixes where a colon is legal, outermost first: the \\?\ and
+    // \\.\ extended-length/device prefixes wrap a drive spec, so taking the
+    // drive off first would leave `\\?\C:\...`'s colon behind and reject it.
+    var rest = t;
+    if (std.mem.startsWith(u8, rest, "\\\\?\\") or std.mem.startsWith(u8, rest, "\\\\.\\")) rest = rest[4..];
+    if (rest.len >= 2 and rest[1] == ':' and std.ascii.isAlphabetic(rest[0])) rest = rest[2..];
+    for (rest) |c| {
+        if (c < ' ' or c == 0x7f) return error.ControlInPath;
+        switch (c) {
+            ':', '<', '>', '"', '|', '?', '*' => return error.BadCharInPath,
+            else => {},
+        }
+    }
+}
+
 /// parsePathRaw is parsePathLine but keeps forward slashes (TOML storage form).
 fn parsePathRaw(arena: std.mem.Allocator, line: []const u8) !?[]const u8 {
     return parsePathInner(arena, line, false);
@@ -362,6 +393,28 @@ test "loadAliases: lowercased names, first path wins, multi-target skipped" {
     try std.testing.expectEqualStrings("C:/a", list.items[0].path); // storage form (slashes kept)
     try std.testing.expectEqualStrings("zeta", list.items[1].name);
     try std.testing.expectEqualStrings("C:/z", list.items[1].path);
+}
+
+test "validateAliasPath: accepts real paths, refuses what can't be one" {
+    try validateAliasPath("C:\\code\\acme");
+    try validateAliasPath("relative/sub");
+    try validateAliasPath("~/projects/acme");
+    try validateAliasPath("\\\\server\\share\\proj"); // UNC
+    try validateAliasPath("\\\\?\\C:\\very\\long\\path"); // extended-length
+    // A path may name a drive that isn't plugged in - shape is checked, not
+    // existence, so an alias can point at a disconnected share.
+    try validateAliasPath("Z:\\offline\\share");
+    try std.testing.expectError(error.EmptyPath, validateAliasPath("   "));
+    if (is_windows) {
+        // The reported bug: `o i :` resolved ":" against the cwd, overwrote the
+        // alias, saved, and only then crashed entering it.
+        try std.testing.expectError(error.BadCharInPath, validateAliasPath(":"));
+        try std.testing.expectError(error.BadCharInPath, validateAliasPath("C:\\a\\b:c"));
+        try std.testing.expectError(error.BadCharInPath, validateAliasPath("a|b"));
+        try std.testing.expectError(error.BadCharInPath, validateAliasPath("a?b"));
+        try std.testing.expectError(error.BadCharInPath, validateAliasPath("a*b"));
+        try std.testing.expectError(error.ControlInPath, validateAliasPath("a\tb"));
+    }
 }
 
 test "validateAliasName: rejects separators, @, spaces, control chars, empty" {

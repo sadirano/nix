@@ -61,6 +61,7 @@ One PowerShell gotcha: pwsh resolves aliases before PATH exes, and `r` is a buil
 
 ```powershell
 nix acme C:\Users\dev\projects\acme        # register an alias (auto-creates the dir if missing)
+nix --force acme D:\moved\acme             # repoint an EXISTING alias (asks first without --force)
 o acme                                     # jump to it
 o acme C:\Users\dev\projects\acme          # register + jump in one step (dir auto-created)
 o                                          # no args: open ~/.nix in your editor
@@ -84,6 +85,8 @@ nix acme --remove                          # forget the alias
 ```
 
 An unknown name after `o` runs the directory picker (`es`/`fd` + fzf): pick a directory and it's registered and entered in one step.
+
+**Repointing an existing alias asks first.** The alias file is the only record of where a name pointed, so overwriting one silently is how that path gets lost — a mistyped `o proj .` in the wrong directory, and the original is gone with nothing to restore it from. Registering the path an alias *already* has stays a silent no-op; changing it shows both paths and waits for `y`. Unattended (`--no-prompt`, or a pipe) it refuses rather than guessing, and `--force` is how a script says it meant it. Registration also refuses an argument that can't name a directory at all, so a stray token can't take an alias down with it.
 
 On Windows every command is a standalone `.exe` wrapper, so they all work from any prompt with no shell glue; `o` stacks a new shell rooted at the target (with the project's `.nix/scripts` on PATH — exit it to land back where you were). On Unix-likes `o` is a shell function that cd's your current shell in place.
 
