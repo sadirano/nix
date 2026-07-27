@@ -510,9 +510,15 @@ pub const specs = [_]Spec{
         .safety = .safe,
         .detail =
         \\A project's .nix/actions.toml may declare [bin] entries pointing at
-        \\built executables (`hoot = "zig-out/bin/hoot.exe"`). `nix --sync-bin`
-        \\installs wrappers for them into ~/.nix/bin, which is on PATH, so the
-        \\tool runs from anywhere by name.
+        \\built executables (`hoot = "zig-out/bin/hoot.exe"`) or at one of its
+        \\own actions (`ship = ":deploy"`). `nix --sync-bin` installs them into
+        \\~/.nix/bin, which is on PATH, so the tool - or the action - runs from
+        \\anywhere by name. An action export installs a copy of nix that
+        \\recognizes the name it was invoked under; it runs in the alias dir,
+        \\takes the same arguments the action would, and passes them through
+        \\untouched (`ship --no-prompt` reaches the command, not nix). The same
+        \\line in ~/.nix/actions/_default.toml makes a personal global that runs
+        \\in the CURRENT directory instead.
         ,
         .agent_use =
         \\When a project builds a binary the user will want globally, add it
@@ -521,9 +527,17 @@ pub const specs = [_]Spec{
         \\keeps working while the source rebuilds - and picking up a rebuild
         \\means telling them to run `nix --sync-bin` again, since a new version
         \\needs new consent. Never run it for them: the command IS the consent.
+        \\An action export follows the same rule, fingerprinted over the action's
+        \\command text, so editing the action re-arms consent. Write only the
+        \\bare `:name` form - flags and chains are refused. An action that
+        \\resolves out of a committed actions.toml will not install at all until
+        \\the user has run `nix --trust <alias>`, which is theirs to run.
         ,
-        .examples = &.{"`nix --sync-bin` - install every project's [bin] exports"},
-        .see_also = &.{"actions"},
+        .examples = &.{
+            "`nix --sync-bin` - install every project's [bin] exports",
+            "`ship = \":deploy\"` in [bin] - `ship` runs that action from anywhere",
+        },
+        .see_also = &.{ "actions", "state" },
     },
 
     // ---- concepts ----

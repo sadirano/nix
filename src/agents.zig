@@ -98,6 +98,14 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   builds that should be runnable from anywhere goes under `[bin]` in
         \\   the same actions.toml (e.g. `hoot = "zig-out/bin/hoot.exe"`);
         \\   `nix --sync-bin` installs it into `~/.nix/bin`, which is on PATH.
+        \\   A `[bin]` value may instead name one of the file's own actions
+        \\   (`ship = ":deploy"`), which makes `ship` a global command running
+        \\   that action in the alias dir - arguments and all - from anywhere.
+        \\   One bare action name only: flags and chains are refused. In
+        \\   `~/.nix/actions/_default.toml` the same line makes a personal
+        \\   global that runs in the CURRENT directory. An export whose action
+        \\   lives in a committed actions.toml will not install until the user
+        \\   runs `nix --trust <alias>`.
         \\   Actions take arguments (`{[r]s} <alias> :test -- --json`, appended or
         \\   substituted into an `{{args}}` placeholder) and chain in order,
         \\   stopping at the first failure (`{[r]s} <alias> :build :test`). An
