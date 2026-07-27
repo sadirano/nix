@@ -454,6 +454,7 @@ That strictness is the difference from a group, deliberately. `r +work git pull`
 Actions are declared per alias but invoked from anywhere, so the thing you forget is rarely the command — it's *which alias owns it*. `nix --actions` (`-A`) gathers every alias's actions into one fzf view and runs the pick in its own directory:
 
 ```powershell
+r :                              # the shorthand: any nix command + a bare `:`
 nix --actions                    # pick from everything wired up on this machine
 nix --actions deploy             # pre-filter by alias, action name, or command text
 nix --no-prompt --actions        # just print the table, run nothing
@@ -467,6 +468,8 @@ beta   :deploy   npm run deploy && echo shipped
 ```
 
 Enter runs the pick exactly as `r <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `r` would run. The pattern is a plain case-insensitive substring across every column, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `r <any-alias> :<name>`).
+
+**A bare `:` is the shortest way in**, from any command: `r :`, `o :`, `nix :` all open the palette, and anything after it pre-filters (`r : deploy`). It's the alias-less form of `r <alias> :` — the same colon, one scope wider: with an alias in front it lists that project's actions, without one it lists every project's. Nothing was given up to allow it, since `:` was never a legal alias name.
 
 **Mark several with Tab and they all start, in parallel, each in a window of its own.** Two actions can't share one terminal — the output would interleave and only one of them could read the keyboard — so a multi-pick fans out into a new shell per action (a new console on Windows, opened in that action's directory with its `NIX_ALIAS` and scripts on `PATH`) and nix returns immediately. Build three projects, or bring up a server and its worker, from one picker:
 

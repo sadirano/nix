@@ -85,7 +85,8 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\3. **Prefer saved actions for repeatable commands.** `nix --no-prompt --actions`
         \\   lists every action already wired up on this machine (alias, name,
         \\   command, description) - check there before writing a command line
-        \\   of your own.
+        \\   of your own. A bare `:` after any command is the interactive
+        \\   shorthand for it (`{[r]s} :`), for suggesting to the user.
         \\   If a project needs a
         \\   recurring build/test/serve/deploy command, add it to the project's
         \\   `.nix/actions.toml` under `[actions]` - with a `#` comment above it,

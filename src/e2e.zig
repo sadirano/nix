@@ -446,6 +446,29 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "--no-prompt never consents", r);
     }
 
+    // --- a bare `:` is the palette, from any command ----------------------------
+    {
+        // What the hand types when the question is "what can I run". Reads as the
+        // alias-less form of `r <alias> :`: the same colon, one scope wider.
+        var r = try c.run(&.{ "--no-prompt", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ALIAS") != null and
+            std.mem.indexOf(u8, r.out, ":hello") != null, "a bare `:` opens the action palette", r);
+        // Whatever follows is the palette's pattern, as with --actions.
+        // (`only` is pa's central-layer action, which exists by this point;
+        // `hello` is the row it has to exclude.)
+        r = try c.run(&.{ "--no-prompt", ":", "only" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":only") != null and
+            std.mem.indexOf(u8, r.out, ":hello") == null, "tokens after `:` pre-filter the palette", r);
+        // Global flags may lead it, exactly as they may lead any command.
+        r = try c.run(&.{ ":", "no-such-action-anywhere" });
+        c.check(r.code == 1, "a `:` pattern matching nothing exits 1", r);
+        // The per-alias form is untouched: there the colon has an alias in front
+        // of it and already means "list THIS alias's actions".
+        r = try c.run(&.{ "pa", "--run", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ACTION") != null and
+            std.mem.indexOf(u8, r.out, "ALIAS") == null, "`<alias> --run :` still lists just that alias", r);
+    }
+
     // --- notes (--note / --notes) ----------------------------------------------
     {
         const note_pa = join(&c, &.{ home, "notes", "pa.md" });
