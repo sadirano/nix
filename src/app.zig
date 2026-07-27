@@ -30,6 +30,11 @@ pub const App = struct {
     exe_path: ?[]const u8 = null,
     json: bool,
     no_prompt: bool,
+    /// --force: proceed with a destructive act that would otherwise ask (today,
+    /// repointing an existing alias). Deliberately NOT implied by --no-prompt:
+    /// "don't block me" and "overwrite what I have" are different statements,
+    /// and conflating them is how an unattended run destroys a path.
+    force: bool = false,
     /// PATH as the process started, captured *lazily* on first aliasRunEnv use
     /// (the run/navigate paths only) so the resolve hot path does zero extra work.
     /// aliasRunEnv rebuilds from this each call, so scripts dirs never accumulate.
@@ -65,7 +70,7 @@ pub fn exePath(app: *App) []const u8 {
 /// doctor's own quiet flag, and `rg -q` is ripgrep's, so the short form read
 /// as three different things depending on where it landed.
 pub fn isGlobalFlag(a: []const u8) bool {
-    return std.mem.eql(u8, a, "--no-prompt") or
+    return std.mem.eql(u8, a, "--no-prompt") or std.mem.eql(u8, a, "--force") or
         std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "-j");
 }
 
