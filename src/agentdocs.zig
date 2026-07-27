@@ -269,7 +269,15 @@ pub const specs = [_]Spec{
         \\
         \\`-o` / `--outside` starts the action in a new window and returns at
         \\once, with no exit code to report - never use it for work whose result
-        \\you need.
+        \\you need. `--deps :<name>` runs the [deps] graph first (see
+        \\`--agent actions`).
+        \\
+        \\On FAILURE, nix waits for Enter if it is the only process attached to
+        \\its console - a shortcut launch, where the window would otherwise close
+        \\on the error message. It never holds in a shell you already had open,
+        \\and never under --no-prompt or a piped stdin, so an agent shell is not
+        \\affected. If you are spawning nix somewhere a stray console could
+        \\exist, pass --no-prompt and it can never block.
         ,
         .agent_use =
         \\This is the command to reach for. It is safe, it is scriptable, and it

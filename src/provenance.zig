@@ -203,20 +203,9 @@ pub fn unapproved(app: *App, dir: []const u8) bool {
 
 // ---- the prompt --------------------------------------------------------------
 
-const STD_INPUT_HANDLE: u32 = @bitCast(@as(i32, -10));
-extern "kernel32" fn GetStdHandle(nStdHandle: u32) callconv(.winapi) ?*anyopaque;
-extern "kernel32" fn GetConsoleMode(hConsoleHandle: *anyopaque, lpMode: *u32) callconv(.winapi) i32;
-
-/// interactive reports whether stdin is a real console, the same test
-/// secret.readSecretValue makes: a redirected or piped stdin gets EOF rather
-/// than an answer, and reading "" as a "no" would be a refusal dressed up as a
-/// decision. Under a pipe the gate refuses with the --trust instruction instead.
-pub fn interactive() bool {
-    if (!proc.is_windows) return std.posix.isatty(0);
-    const h = GetStdHandle(STD_INPUT_HANDLE) orelse return false;
-    var mode: u32 = 0;
-    return GetConsoleMode(h, &mode) != 0;
-}
+/// interactive: stdin is a real console, so there is someone who can answer.
+/// Lives in proc with the other console predicates.
+const interactive = proc.interactive;
 
 /// confirm asks on stderr and reads the answer from stdin. The default is NO:
 /// anything that is not an explicit yes declines, EOF included. Both question
