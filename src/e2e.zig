@@ -438,6 +438,49 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pg", "--run", "hello" });
         c.check(r.code == 0 and hasLineFold(r.out, "script-ran"), "--trust approves the scripts beside the actions file", r);
 
+        // An action that RUNS a project script is only reviewable if the script's
+        // bytes are part of the approval. Otherwise `git pull` could rewrite the
+        // script and the gate would stay quiet, having approved only the one line
+        // that names it.
+        // The file is a .py so the extension allowlist is what admits it, but the
+        // command prints it with a shell builtin rather than running an
+        // interpreter: the harness must not need Python installed to test that
+        // nix noticed a Python file.
+        const dep_script = join(&c, &.{ pg, "tools", "deploy.py" });
+        try writeFile(&c, dep_script, "print('deploy v1')\n");
+        try writeFile(&c, pg_actions, if (proc.is_windows)
+            "[actions]\nship = \"type tools\\\\deploy.py\"\n"
+        else
+            "[actions]\nship = \"cat tools/deploy.py\"\n");
+        r = try c.run(&.{ "pg", "--run", ":ship" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not been approved") != null and
+            std.mem.indexOf(u8, r.err, "deploy.py") != null, "the gate names the script an action runs, not just the command", r);
+        _ = try c.run(&.{ "--trust", "pg" });
+        r = try c.run(&.{ "pg", "--run", ":ship" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "deploy v1") != null, "--trust covers the referenced script", r);
+        // The actions file is untouched here - only the script changed.
+        try writeFile(&c, dep_script, "print('deploy v2 - rewritten')\n");
+        r = try c.run(&.{ "pg", "--run", ":ship" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "v2") == null and
+            std.mem.indexOf(u8, r.err, "not been approved") != null, "editing a referenced script re-arms the gate", r);
+
+        // ...but a BUILD OUTPUT must not. Re-arming on every rebuild is how a
+        // person learns to answer `y` without reading, so only reviewable source
+        // counts. The .exe here stands in for zig-out\bin\nix.exe.
+        const built = join(&c, &.{ pg, "out", "tool.exe" });
+        try writeFile(&c, built, "MZ-binary-v1");
+        try writeFile(&c, pg_actions, "[actions]\nrun = \"echo ran out/tool.exe\"\n");
+        _ = try c.run(&.{ "--trust", "pg" });
+        r = try c.run(&.{ "pg", "--run", ":run" });
+        c.check(r.code == 0, "an approved action naming a build output runs", r);
+        try writeFile(&c, built, "MZ-binary-v2-rebuilt");
+        r = try c.run(&.{ "pg", "--run", ":run" });
+        c.check(r.code == 0, "rebuilding a referenced binary does NOT re-arm the gate", r);
+
+        // Put the simple form back for the checks below.
+        try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo rebuilt\"\n");
+        _ = try c.run(&.{ "--trust", "pg" });
+
         // --no-prompt is not a way to consent: it refuses with the instruction,
         // exactly as a pipe does. (An agent approving code it just cloned would
         // be the check approving itself.)
