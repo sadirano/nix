@@ -573,8 +573,11 @@ pub const specs = [_]Spec{
         \\
         \\PROVENANCE: a project's actions.toml and .nix/scripts arrive with a
         \\clone, so the first run of an unapproved file shows the command and
-        \\asks. `nix --trust <alias>` approves the file's current bytes; any edit
-        \\re-arms it. Central and _default files are never gated - they live
+        \\asks. The prompt also names the reviewable project files the command
+        \\runs (`python tools/deploy.py` lists deploy.py), and those files are
+        \\part of the approval - editing one re-arms the gate even when
+        \\actions.toml is unchanged. `nix --trust <alias>` approves the current
+        \\bytes of all of it; any edit re-arms it. Central and _default files are never gated - they live
         \\under ~/.nix and the user wrote them. An ELEVATED action is confirmed
         \\on EVERY run and cannot be pre-approved: UAC names the shell, not the
         \\command, so that prompt is the only place its line is ever shown.
