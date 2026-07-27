@@ -35,6 +35,10 @@ pub const Doc = struct {
     groups: []groups.Group,
     config_toml: []const u8,
     action_sets: []AliasActions,
+    /// `[bin.<alias>]` global-command declarations from the same central files.
+    /// They restore as declarations; installing them is still an explicit
+    /// `nix --sync-bin` on the receiving machine.
+    bin_sets: []AliasActions = &.{},
 };
 
 // ---- export ----------------------------------------------------------------
@@ -109,18 +113,38 @@ pub fn render(arena: std.mem.Allocator, io: Io, home: []const u8) ![]const u8 {
     // (an orphan actions file for a deleted alias is not exported), plus the
     // machine-wide [actions._default] (the name is reserved, never an alias,
     // so import lands it back in _default.toml via the same centralPath).
+    // Each is followed by that file's [bin.<alias>] exports, if any.
     for (aliases.items) |a| try appendActionSet(arena, io, home, &b, a.name);
-    try appendActionSet(arena, io, home, &b, "_default");
+    try appendActionSet(arena, io, home, &b, actions.default_owner);
 
     return b.items;
 }
 
-/// appendActionSet emits one `[actions.<name>]` table from the central actions
-/// file of that name, or nothing when the file is absent/empty.
+/// appendActionSet emits one central file's `[actions.<name>]` and
+/// `[bin.<name>]` tables, or nothing when the file is absent/empty.
+///
+/// The exports travel as DECLARATIONS only - the consent recorded in
+/// exports.toml deliberately stays behind. Restoring a backup writes lines that
+/// lead to PATH; it never puts a command there, which is still an explicit
+/// `nix --sync-bin` on the new machine. A project's own `.nix/actions.toml`
+/// (and so its `[bin]`) is out of scope either way: it travels with the repo.
 fn appendActionSet(arena: std.mem.Allocator, io: Io, home: []const u8, b: *std.ArrayList(u8), name: []const u8) !void {
-    const acts = try actions.loadFile(arena, io, try actions.centralPath(arena, home, name));
+    const data = readFileMaybe(arena, io, try actions.centralPath(arena, home, name));
+    try appendTableSet(arena, b, "actions", name, try actions.parseTable(arena, data, "actions"));
+    try appendTableSet(arena, b, "bin", name, try actions.parseTable(arena, data, "bin"));
+}
+
+fn appendTableSet(
+    arena: std.mem.Allocator,
+    b: *std.ArrayList(u8),
+    section: []const u8,
+    name: []const u8,
+    acts: []actions.Action,
+) !void {
     if (acts.len == 0) return;
-    try b.appendSlice(arena, "[actions.");
+    try b.append(arena, '[');
+    try b.appendSlice(arena, section);
+    try b.append(arena, '.');
     try b.appendSlice(arena, name);
     try b.appendSlice(arena, "]\n");
     for (acts) |ac| {
@@ -147,13 +171,14 @@ fn appendActionSet(arena: std.mem.Allocator, io: Io, home: []const u8, b: *std.A
 /// other readers: unknown top-level tables and malformed lines are skipped, not
 /// rejected. The current store is tracked by the most recent `[table]` header.
 pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
-    const Cur = enum { none, aliases, groups, config, actions };
+    const Cur = enum { none, aliases, groups, config, actions, bin };
     var cur: Cur = .none;
 
     var alias_buf: std.ArrayList(u8) = .empty; // flat  name = 'path'
     var group_buf: std.ArrayList(u8) = .empty; // groups.toml body
     var config_buf: std.ArrayList(u8) = .empty; // reconstructed config.toml
     var action_sets: std.ArrayList(AliasActions) = .empty;
+    var bin_sets: std.ArrayList(AliasActions) = .empty;
 
     var act_alias: []const u8 = "";
     var act_buf: std.ArrayList(u8) = .empty;
@@ -165,8 +190,9 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
         if (t.len > 1 and t[0] == '[') {
             const end = std.mem.indexOfScalar(u8, t, ']') orelse continue;
             const header = t[1..end];
-            // A header change ends any pending [actions.<alias>] block.
+            // A header change ends any pending [actions.<alias>] / [bin.<alias>].
             if (cur == .actions) try flushActions(arena, &action_sets, act_alias, act_buf.items);
+            if (cur == .bin) try flushActions(arena, &bin_sets, act_alias, act_buf.items);
             if (store.eqlFoldAscii(header, "aliases")) {
                 cur = .aliases;
             } else if (store.eqlFoldAscii(header, "groups")) {
@@ -181,6 +207,10 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
             } else if (startsWithFold(header, "actions.")) {
                 cur = .actions;
                 act_alias = header["actions.".len..];
+                act_buf = .empty;
+            } else if (startsWithFold(header, "bin.")) {
+                cur = .bin;
+                act_alias = header["bin.".len..];
                 act_buf = .empty;
             } else {
                 cur = .none; // unknown table: ignore its body
@@ -201,13 +231,14 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
                 try config_buf.appendSlice(arena, line);
                 try config_buf.append(arena, '\n');
             },
-            .actions => {
+            .actions, .bin => {
                 try act_buf.appendSlice(arena, line);
                 try act_buf.append(arena, '\n');
             },
         }
     }
     if (cur == .actions) try flushActions(arena, &action_sets, act_alias, act_buf.items);
+    if (cur == .bin) try flushActions(arena, &bin_sets, act_alias, act_buf.items);
 
     // Aliases: flat table → []Alias (names lowercased like the store does).
     var aliases: std.ArrayList(store.Alias) = .empty;
@@ -224,6 +255,7 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
         .groups = gs.items,
         .config_toml = if (cfg.len == 0) "" else config_buf.items,
         .action_sets = action_sets.items,
+        .bin_sets = bin_sets.items,
     };
 }
 

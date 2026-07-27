@@ -29,6 +29,11 @@ pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8
     return std.fs.path.join(arena, &.{ home, "actions", file });
 }
 
+/// The name `_default.toml` stands under: the owner recorded for a machine-wide
+/// action or `[bin]` export. It is a reserved alias name (store refuses to
+/// register it), so it can never collide with a real alias.
+pub const default_owner = "_default";
+
 /// defaultPath: <home>/actions/_default.toml — machine-wide defaults consulted
 /// after the project-local and central per-alias files, so a personal action
 /// (open agent, git status, …) is defined once and works via `r <any-alias> :name`.

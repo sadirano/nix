@@ -260,32 +260,64 @@ pub fn cmdImport(app: *App, rest: [][]const u8) !u8 {
         }
     }
 
-    // Actions: per alias, replace → overwrite that alias's central file; merge →
-    // add action names it doesn't already have.
+    // Actions and [bin] exports: per alias, replace → overwrite that alias's
+    // central file; merge → add names it doesn't already have. Both tables live
+    // in one file, so one pass handles an alias named by either.
     {
         var files: usize = 0;
         var added: usize = 0;
-        for (doc.action_sets) |set| {
-            const p = try actions.centralPath(app.arena, app.home, set.alias);
+        var bins: usize = 0;
+        var names: std.ArrayList([]const u8) = .empty;
+        for (doc.action_sets) |s| try noteAlias(app, &names, s.alias);
+        for (doc.bin_sets) |s| try noteAlias(app, &names, s.alias);
+
+        for (names.items) |alias| {
+            const p = try actions.centralPath(app.arena, app.home, alias);
+            const prior = Io.Dir.cwd().readFileAlloc(app.io, p, app.arena, .unlimited) catch "";
             var list: std.ArrayList(actions.Action) = .empty;
+            var bin_list: std.ArrayList(actions.Action) = .empty;
             if (!replace) {
-                for (try actions.loadFile(app.arena, app.io, p)) |ac| try list.append(app.arena, ac);
+                for (try actions.parseTable(app.arena, prior, "actions")) |ac| try list.append(app.arena, ac);
+                for (try actions.parseTable(app.arena, prior, "bin")) |ac| try bin_list.append(app.arena, ac);
             }
             var changed = replace;
-            for (set.actions) |ac| {
+            if (setFor(doc.action_sets, alias)) |set| for (set.actions) |ac| {
                 if (actions.find(list.items, ac.name) != null) continue;
                 try list.append(app.arena, ac);
                 added += 1;
                 changed = true;
-            }
+            };
+            if (setFor(doc.bin_sets, alias)) |set| for (set.actions) |ac| {
+                if (actions.find(bin_list.items, ac.name) != null) continue;
+                try bin_list.append(app.arena, ac);
+                bins += 1;
+                changed = true;
+            };
             if (!changed) continue;
-            try writeActionsFile(app, p, list.items);
+            try writeActionsFile(app, p, list.items, bin_list.items);
             files += 1;
         }
         try app.err.print("  actions: +{d} across {d} alias files\n", .{ added, files });
+        if (bins > 0) {
+            try app.err.print("  bin:     +{d} global command(s) declared - run `nix --sync-bin` to install\n", .{bins});
+        }
     }
 
     return 0;
+}
+
+/// noteAlias appends a name unless it is already in the list (case-folded) -
+/// the union of the aliases named by the document's [actions.*] and [bin.*]
+/// tables, so each central file is written exactly once.
+fn noteAlias(app: *App, list: *std.ArrayList([]const u8), name: []const u8) !void {
+    for (list.items) |n| if (store.eqlFoldAscii(n, name)) return;
+    try list.append(app.arena, name);
+}
+
+/// setFor finds the document's table for one alias, or null.
+fn setFor(sets: []portable.AliasActions, alias: []const u8) ?portable.AliasActions {
+    for (sets) |s| if (store.eqlFoldAscii(s.alias, alias)) return s;
+    return null;
 }
 
 /// aliasIndex finds an alias by case-insensitive name, or null.
@@ -300,25 +332,35 @@ fn writeFileAtomic(app: *App, path: []const u8, data: []const u8) !void {
     try util.writeFileAtomic(app.arena, app.io, path, data);
 }
 
-/// writeActionsFile writes an `[actions]` table to a central per-alias file,
-/// creating ~/.nix/actions as needed. Atomic via temp + rename.
-fn writeActionsFile(app: *App, path: []const u8, list: []const actions.Action) !void {
+/// writeActionsFile writes a central per-alias file's `[actions]` and `[bin]`
+/// tables, creating ~/.nix/actions as needed. Atomic via temp + rename.
+///
+/// Both tables are written together because they share the file: writing one
+/// alone would silently drop the other, which is exactly how an import that
+/// merely added an action would delete the user's global commands.
+fn writeActionsFile(app: *App, path: []const u8, list: []const actions.Action, bins: []const actions.Action) !void {
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(app.arena, "# nix per-alias actions - run with `r <alias> :<name>`\n\n[actions]\n");
-    for (list) |ac| {
-        // Descriptions are comments above their action - the format they were
-        // read from, so an import writes back what the export carried.
-        if (ac.description.len > 0) {
-            try b.appendSlice(app.arena, "# ");
-            try b.appendSlice(app.arena, ac.description);
-            try b.append(app.arena, '\n');
-        }
-        try b.appendSlice(app.arena, ac.name);
-        try b.appendSlice(app.arena, " = ");
-        try store.appendTomlString(app.arena, &b, ac.command);
-        try b.append(app.arena, '\n');
+    for (list) |ac| try appendEntry(app, &b, ac);
+    if (bins.len > 0) {
+        try b.appendSlice(app.arena, "\n# global commands - installed by `nix --sync-bin`\n[bin]\n");
+        for (bins) |ac| try appendEntry(app, &b, ac);
     }
     try writeFileAtomic(app, path, b.items);
+}
+
+fn appendEntry(app: *App, b: *std.ArrayList(u8), ac: actions.Action) !void {
+    // Descriptions are comments above their entry - the format they were
+    // read from, so an import writes back what the export carried.
+    if (ac.description.len > 0) {
+        try b.appendSlice(app.arena, "# ");
+        try b.appendSlice(app.arena, ac.description);
+        try b.append(app.arena, '\n');
+    }
+    try b.appendSlice(app.arena, ac.name);
+    try b.appendSlice(app.arena, " = ");
+    try store.appendTomlString(app.arena, b, ac.command);
+    try b.append(app.arena, '\n');
 }
 
 /// warnStaleWrappers reports wrappers regenerate couldn't replace (locked by a

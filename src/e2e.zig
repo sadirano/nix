@@ -834,6 +834,108 @@ pub fn main(init: std.process.Init) !void {
             !proc.pathExists(io, inst_ps), "undeclared exports are pruned on the next sync", r);
     }
 
+    // --- [bin] action exports (a saved action as a global command) -------------
+    {
+        const pa_actions = join(&c, &.{ pa, ".nix", "actions.toml" });
+        const restore = readFileOr(&c, pa_actions, "");
+        const decls =
+            "[actions]\nship = \"echo shipped\"\nwhoson = \"echo alias=%NIX_ALIAS%\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n";
+        const posix_decls =
+            "[actions]\nship = \"echo shipped\"\nwhoson = \"echo alias=$NIX_ALIAS\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n";
+        try writeActions(&c, "pa", pa, if (proc.is_windows) decls else posix_decls);
+
+        const ext = if (proc.is_windows) ".exe" else "";
+        const send = join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "send{s}", .{ext}) });
+        // An action export installs a copy of the CANONICAL binary, which
+        // --init/--sync maintain. --init is out of the harness's scope (it edits
+        // the real user PATH), so put it there the way --init would.
+        const exe_bytes = try Io.Dir.cwd().readFileAlloc(io, c.exe, arena, .unlimited);
+        try writeFile(&c, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "nix{s}", .{ext}) }), exe_bytes);
+        var r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and std.mem.eql(u8, readFileOr(&c, send, ""), exe_bytes), "an action export installs a copy of nix under the export name", r);
+        const man = readFileOr(&c, join(&c, &.{ home, "exports.toml" }), "");
+        c.check(std.mem.indexOf(u8, man, ":ship") != null and std.mem.indexOf(u8, man, "pa ") != null, "the manifest records the alias and action an export runs", r);
+
+        if (proc.is_windows) {
+            const real_exe = c.exe;
+            // The caller's words are the ACTION's, never nix's: --no-prompt is a
+            // nix flag, and it must still reach the command untouched.
+            c.exe = send;
+            r = try c.run(&.{"--no-prompt"});
+            c.exe = real_exe;
+            c.check(r.code == 0 and hasLineFold(r.out, "shipped --no-prompt"), "an export's arguments are opaque - a nix flag reaches the action", r);
+
+            // Invoked from an unrelated cwd, it still runs in the alias dir with
+            // the alias context set.
+            c.exe = join(&c, &.{ home, "bin", "whence.exe" });
+            r = try c.run(&.{});
+            c.exe = real_exe;
+            c.check(r.code == 0 and hasLineFold(r.out, "alias=pa"), "an export runs in its alias dir from anywhere", r);
+        }
+
+        // Consent is per version, and an action's version is its command text.
+        try writeActions(&c, "pa", pa, if (proc.is_windows)
+            "[actions]\nship = \"echo shipped-v2\"\nwhoson = \"echo alias=%NIX_ALIAS%\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n"
+        else
+            "[actions]\nship = \"echo shipped-v2\"\nwhoson = \"echo alias=$NIX_ALIAS\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n");
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "not yet allowed") != null, "editing an exported action re-arms consent", r);
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0, "an explicit sync-bin allows the edited action", r);
+
+        // Only the bare `:name` form parses - flags and chains are refused, so
+        // permitting them later can only widen what works.
+        try writeActions(&c, "pa", pa, "[actions]\nship = \"echo shipped\"\n[bin]\nsend = \"-o :ship\"\n");
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "bare action name") != null, "an export value with flags or a chain is refused", r);
+
+        // A [bin] line naming an action that isn't there.
+        try writeActions(&c, "pa", pa, "[actions]\nship = \"echo shipped\"\n[bin]\nsend = \":nosuch\"\n");
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not an action there") != null, "an export naming a missing action is refused", r);
+
+        // Direct recursion: the action runs its own export name.
+        try writeActions(&c, "pa", pa, "[actions]\nloop = \"send --again\"\n[bin]\nsend = \":loop\"\n");
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "call itself") != null, "an export whose action runs the export is refused", r);
+
+        // Dropping the [bin] table prunes the installed copies.
+        try writeActions(&c, "pa", pa, restore);
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and !proc.pathExists(io, send), "an undeclared action export is pruned", r);
+
+        // A cloned project's action is not installable until it is approved:
+        // choosing a name for a command is not consent to run it.
+        const pg = join(&c, &.{ root, "proj", "pg" }); // registered earlier
+        const pg_actions = join(&c, &.{ pg, ".nix", "actions.toml" });
+        const pg_restore = readFileOr(&c, pg_actions, "");
+        try writeFile(&c, pg_actions, "[actions]\nrisky = \"echo cloned\"\n[bin]\nrisky = \":risky\"\n");
+        r = try c.run(&.{"--sync-bin"});
+        c.check(std.mem.indexOf(u8, r.err, "nix --trust pg") != null and
+            !proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "risky{s}", .{ext}) })), "an unapproved action is listed, not installed", r);
+        _ = try c.run(&.{ "--trust", "pg" });
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "risky{s}", .{ext}) })), "--trust unblocks the export, and sync-bin installs it", r);
+        try writeFile(&c, pg_actions, pg_restore);
+
+        // A machine-wide export (_default.toml) has no alias dir, so it runs
+        // where it was called - the case a loose .cmd on PATH usually serves.
+        const def = join(&c, &.{ home, "actions", "_default.toml" });
+        const def_restore = readFileOr(&c, def, "");
+        try writeFile(&c, def, try std.fmt.allocPrint(arena, "{s}\n[actions]\nwhereis = \"echo cwd={s}\"\n[bin]\nwhereis = \":whereis\"\n", .{ def_restore, if (proc.is_windows) "%CD%" else "$PWD" }));
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "whereis{s}", .{ext}) })), "a machine-wide _default export installs", r);
+        if (proc.is_windows) {
+            const real_exe = c.exe;
+            c.exe = join(&c, &.{ home, "bin", "whereis.exe" });
+            r = try c.run(&.{});
+            c.exe = real_exe;
+            c.check(r.code == 0 and std.ascii.indexOfIgnoreCase(r.out, c.work) != null, "a machine-wide export runs in the current directory", r);
+        }
+        try writeFile(&c, def, def_restore);
+        _ = try c.run(&.{"--sync-bin"}); // drop the machine-wide export again
+    }
+
     // --- multicall via argv0 (wrapper copies; Windows-shaped install) ----------
     if (proc.is_windows) {
         const real_exe = c.exe;
@@ -996,10 +1098,13 @@ pub fn main(init: std.process.Init) !void {
     // --- export (before the removal tests mutate state) ---------------------------
     const backup = join(&c, &.{ root, "backup.toml" });
     {
-        // A described central action, so the backup has one to carry.
-        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }), "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n");
+        // A described central action, so the backup has one to carry - plus a
+        // central [bin] export, which travels as a declaration.
+        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }),
+            "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n[bin]\nonlycmd = \":only\"\n");
         const r = try c.run(&.{ "--export", backup });
         c.check(r.code == 0 and proc.pathExists(io, backup), "--export writes the backup file", r);
+        c.check(std.mem.indexOf(u8, readFileOr(&c, backup, ""), "[bin.pa]") != null, "--export carries central [bin] declarations", r);
         // Descriptions are written back as the comment they were read from -
         // without this, --import --replace would silently discard them.
         c.check(std.mem.indexOf(u8, readFileOr(&c, backup, ""), "# Wipes the cache") != null, "--export carries action descriptions", r);
@@ -1060,6 +1165,12 @@ pub fn main(init: std.process.Init) !void {
         // --replace overwrites each central actions file, so this is where a
         // description would be lost if the round trip dropped it.
         c.check(std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home2, "actions", "pa.toml" }), ""), "# Wipes the cache") != null, "--import --replace restores action descriptions", res);
+        // The [bin] table shares that file, so a restore that rewrote only
+        // [actions] would silently delete the user's global commands.
+        const restored = readFileOr(&c, join(&c, &.{ home2, "actions", "pa.toml" }), "");
+        c.check(std.mem.indexOf(u8, restored, "[bin]") != null and std.mem.indexOf(u8, restored, "onlycmd") != null, "--import restores central [bin] declarations alongside actions", res);
+        // Declarations travel; consent does not - nothing is on PATH yet.
+        c.check(!proc.pathExists(io, join(&c, &.{ home2, "bin", "onlycmd.exe" })), "an imported export is declared, not installed", res);
 
         try c.env.put("NIX_HOME", home);
     }
