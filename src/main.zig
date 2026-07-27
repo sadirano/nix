@@ -33,6 +33,7 @@ const bin_exports = @import("bin_exports.zig");
 const palette = @import("palette.zig");
 const secret = @import("secret.zig");
 const context = @import("context.zig");
+const notes = @import("notes.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
@@ -222,6 +223,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "groups")) return cmdGroups(app);
     if (eql(verb, "contexts")) return cmdContexts(app);
     if (eql(verb, "actions")) return palette.cmdActions(app, rest);
+    if (eql(verb, "notes")) return notes.cmdNotes(app, rest, grep);
     if (eql(verb, "sweep")) return sweep.cmdSweep(app, rest);
     if (eql(verb, "sync")) return init_zig.cmdSync(app);
     if (eql(verb, "sync-bin")) return bin_exports.cmdSyncBin(app);
@@ -282,6 +284,10 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "grep")) return cmdGrep(app, alias, action_args);
     if (eql(act, "find")) return cmdFind(app, alias, action_args);
     if (eql(act, "paste")) return cmdPaste(app, alias, action_args);
+    // A note is keyed on the NAME, not the directory, so it deliberately does
+    // not resolve the alias: notes for a project whose drive is unplugged (or
+    // whose dir is gone) must still be readable and appendable.
+    if (eql(act, "note")) return notes.cmdNote(app, alias, action_args);
     try app.err.print("nix: unknown action \"--{s}\" (run `nix --help` for usage)\n", .{act});
     return 1;
 }
@@ -897,7 +903,8 @@ fn systemVerb(flag: []const u8) ?[]const u8 {
         .{ .k = "--rga-preview", .v = "rga-preview" },   .{ .k = "-v", .v = "version" },
         .{ .k = "--secret", .v = "secret" },             .{ .k = "--trust", .v = "trust" },
         .{ .k = "--agent", .v = "agent" },               .{ .k = "--actions", .v = "actions" },
-        .{ .k = "-A", .v = "actions" },
+        .{ .k = "-A", .v = "actions" },                  .{ .k = "--notes", .v = "notes" },
+        .{ .k = "-N", .v = "notes" },
     };
     for (map) |m| if (eql(flag, m.k)) return m.v;
     return null;

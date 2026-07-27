@@ -112,18 +112,25 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   A project can declare `[deps] needs = ["other-alias"]`, and
         \\   `{[r]s} <alias> --deps :build` then runs each dependency's own
         \\   `:build` first, in order, aborting up front if any of them lacks it.
-        \\4. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
+        \\4. **Read the alias's notes when picking up unfamiliar work.**
+        \\   `nix --no-prompt --notes [pat]` prints every captured line as
+        \\   `<alias>.md:<line>:<text>` and opens nothing. It is where the user
+        \\   records "blocked on X, resume at Y", and often the only explanation
+        \\   for why a project is mid-change. WRITING is theirs: `nix <alias>
+        \\   --note <text>` captures their working memory in their words, so add
+        \\   one only when asked.
+        \\5. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
         \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
         \\   to get the path, then use the absolute path. `{[r]s} <alias> <cmd>` works
         \\   fine from agent shells.
-        \\5. **Add `--no-prompt` instead of avoiding the pickers.** `{[sg]s}`, `{[ff]s}`,
-        \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, and `nix --prune`/`--sweep` open fzf and would block a
+        \\6. **Add `--no-prompt` instead of avoiding the pickers.** `{[sg]s}`, `{[ff]s}`,
+        \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, `nix --notes`, and `nix --prune`/`--sweep` open fzf and would block a
         \\   non-interactive shell. With `--no-prompt` they print what they would have
         \\   offered and act on nothing: `nix <alias> --no-prompt --grep <pat>`,
         \\   `nix <alias> --no-prompt --find <pat>`. The flag goes BEFORE the action
         \\   flag - everything after it belongs to the search tool. `{[o]s} +group` and
         \\   `{[p]s} +group` have no non-interactive form and refuse to run.
-        \\6. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
+        \\7. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
         \\   contents (`aliases.toml`, `groups.toml`, `usage`, ...) unless explicitly
         \\   asked; adding a project-local `.nix/actions.toml` or `.nix/scripts/`
         \\   inside a project is fine and encouraged.

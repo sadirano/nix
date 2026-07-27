@@ -181,7 +181,7 @@ pub fn aliasAction(flag: []const u8) ?[]const u8 {
         .{ .k = "-p", .v = "paste" },          .{ .k = "--grep", .v = "grep" },
         .{ .k = "-g", .v = "grep" },           .{ .k = "--find", .v = "find" },
         .{ .k = "-f", .v = "find" },           .{ .k = "--run", .v = "run" },
-        .{ .k = "-r", .v = "run" },
+        .{ .k = "-r", .v = "run" },            .{ .k = "--note", .v = "note" },
     };
     for (map) |m| if (std.mem.eql(u8, flag, m.k)) return m.v;
     return null;

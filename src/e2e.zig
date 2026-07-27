@@ -446,6 +446,56 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "--no-prompt never consents", r);
     }
 
+    // --- notes (--note / --notes) ----------------------------------------------
+    {
+        const note_pa = join(&c, &.{ home, "notes", "pa.md" });
+
+        // Capture: tokens are joined, so nothing needed quoting.
+        var r = try c.run(&.{ "pa", "--note", "blocked", "on", "the", "API", "key" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "noted in") != null and
+            proc.pathExists(io, note_pa), "--note creates the note and reports where", r);
+        const body = readFileOr(&c, note_pa, "");
+        // A dated bullet, seconds included, one line.
+        c.check(std.mem.startsWith(u8, body, "- 20") and
+            std.mem.indexOf(u8, body, "blocked on the API key") != null and
+            std.mem.count(u8, body, "\n") == 1, "the capture is one dated bullet with the words joined", r);
+        c.check(std.mem.count(u8, body, ":") == 2, "the stamp carries seconds", r);
+
+        // A second capture appends rather than replacing.
+        r = try c.run(&.{ "pa", "--note", "key", "arrived" });
+        const body2 = readFileOr(&c, note_pa, "");
+        c.check(r.code == 0 and std.mem.count(u8, body2, "\n") == 2 and
+            std.mem.indexOf(u8, body2, "blocked on the API key") != null and
+            std.mem.indexOf(u8, body2, "key arrived") != null, "a second note appends", r);
+
+        // Groups get their own file, keyed `+name` - not a fan-out into members.
+        r = try c.run(&.{ "+work", "--note", "whole", "workstream", "blocked" });
+        c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "notes", "+work.md" })), "a group note lands in +group.md", r);
+
+        // The search view: rows are <key>.md:<line>:<text>, so the filename is
+        // the alias and a cross-project view needs no header.
+        r = try c.run(&.{ "--no-prompt", "--notes", "API" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:1:") != null and
+            std.mem.indexOf(u8, r.out, "blocked on the API key") != null, "--notes prints alias-keyed rows", r);
+        // No pattern lists everything, across every note.
+        r = try c.run(&.{ "--no-prompt", "--notes" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
+            std.mem.indexOf(u8, r.out, "+work.md:") != null, "--notes with no pattern lists every line", r);
+        // No match is exit 1 with nothing opened, the picker contract.
+        r = try c.run(&.{ "--no-prompt", "--notes", "zzz-no-such-note" });
+        c.check(r.code == 1, "--notes reports no matches with exit 1", r);
+
+        // A note is keyed on the NAME, so removing the alias must not touch it -
+        // and doctor reports the orphan rather than tidying it away.
+        r = try c.run(&.{ "pnote", join(&c, &.{ root, "proj", "pnote" }) });
+        _ = try c.run(&.{ "pnote", "--note", "temporary" });
+        r = try c.run(&.{ "pnote", "--remove" });
+        c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "notes", "pnote.md" })), "--remove leaves the note file", r);
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "no alias or group") != null and
+            std.mem.indexOf(u8, r.out, "pnote") != null, "--doctor reports an orphaned note", r);
+    }
+
     // --- [deps] dependency-ordered fan-out (r --deps :action) ------------------
     {
         // app needs left and right; both need core. A diamond, so the order has
