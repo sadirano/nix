@@ -862,6 +862,14 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "GLOBAL") != null and
             std.mem.indexOf(u8, r.out, "send") != null, "the action listing marks which actions are global commands", r);
 
+        // The palette marks them too, and the global name is searchable there -
+        // `nix --actions send` should find the action you reach by typing it.
+        r = try c.run(&.{ "--no-prompt", "--actions" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "GLOBAL") != null and
+            std.mem.indexOf(u8, r.out, "send") != null, "the palette marks global commands", r);
+        r = try c.run(&.{ "--no-prompt", "--actions", "send" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":ship") != null, "the palette finds an action by its global name", r);
+
         if (proc.is_windows) {
             const real_exe = c.exe;
             // The caller's words are the ACTION's, never nix's: --no-prompt is a

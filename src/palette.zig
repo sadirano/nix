@@ -14,6 +14,7 @@ const util = @import("util.zig");
 const run_zig = @import("run.zig");
 const resolve = @import("resolve.zig");
 const provenance = @import("provenance.zig");
+const bin_exports = @import("bin_exports.zig");
 
 const App = app_zig.App;
 const isGlobalFlag = app_zig.isGlobalFlag;
@@ -28,6 +29,10 @@ const Entry = struct {
     name: []const u8,
     command: []const u8,
     description: []const u8 = "",
+    /// The name this action is installed as on PATH (`[bin] ship = ":deploy"`),
+    /// or "" - the palette answers "which alias owns it", and this answers the
+    /// follow-up "or can I just type something".
+    global: []const u8 = "",
     row: []const u8 = "",
 };
 
@@ -40,7 +45,8 @@ const Entry = struct {
 fn matches(e: Entry, pat: []const u8) bool {
     if (pat.len == 0) return true;
     return containsFold(e.alias, pat) or containsFold(e.name, pat) or
-        containsFold(e.command, pat) or containsFold(e.description, pat);
+        containsFold(e.command, pat) or containsFold(e.description, pat) or
+        containsFold(e.global, pat);
 }
 
 fn containsFold(haystack: []const u8, needle: []const u8) bool {
@@ -131,10 +137,18 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     const aliases = try store.loadAliases(app.arena, data);
     var out: std.ArrayList(Entry) = .empty;
+    // Read once, not per alias: which actions are also global commands.
+    const installed = bin_exports.loadManifest(app.arena, app.io, app.home) catch &.{};
     for (aliases.items) |al| {
         const dir = try store.fromSlash(app.arena, al.path);
         for (try run_zig.mergedActions(app, al.name, dir, false)) |a| {
-            const e: Entry = .{ .alias = al.name, .name = a.name, .command = a.command, .description = a.description };
+            const e: Entry = .{
+                .alias = al.name,
+                .name = a.name,
+                .command = a.command,
+                .description = a.description,
+                .global = run_zig.globalName(installed, al.name, a.name) orelse "",
+            };
             if (!matches(e, pat)) continue;
             try out.append(app.arena, e);
         }
@@ -143,11 +157,11 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
     return out.items;
 }
 
-/// render lays the entries out as a padded `ALIAS  ACTION  COMMAND
+/// render lays the entries out as a padded `ALIAS  ACTION  [GLOBAL]  COMMAND
 /// [DESCRIPTION]` table and records each line back onto its entry. The header is
 /// a row too: fzf keeps it pinned via --header-lines, and a plain listing wants
-/// it anyway. The DESCRIPTION column appears only when some action carries one,
-/// so an undocumented machine sees exactly the table it saw before.
+/// it anyway. The DESCRIPTION and GLOBAL columns appear only when some action
+/// carries one, so a machine with neither sees exactly the table it saw before.
 ///
 /// The command is what you scan for and the description is the footnote, so the
 /// prose goes last - and a row that has none simply ends at its command instead
@@ -156,17 +170,24 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 
     var alias_w: usize = "ALIAS".len;
     var name_w: usize = "ACTION".len;
     var cmd_w: usize = "COMMAND".len;
+    var glob_w: usize = "GLOBAL".len;
     var described = false;
+    var any_global = false;
     for (entries) |e| {
         alias_w = @max(alias_w, e.alias.len);
         name_w = @max(name_w, e.name.len + 1); // the ':' the row shows
         cmd_w = @max(cmd_w, @min(e.command.len, app_zig.max_command_cols));
         if (e.description.len > 0) described = true;
+        if (e.global.len > 0) {
+            any_global = true;
+            glob_w = @max(glob_w, e.global.len);
+        }
     }
     var buf: std.ArrayList(u8) = .empty;
     if (header) {
         try padInto(arena, &buf, "ALIAS", alias_w + 2);
         try padInto(arena, &buf, "ACTION", name_w + 2);
+        if (any_global) try padInto(arena, &buf, "GLOBAL", glob_w + 2);
         if (described) {
             try padInto(arena, &buf, "COMMAND", cmd_w + 2);
             try buf.appendSlice(arena, "DESCRIPTION\n");
@@ -179,6 +200,7 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 
         var row: std.ArrayList(u8) = .empty;
         try padInto(arena, &row, e.alias, alias_w + 2);
         try padInto(arena, &row, try std.fmt.allocPrint(arena, ":{s}", .{e.name}), name_w + 2);
+        if (any_global) try padInto(arena, &row, e.global, glob_w + 2);
         if (described and e.description.len > 0) {
             try padInto(arena, &row, e.command, cmd_w + 2);
             try row.appendSlice(arena, app_zig.ellipsize(arena, e.description));
