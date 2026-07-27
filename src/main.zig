@@ -151,7 +151,19 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         const base = wrapperName(argv0, &lb) orelse break :blk null;
         if (eql(base, "nix")) break :blk null;
         const cfg = config.loadConfig(app.arena, app.io, app.home) catch break :blk null;
-        break :blk renamedMulticallAction(cfg, argv0);
+        if (renamedMulticallAction(cfg, argv0)) |a| break :blk a;
+        // Still nothing: the name may be a `[bin]` action export, a copy of nix
+        // installed under a name of the user's choosing. This is the LAST thing
+        // tried, so an export can never shadow a real command - and buildPlan
+        // refuses the reserved names anyway.
+        //
+        // Returns from here rather than joining the dispatch below: the caller's
+        // words belong to the action, so they must not pass setGlobalFlags or
+        // any of nix's own parsing.
+        if (try bin_exports.lookupExport(app.arena, app.io, app.home, base)) |ex| {
+            return run_zig.cmdExport(app, base, ex.alias, ex.action, args);
+        }
+        break :blk null;
     };
     if (mc_action) |action| {
         const d = desugarMultiCall(app.arena, action, args) catch |e| return e;

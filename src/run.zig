@@ -98,6 +98,72 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     };
 }
 
+/// The environment variable that stops an exported action from re-entering
+/// itself. buildPlan refuses the direct case (`ship` running `ship`), but it
+/// only reads the first word of the command - a script that calls the export
+/// back is one level beyond it, and would otherwise fork until the machine
+/// gives up.
+pub const depth_var = "NIX_EXPORT_DEPTH";
+const max_depth = 2;
+
+/// cmdExport runs a `[bin]` action export: the global command `ship`, resolved
+/// from the manifest to an alias and an action.
+///
+/// The caller's words are OPAQUE - they go to the action and are never parsed as
+/// nix's own flags. `ship --no-prompt` hands `--no-prompt` to the command, which
+/// is the whole point of putting it on PATH: at the call site it is a program,
+/// not a nix invocation wearing a program's name. (The cost, accepted: `ship
+/// --help` is the action's help, and `nix --actions` is where you ask nix.)
+///
+/// `alias` is actions.default_owner for a machine-wide export, which has no
+/// alias directory and therefore runs in the CURRENT one - the case a loose
+/// .cmd on PATH usually serves. NIX_ALIAS is still filled in when the cwd
+/// happens to sit inside an alias, so the action can tell where it landed.
+pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const u8, args: [][]const u8) !u8 {
+    var depth: u8 = 0;
+    if (app.env.get(depth_var)) |d| depth = std.fmt.parseInt(u8, d, 10) catch 0;
+    if (depth >= max_depth) {
+        try app.err.print("nix: \"{s}\" called itself {d} levels deep - stopping (an exported action must not run its own export name)\n", .{ name, depth });
+        return 1;
+    }
+    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+
+    const machine_wide = std.mem.eql(u8, alias, actions.default_owner);
+    var dir: []const u8 = undefined;
+    var ctx_alias: []const u8 = "";
+    if (machine_wide) {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try std.process.currentPath(app.io, &buf);
+        dir = try app.arena.dupe(u8, buf[0..n]);
+        const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
+        ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+    } else {
+        dir = (try resolveAliasPath(app, alias)) orelse return 1;
+        ctx_alias = alias;
+    }
+
+    const r = (try resolveExportAction(app, machine_wide, alias, dir, action)) orelse {
+        try app.err.print("nix: \"{s}\" runs {s} :{s}, which no longer exists - fix the [bin] line, then `nix --sync-bin`\n", .{ name, alias, action });
+        return 1;
+    };
+    const cmd = try applyArgs(app.arena, r.command, args);
+    if (!try provenance.gateAction(app, ctx_alias, dir, action, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
+    return runAction(app, cmd, ctx_alias, dir, action, false);
+}
+
+/// resolveExportAction mirrors bin_exports' declaration-time lookup: the normal
+/// three layers for an alias-owned export, the machine-wide file alone for a
+/// `_default` one (whose "directory" is wherever the user happens to be, and so
+/// must never pull in that directory's project actions).
+fn resolveExportAction(app: *App, machine_wide: bool, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
+    if (machine_wide) {
+        const list = try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home));
+        const cmd = actions.find(list, name) orelse return null;
+        return .{ .command = cmd, .from_project = false };
+    }
+    return resolveAction(app, alias, dir, name);
+}
+
 /// One `:action` invocation parsed off a command line: the names to run, in the
 /// order given, and the arguments they were called with.
 pub const ActionCall = struct {
