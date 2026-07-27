@@ -328,7 +328,7 @@ fn addDecls(
         switch (actionRef(d.value)) {
             .bad => |why| try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "export \"{s}\" from {s}: {s}", .{ d.name, d.alias, why })),
             .action => |action_name| {
-                const resolved = try resolveExportAction(app, d, action_name) orelse {
+                const resolved = try run.resolveExportAction(app, d.alias, d.dir, action_name) orelse {
                     try problems.append(app.arena, try std.fmt.allocPrint(app.arena, "export \"{s}\" from {s} names \":{s}\", which is not an action there", .{ d.name, d.alias, action_name }));
                     continue;
                 };
@@ -374,18 +374,6 @@ fn addDecls(
             },
         }
     }
-}
-
-/// resolveExportAction looks up the action a `[bin]` line names, through the
-/// same layers `r <alias> :name` would - except for `_default`, which has no
-/// alias and reads the machine-wide file alone.
-fn resolveExportAction(app: *App, d: Decl, name: []const u8) !?run.Resolved {
-    if (d.dir.len == 0) {
-        const list = try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home));
-        const cmd = actions.find(list, name) orelse return null;
-        return .{ .command = cmd, .from_project = false };
-    }
-    return run.resolveAction(app, d.alias, d.dir, name);
 }
 
 /// buildPlan walks every registered alias's `[bin]` table - plus the
