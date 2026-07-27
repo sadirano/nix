@@ -84,7 +84,8 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   one: `nix <name> <path>`.
         \\3. **Prefer saved actions for repeatable commands.** `nix --no-prompt --actions`
         \\   lists every action already wired up on this machine (alias, name,
-        \\   command) - check there before writing a command line of your own.
+        \\   command, description) - check there before writing a command line
+        \\   of your own.
         \\   If a project needs a
         \\   recurring build/test/serve/deploy command, add it to the project's
         \\   `.nix/actions.toml` under `[actions]` - with a `#` comment above it,
@@ -96,6 +97,12 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   builds that should be runnable from anywhere goes under `[bin]` in
         \\   the same actions.toml (e.g. `hoot = "zig-out/bin/hoot.exe"`);
         \\   `nix --sync-bin` installs it into `~/.nix/bin`, which is on PATH.
+        \\   Actions take arguments (`{[r]s} <alias> :test -- --json`, appended or
+        \\   substituted into an `{{args}}` placeholder) and chain in order,
+        \\   stopping at the first failure (`{[r]s} <alias> :build :test`). An
+        \\   action whose command begins with `sudo` runs ELEVATED in its own
+        \\   console - it raises a UAC prompt only the user can answer, so never
+        \\   put one in a command you expect to run unattended.
         \\4. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
         \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
         \\   to get the path, then use the absolute path. `{[r]s} <alias> <cmd>` works
@@ -132,6 +139,16 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .ff = config.shortcutFor(cfg, "ff"),
     });
     return b.items;
+}
+
+test "render: the {args} placeholder survives the format pass" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const out = try render(arena_state.allocator(), .{});
+    // It is written `{{args}}` in the template; a slip there would put a stray
+    // brace in every generated guide on every machine.
+    try std.testing.expect(std.mem.indexOf(u8, out, "`{args}` placeholder") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "{{args}}") == null);
 }
 
 test "render uses default names" {

@@ -112,16 +112,28 @@ pub fn resolveEditor(app: *App) ?[]const u8 {
     return null;
 }
 
+/// padPrint writes `s` padded out to `width`. A value too long for its column
+/// still gets the two-space gap the padding would have provided: columns are
+/// capped in places (see max_command_cols), and an overflowing one must not run
+/// straight into the text of the next.
 pub fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
     try w.writeAll(s);
     var i: usize = s.len;
     while (i < width) : (i += 1) try w.writeByte(' ');
+    if (s.len >= width) try w.writeAll("  ");
 }
 
 /// Widest a DESCRIPTION column gets. Names and paths are naturally short, but a
 /// description is prose with no bound - left alone, one wordy action would push
 /// the COMMAND column off the screen for every row.
 pub const max_description_cols: usize = 52;
+
+/// How far a COMMAND column is padded out when a DESCRIPTION follows it. This
+/// caps PADDING only - a longer command is never cut, it just pushes its own
+/// description right. Truncating a command would hide the one thing on the row
+/// that says what will actually run, while one 200-column outlier indenting
+/// every other description is a table nobody can read.
+pub const max_command_cols: usize = 44;
 
 /// ellipsize shortens prose to max_description_cols, marking the cut with "..."
 /// (ASCII: a `…` renders as mojibake on a legacy Windows code page). Text that

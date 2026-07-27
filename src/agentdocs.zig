@@ -260,6 +260,16 @@ pub const specs = [_]Spec{
         \\`nix <alias> --run :` lists them. A bare name matching a file in
         \\.nix/scripts/ runs that script. The child gets $NIX_ALIAS and
         \\$NIX_ALIAS_PATH. `r +<group> <cmd>` fans the command across members.
+        \\
+        \\Actions take arguments (`--run :test -- --json`, appended to the
+        \\command or substituted into its {args}) and chain in order, stopping at
+        \\the first failure (`--run :build :test`). An action whose command
+        \\starts with `sudo` runs elevated in a console of its own - it will
+        \\raise a UAC prompt the user has to answer.
+        \\
+        \\`-o` / `--outside` starts the action in a new window and returns at
+        \\once, with no exit code to report - never use it for work whose result
+        \\you need.
         ,
         .agent_use =
         \\This is the command to reach for. It is safe, it is scriptable, and it
@@ -395,10 +405,16 @@ pub const specs = [_]Spec{
         .detail =
         \\Actions are declared per alias but invoked from anywhere, so the thing
         \\that gets forgotten is WHICH alias owns one. `nix --actions` gathers
-        \\them all into a single fzf view (`alias  :name  command`); Enter runs
-        \\the pick in its own alias dir, exactly as `nix <alias> --run :<name>`
-        \\would. An optional pattern pre-filters by alias, action name, or
-        \\command text - plain case-insensitive substring, not fuzzy.
+        \\them all into a single fzf view (`alias  :name  command  description`);
+        \\Enter runs the pick in its own alias dir, exactly as
+        \\`nix <alias> --run :<name>` would. An optional pattern pre-filters by
+        \\alias, action name, command, or description text - plain
+        \\case-insensitive substring, not fuzzy.
+        \\
+        \\Tab marks several. They then start in PARALLEL, each in a shell of its
+        \\own (a new console window on Windows), and nix returns at once - two
+        \\actions cannot share one terminal. A fan-out fires no [notify] hook and
+        \\reports only that everything started.
         \\
         \\Machine-wide `_default` actions are deliberately absent: the palette
         \\maps deliberate per-project wiring, and a default would otherwise
@@ -515,6 +531,21 @@ pub const specs = [_]Spec{
         \\Machine-wide personal actions live in ~/.nix/actions/_default.toml at
         \\lowest precedence, so they're available through any alias. Values may
         \\reference ${secret:NAME}; see `--agent --secret`.
+        \\
+        \\Arguments are appended to the command, or substituted into an {args}
+        \\placeholder if it has one:
+        \\
+        \\    [actions]
+        \\    test  = "zig build test"
+        \\    serve = "npm run dev -- --port {args} --open"
+        \\
+        \\Several names chain in order and stop at the first failure:
+        \\`nix <alias> --run :build :test`. A chain takes no arguments - there
+        \\would be no saying which action they belong to.
+        \\
+        \\A command starting with `sudo` is ELEVATED: it prompts through UAC and
+        \\runs in an administrator console of its own. Write it when the command
+        \\genuinely needs admin, and never to "make sure" something works.
         ,
         .agent_use =
         \\Prefer writing an action over handing the user a command line. It

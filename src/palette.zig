@@ -3,6 +3,8 @@
 //! anywhere, so the thing you forget is not the command, it is WHICH alias owns
 //! it. Enter runs the pick in its own alias dir, exactly as `r <alias> :<name>`
 //! would (same merge, same runAction, so [notify] and usage recording apply).
+//! Tab marks more than one, and then each starts in a shell of its own -
+//! parallel, unwatched - because several actions cannot share one terminal.
 
 const std = @import("std");
 const app_zig = @import("app.zig");
@@ -92,21 +94,32 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
         return 1;
     }
 
-    // --header-lines pins the column header inside fzf; --no-multi states the
-    // v1 decision explicitly, so a user whose FZF_DEFAULT_OPTS turns on --multi
-    // still gets "run one thing" (batch execution is what groups are for).
-    const fzf_argv = [_][]const u8{ "fzf", "--prompt", "action> ", "--header-lines", "1", "--no-multi" };
+    // --header-lines pins the column header inside fzf. --multi is on because
+    // "run these three" is a real ask (Tab marks them): one pick runs here, in
+    // this terminal, as it always has; several fan out into a window each.
+    const fzf_argv = [_][]const u8{ "fzf", "--prompt", "action> ", "--header-lines", "1", "--multi" };
     try app.out.flush();
     const res = try proc.runFilter(app.arena, app.io, &fzf_argv, try render(app.arena, entries, true), fzfEnv(app));
     if (res.code != 0) return 0; // cancelled
+
+    var picks: std.ArrayList(Entry) = .empty;
     var lines = std.mem.splitScalar(u8, res.output, '\n');
-    const picked = std.mem.trim(u8, lines.first(), " \t\r\n");
-    if (picked.len == 0) return 0;
-    for (entries) |e| {
-        if (std.mem.eql(u8, e.row, picked)) return runPicked(app, e);
+    while (lines.next()) |raw| {
+        const picked = std.mem.trim(u8, raw, " \t\r\n");
+        if (picked.len == 0) continue;
+        for (entries) |e| {
+            if (std.mem.eql(u8, e.row, picked)) {
+                try picks.append(app.arena, e);
+                break;
+            }
+        } else {
+            try app.err.writeAll("nix: could not match the selection back to an action\n");
+            return 1;
+        }
     }
-    try app.err.writeAll("nix: could not match the selection back to an action\n");
-    return 1;
+    if (picks.items.len == 0) return 0;
+    if (picks.items.len == 1) return runPicked(app, picks.items[0]);
+    return startAll(app, picks.items);
 }
 
 /// collect gathers every alias's actions, minus the machine-wide `_default`
@@ -129,28 +142,34 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
     return out.items;
 }
 
-/// render lays the entries out as a padded `ALIAS  ACTION  [DESCRIPTION]
-/// COMMAND` table and records each line back onto its entry. The header is a
-/// row too: fzf keeps it pinned via --header-lines, and a plain listing wants
+/// render lays the entries out as a padded `ALIAS  ACTION  COMMAND
+/// [DESCRIPTION]` table and records each line back onto its entry. The header is
+/// a row too: fzf keeps it pinned via --header-lines, and a plain listing wants
 /// it anyway. The DESCRIPTION column appears only when some action carries one,
 /// so an undocumented machine sees exactly the table it saw before.
+///
+/// The command is what you scan for and the description is the footnote, so the
+/// prose goes last - and a row that has none simply ends at its command instead
+/// of trailing into blank padding.
 fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 {
     var alias_w: usize = "ALIAS".len;
     var name_w: usize = "ACTION".len;
-    var desc_w: usize = 0;
+    var cmd_w: usize = "COMMAND".len;
+    var described = false;
     for (entries) |e| {
         alias_w = @max(alias_w, e.alias.len);
         name_w = @max(name_w, e.name.len + 1); // the ':' the row shows
-        if (e.description.len > 0) desc_w = @max(desc_w, @min(e.description.len, app_zig.max_description_cols));
+        cmd_w = @max(cmd_w, @min(e.command.len, app_zig.max_command_cols));
+        if (e.description.len > 0) described = true;
     }
-    const described = desc_w > 0;
-    if (described) desc_w = @max(desc_w, "DESCRIPTION".len);
     var buf: std.ArrayList(u8) = .empty;
     if (header) {
         try padInto(arena, &buf, "ALIAS", alias_w + 2);
         try padInto(arena, &buf, "ACTION", name_w + 2);
-        if (described) try padInto(arena, &buf, "DESCRIPTION", desc_w + 2);
-        try buf.appendSlice(arena, "COMMAND\n");
+        if (described) {
+            try padInto(arena, &buf, "COMMAND", cmd_w + 2);
+            try buf.appendSlice(arena, "DESCRIPTION\n");
+        } else try buf.appendSlice(arena, "COMMAND\n");
     }
     for (entries) |*e| {
         // Each row is built into its own allocation, then appended: the entry
@@ -159,19 +178,27 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 
         var row: std.ArrayList(u8) = .empty;
         try padInto(arena, &row, e.alias, alias_w + 2);
         try padInto(arena, &row, try std.fmt.allocPrint(arena, ":{s}", .{e.name}), name_w + 2);
-        if (described) try padInto(arena, &row, app_zig.ellipsize(arena, e.description), desc_w + 2);
-        try row.appendSlice(arena, e.command);
-        e.row = row.items;
-        try buf.appendSlice(arena, row.items);
+        if (described and e.description.len > 0) {
+            try padInto(arena, &row, e.command, cmd_w + 2);
+            try row.appendSlice(arena, app_zig.ellipsize(arena, e.description));
+        } else try row.appendSlice(arena, e.command);
+        // No row may end in padding: fzf hands the line back verbatim and the
+        // pick is found by comparing it to what was rendered here.
+        e.row = std.mem.trimEnd(u8, row.items, " ");
+        try buf.appendSlice(arena, e.row);
         try buf.append(arena, '\n');
     }
     return buf.items;
 }
 
+/// padInto is padPrint into a buffer: a value wider than its column still gets
+/// the two-space gap, so an overrunning command cannot collide with the
+/// description beside it.
 fn padInto(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8, width: usize) !void {
     try buf.appendSlice(arena, s);
     var i: usize = s.len;
     while (i < width) : (i += 1) try buf.append(arena, ' ');
+    if (s.len >= width) try buf.appendSlice(arena, "  ");
 }
 
 /// runPicked runs the selected entry the way `r <alias> :<name>` would: through
@@ -179,13 +206,45 @@ fn padInto(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8, wid
 /// exactly as a direct run does) and then runAction (so [notify] fires).
 fn runPicked(app: *App, e: Entry) !u8 {
     const dir = (try resolve.resolveAliasPath(app, e.alias)) orelse return 1;
-    // Re-resolve rather than trusting the row: the file may have changed since
-    // the palette was built, and what runs must be what the file says now.
-    const cmd = (try run_zig.resolveAction(app, e.alias, dir, e.name)) orelse {
-        try app.err.print("nix: alias \"{s}\" no longer has an action \":{s}\"\n", .{ e.alias, e.name });
-        return 1;
-    };
+    const cmd = (try freshCommand(app, e, dir)) orelse return 1;
     return run_zig.runAction(app, cmd, e.alias, dir, e.name, false);
+}
+
+/// startAll launches several picks at once, each in its own shell, and returns
+/// as soon as they are all running. Actions picked together are things you want
+/// going in parallel (build three projects, start two servers), and they cannot
+/// share this terminal: the output would interleave and only one of them could
+/// read the keyboard. So each gets a window, and nix stops waiting - the exit
+/// code reports whether they all STARTED, not how any of them ended.
+///
+/// One failure does not stop the rest: the other picks were asked for too, and
+/// a mistyped alias is no reason to strand them.
+fn startAll(app: *App, picks: []const Entry) !u8 {
+    var code: u8 = 0;
+    for (picks) |e| {
+        const dir = (try resolve.resolveAliasPath(app, e.alias)) orelse {
+            code = 1;
+            continue;
+        };
+        const cmd = (try freshCommand(app, e, dir)) orelse {
+            code = 1;
+            continue;
+        };
+        // startInNewShell prints the "started ..." line itself, so an elevated
+        // pick is reported as elevated wherever it was launched from.
+        if (try run_zig.startInNewShell(app, cmd, e.alias, dir, e.name) != 0) code = 1;
+    }
+    return code;
+}
+
+/// freshCommand re-reads the picked action from its file rather than trusting
+/// the rendered row: the palette may have been open a while, and what runs must
+/// be what actions.toml says now.
+fn freshCommand(app: *App, e: Entry, dir: []const u8) !?[]const u8 {
+    return (try run_zig.resolveAction(app, e.alias, dir, e.name)) orelse {
+        try app.err.print("nix: alias \"{s}\" no longer has an action \":{s}\"\n", .{ e.alias, e.name });
+        return null;
+    };
 }
 
 test "matches: substring over alias, name and command, case-insensitive" {
@@ -230,6 +289,31 @@ test "render: every recorded row is exactly one line of the output" {
         try std.testing.expect(std.mem.endsWith(u8, e.row, e.command));
         try std.testing.expect(std.mem.startsWith(u8, e.row, e.alias));
     }
+}
+
+test "render: the description is the last column, and only when one exists" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var undocumented = [_]Entry{.{ .alias = "acme", .name = "build", .command = "zig build" }};
+    const plain = try render(a, &undocumented, true);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "DESCRIPTION") == null);
+    try std.testing.expect(std.mem.endsWith(u8, undocumented[0].row, "zig build"));
+
+    var entries = [_]Entry{
+        .{ .alias = "acme", .name = "build", .command = "zig build", .description = "Ship it." },
+        .{ .alias = "acme", .name = "test", .command = "zig build test" },
+    };
+    const out = try render(a, &entries, true);
+    const header = std.mem.sliceTo(out, '\n');
+    const cmd_at = std.mem.indexOf(u8, header, "COMMAND").?;
+    try std.testing.expect(std.mem.indexOf(u8, header, "DESCRIPTION").? > cmd_at);
+    // A described row ends in its prose, an undescribed one at its command -
+    // never in the padding that would break the fzf round-trip.
+    try std.testing.expect(std.mem.endsWith(u8, entries[0].row, "Ship it."));
+    try std.testing.expect(std.mem.endsWith(u8, entries[1].row, "zig build test"));
+    for (entries) |e| try std.testing.expect(std.mem.indexOf(u8, out, e.row) != null);
 }
 
 test "lessThan: alias first, then action name" {
