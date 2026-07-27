@@ -547,6 +547,17 @@ pub const specs = [_]Spec{
         \\runs in an administrator console of its own. Write it when the command
         \\genuinely needs admin, and never to "make sure" something works.
         \\
+        \\`[deps]` declares the aliases a project builds on, and
+        \\`nix <alias> --run --deps :build` runs each dependency's OWN action of
+        \\that name first, in dependency order, then the alias's:
+        \\
+        \\    [deps]
+        \\    needs = ["hoot", "libx"]
+        \\
+        \\Strict before it starts: an unregistered name in `needs`, or a
+        \\dependency that does not define the action, aborts with nothing run. A
+        \\failure mid-chain stops the rest. Plain `--run :build` is unaffected.
+        \\
         \\PROVENANCE: a project's actions.toml and .nix/scripts arrive with a
         \\clone, so the first run of an unapproved file shows the command and
         \\asks. `nix --trust <alias>` approves the file's current bytes; any edit

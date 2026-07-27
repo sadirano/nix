@@ -407,6 +407,32 @@ Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.t
 
 **Nothing can approve on your behalf.** Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead. That's deliberate: an agent approving a repo it just cloned is the check approving itself.
 
+### Building on other repos (`[deps]`)
+
+A group fans out over a *set*; a multi-repo build needs an *order*. Declare what a project builds on, and one command builds the world under it — with every repo keeping its own build definition:
+
+```toml
+# acme/.nix/actions.toml
+[deps]
+needs = ["hoot", "libx"]
+```
+
+```powershell
+r acme --deps :build      # hoot's :build, then libx's, then acme's
+```
+
+Each dependency runs **its own** action of that name, so nothing here says how to build anything — the graph only says what comes first. Members are alias names, not paths, so the graph follows a repo when it moves. The walk is depth-first, and a diamond (two dependencies sharing a third) builds the shared one once, early enough for both.
+
+It is **strict, and strict before it starts.** A `needs` naming an unregistered alias, or a dependency that doesn't define the action, aborts the whole chain with nothing run — reported all at once, so you fix the graph in one pass rather than discovering the fourth gap after three builds. A failure mid-chain stops the rest and keeps its exit code:
+
+```
+==> hoot :build
+...
+nix: hoot :build failed (exit 3) - stopping
+```
+
+That strictness is the difference from a group, deliberately. `r +work git pull` should keep going when one member is offline; a build chain *is* its completeness, and half a world built is worse than none because it looks like success. Plain `r acme :build` is untouched — dependencies run only when asked.
+
 ### The palette (`nix --actions`)
 
 Actions are declared per alias but invoked from anywhere, so the thing you forget is rarely the command — it's *which alias owns it*. `nix --actions` (`-A`) gathers every alias's actions into one fzf view and runs the pick in its own directory:

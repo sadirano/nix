@@ -446,6 +446,77 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "--no-prompt never consents", r);
     }
 
+    // --- [deps] dependency-ordered fan-out (r --deps :action) ------------------
+    {
+        // app needs left and right; both need core. A diamond, so the order has
+        // something to prove beyond "walked the list".
+        const da = join(&c, &.{ root, "proj", "dapp" });
+        const dl = join(&c, &.{ root, "proj", "dleft" });
+        const dr = join(&c, &.{ root, "proj", "dright" });
+        const dc = join(&c, &.{ root, "proj", "dcore" });
+        for ([_][]const u8{ "dapp", "dleft", "dright", "dcore" }, [_][]const u8{ da, dl, dr, dc }) |n, p| {
+            _ = try c.run(&.{ n, p });
+        }
+        try writeActions(&c, "dapp", da, "[deps]\nneeds = [\"dleft\", \"dright\"]\n\n[actions]\nbuild = \"echo built-app\"\n");
+        try writeActions(&c, "dleft", dl, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"echo built-left\"\n");
+        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"echo built-right\"\n");
+        try writeActions(&c, "dcore", dc, "[actions]\nbuild = \"echo built-core\"\n");
+
+        var r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
+        const i_core = std.mem.indexOf(u8, r.out, "built-core");
+        const i_left = std.mem.indexOf(u8, r.out, "built-left");
+        const i_right = std.mem.indexOf(u8, r.out, "built-right");
+        const i_app = std.mem.indexOf(u8, r.out, "built-app");
+        c.check(r.code == 0 and i_core != null and i_left != null and i_right != null and i_app != null,
+            "--deps runs every alias in the graph", r);
+        c.check(i_core != null and i_left != null and i_right != null and i_app != null and
+            i_core.? < i_left.? and i_core.? < i_right.? and
+            i_left.? < i_app.? and i_right.? < i_app.?, "a dependency runs before what needs it, the invoked alias last", r);
+        // The diamond's shared dependency is built once, not once per dependent.
+        c.check(std.mem.count(u8, r.out, "built-core") == 1, "a diamond builds the shared dependency once", r);
+        c.check(std.mem.indexOf(u8, r.err, "==> dcore :build") != null, "each dependency's run is announced", r);
+
+        // Plain `r <alias> :build` is untouched - deps run only when asked.
+        r = try c.run(&.{ "dapp", "--run", ":build" });
+        c.check(r.code == 0 and hasLineFold(r.out, "built-app") and
+            std.mem.indexOf(u8, r.out, "built-core") == null, "without --deps only the alias's own action runs", r);
+
+        // Strict, and strict UP FRONT: a dep that does not define the action
+        // aborts before anything runs, rather than three builds in.
+        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nother = \"echo nope\"\n");
+        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "dright") != null and
+            std.mem.indexOf(u8, r.err, "nothing was run") != null and
+            std.mem.indexOf(u8, r.out, "built-core") == null, "a dep missing the action aborts before anything runs", r);
+
+        // Same for a needs entry naming an alias that is not registered.
+        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"ghost-repo\"]\n\n[actions]\nbuild = \"echo built-right\"\n");
+        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "ghost-repo") != null and
+            std.mem.indexOf(u8, r.out, "built-core") == null, "an unregistered dependency aborts before anything runs", r);
+
+        // A failing link stops the chain and keeps its exit code - build
+        // semantics, not the run-everything policy a group has.
+        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"exit 3\"\n");
+        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
+        c.check(r.code == 3 and std.mem.indexOf(u8, r.err, "stopping") != null and
+            std.mem.indexOf(u8, r.out, "built-app") == null, "a failing dependency stops the chain and keeps its code", r);
+
+        // A cycle is refused rather than walked forever.
+        try writeActions(&c, "dcore", dc, "[deps]\nneeds = [\"dapp\"]\n\n[actions]\nbuild = \"echo built-core\"\n");
+        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"echo built-right\"\n");
+        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "cycle") != null and
+            std.mem.indexOf(u8, r.out, "built-core") == null, "a [deps] cycle is refused", r);
+
+        // The flag needs an action: there is no name to look for in a dependency
+        // when the command is literal, and a chain has no single one.
+        r = try c.run(&.{ "dapp", "--run", "--deps", "echo", "hi" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "named action") != null, "--deps refuses a literal command", r);
+        r = try c.run(&.{ "dapp", "--run", "--deps", ":build", ":other" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "one action") != null, "--deps refuses a chain", r);
+    }
+
     // --- action palette (nix --actions) ----------------------------------------
     {
         // A second alias with an overlapping action name, so the palette has to
