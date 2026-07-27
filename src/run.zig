@@ -143,7 +143,7 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
         ctx_alias = alias;
     }
 
-    const r = (try resolveExportAction(app, machine_wide, alias, dir, action)) orelse {
+    const r = (try resolveExportAction(app, alias, if (machine_wide) "" else dir, action)) orelse {
         try app.err.print("nix: \"{s}\" runs {s} :{s}, which no longer exists - fix the [bin] line, then `nix --sync-bin`\n", .{ name, alias, action });
         return 1;
     };
@@ -152,12 +152,16 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
     return runAction(app, cmd, ctx_alias, dir, action, false);
 }
 
-/// resolveExportAction mirrors bin_exports' declaration-time lookup: the normal
-/// three layers for an alias-owned export, the machine-wide file alone for a
-/// `_default` one (whose "directory" is wherever the user happens to be, and so
-/// must never pull in that directory's project actions).
-fn resolveExportAction(app: *App, machine_wide: bool, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
-    if (machine_wide) {
+/// resolveExportAction looks up the action a `[bin]` export names. ONE lookup
+/// for both sides of the feature - bin_exports calls it to validate and
+/// fingerprint a declaration, cmdExport calls it to run one - so the command a
+/// sync consented to can never be a different command than the one that runs.
+///
+/// An empty `dir` marks a machine-wide (`_default`) export: its "directory" is
+/// wherever the user happens to be standing, so it reads the machine-wide file
+/// alone and must never pull in that directory's project actions.
+pub fn resolveExportAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
+    if (dir.len == 0) {
         const list = try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home));
         const cmd = actions.find(list, name) orelse return null;
         return .{ .command = cmd, .from_project = false };
