@@ -14,6 +14,8 @@ const picker = @import("picker.zig");
 const bin_exports = @import("bin_exports.zig");
 const util = @import("util.zig");
 const provenance = @import("provenance.zig");
+const notes = @import("notes.zig");
+const groups = @import("groups.zig");
 
 // Version baked by build.zig (git describe).
 const build_version = @import("build_options").version;
@@ -440,6 +442,25 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         if (dups.items.len > 0) {
             try d.row(.warn, "duplicates", try std.fmt.allocPrint(app.arena, "defined more than once: {s}", .{try std.mem.join(app.arena, ", ", dups.items)}));
             try d.cont("hand-edited aliases.toml? the first entry wins - remove the extras");
+        }
+
+        // Notes whose alias or group is gone. nix never deletes a note (it is
+        // the user's writing, and --remove taking it would be the one
+        // unrecoverable thing here), so this row is how they stay findable:
+        // rename the alias back, or delete the file yourself.
+        {
+            var known: std.ArrayList([]const u8) = .empty;
+            for (aliases.items) |a| try known.append(app.arena, a.name);
+            const gdata = groups.readGroupsFile(app.arena, app.io, app.home) catch "";
+            const gs = groups.loadGroups(app.arena, gdata) catch null;
+            if (gs) |list| for (list.items) |g| {
+                try known.append(app.arena, try std.fmt.allocPrint(app.arena, "+{s}", .{g.name}));
+            };
+            const orphans = notes.orphans(app, known.items) catch &.{};
+            if (orphans.len > 0) {
+                try d.row(.note, "notes", try std.fmt.allocPrint(app.arena, "{d} note(s) with no alias or group: {s}", .{ orphans.len, try std.mem.join(app.arena, ", ", orphans) }));
+                try d.cont(try std.fmt.allocPrint(app.arena, "kept on purpose - they live in {s}", .{try notes.dirPath(app.arena, app.home)}));
+            }
         }
 
         // Project actions awaiting approval. Not a problem to fix - a fresh

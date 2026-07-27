@@ -17,6 +17,7 @@ const grep = @import("grep.zig");
 const find = @import("find.zig");
 const run_zig = @import("run.zig");
 const provenance = @import("provenance.zig");
+const notes = @import("notes.zig");
 const nav = @import("nav.zig");
 const paste = @import("paste.zig");
 const picker = @import("picker.zig");
@@ -134,6 +135,11 @@ pub fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "paste")) return cmdGroupPaste(app, group, aargs);
     if (eql(act, "grep")) return cmdGroupGrep(app, group, aargs);
     if (eql(act, "find")) return cmdGroupFind(app, group, aargs);
+    // A group note is not a fan-out: "this whole workstream is blocked" is one
+    // thought about the set, so it goes in the group's own file (`+work.md`) and
+    // not into each member's. Groups have no directory, which is the other
+    // reason notes had to live under $home to be able to have this at all.
+    if (eql(act, "note")) return notes.cmdNote(app, try std.fmt.allocPrint(app.arena, "+{s}", .{group}), aargs);
     try app.err.print("nix: --{s} is a single-alias action, not supported on group +{s}\n", .{ act, group });
     return 1;
 }
