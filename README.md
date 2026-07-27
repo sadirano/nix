@@ -381,6 +381,32 @@ install = "sudo .\\scripts\\install-service.ps1"
 
 The marker has to be the first word — it elevates the command, not one link of a `&&` chain — and it survives into listings, so `r acme :` and the palette both show which actions will prompt. Since the elevated shell is the administrator's session, not yours, nix writes the alias context (`NIX_ALIAS`, `NIX_ALIAS_PATH`, and the `.nix/scripts` directories *prepended* to the admin's `PATH`) into the command as a `set` prelude. Answering "No" to UAC is reported as `elevation declined - nothing was run`. On non-Windows nothing is intercepted: there `sudo` is a real program and the line runs as written.
 
+**An elevated action asks every time**, and there is no way to remember the answer. UAC does show a dialog, but it names the *shell* — `cmd.exe` — not the command line it was handed, so it can't tell you what you are agreeing to. This prompt is the only place that text is ever displayed:
+
+```
+nix: :install will run as ADMINISTRATOR:
+  sudo .\scripts\install-service.ps1
+Run it elevated? [y/N]
+```
+
+A remembered "yes" would mean an administrator command line nobody has read since the day it was approved, which is exactly the thing worth reading. Unattended — piped, redirected, or under `--no-prompt` — an elevated action refuses rather than running; it could never have answered UAC anyway.
+
+### Actions that arrived with a clone
+
+A project's `.nix/actions.toml` is committed, which means `git clone` brings it with the code, and `r acme :build` would run whatever it says. Choosing the *name* is not consent to the *command*. So the first run of a file nix hasn't seen approved shows what it is about to run:
+
+```
+nix: acme's :build wants to run (from C:\code\acme\.nix\actions.toml):
+  zig build -Doptimize=ReleaseFast && scripts\publish.cmd
+Approve this file's current contents and run? [y/N]
+```
+
+Approving records the file's **current bytes**, so it runs silently from then on — until a `git pull` rewrites it, which re-arms the prompt. That's the same hash discipline context sources and `[bin]` exports already use: what you approved is the text you read, not the filename. `nix --trust <alias>` approves an alias's actions, its `.nix/scripts`, and its context sources in one gesture, which is the sane way to take on a fresh clone; `nix --doctor` lists which aliases are still waiting.
+
+Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.toml`, `~/.nix/scripts`, a project that lives under `~/.nix`, and anything you type as a literal command (`r acme git status`) run untouched — they're under your home directory or you wrote them just now, and there the provenance is you. Scripts get the same treatment as the actions file beside them, since gating `:build` while leaving `r acme build` open would only move the unreviewed code one filename over.
+
+**Nothing can approve on your behalf.** Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead. That's deliberate: an agent approving a repo it just cloned is the check approving itself.
+
 ### The palette (`nix --actions`)
 
 Actions are declared per alias but invoked from anywhere, so the thing you forget is rarely the command — it's *which alias owns it*. `nix --actions` (`-A`) gathers every alias's actions into one fzf view and runs the pick in its own directory:

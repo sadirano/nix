@@ -112,6 +112,16 @@ fn join(c: *Ctx, parts: []const []const u8) []const u8 {
     return std.fs.path.join(c.arena, parts) catch @panic("oom");
 }
 
+/// writeActions writes a project actions.toml and approves it, which is what a
+/// person does after reading a fresh clone. The provenance gate refuses
+/// unapproved project code whenever it cannot ask (every run here: the harness
+/// gives its children no console), so a test that is not ABOUT the gate has to
+/// consent first - once per edit, since each edit re-arms it.
+fn writeActions(c: *Ctx, alias: []const u8, dir: []const u8, body: []const u8) !void {
+    try writeFile(c, join(c, &.{ dir, ".nix", "actions.toml" }), body);
+    _ = try c.run(&.{ "--trust", alias });
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
@@ -272,10 +282,12 @@ pub fn main(init: std.process.Init) !void {
 
     // --- actions ---------------------------------------------------------------
     {
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), if (proc.is_windows)
+        try writeActions(&c, "pa", pa, if (proc.is_windows)
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=%NIX_ALIAS% path=%NIX_ALIAS_PATH%\"\n"
         else
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=$NIX_ALIAS path=$NIX_ALIAS_PATH\"\n");
+        // Central: written, never approved. It never needs to be - that is the
+        // half of the gate this file proves by never mentioning it again.
         try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }), "[actions]\nhello = \"echo from-central\"\nonly = \"echo central-only\"\n");
 
         var r = try c.run(&.{ "pa", "--run", ":hello" });
@@ -317,7 +329,7 @@ pub fn main(init: std.process.Init) !void {
 
     // --- action arguments and chains -------------------------------------------
     {
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\n" ++
+        try writeActions(&c, "pa", pa, "[actions]\n" ++
             "one = \"echo one\"\n" ++
             "two = \"echo two\"\n" ++
             "mid = \"echo before {args} after\"\n" ++
@@ -353,20 +365,92 @@ pub fn main(init: std.process.Init) !void {
         // Quotes reach the shell as written. This is what makes the re-quoting
         // above safe, and it is why the foreground run builds its own command
         // line rather than handing argv to std (which would send cmd `\"`).
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nquoted = 'echo \"inner quotes\"'\n");
+        try writeActions(&c, "pa", pa, "[actions]\nquoted = 'echo \"inner quotes\"'\n");
         r = try c.run(&.{ "pa", "--run", ":quoted" });
         c.check(r.code == 0 and hasLineFold(r.out, "\"inner quotes\"") and
             std.mem.indexOf(u8, r.out, "\\\"") == null, "a command's own quotes are not mangled", r);
 
         // Put back what the blocks after this one expect to find.
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-project\"\n");
+        try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\n");
+    }
+
+    // --- provenance gate (cloned actions and scripts) --------------------------
+    // On its own alias: every check here turns on approval state, and sharing pa
+    // would make these tests and the ones above depend on each other's order.
+    {
+        const pg = join(&c, &.{ root, "proj", "pg" });
+        _ = try c.run(&.{ "pg", pg });
+        const pg_actions = join(&c, &.{ pg, ".nix", "actions.toml" });
+
+        // A clone: the file arrived, nobody approved it. The harness gives its
+        // children no console, which is the same position a script or an agent
+        // is in - so the gate refuses rather than asking into the void.
+        try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo built\"\n");
+        var r = try c.run(&.{ "pg", "--run", ":build" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "built") == null and
+            std.mem.indexOf(u8, r.err, "not been approved") != null and
+            std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "an unapproved project action refuses and says how to approve", r);
+        // The refusal shows the command, which is the point: the thing being
+        // approved is the text, not the name that was typed.
+        c.check(std.mem.indexOf(u8, r.err, "echo built") != null, "the refusal shows the command it withheld", r);
+
+        r = try c.run(&.{ "--trust", "pg" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "approved") != null, "--trust approves the project action file", r);
+        r = try c.run(&.{ "pg", "--run", ":build" });
+        c.check(r.code == 0 and hasLineFold(r.out, "built"), "an approved action runs without asking again", r);
+
+        // Approval is of BYTES. A pull that rewrites the command re-arms it,
+        // which is the whole reason the record is a hash and not a filename.
+        try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo rewritten\"\n");
+        r = try c.run(&.{ "pg", "--run", ":build" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "rewritten") == null and
+            std.mem.indexOf(u8, r.err, "not been approved") != null, "editing the file re-arms the gate", r);
+
+        // A central action is never gated - it lives under $home and the user
+        // wrote it. Same name, so only the layer differs.
+        // (Its output is deliberately not "from-central": the palette block
+        // below asserts that string never appears, since pa's project layer must
+        // win over pa's central one.)
+        try writeFile(&c, join(&c, &.{ home, "actions", "pg.toml" }), "[actions]\ncentral = \"echo pg-central-ran\"\n");
+        r = try c.run(&.{ "pg", "--run", ":central" });
+        c.check(r.code == 0 and hasLineFold(r.out, "pg-central-ran"), "a central action is never gated", r);
+
+        // Elevation is not a provenance question, so approval cannot answer it:
+        // an elevated action refuses unattended even with the file approved.
+        try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo rewritten\"\ninstall = \"sudo echo elevated\"\n");
+        _ = try c.run(&.{ "--trust", "pg" });
+        r = try c.run(&.{ "pg", "--run", ":build" });
+        c.check(r.code == 0 and hasLineFold(r.out, "rewritten"), "--trust re-approves the edited file", r);
+        r = try c.run(&.{ "pg", "--run", ":install" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null and
+            std.mem.indexOf(u8, r.err, "every time") != null, "an approved elevated action still refuses unattended", r);
+        // ...and it refuses by showing the line UAC would not have shown.
+        c.check(std.mem.indexOf(u8, r.err, "sudo echo elevated") != null, "the elevated refusal shows the command UAC would hide", r);
+
+        // Scripts beside the actions file are the same cloned code reached by a
+        // different spelling, so `r pg hello` is gated too.
+        const script = join(&c, &.{ pg, ".nix", "scripts", if (proc.is_windows) "hello.cmd" else "hello.sh" });
+        try writeFile(&c, script, if (proc.is_windows) "@echo script-ran\n" else "#!/bin/sh\necho script-ran\n");
+        r = try c.run(&.{ "pg", "--run", "hello" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "script-ran") == null and
+            std.mem.indexOf(u8, r.err, "not been approved") != null, "a bare-name project script is gated too", r);
+        _ = try c.run(&.{ "--trust", "pg" });
+        r = try c.run(&.{ "pg", "--run", "hello" });
+        c.check(r.code == 0 and hasLineFold(r.out, "script-ran"), "--trust approves the scripts beside the actions file", r);
+
+        // --no-prompt is not a way to consent: it refuses with the instruction,
+        // exactly as a pipe does. (An agent approving code it just cloned would
+        // be the check approving itself.)
+        try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo again\"\n");
+        r = try c.run(&.{ "--no-prompt", "pg", "--run", ":build" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "--no-prompt never consents", r);
     }
 
     // --- action palette (nix --actions) ----------------------------------------
     {
         // A second alias with an overlapping action name, so the palette has to
         // keep both rows apart by their owning alias.
-        try writeFile(&c, join(&c, &.{ pb, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-pb\"\nship = \"echo shipping\"\n");
+        try writeActions(&c, "pb", pb, "[actions]\nhello = \"echo from-pb\"\nship = \"echo shipping\"\n");
 
         var r = try c.run(&.{ "--no-prompt", "--actions" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":ship") != null and
@@ -395,7 +479,7 @@ pub fn main(init: std.process.Init) !void {
         var r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "DESCRIPTION") == null, "no descriptions means no DESCRIPTION column", r);
 
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }),
+        try writeActions(&c, "pa", pa,
             "# file header, separated by a blank line\n\n[actions]\n" ++
                 "# Portable build: keeps it\n# runnable anywhere.\n" ++
                 "hello = \"echo from-project\"\n" ++
@@ -433,7 +517,7 @@ pub fn main(init: std.process.Init) !void {
 
     // --- notify hook ([notify] on_finish fires after :actions) -----------------
     {
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), "[actions]\nhello = \"echo from-project\"\nbad = \"exit 3\"\n");
+        try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\nbad = \"exit 3\"\n");
         // The hook spawns directly (no shell), so route the echo through an
         // explicit cmd /c | sh -c — which also exercises env-var visibility.
         const dur_ref = if (proc.is_windows) "%NIX_ACTION_DURATION_MS%" else "$NIX_ACTION_DURATION_MS";
@@ -471,7 +555,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "yank-hook=pa,ok,info:yanked path ") != null, "on_yank records the copied path", r);
 
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
-        try writeFile(&c, join(&c, &.{ pa, ".nix", "actions.toml" }), if (proc.is_windows)
+        try writeActions(&c, "pa", pa, if (proc.is_windows)
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=%NIX_ALIAS% path=%NIX_ALIAS_PATH%\"\n"
         else
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=$NIX_ALIAS path=$NIX_ALIAS_PATH\"\n");

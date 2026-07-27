@@ -13,6 +13,7 @@ const config = @import("config.zig");
 const notify = @import("notify.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
+const provenance = @import("provenance.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -51,6 +52,10 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     var resolved = try app.arena.dupe([]const u8, argv);
     const exe = argv[0];
     if (resolveScript(app, target, exe)) |s| {
+        // A project script is cloned code reached by bare name - the same
+        // provenance question its actions.toml sibling answers. (A script under
+        // $home, central or otherwise, is waved through inside the gate.)
+        if (!try provenance.gateScript(app, alias, s, .may_prompt)) return 1;
         resolved[0] = s;
     } else if (proc.is_windows and std.mem.indexOfAny(u8, exe, "/\\") == null) {
         for ([_][]const u8{ ".cmd", ".bat", ".exe", ".ps1" }) |ext| {
@@ -127,16 +132,20 @@ pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
 fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outside: bool) !u8 {
     const chained = call.names.len > 1;
     for (call.names, 0..) |name, i| {
-        const cmd = (try resolveAction(app, alias, dir, name)) orelse {
+        const r = (try resolveAction(app, alias, dir, name)) orelse {
             try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `r {s} :`)\n", .{ alias, name, alias });
             return 1;
         };
+        const cmd = try applyArgs(app.arena, r.command, call.args);
+        // Gated per link, not once for the chain: each link is its own command,
+        // and an elevated one asks again even if an earlier link just did.
+        if (!try provenance.gateAction(app, alias, dir, name, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
         if (chained) {
             try app.out.flush();
             try app.err.print("==> {s} :{s}\n", .{ alias, name });
             try app.err.flush();
         }
-        const code = try runAction(app, try applyArgs(app.arena, cmd, call.args), alias, dir, name, outside);
+        const code = try runAction(app, cmd, alias, dir, name, outside);
         if (code != 0) {
             if (i + 1 < call.names.len) try app.err.print("nix: :{s} failed (exit {d}) - stopping\n", .{ name, code });
             return code;
@@ -281,13 +290,23 @@ pub fn wrapPs1(app: *App, resolved: [][]const u8) ![][]const u8 {
     return out;
 }
 
+/// A resolved action, and whether it came from the layer that travels with the
+/// repo. Every caller that RUNS one needs the second half: the provenance gate
+/// applies to project-local commands and not to the files under $home, so losing
+/// track of which layer answered would either gate everything or nothing.
+pub const Resolved = struct {
+    command: []const u8,
+    from_project: bool,
+};
+
 /// resolveAction looks up a named action for an alias: project-local
 /// `<dir>/.nix/actions.toml` first (wins), then central
 /// `~/.nix/actions/<alias>.toml`, then the machine-wide
-/// `~/.nix/actions/_default.toml`. Returns the command string, or null if absent.
-pub fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?[]const u8 {
-    for (try actionPaths(app, alias, dir)) |p| {
-        if (actions.find(try actions.loadFile(app.arena, app.io, p), name)) |c| return c;
+/// `~/.nix/actions/_default.toml`. Returns null if absent.
+pub fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
+    for (try actionPaths(app, alias, dir), 0..) |p, i| {
+        if (actions.find(try actions.loadFile(app.arena, app.io, p), name)) |c|
+            return .{ .command = c, .from_project = i == 0 };
     }
     return null;
 }
