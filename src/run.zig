@@ -558,7 +558,7 @@ pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
 /// PATH (`[bin] ship = ":deploy"` -> "ship" for :deploy), or null. Read from
 /// the exports manifest, so it reports what is actually installed rather than
 /// what some file declares.
-fn globalName(installed: []const bin_exports.Installed, alias: []const u8, action: []const u8) ?[]const u8 {
+pub fn globalName(installed: []const bin_exports.Installed, alias: []const u8, action: []const u8) ?[]const u8 {
     for (installed) |m| {
         if (m.action.len == 0) continue;
         if (!store.eqlFoldAscii(m.alias, alias)) continue;
