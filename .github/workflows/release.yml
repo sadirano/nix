@@ -6,6 +6,10 @@ on:
 
 permissions:
   contents: write
+  # The manual verification checklist is a GitHub issue (see
+  # .github/scripts/release-checklist.sh): a pre-release tag opens it, a stable
+  # tag refuses to publish until it is complete, and publishing closes it.
+  issues: write
 
 jobs:
   release:
@@ -21,28 +25,27 @@ jobs:
         with:
           version: 0.16.0
 
-      # Stable tags (no pre-release suffix) must ship with every box in
-      # RELEASE-CHECKLIST.md checked — the manual Windows-only verification
-      # the e2e harness can't reach (interactive pickers, real PATH/registry
-      # mutation). Pre-release tags (v*-pre, v*-rc1, …) are exempt: they're
-      # the build the checklist itself gets run against.
-      - name: Verify release checklist is complete
+      # A pre-release tag (v*-pre, v*-rc1, ...) is the build the manual
+      # checklist gets run against, so it opens the issue - or, when one is
+      # already open for this version, re-stamps it with the new candidate so
+      # the verification can never silently describe an older build.
+      - name: Open or re-stamp the release checklist
+        if: contains(github.ref_name, '-')
         shell: bash
-        run: |
-          tag="$GITHUB_REF_NAME"
-          if [[ "$tag" == *-* ]]; then
-            echo "Pre-release tag ($tag) — skipping checklist gate."
-          elif [ -f RELEASE-CHECKLIST.md ]; then
-            unchecked=$(grep -c '^- \[ \]' RELEASE-CHECKLIST.md || true)
-            if [ "$unchecked" -gt 0 ]; then
-              echo "::error::RELEASE-CHECKLIST.md has $unchecked unchecked item(s) — complete them (or delete/reset the file, per its own last step) before tagging a stable release."
-              grep -n '^- \[ \]' RELEASE-CHECKLIST.md
-              exit 1
-            fi
-            echo "Release checklist fully checked."
-          else
-            echo "No RELEASE-CHECKLIST.md present — nothing to verify."
-          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-checklist.sh open "$GITHUB_REF_NAME" "$GITHUB_SHA"
+
+      # A stable tag must have a complete checklist issue, verified against a
+      # build whose source is this one. FAIL-CLOSED: no issue, no release. The
+      # file this replaced passed when it was missing, which is the state the
+      # repo has been in since v0.10.0 shipped.
+      - name: Verify the release checklist
+        if: "!contains(github.ref_name, '-')"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-checklist.sh verify "$GITHUB_REF_NAME" "$GITHUB_SHA"
 
       - name: Test
         run: zig build test
@@ -95,3 +98,12 @@ jobs:
           prerelease: ${{ steps.prerelease.outputs.value }}
           make_latest: ${{ steps.prerelease.outputs.value == 'false' }}
           files: nix-${{ github.ref_name }}-windows-amd64.zip
+
+      # The checklist's evidence outlives the issue: an issue body can be
+      # edited afterwards, the release notes are what the tag shipped with.
+      - name: Archive and close the release checklist
+        if: "!contains(github.ref_name, '-')"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/release-checklist.sh close "$GITHUB_REF_NAME"

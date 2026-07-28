@@ -12,3 +12,6 @@ sync = 'zig-out\bin\nix.exe --sync'
 # Everything CI runs, in CI's order: fmt check, unit tests, e2e, the portable
 # release build, the linux compile canary. What .githooks/pre-push calls.
 ci = "zig build ci"
+# What is still unticked on the release checklist issue for the version in
+# flight (the checklist lives in a GitHub issue, not in the tree).
+checklist = "bash .github/scripts/release-checklist.sh status"
