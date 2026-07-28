@@ -14,7 +14,7 @@ const util = @import("util.zig");
 const run_zig = @import("run.zig");
 const resolve = @import("resolve.zig");
 const provenance = @import("provenance.zig");
-const bin_exports = @import("bin_exports.zig");
+const exports = @import("exports.zig");
 const actions = @import("actions.zig");
 
 const App = app_zig.App;
@@ -22,9 +22,8 @@ const isGlobalFlag = app_zig.isGlobalFlag;
 const fzfEnv = app_zig.fzfEnv;
 
 /// One palette entry: which alias owns the action, and the command it runs.
-/// `row` is the rendered table line - kept so a selection maps back to its
-/// entry by exact string match rather than by re-parsing columns, which an
-/// action name containing a space would break.
+/// Nothing here is derived from the rendered text - a selection comes back as
+/// an index (see keyOf), so the columns are free to change shape.
 const Entry = struct {
     alias: []const u8,
     name: []const u8,
@@ -34,7 +33,6 @@ const Entry = struct {
     /// or "" - the palette answers "which alias owns it", and this answers the
     /// follow-up "or can I just type something".
     global: []const u8 = "",
-    row: []const u8 = "",
 };
 
 /// matches reports whether an entry should survive the `[pat]` pre-filter.
@@ -109,14 +107,14 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
 /// once per alias would bury everything else.
 pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
     var entries: std.ArrayList(Entry) = .empty;
-    const installed = bin_exports.loadManifest(app.arena, app.io, app.home) catch &.{};
+    const installed = exports.load(app.arena, app.io, app.home) catch &.{};
     for (try run_zig.mergedActions(app, alias, dir, true)) |a| {
         try entries.append(app.arena, .{
             .alias = alias,
             .name = a.name,
             .command = a.command,
             .description = a.description,
-            .global = run_zig.globalName(installed, alias, a.name) orelse "",
+            .global = exports.globalName(installed, alias, a.name) orelse "",
         });
     }
     if (entries.items.len == 0) {
@@ -147,32 +145,37 @@ fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fz
             try app.err.writeAll(missing_fzf);
             return 1;
         }
-        try app.out.writeAll(try render(app.arena, entries, true, with_alias));
+        try app.out.writeAll(try render(app.arena, entries, .{ .alias_column = with_alias }));
         return 0;
     }
 
     // --header-lines pins the column header inside fzf. --multi is on because
     // "run these three" is a real ask (Tab marks them): one pick runs here, in
     // this terminal, as it always has; several fan out into a window each.
-    const fzf_argv = [_][]const u8{ "fzf", "--prompt", "action> ", "--header-lines", "1", "--multi" };
+    // --delimiter/--with-nth hide the leading key field from both the display
+    // and the search, so it never shows up in a row or matches a query.
+    const fzf_argv = [_][]const u8{
+        "fzf",         "--prompt", "action> ",   "--header-lines", "1", "--multi",
+        "--delimiter", "\t",       "--with-nth", "2..",
+    };
     try app.out.flush();
-    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, try render(app.arena, entries, true, with_alias), fzfEnv(app));
+    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, try render(app.arena, entries, .{ .alias_column = with_alias, .keys = true }), fzfEnv(app));
     if (res.code != 0) return 0; // cancelled
 
     var picks: std.ArrayList(Entry) = .empty;
     var lines = std.mem.splitScalar(u8, res.output, '\n');
     while (lines.next()) |raw| {
-        const picked = std.mem.trim(u8, raw, " \t\r\n");
-        if (picked.len == 0) continue;
-        for (entries) |e| {
-            if (std.mem.eql(u8, e.row, picked)) {
-                try picks.append(app.arena, e);
-                break;
-            }
-        } else {
+        const line = std.mem.trim(u8, raw, " \r\n");
+        if (line.len == 0) continue;
+        const key = keyOf(line) orelse {
+            try app.err.writeAll("nix: could not match the selection back to an action\n");
+            return 1;
+        };
+        if (key >= entries.len) {
             try app.err.writeAll("nix: could not match the selection back to an action\n");
             return 1;
         }
+        try picks.append(app.arena, entries[key]);
     }
     if (picks.items.len == 0) return 0;
     if (picks.items.len == 1) return runPicked(app, picks.items[0]);
@@ -188,7 +191,7 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
     const aliases = try store.loadAliases(app.arena, data);
     var out: std.ArrayList(Entry) = .empty;
     // Read once, not per alias: which actions are also global commands.
-    const installed = bin_exports.loadManifest(app.arena, app.io, app.home) catch &.{};
+    const installed = exports.load(app.arena, app.io, app.home) catch &.{};
     for (aliases.items) |al| {
         const dir = try store.fromSlash(app.arena, al.path);
         for (try run_zig.mergedActions(app, al.name, dir, false)) |a| {
@@ -197,7 +200,7 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
                 .name = a.name,
                 .command = a.command,
                 .description = a.description,
-                .global = run_zig.globalName(installed, al.name, a.name) orelse "",
+                .global = exports.globalName(installed, al.name, a.name) orelse "",
             };
             if (!matches(e, pat)) continue;
             try out.append(app.arena, e);
@@ -216,7 +219,22 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
 /// The command is what you scan for and the description is the footnote, so the
 /// prose goes last - and a row that has none simply ends at its command instead
 /// of trailing into blank padding.
-fn render(arena: std.mem.Allocator, entries: []Entry, header: bool, with_alias: bool) ![]const u8 {
+const RenderOpts = struct {
+    /// Emit the column header. fzf pins it with --header-lines; a printed table
+    /// wants it too.
+    header: bool = true,
+    /// Show the ALIAS column. Off for the alias-scoped view, where one repeated
+    /// value down the page answers nothing.
+    alias_column: bool = true,
+    /// Emit the leading `<index>\t` key field that identifies a pick. Only the
+    /// fzf path wants it (--with-nth hides it again); a printed table must not
+    /// show plumbing.
+    keys: bool = false,
+};
+
+fn render(arena: std.mem.Allocator, entries: []Entry, opts: RenderOpts) ![]const u8 {
+    const header = opts.header;
+    const with_alias = opts.alias_column;
     var alias_w: usize = "ALIAS".len;
     var name_w: usize = "ACTION".len;
     var cmd_w: usize = "COMMAND".len;
@@ -235,6 +253,9 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool, with_alias: 
     }
     var buf: std.ArrayList(u8) = .empty;
     if (header) {
+        // The header is a row too, so it carries a key field like the rest -
+        // otherwise --with-nth would shift its columns one place left.
+        if (opts.keys) try buf.appendSlice(arena, "#\t");
         if (with_alias) try padInto(arena, &buf, "ALIAS", alias_w + 2);
         try padInto(arena, &buf, "ACTION", name_w + 2);
         if (any_global) try padInto(arena, &buf, "GLOBAL", glob_w + 2);
@@ -243,25 +264,31 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool, with_alias: 
             try buf.appendSlice(arena, "DESCRIPTION\n");
         } else try buf.appendSlice(arena, "COMMAND\n");
     }
-    for (entries) |*e| {
-        // Each row is built into its own allocation, then appended: the entry
-        // keeps that string (never a slice into buf, which moves as it grows),
-        // and it is the exact text fzf hands back for the equality lookup.
-        var row: std.ArrayList(u8) = .empty;
-        if (with_alias) try padInto(arena, &row, e.alias, alias_w + 2);
-        try padInto(arena, &row, try std.fmt.allocPrint(arena, ":{s}", .{e.name}), name_w + 2);
-        if (any_global) try padInto(arena, &row, e.global, glob_w + 2);
+    for (entries, 0..) |*e, i| {
+        if (opts.keys) try buf.print(arena, "{d}\t", .{i});
+        if (with_alias) try padInto(arena, &buf, e.alias, alias_w + 2);
+        try padInto(arena, &buf, try std.fmt.allocPrint(arena, ":{s}", .{e.name}), name_w + 2);
+        if (any_global) try padInto(arena, &buf, e.global, glob_w + 2);
         if (described and e.description.len > 0) {
-            try padInto(arena, &row, e.command, cmd_w + 2);
-            try row.appendSlice(arena, app_zig.ellipsize(arena, e.description));
-        } else try row.appendSlice(arena, e.command);
-        // No row may end in padding: fzf hands the line back verbatim and the
-        // pick is found by comparing it to what was rendered here.
-        e.row = std.mem.trimEnd(u8, row.items, " ");
-        try buf.appendSlice(arena, e.row);
+            try padInto(arena, &buf, e.command, cmd_w + 2);
+            try buf.appendSlice(arena, app_zig.ellipsize(arena, e.description));
+        } else try buf.appendSlice(arena, e.command);
         try buf.append(arena, '\n');
     }
     return buf.items;
+}
+
+/// keyOf reads the index field off a row fzf handed back. Rows are emitted as
+/// `<index>\t<columns>` and fzf is told to display and search only the columns
+/// (--delimiter TAB --with-nth 2..), so a selection resolves by KEY.
+///
+/// The alternative - comparing the returned line to the rendered one - made
+/// every column a load-bearing detail: a trailing space, an ellipsis, a new
+/// conditional column, and the pick silently matched nothing. The row is for
+/// the eye; the key is for the lookup.
+fn keyOf(line: []const u8) ?usize {
+    const tab = std.mem.indexOfScalar(u8, line, '\t') orelse return null;
+    return std.fmt.parseInt(usize, std.mem.trim(u8, line[0..tab], " \t\r\n"), 10) catch null;
 }
 
 /// padInto is padPrint into a buffer: a value wider than its column still gets
@@ -342,11 +369,11 @@ test "matches: substring over alias, name and command, case-insensitive" {
     try std.testing.expect(!matches(e, "acmeacmeacmeacme"));
 }
 
-test "render: every recorded row is exactly one line of the output" {
-    // This is the invariant the pick depends on: fzf hands back a line
-    // verbatim, and the entry is found by comparing it to the row rendered
-    // here. If padding or the newline ever leaked into Entry.row, a selection
-    // would silently match nothing.
+test "render/keyOf: a selection round-trips by key, not by matching text" {
+    // The invariant the pick depends on. It used to be "the returned line must
+    // equal the rendered row byte-for-byte", which made every column
+    // load-bearing; now it is only "the key field survives", so padding,
+    // ellipsis and new columns cannot break a selection.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -354,25 +381,33 @@ test "render: every recorded row is exactly one line of the output" {
         .{ .alias = "acme", .name = "build", .command = "zig build" },
         .{ .alias = "much-longer-alias", .name = "deploy", .command = "npm run deploy && echo ok" },
     };
-    const out = try render(a, &entries, true, true);
+    const out = try render(a, &entries, .{ .keys = true });
 
     var lines = std.mem.splitScalar(u8, out, '\n');
-    try std.testing.expect(std.mem.startsWith(u8, lines.first(), "ALIAS")); // header kept
-    for (entries) |e| {
-        try std.testing.expect(e.row.len > 0);
-        try std.testing.expect(std.mem.indexOfScalar(u8, e.row, '\n') == null);
-        // The row must appear as a WHOLE line, not merely as a substring.
-        var found = false;
-        var scan = std.mem.splitScalar(u8, out, '\n');
-        while (scan.next()) |line| {
-            if (std.mem.eql(u8, line, e.row)) found = true;
-        }
-        try std.testing.expect(found);
-        // Columns line up: the command is last, so no row ends in padding.
-        try std.testing.expect(!std.mem.endsWith(u8, e.row, " "));
-        try std.testing.expect(std.mem.endsWith(u8, e.row, e.command));
-        try std.testing.expect(std.mem.startsWith(u8, e.row, e.alias));
+    // The header carries a key field too, so --with-nth does not shift it.
+    const head = lines.first();
+    try std.testing.expect(std.mem.startsWith(u8, head, "#\t"));
+    try std.testing.expect(std.mem.startsWith(u8, head["#\t".len..], "ALIAS"));
+
+    // Every data row: `<index>\t<columns>`, and the key resolves to its entry.
+    var i: usize = 0;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const key = keyOf(line) orelse return error.NoKey;
+        try std.testing.expectEqual(i, key);
+        const cols = line[std.mem.indexOfScalar(u8, line, '\t').? + 1 ..];
+        try std.testing.expect(std.mem.startsWith(u8, cols, entries[i].alias));
+        try std.testing.expect(std.mem.indexOf(u8, cols, entries[i].command) != null);
+        i += 1;
     }
+    try std.testing.expectEqual(entries.len, i);
+}
+
+test "keyOf: refuses a line that carries no key" {
+    try std.testing.expect(keyOf("acme  :build  zig build") == null); // no tab
+    try std.testing.expect(keyOf("#\tALIAS  ACTION") == null); // the header
+    try std.testing.expect(keyOf("") == null);
+    try std.testing.expectEqual(@as(usize, 12), keyOf("12\tacme  :build").?);
 }
 
 test "render: the alias-scoped view drops the ALIAS column, keeps the round-trip" {
@@ -383,21 +418,22 @@ test "render: the alias-scoped view drops the ALIAS column, keeps the round-trip
         .{ .alias = "acme", .name = "build", .command = "zig build" },
         .{ .alias = "acme", .name = "deploy", .command = "./ship.sh", .global = "ship" },
     };
-    const out = try render(a, &entries, true, false);
+    const out = try render(a, &entries, .{ .alias_column = false, .keys = true });
     const header = std.mem.sliceTo(out, '\n');
-    // One repeated alias down the page answers nothing, so the column goes.
-    try std.testing.expect(std.mem.startsWith(u8, header, "ACTION"));
+    // One repeated alias down the page answers nothing, so the column goes -
+    // past the key field, which every row carries.
+    try std.testing.expect(std.mem.startsWith(u8, header, "#\tACTION"));
     try std.testing.expect(std.mem.indexOf(u8, out, "acme") == null);
     // GLOBAL still appears, because one of them IS a global command.
     try std.testing.expect(std.mem.indexOf(u8, header, "GLOBAL") != null);
-    // Rows must still be whole lines with no trailing padding: fzf hands the
-    // line back verbatim and the pick is found by comparing it to this.
-    for (entries) |e| {
-        try std.testing.expect(!std.mem.endsWith(u8, e.row, " "));
+    // Every entry is still reachable by its key, whatever the columns became.
+    for (entries, 0..) |_, i| {
         var scan = std.mem.splitScalar(u8, out, '\n');
+        _ = scan.first(); // header
         var found = false;
         while (scan.next()) |line| {
-            if (std.mem.eql(u8, line, e.row)) found = true;
+            if (line.len == 0) continue;
+            if (keyOf(line) orelse continue == i) found = true;
         }
         try std.testing.expect(found);
     }
@@ -409,23 +445,31 @@ test "render: the description is the last column, and only when one exists" {
     const a = arena_state.allocator();
 
     var undocumented = [_]Entry{.{ .alias = "acme", .name = "build", .command = "zig build" }};
-    const plain = try render(a, &undocumented, true, true);
+    const plain = try render(a, &undocumented, .{ .keys = true });
     try std.testing.expect(std.mem.indexOf(u8, plain, "DESCRIPTION") == null);
-    try std.testing.expect(std.mem.endsWith(u8, undocumented[0].row, "zig build"));
+    // An undescribed row ends at its command rather than trailing into padding.
+    // That is cosmetic now, not load-bearing: the pick resolves by key.
+    try std.testing.expect(std.mem.indexOf(u8, plain, "\n0\t") != null);
+    try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, plain, "\n"), "zig build"));
 
     var entries = [_]Entry{
         .{ .alias = "acme", .name = "build", .command = "zig build", .description = "Ship it." },
         .{ .alias = "acme", .name = "test", .command = "zig build test" },
     };
-    const out = try render(a, &entries, true, true);
+    const out = try render(a, &entries, .{ .keys = true });
     const header = std.mem.sliceTo(out, '\n');
     const cmd_at = std.mem.indexOf(u8, header, "COMMAND").?;
     try std.testing.expect(std.mem.indexOf(u8, header, "DESCRIPTION").? > cmd_at);
-    // A described row ends in its prose, an undescribed one at its command -
-    // never in the padding that would break the fzf round-trip.
-    try std.testing.expect(std.mem.endsWith(u8, entries[0].row, "Ship it."));
-    try std.testing.expect(std.mem.endsWith(u8, entries[1].row, "zig build test"));
-    for (entries) |e| try std.testing.expect(std.mem.indexOf(u8, out, e.row) != null);
+    // A described row ends in its prose, an undescribed one at its command.
+    var scan = std.mem.splitScalar(u8, out, '\n');
+    _ = scan.first(); // header
+    const row0 = scan.next().?;
+    const row1 = scan.next().?;
+    try std.testing.expect(std.mem.endsWith(u8, row0, "Ship it."));
+    try std.testing.expect(std.mem.endsWith(u8, row1, "zig build test"));
+    // Both are still addressable by key, which is what the pick actually uses.
+    try std.testing.expectEqual(@as(usize, 0), keyOf(row0).?);
+    try std.testing.expectEqual(@as(usize, 1), keyOf(row1).?);
 }
 
 test "lessThan: alias first, then action name" {

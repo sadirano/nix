@@ -15,7 +15,7 @@ const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
 const deps = @import("deps.zig");
-const bin_exports = @import("bin_exports.zig");
+const exports = @import("exports.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -512,23 +512,6 @@ pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_defa
         }
     }
     return merged.items;
-}
-
-/// globalName returns the command name an alias's action is installed as on
-/// PATH (`[bin] ship = ":deploy"` -> "ship" for :deploy), or null. Read from
-/// the exports manifest, so it reports what is actually installed rather than
-/// what some file declares.
-pub fn globalName(installed: []const bin_exports.Installed, alias: []const u8, action: []const u8) ?[]const u8 {
-    for (installed) |m| {
-        if (m.action.len == 0) continue;
-        if (!store.eqlFoldAscii(m.alias, alias)) continue;
-        if (!store.eqlFoldAscii(m.action, action)) continue;
-        // The manifest keys by installed FILE ("ship.exe"); the command you
-        // type is that without the extension.
-        const dot = std.mem.lastIndexOfScalar(u8, m.file, '.');
-        return if (dot) |i| m.file[0..i] else m.file;
-    }
-    return null;
 }
 
 /// runShellString runs an action's command through the shell (cmd /c on Windows,

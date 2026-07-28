@@ -28,6 +28,7 @@ const actions = @import("actions.zig");
 const util = @import("util.zig");
 const run = @import("run.zig");
 const provenance = @import("provenance.zig");
+const exports = @import("exports.zig");
 
 const App = app_zig.App;
 const readFileMaybe = app_zig.readFileMaybe;
@@ -75,81 +76,24 @@ pub const Plan = struct {
     unreachable_aliases: []const []const u8,
 };
 
-/// Installed is one recorded export in the manifest: the file nix wrote into
-/// ~/.nix/bin, the alias that owns it, and the fingerprint of what the user
-/// consented to. The hash is empty only for a manifest written by an older nix
-/// (pre-fingerprint) - adopted silently on the next sync when the on-disk file
-/// still matches the source, so upgrading never forces a round of re-review.
-///
-/// `action` is set for an action export (`ship.exe = "acme <hash> :deploy"`),
-/// and is what argv0 dispatch reads back: the installed file is a copy of nix
-/// and carries no trace of what it runs, so the manifest is the only record.
-pub const Installed = struct {
-    file: []const u8,
-    alias: []const u8,
-    hash: []const u8,
-    action: []const u8 = "",
-};
+/// The manifest store lives in exports.zig - see the note there on why the
+/// readers are split from this module (the sync policy needs run.zig; the
+/// readers must not).
+pub const Installed = exports.Installed;
+pub const manifestPath = exports.manifestPath;
+pub const loadManifest = exports.load;
+const findInstalled = exports.find;
 
-pub fn manifestPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
-    return std.fs.path.join(arena, &.{ home, "exports.toml" });
-}
-
-/// hashHex fingerprints the exact installed bytes (a truncated SHA-256 - 128
-/// bits, ample for detecting an accidental or hand edit; this is a provenance
-/// check, not an authentication boundary). The fingerprint is what makes both
-/// "is this a new version I haven't allowed?" and "was this file edited in
-/// place?" answerable from the manifest alone.
+/// hashHex fingerprints bytes (a truncated SHA-256 - 128 bits, ample for
+/// detecting an accidental or hand edit; this is a provenance check, not an
+/// authentication boundary). It stays here rather than in the store because
+/// COMPUTING a fingerprint is the sync's job - reading one back is the
+/// manifest's.
 pub fn hashHex(arena: std.mem.Allocator, data: []const u8) ![]const u8 {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
     const hex = std.fmt.bytesToHex(digest[0..16].*, .lower);
     return arena.dupe(u8, &hex);
-}
-
-/// loadManifest reads the installed-exports record: `<filename> = "<alias> <hash>"`
-/// (the trailing hash is absent in manifests written before fingerprinting).
-/// Absent file = empty.
-pub fn loadManifest(arena: std.mem.Allocator, io: Io, home: []const u8) ![]Installed {
-    const p = try manifestPath(arena, home);
-    const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => return &.{},
-        else => return e,
-    };
-    const raw = try actions.parseTable(arena, data, "exports");
-    var out: std.ArrayList(Installed) = .empty;
-    for (raw) |a| {
-        // Value is "<alias>", "<alias> <hash>", or "<alias> <hash> :<action>".
-        // Alias names are space-free (store.validateAliasName), so the first
-        // token is always the alias; the `:` marks the optional third the same
-        // way it marks an action in a [bin] declaration.
-        var it = std.mem.tokenizeScalar(u8, a.command, ' ');
-        const alias = it.next() orelse continue;
-        const hash = it.next() orelse "";
-        const third = it.next() orelse "";
-        const action = if (third.len > 1 and third[0] == ':') third[1..] else "";
-        try out.append(arena, .{ .file = a.name, .alias = alias, .hash = hash, .action = action });
-    }
-    return out.items;
-}
-
-/// lookupExport finds the action export installed under `name` (the argv0
-/// basename a copied wrapper was invoked as). Null for a name nix doesn't own,
-/// or one owned by a FILE export - that file is the tool itself and never
-/// reaches nix's dispatch.
-pub fn lookupExport(arena: std.mem.Allocator, io: Io, home: []const u8, name: []const u8) !?Installed {
-    const file = try std.fmt.allocPrint(arena, "{s}{s}", .{ name, if (proc.is_windows) ".exe" else "" });
-    for (try loadManifest(arena, io, home)) |m| {
-        if (m.action.len > 0 and store.eqlFoldAscii(m.file, file)) return m;
-    }
-    return null;
-}
-
-/// findInstalled looks up a manifest entry by installed filename (case-folded,
-/// like the wrappers).
-fn findInstalled(list: []const Installed, file: []const u8) ?Installed {
-    for (list) |m| if (store.eqlFoldAscii(m.file, file)) return m;
-    return null;
 }
 
 /// kindOf classifies a source path by extension, or null for types nix can't
