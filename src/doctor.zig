@@ -16,6 +16,7 @@ const util = @import("util.zig");
 const provenance = @import("provenance.zig");
 const notes = @import("notes.zig");
 const groups = @import("groups.zig");
+const env_zig = @import("env.zig");
 
 // Version baked by build.zig (git describe).
 const build_version = @import("build_options").version;
@@ -485,6 +486,24 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             } else {
                 try d.row(.warn, "shell", try std.fmt.allocPrint(app.arena, "snippet missing ({s}) - run `nix --init`", .{snip}));
             }
+        }
+    }
+
+    try d.section("Env  (.nix/env.toml + ~/.nix/env/<alias>.toml)");
+    {
+        // Same read-only load the injector uses, so the report cannot describe
+        // an environment other than the one a command would actually get.
+        const adata = store.readAliasesFile(app.arena, app.io, app.home) catch "";
+        var findings: []const env_zig.Finding = &.{};
+        if (store.loadAliases(app.arena, adata)) |al| {
+            findings = env_zig.doctorFindings(app, al.items) catch &.{};
+        } else |_| {}
+        for (findings) |f| {
+            try d.row(switch (f.status) {
+                .ok => .ok,
+                .warn => .warn,
+                .note => .note,
+            }, f.label, f.detail);
         }
     }
 

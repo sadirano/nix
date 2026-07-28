@@ -1,5 +1,5 @@
 //! Portable export/import: bundle the central ~/.nix stores into
-//! one TOML "export v1" document, and parse one back for merge/restore.
+//! one TOML "export v2" document, and parse one back for merge/restore.
 //!
 //! The document is a single, greppable file with a flat sub-table per store:
 //!
@@ -7,24 +7,38 @@
 //!   [groups]               name = ["m1", "m2"]      (groups.toml format verbatim)
 //!   [config] / [config.*]  the machine's config.toml, re-sectioned, lossless
 //!   [actions.<alias>]      name = 'command'         (central per-alias actions)
+//!   [env.<alias>]          NAME = 'value'           (central per-alias env, v2)
 //!
 //! Locked decisions: merge skips existing names (--replace does a
 //! full restore); the machine-local `usage` ranking — the per-alias lines and
 //! the `+name` group-usage lines alike — is deliberately NOT exported
 //! (churny, non-portable); single TOML over an archive (matches nix's simple,
-//! onix-derived formats). Project-local `.nix/actions.toml` files travel with
-//! their repos and are out of scope — only central `~/.nix/actions/*.toml` ship.
+//! onix-derived formats). Project-local `.nix/actions.toml` and `.nix/env.toml`
+//! files travel with their repos and are out of scope — only the central
+//! `~/.nix/actions/*.toml` and `~/.nix/env/*.toml` ship.
+//!
+//! v2 added [env.<alias>]. The reader has always ignored tables it does not
+//! know, so an older nix reads a v2 document as a v1 one — it drops the
+//! environment and restores everything else, which is the right failure.
+//!
+//! An env VALUE is plain text in this file: a credential belongs in a
+//! `${secret:NAME}` reference (which exports as the reference, never the
+//! value), and the export carries no secrets of its own.
 
 const std = @import("std");
 const Io = std.Io;
 const store = @import("store.zig");
 const groups = @import("groups.zig");
 const actions = @import("actions.zig");
+const env_zig = @import("env.zig");
 const lowerDup = @import("util.zig").lowerDup;
 
-pub const format_version = 1;
+pub const format_version = 2;
 
 /// AliasActions is one `[actions.<alias>]` block: an alias's central actions.
+/// The same shape carries `[bin.<alias>]` and `[env.<alias>]` - all three are
+/// name/value tables read out of a central per-alias file, and giving them one
+/// struct is what keeps the parse loop a single pass.
 pub const AliasActions = struct { alias: []const u8, actions: []actions.Action };
 
 /// Doc is a parsed export, split into per-store pieces ready to merge or restore.
@@ -39,6 +53,8 @@ pub const Doc = struct {
     /// They restore as declarations; installing them is still an explicit
     /// `nix --sync-bin` on the receiving machine.
     bin_sets: []AliasActions = &.{},
+    /// `[env.<alias>]` central environment layers (~/.nix/env/<alias>.toml).
+    env_sets: []AliasActions = &.{},
 };
 
 // ---- export ----------------------------------------------------------------
@@ -47,9 +63,11 @@ pub const Doc = struct {
 pub fn render(arena: std.mem.Allocator, io: Io, home: []const u8) ![]const u8 {
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena,
-        \\# nix export v1 - portable backup of ~/.nix (aliases, groups, config, actions)
+        \\# nix export v2 - portable backup of ~/.nix (aliases, groups, config, actions, env)
         \\# Restore with `nix --import <file>` (merge, skips existing names);
         \\# add --replace for a full restore. The local usage ranking is not included.
+        \\# [env.*] values are plain text - credentials belong in ${secret:NAME},
+        \\# which travels as the reference and never as the value.
         \\
         \\
     );
@@ -114,10 +132,22 @@ pub fn render(arena: std.mem.Allocator, io: Io, home: []const u8) ![]const u8 {
     // machine-wide [actions._default] (the name is reserved, never an alias,
     // so import lands it back in _default.toml via the same centralPath).
     // Each is followed by that file's [bin.<alias>] exports, if any.
-    for (aliases.items) |a| try appendActionSet(arena, io, home, &b, a.name);
+    for (aliases.items) |a| {
+        try appendActionSet(arena, io, home, &b, a.name);
+        try appendEnvSet(arena, io, home, &b, a.name);
+    }
     try appendActionSet(arena, io, home, &b, actions.default_owner);
 
     return b.items;
+}
+
+/// appendEnvSet emits one alias's central environment layer as `[env.<alias>]`,
+/// or nothing when the file is absent. There is no `_default` counterpart: an
+/// environment layer is per project by definition, and the machine-wide role is
+/// already played by the system environment.
+fn appendEnvSet(arena: std.mem.Allocator, io: Io, home: []const u8, b: *std.ArrayList(u8), name: []const u8) !void {
+    const data = readFileMaybe(arena, io, try env_zig.centralPath(arena, home, name));
+    try appendTableSet(arena, b, env_zig.section, name, try actions.parseTable(arena, data, env_zig.section));
 }
 
 /// appendActionSet emits one central file's `[actions.<name>]` and
@@ -171,7 +201,7 @@ fn appendTableSet(
 /// other readers: unknown top-level tables and malformed lines are skipped, not
 /// rejected. The current store is tracked by the most recent `[table]` header.
 pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
-    const Cur = enum { none, aliases, groups, config, actions, bin };
+    const Cur = enum { none, aliases, groups, config, actions, bin, env };
     var cur: Cur = .none;
 
     var alias_buf: std.ArrayList(u8) = .empty; // flat  name = 'path'
@@ -179,6 +209,7 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
     var config_buf: std.ArrayList(u8) = .empty; // reconstructed config.toml
     var action_sets: std.ArrayList(AliasActions) = .empty;
     var bin_sets: std.ArrayList(AliasActions) = .empty;
+    var env_sets: std.ArrayList(AliasActions) = .empty;
 
     var act_alias: []const u8 = "";
     var act_buf: std.ArrayList(u8) = .empty;
@@ -190,9 +221,10 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
         if (t.len > 1 and t[0] == '[') {
             const end = std.mem.indexOfScalar(u8, t, ']') orelse continue;
             const header = t[1..end];
-            // A header change ends any pending [actions.<alias>] / [bin.<alias>].
+            // A header change ends any pending [actions.*] / [bin.*] / [env.*].
             if (cur == .actions) try flushActions(arena, &action_sets, act_alias, act_buf.items);
             if (cur == .bin) try flushActions(arena, &bin_sets, act_alias, act_buf.items);
+            if (cur == .env) try flushActions(arena, &env_sets, act_alias, act_buf.items);
             if (store.eqlFoldAscii(header, "aliases")) {
                 cur = .aliases;
             } else if (store.eqlFoldAscii(header, "groups")) {
@@ -211,6 +243,10 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
             } else if (startsWithFold(header, "bin.")) {
                 cur = .bin;
                 act_alias = header["bin.".len..];
+                act_buf = .empty;
+            } else if (startsWithFold(header, "env.")) {
+                cur = .env;
+                act_alias = header["env.".len..];
                 act_buf = .empty;
             } else {
                 cur = .none; // unknown table: ignore its body
@@ -231,7 +267,7 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
                 try config_buf.appendSlice(arena, line);
                 try config_buf.append(arena, '\n');
             },
-            .actions, .bin => {
+            .actions, .bin, .env => {
                 try act_buf.appendSlice(arena, line);
                 try act_buf.append(arena, '\n');
             },
@@ -239,6 +275,7 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
     }
     if (cur == .actions) try flushActions(arena, &action_sets, act_alias, act_buf.items);
     if (cur == .bin) try flushActions(arena, &bin_sets, act_alias, act_buf.items);
+    if (cur == .env) try flushActions(arena, &env_sets, act_alias, act_buf.items);
 
     // Aliases: flat table → []Alias (names lowercased like the store does).
     var aliases: std.ArrayList(store.Alias) = .empty;
@@ -256,6 +293,7 @@ pub fn parse(arena: std.mem.Allocator, data: []const u8) !Doc {
         .config_toml = if (cfg.len == 0) "" else config_buf.items,
         .action_sets = action_sets.items,
         .bin_sets = bin_sets.items,
+        .env_sets = env_sets.items,
     };
 }
 
@@ -401,6 +439,35 @@ test "parse: round-trips a hand-written export" {
     try std.testing.expectEqualStrings("acme", doc.action_sets[0].alias);
     try std.testing.expectEqual(@as(usize, 2), doc.action_sets[0].actions.len);
     try std.testing.expectEqualStrings("zig build test && echo ok", actions.find(doc.action_sets[0].actions, "test").?);
+}
+
+test "parse: [env.<alias>] rides alongside actions, and an unknown table still doesn't" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const data =
+        \\[actions.acme]
+        \\test = "zig build test"
+        \\
+        \\[env.acme]
+        \\DATABASE_URL = 'postgres://box/dev'
+        \\ACME_TOKEN = '${secret:acme-api}'
+        \\
+        \\[future.acme]
+        \\whatever = "ignored by this version"
+        \\
+        \\[env.pb]
+        \\REGION = 'eu-west-1'
+        \\
+    ;
+    const doc = try parse(a, data);
+    try std.testing.expectEqual(@as(usize, 1), doc.action_sets.len);
+    try std.testing.expectEqual(@as(usize, 2), doc.env_sets.len);
+    try std.testing.expectEqualStrings("acme", doc.env_sets[0].alias);
+    try std.testing.expectEqualStrings("postgres://box/dev", actions.find(doc.env_sets[0].actions, "DATABASE_URL").?);
+    // A secret travels as the REFERENCE - the export carries no credentials.
+    try std.testing.expectEqualStrings("${secret:acme-api}", actions.find(doc.env_sets[0].actions, "ACME_TOKEN").?);
+    try std.testing.expectEqualStrings("pb", doc.env_sets[1].alias);
 }
 
 test "dequote: literal single vs escaped double" {

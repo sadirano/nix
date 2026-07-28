@@ -40,7 +40,9 @@ pub fn enterDir(app: *App, alias: []const u8, dir: []const u8) !u8 {
         return 1;
     }
     const shell = interactiveShell(app);
-    const env = try aliasRunEnv(app, alias, dir);
+    // `.navigate`: a missing secret costs that one variable and a warning, never
+    // the shell itself - a session you cannot enter is not a safer session.
+    const env = (try aliasRunEnv(app, alias, dir, .navigate)) orelse return 1;
     try app.out.flush();
     // cmd.exe rejects a UNC path as its working directory ("UNC paths are not
     // supported. Defaulting to Windows directory."). `pushd` maps the share to a

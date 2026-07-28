@@ -529,6 +529,105 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "--no-prompt never consents", r);
     }
 
+    // --- per-project environment (.nix/env.toml) --------------------------------
+    {
+        const pe = join(&c, &.{ root, "proj", "pe" });
+        const pf = join(&c, &.{ root, "proj", "pf" });
+        _ = try c.run(&.{ "pe", pe });
+        _ = try c.run(&.{ "pf", pf });
+        // One action, echoing the variables back through the shell nix spawns.
+        const show = if (proc.is_windows)
+            "[actions]\nshow = \"echo url=[%DATABASE_URL%] region=[%REGION%]\"\n"
+        else
+            "[actions]\nshow = \"echo url=[$DATABASE_URL] region=[$REGION]\"\n";
+        try writeActions(&c, "pe", pe, show);
+
+        // The committed layer arrives with the clone, so it sets NOTHING until
+        // its bytes are approved - and says so without refusing the run, since
+        // an environment file must never make a directory unreachable.
+        const pe_env = join(&c, &.{ pe, ".nix", "env.toml" });
+        try writeFile(&c, pe_env, "[env]\nDATABASE_URL = \"from-project\"\nREGION = \"eu-west-1\"\n");
+        var r = try c.run(&.{ "pe", "--run", ":show" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") == null and
+            std.mem.indexOf(u8, r.err, "nix --trust pe env") != null, "an unapproved env.toml sets nothing, and the run still happens", r);
+
+        r = try c.run(&.{ "--trust", "pe", "env" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "env: approved") != null, "--trust <alias> env approves the file", r);
+        r = try c.run(&.{ "pe", "--run", ":show" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "url=[from-project]") != null and
+            std.mem.indexOf(u8, r.out, "region=[eu-west-1]") != null, "an approved env.toml reaches the command", r);
+
+        // Editing it re-arms the gate, exactly as it does for actions.toml: what
+        // was approved is the text that was read, not the filename.
+        try writeFile(&c, pe_env, "[env]\nDATABASE_URL = \"from-project-v2\"\nREGION = \"eu-west-1\"\n");
+        r = try c.run(&.{ "pe", "--run", ":show" });
+        c.check(std.mem.indexOf(u8, r.out, "from-project-v2") == null and
+            std.mem.indexOf(u8, r.err, "not been approved") != null, "editing env.toml re-arms the gate", r);
+        _ = try c.run(&.{ "--trust", "pe" }); // the bare form covers env too
+
+        // The PRIVATE central layer wins - the override that doesn't dirty the
+        // repo - and matches the project's name case-insensitively.
+        try writeFile(&c, join(&c, &.{ home, "env", "pe.toml" }), "[env]\ndatabase_url = \"from-central\"\n");
+        r = try c.run(&.{ "pe", "--run", ":show" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "url=[from-central]") != null and
+            std.mem.indexOf(u8, r.out, "region=[eu-west-1]") != null, "the central layer overrides one key and leaves the rest", r);
+
+        // --env is the read-only view: provenance per key, and a secret shown as
+        // the reference it is rather than the value it would resolve to.
+        try writeFile(&c, join(&c, &.{ home, "env", "pe.toml" }), "[env]\ndatabase_url = \"from-central\"\nTOKEN = \"${secret:nix-e2e-absent}\"\n");
+        r = try c.run(&.{ "pe", "--env" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "central") != null and
+            std.mem.indexOf(u8, r.out, "project") != null and
+            std.mem.indexOf(u8, r.out, "${secret:nix-e2e-absent}") != null and
+            std.mem.indexOf(u8, r.out, "unset") != null, "--env prints provenance and masks secrets", r);
+
+        // A secret nobody stored stops the run BEFORE the spawn: a
+        // half-configured command that looks like it worked is the bad outcome.
+        r = try c.run(&.{ "pe", "--run", ":show" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "url=") == null and
+            std.mem.indexOf(u8, r.err, "nix --secret set nix-e2e-absent") != null, "an unresolvable secret aborts the run before anything spawns", r);
+        try writeFile(&c, join(&c, &.{ home, "env", "pe.toml" }), "[env]\ndatabase_url = \"from-central\"\n");
+
+        // Names nix owns are refused, loudly. PATH especially: aliasRunEnv
+        // rebuilds it every call, so a value set here would be both overridden
+        // and later removed as stale.
+        try writeFile(&c, join(&c, &.{ home, "env", "pf.toml" }), "[env]\nPATH = \"C:/nowhere\"\nNIX_ALIAS = \"lies\"\n1BAD = \"x\"\n");
+        r = try c.run(&.{ "pf", "--env" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "refused") != null and
+            std.mem.indexOf(u8, r.out, "PATH") != null and
+            std.mem.indexOf(u8, r.out, "NIX_ALIAS") != null and
+            std.mem.indexOf(u8, r.out, "1BAD") != null, "reserved and malformed names are refused", r);
+
+        // Group fan-out: each member gets its OWN environment. Without the
+        // removal discipline, pe's variables would still be set for pf.
+        try writeFile(&c, join(&c, &.{ home, "env", "pf.toml" }), "[env]\nREGION = \"us-east-1\"\n");
+        _ = try c.run(&.{ "pe+envg", "--no-prompt" });
+        _ = try c.run(&.{ "pf+envg", "--no-prompt" });
+        // A literal command, so this exercises the group fan-out's own env call
+        // site rather than the action path already covered above.
+        const fan = if (proc.is_windows)
+            [_][]const u8{ "+envg", "--run", "cmd", "/c", "echo url=[%DATABASE_URL%]" }
+        else
+            [_][]const u8{ "+envg", "--run", "sh", "-c", "echo url=[$DATABASE_URL]" };
+        r = try c.run(&fan);
+        const first = std.mem.indexOf(u8, r.out, "from-central");
+        const second = if (first) |i| std.mem.indexOfPos(u8, r.out, i + 1, "from-central") else null;
+        c.check(first != null and second == null, "a group member's env doesn't leak into the next", r);
+
+        // The central layer travels in an export; the project's own file stays
+        // with its repo, where it already is.
+        const envbak = join(&c, &.{ root, "env-backup.toml" });
+        r = try c.run(&.{ "--export", envbak });
+        const doc = readFileOr(&c, envbak, "");
+        c.check(r.code == 0 and std.mem.indexOf(u8, doc, "[env.pe]") != null and
+            std.mem.indexOf(u8, doc, "from-central") != null, "--export carries the central env layers", r);
+
+        // Leave nothing behind: later sections run these aliases too.
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "pe.toml" })) catch {};
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "pf.toml" })) catch {};
+        Io.Dir.cwd().deleteFile(io, pe_env) catch {};
+    }
+
     // --- a bare `:` is the palette, from any command ----------------------------
     {
         // What the hand types when the question is "what can I run". Reads as the

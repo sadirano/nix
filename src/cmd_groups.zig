@@ -434,7 +434,13 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
                 }
                 rargv[0] = s;
             }
-            const env = try aliasRunEnv(app, t.name, t.path);
+            // A member whose env.toml names a secret nobody stored fails as that
+            // member, not as the fan-out: the lenient group policy again, where
+            // one repo being unready must not cancel the other five.
+            const env = (try aliasRunEnv(app, t.name, t.path, .run)) orelse {
+                rc = 1;
+                continue;
+            };
             const code = proc.runInheritEnv(app.io, rargv, t.path, env) catch |e| blk: {
                 try app.err.print("nix: run in {s}: {s}\n", .{ t.name, @errorName(e) });
                 break :blk @as(u8, 1);

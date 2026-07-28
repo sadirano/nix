@@ -16,6 +16,7 @@ const bin_exports = @import("bin_exports.zig");
 const groups = @import("groups.zig");
 const winpath = @import("winpath.zig");
 const util = @import("util.zig");
+const env_zig = @import("env.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
@@ -303,7 +304,45 @@ pub fn cmdImport(app: *App, rest: [][]const u8) !u8 {
         }
     }
 
+    // Central env layers: one file per alias, same policy. Only the private
+    // layer is here at all - a project's own .nix/env.toml travels with its
+    // repo, and arrives already needing the receiving machine's approval.
+    if (doc.env_sets.len > 0) {
+        var files: usize = 0;
+        var added: usize = 0;
+        for (doc.env_sets) |s| {
+            const p = try env_zig.centralPath(app.arena, app.home, s.alias);
+            var list: std.ArrayList(actions.Action) = .empty;
+            if (!replace) {
+                for (try actions.parseTable(app.arena, readFileMaybe(app, p) orelse "", env_zig.section)) |kv| {
+                    try list.append(app.arena, kv);
+                }
+            }
+            var changed = replace;
+            for (s.actions) |kv| {
+                if (actions.find(list.items, kv.name) != null) continue;
+                try list.append(app.arena, kv);
+                added += 1;
+                changed = true;
+            }
+            if (!changed) continue;
+            try writeEnvFile(app, p, list.items);
+            files += 1;
+        }
+        try app.err.print("  env:     +{d} across {d} alias files\n", .{ added, files });
+    }
+
     return 0;
+}
+
+/// writeEnvFile writes a central per-alias environment layer, creating
+/// ~/.nix/env as needed. Atomic via temp + rename, like every store nix owns.
+fn writeEnvFile(app: *App, path: []const u8, list: []const actions.Action) !void {
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(app.arena, "# nix per-alias environment - private to this machine, merged over the\n" ++
+        "# project's own .nix/env.toml. See `nix <alias> --env`.\n\n[env]\n");
+    for (list) |kv| try appendEntry(app, &b, kv);
+    try writeFileAtomic(app, path, b.items);
 }
 
 /// noteAlias appends a name unless it is already in the list (case-folded) -
