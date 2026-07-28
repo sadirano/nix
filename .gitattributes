@@ -3,5 +3,6 @@
 *.zig text eol=lf
 *.zon text eol=lf
 
-# Git hooks are run by sh; CRLF makes the shebang line unusable.
+# Shell scripts are run by sh/bash; CRLF makes the shebang line unusable.
 .githooks/* text eol=lf
+.github/scripts/* text eol=lf

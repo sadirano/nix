@@ -145,6 +145,22 @@ pub fn build(b: *std.Build) void {
 
     const ci_step = b.step("ci", "Everything CI runs: fmt check, tests, e2e, portable + linux builds");
     ci_step.dependOn(&fmt_check.step);
+
+    // The release gate's own parsing (unchecked boxes, the candidate stamp)
+    // otherwise runs for the first time during a release, which is the worst
+    // moment to find it wrong. Skipped where there is no bash rather than
+    // failing the gate over it: the script is release tooling, not the build.
+    if (b.findProgram(&.{"bash"}, &.{})) |bash| {
+        const release_selftest = b.addSystemCommand(&.{
+            bash, ".github/scripts/release-checklist.sh", "selftest",
+        });
+        ci_step.dependOn(&release_selftest.step);
+        // And the open/verify/close orchestration, driven against a stub gh.
+        const release_test = b.addSystemCommand(&.{
+            bash, ".github/scripts/release-checklist-test.sh",
+        });
+        ci_step.dependOn(&release_test.step);
+    } else |_| {}
     ci_step.dependOn(test_step);
     ci_step.dependOn(e2e_step);
     ci_step.dependOn(&portable.step);
