@@ -15,6 +15,7 @@ const run_zig = @import("run.zig");
 const resolve = @import("resolve.zig");
 const provenance = @import("provenance.zig");
 const bin_exports = @import("bin_exports.zig");
+const actions = @import("actions.zig");
 
 const App = app_zig.App;
 const isGlobalFlag = app_zig.isGlobalFlag;
@@ -92,13 +93,62 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
         return 0;
     }
 
-    if (app.no_prompt) {
-        try app.out.writeAll(try render(app.arena, entries, true));
+    return pickAndRun(app, entries, true, "nix: install fzf to pick from the palette (or run `nix --no-prompt --actions` to just list them)\n");
+}
+
+/// cmdAliasActions is the palette scoped to one alias: what `<cmd> <alias> :`
+/// opens. Same picker, same multi-select, narrowed to the actions that alias can
+/// actually run - the question is "what can THIS project do", and the ALIAS
+/// column would repeat one value down the page, so it is dropped.
+///
+/// Unlike the global palette it FALLS BACK to printing when fzf is missing
+/// rather than failing: `r <alias> :` printed a table long before it opened a
+/// picker, and losing that on a machine without fzf would be a regression.
+/// Machine-wide `_default` actions are included, because they are genuinely
+/// runnable here - the global palette suppresses them only because listing them
+/// once per alias would bury everything else.
+pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
+    var entries: std.ArrayList(Entry) = .empty;
+    const installed = bin_exports.loadManifest(app.arena, app.io, app.home) catch &.{};
+    for (try run_zig.mergedActions(app, alias, dir, true)) |a| {
+        try entries.append(app.arena, .{
+            .alias = alias,
+            .name = a.name,
+            .command = a.command,
+            .description = a.description,
+            .global = run_zig.globalName(installed, alias, a.name) orelse "",
+        });
+    }
+    if (entries.items.len == 0) {
+        try app.out.print("no actions for \"{s}\" - define them in {s}\n", .{ alias, try actions.projectPath(app.arena, dir) });
         return 0;
     }
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.writeAll("nix: install fzf to pick from the palette (or run `nix --no-prompt --actions` to just list them)\n");
-        return 1;
+    std.mem.sort(Entry, entries.items, {}, lessThan);
+    return pickAndRun(app, entries.items, false, "");
+}
+
+/// pickAndRun renders the entries, opens fzf over them, and runs what came back:
+/// one pick here in this terminal, several fanned out into a window each.
+///
+/// A picker needs somebody able to answer it, so it opens only when there IS
+/// one: not under --no-prompt, and not when stdin is a pipe or a redirect - the
+/// same test the failure hold and the provenance gate use. Without that check a
+/// scripted `r <alias> :`, which merely PRINTED before this became a picker,
+/// hangs on an fzf nobody can see.
+///
+/// `missing_fzf` decides what "no fzf, but somebody is there" means: the global
+/// palette has nothing to show instead of picking, so it says so; an alias
+/// listing just prints, which is what it always did.
+fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fzf: []const u8) !u8 {
+    const can_ask = !app.no_prompt and proc.interactive();
+    const have_fzf = proc.findInPath(app.arena, app.io, app.env, "fzf") != null;
+    if (!can_ask or !have_fzf) {
+        if (can_ask and !have_fzf and missing_fzf.len > 0) {
+            try app.err.writeAll(missing_fzf);
+            return 1;
+        }
+        try app.out.writeAll(try render(app.arena, entries, true, with_alias));
+        return 0;
     }
 
     // --header-lines pins the column header inside fzf. --multi is on because
@@ -106,7 +156,7 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
     // this terminal, as it always has; several fan out into a window each.
     const fzf_argv = [_][]const u8{ "fzf", "--prompt", "action> ", "--header-lines", "1", "--multi" };
     try app.out.flush();
-    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, try render(app.arena, entries, true), fzfEnv(app));
+    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, try render(app.arena, entries, true, with_alias), fzfEnv(app));
     if (res.code != 0) return 0; // cancelled
 
     var picks: std.ArrayList(Entry) = .empty;
@@ -166,7 +216,7 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
 /// The command is what you scan for and the description is the footnote, so the
 /// prose goes last - and a row that has none simply ends at its command instead
 /// of trailing into blank padding.
-fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 {
+fn render(arena: std.mem.Allocator, entries: []Entry, header: bool, with_alias: bool) ![]const u8 {
     var alias_w: usize = "ALIAS".len;
     var name_w: usize = "ACTION".len;
     var cmd_w: usize = "COMMAND".len;
@@ -185,7 +235,7 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 
     }
     var buf: std.ArrayList(u8) = .empty;
     if (header) {
-        try padInto(arena, &buf, "ALIAS", alias_w + 2);
+        if (with_alias) try padInto(arena, &buf, "ALIAS", alias_w + 2);
         try padInto(arena, &buf, "ACTION", name_w + 2);
         if (any_global) try padInto(arena, &buf, "GLOBAL", glob_w + 2);
         if (described) {
@@ -198,7 +248,7 @@ fn render(arena: std.mem.Allocator, entries: []Entry, header: bool) ![]const u8 
         // keeps that string (never a slice into buf, which moves as it grows),
         // and it is the exact text fzf hands back for the equality lookup.
         var row: std.ArrayList(u8) = .empty;
-        try padInto(arena, &row, e.alias, alias_w + 2);
+        if (with_alias) try padInto(arena, &row, e.alias, alias_w + 2);
         try padInto(arena, &row, try std.fmt.allocPrint(arena, ":{s}", .{e.name}), name_w + 2);
         if (any_global) try padInto(arena, &row, e.global, glob_w + 2);
         if (described and e.description.len > 0) {
@@ -304,7 +354,7 @@ test "render: every recorded row is exactly one line of the output" {
         .{ .alias = "acme", .name = "build", .command = "zig build" },
         .{ .alias = "much-longer-alias", .name = "deploy", .command = "npm run deploy && echo ok" },
     };
-    const out = try render(a, &entries, true);
+    const out = try render(a, &entries, true, true);
 
     var lines = std.mem.splitScalar(u8, out, '\n');
     try std.testing.expect(std.mem.startsWith(u8, lines.first(), "ALIAS")); // header kept
@@ -325,13 +375,41 @@ test "render: every recorded row is exactly one line of the output" {
     }
 }
 
+test "render: the alias-scoped view drops the ALIAS column, keeps the round-trip" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var entries = [_]Entry{
+        .{ .alias = "acme", .name = "build", .command = "zig build" },
+        .{ .alias = "acme", .name = "deploy", .command = "./ship.sh", .global = "ship" },
+    };
+    const out = try render(a, &entries, true, false);
+    const header = std.mem.sliceTo(out, '\n');
+    // One repeated alias down the page answers nothing, so the column goes.
+    try std.testing.expect(std.mem.startsWith(u8, header, "ACTION"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "acme") == null);
+    // GLOBAL still appears, because one of them IS a global command.
+    try std.testing.expect(std.mem.indexOf(u8, header, "GLOBAL") != null);
+    // Rows must still be whole lines with no trailing padding: fzf hands the
+    // line back verbatim and the pick is found by comparing it to this.
+    for (entries) |e| {
+        try std.testing.expect(!std.mem.endsWith(u8, e.row, " "));
+        var scan = std.mem.splitScalar(u8, out, '\n');
+        var found = false;
+        while (scan.next()) |line| {
+            if (std.mem.eql(u8, line, e.row)) found = true;
+        }
+        try std.testing.expect(found);
+    }
+}
+
 test "render: the description is the last column, and only when one exists" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
     var undocumented = [_]Entry{.{ .alias = "acme", .name = "build", .command = "zig build" }};
-    const plain = try render(a, &undocumented, true);
+    const plain = try render(a, &undocumented, true, true);
     try std.testing.expect(std.mem.indexOf(u8, plain, "DESCRIPTION") == null);
     try std.testing.expect(std.mem.endsWith(u8, undocumented[0].row, "zig build"));
 
@@ -339,7 +417,7 @@ test "render: the description is the last column, and only when one exists" {
         .{ .alias = "acme", .name = "build", .command = "zig build", .description = "Ship it." },
         .{ .alias = "acme", .name = "test", .command = "zig build test" },
     };
-    const out = try render(a, &entries, true);
+    const out = try render(a, &entries, true, true);
     const header = std.mem.sliceTo(out, '\n');
     const cmd_at = std.mem.indexOf(u8, header, "COMMAND").?;
     try std.testing.expect(std.mem.indexOf(u8, header, "DESCRIPTION").? > cmd_at);

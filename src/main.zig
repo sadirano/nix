@@ -175,6 +175,10 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
             setGlobalFlags(app, d.args);
             const code = try dispatch(app, d.args);
             if (code != 0) return code;
+            // …unless the second word was a bare `:`, which registered nothing
+            // and asked a question instead. Answering it and THEN stacking a
+            // shell would be two unrelated things from one word.
+            if (d.args.len > 1 and bareAliasColon(d.args[1..])) return 0;
             return navigate(app, d.nav_alias);
         }
         args = d.args;
@@ -296,6 +300,15 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
 }
 
 fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
+    // A trailing bare `:` asks what this alias can run - from ANY command, so
+    // `o i :` and `e i :` answer the same as `r i :`. It reads as the alias-
+    // scoped form of the leading bare `:` that already opens the whole palette,
+    // and it is what stopped `o i :` from registering ":" as a path.
+    if (bareAliasColon(rest)) {
+        const dir = (try resolve.resolveAliasPath(app, alias)) orelse return 1;
+        return palette.cmdAliasActions(app, alias, dir);
+    }
+
     // Find first action flag.
     var action: ?[]const u8 = null;
     var action_idx: usize = 0;
@@ -332,6 +345,27 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "note")) return notes.cmdNote(app, alias, action_args);
     try app.err.print("nix: unknown action \"--{s}\" (run `nix --help` for usage)\n", .{act});
     return 1;
+}
+
+/// bareAliasColon reports whether the only thing said about this alias is a
+/// bare `:` - true for `o i :` (no verb) and for `r i :` (the verb desugared to
+/// `--run`), false the moment anything else is named (`r i :build`, `r i cmd :`).
+///
+/// `--note` is excluded: its argument is deliberately arbitrary prose, so a note
+/// that happens to be ":" must stay a note.
+fn bareAliasColon(rest: [][]const u8) bool {
+    var only: ?[]const u8 = null;
+    var count: usize = 0;
+    for (rest) |a| {
+        if (isGlobalFlag(a)) continue;
+        if (aliasAction(a)) |v| {
+            if (eql(v, "note")) return false;
+            continue;
+        }
+        count += 1;
+        only = a;
+    }
+    return count == 1 and eql(only.?, ":");
 }
 
 fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {

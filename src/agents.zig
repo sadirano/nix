@@ -86,7 +86,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   lists every action already wired up on this machine (alias, name,
         \\   command, description) - check there before writing a command line
         \\   of your own. A bare `:` after any command is the interactive
-        \\   shorthand for it (`{[r]s} :`), for suggesting to the user.
+        \\   shorthand for it (`{[r]s} :`), and `<cmd> <alias> :` narrows it to
+        \\   one project (`{[o]s} acme :` and `{[r]s} acme :` are the same
+        \\   question) - both print rather than open a picker when nobody can
+        \\   answer, so they are safe to run yourself.
         \\   If a project needs a
         \\   recurring build/test/serve/deploy command, add it to the project's
         \\   `.nix/actions.toml` under `[actions]` - with a `#` comment above it,

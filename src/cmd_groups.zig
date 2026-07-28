@@ -43,7 +43,6 @@ const aliasRunEnv = run_zig.aliasRunEnv;
 const resolveAction = run_zig.resolveAction;
 const resolveScript = run_zig.resolveScript;
 const runAction = run_zig.runAction;
-const listActions = run_zig.listActions;
 const padPrint = app_zig.padPrint;
 
 fn eql(a: []const u8, b: []const u8) bool {
