@@ -48,7 +48,26 @@ pub const App = struct {
     /// next injection so a group fan-out never leaks one member's context into
     /// the next (the same discipline PATH gets via orig_path).
     ctx_injected: []const []const u8 = &.{},
+    /// What the per-project environment (env.zig) contributed to the child
+    /// environment on the last aliasRunEnv call, and the names to remove before
+    /// the next one - the same leak discipline as ctx_vars/ctx_injected. Empty
+    /// for every alias with no env.toml, so nothing pays for the feature unless
+    /// it is used.
+    env_vars: []const EnvVar = &.{},
+    env_injected: []const []const u8 = &.{},
+    /// Whether this process has already reported an env.toml problem (an
+    /// unapproved project layer, a refused name). A chain injects once per link,
+    /// and the same note three times reads as three separate problems.
+    env_noted: bool = false,
 };
+
+/// One variable the per-project environment set. `from_secret` travels with it
+/// because the elevated path writes variables onto a command line, and a
+/// resolved credential must never go there - see run.elevatedCommand.
+///
+/// Declared here rather than in env.zig so App can name it without the two
+/// modules depending on each other's types.
+pub const EnvVar = struct { key: []const u8, value: []const u8, from_secret: bool };
 
 /// exePath returns the real on-disk image path, computed lazily and cached. The
 /// find/picker preview indirection re-invokes the binary as `<exe> --preview
@@ -187,6 +206,7 @@ pub fn aliasAction(flag: []const u8) ?[]const u8 {
         .{ .k = "-g", .v = "grep" },           .{ .k = "--find", .v = "find" },
         .{ .k = "-f", .v = "find" },           .{ .k = "--run", .v = "run" },
         .{ .k = "-r", .v = "run" },            .{ .k = "--note", .v = "note" },
+        .{ .k = "--env", .v = "env" },
     };
     for (map) |m| if (std.mem.eql(u8, flag, m.k)) return m.v;
     return null;

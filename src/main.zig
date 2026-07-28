@@ -35,6 +35,7 @@ const palette = @import("palette.zig");
 const secret = @import("secret.zig");
 const context = @import("context.zig");
 const notes = @import("notes.zig");
+const env_zig = @import("env.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
@@ -277,7 +278,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     if (eql(verb, "export")) return init_zig.cmdExport(app, rest);
     if (eql(verb, "import")) return init_zig.cmdImport(app, rest);
     if (eql(verb, "secret")) return secret.cmdSecret(app, rest);
-    if (eql(verb, "trust")) return context.cmdTrust(app, rest, resolve, run_zig);
+    if (eql(verb, "trust")) return context.cmdTrust(app, rest, resolve, run_zig, env_zig);
     if (eql(verb, "agent")) return cmdAgent(app, rest);
     if (eql(verb, "init")) {
         for (rest) |a| {
@@ -340,6 +341,10 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     if (eql(act, "grep")) return cmdGrep(app, alias, action_args);
     if (eql(act, "find")) return cmdFind(app, alias, action_args);
     if (eql(act, "paste")) return cmdPaste(app, alias, action_args);
+    if (eql(act, "env")) {
+        const dir = (try resolveAliasPath(app, alias)) orelse return 1;
+        return env_zig.cmdEnv(app, alias, dir, action_args);
+    }
     // A note is keyed on the NAME, not the directory, so it deliberately does
     // not resolve the alias: notes for a project whose drive is unplugged (or
     // whose dir is gone) must still be readable and appendable.
@@ -1110,6 +1115,7 @@ fn printUsage(app: *App) !void {
         \\  --run,     -r <cmd>  run a command at the dir (`:name` runs a saved action)
         \\  --grep,    -g <pat>  ripgrep search (add --all/-a to search via rga)
         \\  --find,    -f [pat]  fuzzy-find files
+        \\  --env                print the project's environment (.nix/env.toml), with provenance
         \\  --remove,  --rm      forget the alias
         \\
         \\COMMANDS
@@ -1127,7 +1133,7 @@ fn printUsage(app: *App) !void {
         \\  --sync,    -S        regenerate wrappers and generated files
         \\  --sync-bin           install projects' [bin] exports into ~/.nix/bin
         \\  --secret  set|rm|list [NAME]   manage ${secret:NAME} values for actions (Windows Credential Manager)
-        \\  --trust   <alias> [segment]    approve a context source's current bytes so its `run` may execute
+        \\  --trust   <alias> [segment|env]  approve an alias's project actions, scripts, context sources and env.toml as they stand
         \\  --export  [file]     write a portable backup (aliases/groups/config/actions; stdout if no file)
         \\  --import  <file>     merge a backup (skips existing; --replace for a full restore)
         \\  --agent   [topic]    full command spec for an agent (`<cmd> --agent` works too)
@@ -1188,6 +1194,7 @@ test {
     _ = cmd_groups;
     _ = bin_exports;
     _ = agentdocs;
+    _ = env_zig;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
 }
 

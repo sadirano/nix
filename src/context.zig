@@ -611,9 +611,9 @@ fn tmpDir(app: *App) ![]const u8 {
 
 // ---- `nix --trust <alias> [segment]` ----------------------------------------
 
-pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: anytype) !u8 {
+pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: anytype, env_zig: anytype) !u8 {
     if (rest.len < 1 or rest.len > 2) {
-        try app.err.writeAll("usage: nix --trust <alias> [segment]   (approve an alias's project actions, scripts and context sources as they stand)\n");
+        try app.err.writeAll("usage: nix --trust <alias> [segment|env]   (approve an alias's project actions, scripts, context sources and env.toml as they stand)\n");
         return 1;
     }
     const alias = rest[0];
@@ -623,6 +623,12 @@ pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: an
     // one review, one command. Named-segment form (`--trust acme seg`) is asking
     // about that segment specifically, so it leaves the action file alone.
     var approved: usize = if (rest.len == 2) 0 else try provenance.approveProject(app, alias, dir);
+    // The project's env.toml, under the reserved word `env`. A context segment
+    // could also be called "env", so the named form approves BOTH rather than
+    // making one of them unreachable - the loop below still matches it.
+    if (rest.len < 2 or util.eqlFoldAscii(rest[1], "env")) {
+        approved += try env_zig.approveEnv(app, alias, dir);
+    }
     for (merged.contexts) |cd| {
         if (rest.len == 2 and !util.eqlFoldAscii(cd.segment, rest[1])) continue;
         // Resolve exactly as resolution will: an inline `run` wins, else the

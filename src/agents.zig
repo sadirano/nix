@@ -124,6 +124,14 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   A project can declare `[deps] needs = ["other-alias"]`, and
         \\   `{[r]s} <alias> --deps :build` then runs each dependency's own
         \\   `:build` first, in order, aborting up front if any of them lacks it.
+        \\   Configuration the commands NEED goes in `.nix/env.toml` under
+        \\   `[env]`, and is set for every `{[r]s} <alias> ...` and every
+        \\   `{[o]s} <alias>` session (`~/.nix/env/<alias>.toml` is the private
+        \\   per-machine override, and it wins). Same trust gate as actions.toml,
+        \\   so a file you just wrote will not inject until the user approves it.
+        \\   Credentials belong there as `${{secret:NAME}}` references, never as
+        \\   literal values in a committed file; `nix <alias> --env` prints the
+        \\   merged result with provenance and no secret values.
         \\4. **Read the alias's notes when picking up unfamiliar work.**
         \\   `nix --no-prompt --notes [pat]` prints every captured line as
         \\   `<alias>.md:<line>:<text>` and opens nothing. It is where the user
@@ -144,8 +152,8 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   `{[p]s} +group` have no non-interactive form and refuse to run.
         \\7. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
         \\   contents (`aliases.toml`, `groups.toml`, `usage`, ...) unless explicitly
-        \\   asked; adding a project-local `.nix/actions.toml` or `.nix/scripts/`
-        \\   inside a project is fine and encouraged. Registering a name that
+        \\   asked; adding a project-local `.nix/actions.toml`, `.nix/env.toml`
+        \\   or `.nix/scripts/` inside a project is fine and encouraged. Registering a name that
         \\   already exists REPOINTS it and forgets the path it had, so check
         \\   `nix --list` first and pick an unused name. nix refuses this when it
         \\   cannot ask (your shell included); `--force` overrides that refusal

@@ -16,6 +16,7 @@ const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
 const deps = @import("deps.zig");
 const exports = @import("exports.zig");
+const env_zig = @import("env.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -91,7 +92,7 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         }
     }
     resolved = try wrapPs1(app, resolved);
-    const env = try aliasRunEnv(app, alias, target);
+    const env = (try aliasRunEnv(app, alias, target, .run)) orelse return 1;
     try app.out.flush();
     if (outside) {
         proc.runDetachedEnv(app.io, resolved, target, false, env) catch |e| {
@@ -380,11 +381,14 @@ pub fn stripSudo(command: []const u8) ?[]const u8 {
 /// `o <alias>` subshell both resolve the project's own `build`, shadowing globals,
 /// and scripts can call siblings by bare name), plus NIX_ALIAS/NIX_ALIAS_PATH so
 /// children (prompts, status lines, scripts) know their alias context without a
-/// reverse lookup. `alias` is the token that selected the dir (a group member's
-/// name, possibly a `seg@alias` form). Rebuilt from orig_path each call and put
-/// overwrites, so repeated runs (a group) never stack dirs or leak a previous
-/// member's alias. Returns app.env (mutated in place).
-pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8) !*std.process.Environ.Map {
+/// reverse lookup, plus the project's own environment (env.zig). `alias` is the
+/// token that selected the dir (a group member's name, possibly a `seg@alias`
+/// form). Rebuilt from orig_path each call and put overwrites, so repeated runs
+/// (a group) never stack dirs or leak a previous member's alias. Returns app.env
+/// (mutated in place), or null when `mode` is `.run` and a `${secret:NAME}` in
+/// the environment could not be resolved — the caller must then abort without
+/// spawning, and the reason has already been printed.
+pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.Mode) !?*std.process.Environ.Map {
     // Capture the original PATH lazily (and dupe it — the env.put below may free
     // the map's value). This runs only here, on the run/navigate paths, so the
     // resolve hot path pays nothing.
@@ -402,6 +406,12 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8) !*std.process.
         try app.env.put("NIX_ALIAS", alias);
         try app.env.put("NIX_ALIAS_PATH", dir);
     }
+    // The project's own environment (.nix/env.toml + ~/.nix/env/<alias>.toml).
+    // After PATH and NIX_ALIAS, which are nix's own and which env.toml may not
+    // name; before the context variables below, so a live context answer
+    // outranks static configuration. A run whose secret cannot be resolved
+    // stops here, before anything is spawned.
+    if ((try env_zig.inject(app, alias, dir, mode)) == null) return null;
     // Context-source variables (context.zig). Names are arbitrary, so unlike
     // PATH they can't be rebuilt from an original — remove what the previous
     // call injected first, or a group fan-out would carry one member's context
@@ -530,7 +540,7 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     // back a separate process under a different token, and it cannot write into
     // this console. It gets a window, like `--outside` does.
     if (outside or stripSudo(cmd) != null) return startWindowed(app, cmd, alias, dir, name);
-    const env = try aliasRunEnv(app, alias, dir);
+    const env = (try aliasRunEnv(app, alias, dir, .run)) orelse return 1;
     try app.out.flush();
     return proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
         try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
@@ -545,11 +555,17 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
 /// old detached spawn inherited this console with its output routed to NUL, so
 /// the command ran where nobody could see it.
 fn startWindowed(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8) !u8 {
-    const env = try aliasRunEnv(app, alias, dir);
+    const env = (try aliasRunEnv(app, alias, dir, .run)) orelse return 1;
     try app.out.flush();
     if (stripSudo(command)) |bare| {
         const comspec = env.get("COMSPEC") orelse "cmd.exe";
-        const line = try elevatedCommand(app.arena, app.home, app.ctx_vars, bare, alias, dir);
+        // Say what the elevated window will NOT have. A secret-derived variable
+        // is withheld there (elevatedCommand explains why), and a command that
+        // silently ran without its credential is the worst kind of failure.
+        for (app.env_vars) |kv| if (kv.from_secret) {
+            try app.err.print("nix: {s} is secret-derived and is NOT passed to an elevated window (it would sit in that process's command line)\n", .{kv.key});
+        };
+        const line = try elevatedCommand(app.arena, app.home, app.env_vars, app.ctx_vars, bare, alias, dir);
         proc.spawnElevated(app.arena, line, dir, comspec) catch |e| {
             switch (e) {
                 error.ElevationDeclined => try app.err.writeAll("nix: elevation declined - nothing was run\n"),
@@ -582,9 +598,17 @@ fn started(app: *App, alias: []const u8, name: []const u8, elevated: bool) !u8 {
 /// PATH is EXTENDED, not replaced: `%PATH%` expands inside the elevated shell,
 /// whose own PATH is the administrator's. Prepending the script dirs to that is
 /// right; overwriting it with ours would be a lie about whose session this is.
+///
+/// The project's env.toml variables travel too - an elevated deploy needs its
+/// DATABASE_URL like any other - with ONE exception: a value resolved from
+/// `${secret:NAME}` is left out. Everything here becomes a command line, and a
+/// command line is readable in the process list by anyone on the machine; a
+/// credential that only ever lived in a child's environment must not be
+/// promoted to that. startWindowed says which variables it withheld.
 fn elevatedCommand(
     arena: std.mem.Allocator,
     home: []const u8,
+    env_vars: []const app_zig.EnvVar,
     ctx_vars: []const segments.Var,
     command: []const u8,
     alias: []const u8,
@@ -597,6 +621,10 @@ fn elevatedCommand(
     if (alias.len > 0) {
         try setVar(arena, &buf, "NIX_ALIAS", alias);
         try setVar(arena, &buf, "NIX_ALIAS_PATH", dir);
+    }
+    for (env_vars) |kv| {
+        if (kv.from_secret) continue;
+        try setVar(arena, &buf, kv.key, kv.value);
     }
     for (ctx_vars) |kv| try setVar(arena, &buf, kv.key, kv.value);
     try buf.appendSlice(arena, command);
@@ -704,7 +732,7 @@ test "elevatedCommand: the alias context is carried in, PATH extended not replac
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    const line = try elevatedCommand(a, "H", &.{}, "install.ps1", "acme", "D");
+    const line = try elevatedCommand(a, "H", &.{}, &.{}, "install.ps1", "acme", "D");
     // The command itself is last and untouched - everything before it is prelude.
     try std.testing.expect(std.mem.endsWith(u8, line, "install.ps1"));
     try std.testing.expect(std.mem.indexOf(u8, line, "set \"NIX_ALIAS=acme\"") != null);
@@ -715,8 +743,25 @@ test "elevatedCommand: the alias context is carried in, PATH extended not replac
     // A value that would break out of its own quotes is dropped, not escaped:
     // this string is about to be parsed by a shell running as administrator.
     const hostile = [_]segments.Var{.{ .key = "K", .value = "x\" & del /q *" }};
-    const guarded = try elevatedCommand(a, "H", &hostile, "install.ps1", "acme", "D");
+    const guarded = try elevatedCommand(a, "H", &.{}, &hostile, "install.ps1", "acme", "D");
     try std.testing.expect(std.mem.indexOf(u8, guarded, "del /q") == null);
+}
+
+test "elevatedCommand: env.toml travels, a resolved secret does not" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const vars = [_]app_zig.EnvVar{
+        .{ .key = "DATABASE_URL", .value = "postgres://box/dev", .from_secret = false },
+        .{ .key = "ACME_TOKEN", .value = "hunter2", .from_secret = true },
+    };
+    const line = try elevatedCommand(a, "H", &vars, &.{}, "deploy.ps1", "acme", "D");
+    try std.testing.expect(std.mem.indexOf(u8, line, "set \"DATABASE_URL=postgres://box/dev\"") != null);
+    // A command line is world-readable in the process list; the credential that
+    // only lived in a child's environment must not be promoted to one.
+    try std.testing.expect(std.mem.indexOf(u8, line, "hunter2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "ACME_TOKEN") == null);
 }
 
 test "applyArgs: appended by default, substituted where the command asks" {

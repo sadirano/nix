@@ -78,6 +78,7 @@ sg acme TODO                               # ripgrep search under the dir → fz
 sg acme invoice --all                      # search inside PDFs/office docs/archives too (ripgrep-all)
 ff acme config                             # fuzzy-find files under the dir → fzf → open the selection
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
+nix acme --env                             # what the project's .nix/env.toml sets, and where each value came from
 nix --list                                 # show every alias
 nix --which                                # print the alias containing the cwd (reverse of resolve)
 nix --edit                                 # open ~/.nix in your editor
@@ -516,6 +517,61 @@ They fire only on success (a failed `p`/`y` already has your eyes on it) with `{
 
 For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `r acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). It fans out too: `r +work build` runs each member's own script. Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
 
+## Per-project environment (`.nix/env.toml`)
+
+A project usually needs more than a command: it needs a connection string, a region, an API base URL. Those belong to the *directory*, not to whichever shell you happened to open — which is what direnv solved on Unix and what nothing solved on Windows. nix already runs everything through one place, so the variables go there:
+
+```toml
+# <alias-dir>/.nix/env.toml   (commit it with the project)
+[env]
+DATABASE_URL = "postgres://localhost/dev"
+API_BASE     = "https://staging.internal"
+ACME_TOKEN   = "${secret:acme-api}"
+```
+
+Every `r acme <cmd>`, every `r acme :action`, every `r +work <cmd>` fan-out, and every `o acme` session gets them. Nothing to source, nothing to remember, and no `.env` file the repo has to gitignore.
+
+**The private layer wins.** `~/.nix/env/<alias>.toml` has the same `[env]` shape and overrides the committed file per key — deliberately the opposite of the actions rule. The committed file is the project's *defaults*, the thing that should work for everyone who clones it; the central file is the only place your machine's real database can go without dirtying the repo:
+
+```toml
+# ~/.nix/env/acme.toml   (private, never committed, travels in --export)
+[env]
+DATABASE_URL = "postgres://box.local:5433/acme"
+```
+
+Names match case-insensitively (Windows folds them anyway, so one variable can't quietly become two), and `nix acme --env` shows exactly what a command will see and where each value came from:
+
+```
+env for acme
+
+  project  C:\code\acme\.nix\env.toml
+            in use
+  central  C:\Users\me\.nix\env\acme.toml
+            in use
+
+  NAME          FROM     VALUE
+  ACME_TOKEN    project  ${secret:acme-api}
+  API_BASE      project  https://staging.internal
+  DATABASE_URL  central  postgres://box.local:5433/acme
+```
+
+**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. The resolved value exists only in that child's environment — `--env` prints the reference (and tells you when nothing is stored under it), `--export` carries the reference, and no listing ever sees the secret. On a `r`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
+
+`PATH`, `PATHEXT`, `COMSPEC` and anything starting with `NIX_` are refused, and say so. PATH is composed by `.nix/scripts` and `[bin]`, which nix rebuilds on every run; a value set here would be both overridden and later removed as stale. Names that aren't shell-referenceable at all (`my key`, `1BAD`) are refused for the same reason: a variable that silently never arrives costs an afternoon.
+
+**The committed file is gated, like everything else that arrives with a clone.** `.nix/env.toml` steers every command the project later runs, so until you approve its bytes it sets nothing — and nix says so once, then runs anyway:
+
+```
+nix: C:\code\acme\.nix\env.toml has not been approved - its variables were NOT set
+  read it, then run:  nix --trust acme env
+```
+
+It never refuses the command or the navigation over an environment file; being unable to reach a directory is a worse outcome than reaching it under-configured, and the message says which it was. `nix --trust acme` approves it along with the project's actions, scripts and context sources; `nix --trust acme env` approves just this file. Any edit re-arms it. The file gets its own approval record on purpose — sharing actions.toml's would mean every unrelated action edit re-armed the environment too, and being asked to re-approve something several times a day is how people learn to answer `y` without looking. The central layer is under `~/.nix` and is never gated: you wrote it.
+
+`nix --doctor` has an Env section listing which aliases have layers, which are waiting for approval, which names were refused, and which referenced secrets have no value stored yet.
+
+One deliberate gap: an **elevated** (`sudo`) action gets the environment too, minus anything resolved from a secret. Elevation carries variables in as a `set` prelude on a command line, and a command line is readable in the process list by anyone on the machine; nix names each variable it withheld rather than passing the credential up there.
+
 ## Notes (`--note` / `nix --notes`)
 
 Re-entering a project costs more than finding the directory. The expensive part is remembering where you left off, and no amount of navigation speed helps with that. So every alias gets a freeform markdown file:
@@ -623,9 +679,9 @@ Other tools can point at the same file wherever they take custom instructions.
 
 `nix --sweep` finds picker noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.nix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
 
-`nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, and central per-alias actions and `[bin]` declarations as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap. Exports travel as **declarations only** — the consent that puts them on PATH stays behind, so a restored backup is still one deliberate `nix --sync-bin` away from installing anything.
+`nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, central per-alias actions, `[bin]` declarations, and central `[env]` layers as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap. Exports travel as **declarations only** — the consent that puts them on PATH stays behind, so a restored backup is still one deliberate `nix --sync-bin` away from installing anything.
 
-`nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
+`nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, the per-project `[env]` layers, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
 `nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no usage recording, no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `r <alias> <cmd>`, a `:action`, group fan-outs — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
 
