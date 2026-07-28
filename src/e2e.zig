@@ -1138,8 +1138,7 @@ pub fn main(init: std.process.Init) !void {
     {
         // A described central action, so the backup has one to carry - plus a
         // central [bin] export, which travels as a declaration.
-        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }),
-            "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n[bin]\nonlycmd = \":only\"\n");
+        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }), "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n[bin]\nonlycmd = \":only\"\n");
         const r = try c.run(&.{ "--export", backup });
         c.check(r.code == 0 and proc.pathExists(io, backup), "--export writes the backup file", r);
         c.check(std.mem.indexOf(u8, readFileOr(&c, backup, ""), "[bin.pa]") != null, "--export carries central [bin] declarations", r);
