@@ -7,6 +7,7 @@ const std = @import("std");
 const Io = std.Io;
 const proc = @import("proc.zig");
 const segments = @import("segments.zig");
+const grammar = @import("grammar.zig");
 
 pub const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -84,14 +85,10 @@ pub fn exePath(app: *App) []const u8 {
 
 /// isGlobalFlag reports the process-wide flags any sub-parser silently accepts
 /// (parsed up front into app.json / app.no_prompt) so they don't read as an
-/// unexpected argument to a group command.
-/// `-q` is deliberately NOT a spelling of --no-prompt: `--doctor -q` is
-/// doctor's own quiet flag, and `rg -q` is ripgrep's, so the short form read
-/// as three different things depending on where it landed.
-pub fn isGlobalFlag(a: []const u8) bool {
-    return std.mem.eql(u8, a, "--no-prompt") or std.mem.eql(u8, a, "--force") or
-        std.mem.eql(u8, a, "--json") or std.mem.eql(u8, a, "-j");
-}
+/// unexpected argument to a group command. Re-exported here because every
+/// command module already imports app.zig as its shared seam; the flags
+/// themselves live in the grammar table with the rest of them.
+pub const isGlobalFlag = grammar.isGlobal;
 
 pub fn startsWithDash(s: []const u8) bool {
     return s.len > 0 and s[0] == '-';
@@ -195,22 +192,9 @@ pub fn dispWidth(s: []const u8) usize {
     return n;
 }
 
-pub fn aliasAction(flag: []const u8) ?[]const u8 {
-    const map = [_]struct { k: []const u8, v: []const u8 }{
-        .{ .k = "--resolve", .v = "resolve" }, .{ .k = "--remove", .v = "remove" },
-        .{ .k = "--rm", .v = "remove" },       .{ .k = "--edit", .v = "edit" },
-        .{ .k = "-e", .v = "edit" },           .{ .k = "--explore", .v = "explore" },
-        .{ .k = "-x", .v = "explore" },        .{ .k = "--yank", .v = "yank" },
-        .{ .k = "-y", .v = "yank" },           .{ .k = "--paste", .v = "paste" },
-        .{ .k = "-p", .v = "paste" },          .{ .k = "--grep", .v = "grep" },
-        .{ .k = "-g", .v = "grep" },           .{ .k = "--find", .v = "find" },
-        .{ .k = "-f", .v = "find" },           .{ .k = "--run", .v = "run" },
-        .{ .k = "-r", .v = "run" },            .{ .k = "--note", .v = "note" },
-        .{ .k = "--env", .v = "env" },
-    };
-    for (map) |m| if (std.mem.eql(u8, flag, m.k)) return m.v;
-    return null;
-}
+/// aliasAction resolves an alias action flag to its verb. Re-exported from the
+/// grammar table for the same reason as isGlobalFlag.
+pub const aliasAction = grammar.aliasAction;
 
 /// fzfEnv hands nix's OWN fzf children the Tokyo Night theme unless the user
 /// already themes fzf. It works on a fresh COPY of the process environment —

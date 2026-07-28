@@ -36,6 +36,7 @@ const secret = @import("secret.zig");
 const context = @import("context.zig");
 const notes = @import("notes.zig");
 const env_zig = @import("env.zig");
+const grammar = @import("grammar.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
@@ -235,10 +236,6 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
         return 0;
     }
     const first = rest[0];
-    if (eql(first, "--help") or eql(first, "-h")) {
-        try printUsage(app);
-        return 0;
-    }
     if (startsWithDash(first)) {
         return dispatchSystem(app, first, rest[1..]);
     }
@@ -255,50 +252,51 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
     return dispatchAlias(app, first, rest[1..]);
 }
 
+// The switch below is exhaustive over grammar.SystemVerb with no else branch:
+// adding a row to the grammar table without wiring a handler here is a compile
+// error, which is what keeps the parser and `nix --help` describing one binary.
 fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     const verb = systemVerb(flag) orelse {
         try app.err.print("nix: unknown flag \"{s}\" (run `nix --help` for usage)\n", .{flag});
         return 1;
     };
-    if (eql(verb, "list")) return cmdList(app);
-    if (eql(verb, "list-names")) return cmdListNames(app);
-    if (eql(verb, "which")) return cmdWhich(app, rest);
-    if (eql(verb, "version")) return cmdVersion(app);
-    if (eql(verb, "edit")) return cmdEdit(app, "", rest);
-    if (eql(verb, "prune")) return cmdPrune(app);
-    if (eql(verb, "picker-check")) return picker.cmdPickerCheck(app, rest);
-    if (eql(verb, "doctor")) return doctor.cmdDoctor(app, rest);
-    if (eql(verb, "groups")) return cmdGroups(app);
-    if (eql(verb, "contexts")) return cmdContexts(app);
-    if (eql(verb, "actions")) return palette.cmdActions(app, rest);
-    if (eql(verb, "notes")) return notes.cmdNotes(app, rest, grep);
-    if (eql(verb, "sweep")) return sweep.cmdSweep(app, rest);
-    if (eql(verb, "sync")) return init_zig.cmdSync(app);
-    if (eql(verb, "sync-bin")) return bin_exports.cmdSyncBin(app);
-    if (eql(verb, "export")) return init_zig.cmdExport(app, rest);
-    if (eql(verb, "import")) return init_zig.cmdImport(app, rest);
-    if (eql(verb, "secret")) return secret.cmdSecret(app, rest);
-    if (eql(verb, "trust")) return context.cmdTrust(app, rest, resolve, run_zig, env_zig);
-    if (eql(verb, "agent")) return cmdAgent(app, rest);
-    if (eql(verb, "init")) {
-        for (rest) |a| {
-            try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
-            return 1;
-        }
-        return init_zig.cmdInit(app);
-    }
-    if (eql(verb, "preview")) {
+    return switch (verb) {
+        .list => cmdList(app),
+        .list_names => cmdListNames(app),
+        .which => cmdWhich(app, rest),
+        .version => cmdVersion(app),
+        .help => blk: {
+            try printUsage(app);
+            break :blk 0;
+        },
+        .edit => cmdEdit(app, "", rest),
+        .prune => cmdPrune(app),
+        .picker_check => picker.cmdPickerCheck(app, rest),
+        .doctor => doctor.cmdDoctor(app, rest),
+        .groups => cmdGroups(app),
+        .contexts => cmdContexts(app),
+        .actions => palette.cmdActions(app, rest),
+        .notes => notes.cmdNotes(app, rest, grep),
+        .sweep => sweep.cmdSweep(app, rest),
+        .sync => init_zig.cmdSync(app),
+        .sync_bin => bin_exports.cmdSyncBin(app),
+        .@"export" => init_zig.cmdExport(app, rest),
+        .import => init_zig.cmdImport(app, rest),
+        .secret => secret.cmdSecret(app, rest),
+        .trust => context.cmdTrust(app, rest, resolve, run_zig, env_zig),
+        .agent => cmdAgent(app, rest),
+        .init => blk: {
+            for (rest) |a| {
+                try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
+                break :blk 1;
+            }
+            break :blk init_zig.cmdInit(app);
+        },
         // Empty target (fzf has no current item) -> empty preview, not an error.
         // Join multiple tokens so unquoted paths with spaces still resolve.
-        const path = try std.mem.join(app.arena, " ", rest);
-        return cmdPreview(app, path);
-    }
-    if (eql(verb, "rga-preview")) {
-        const path = try std.mem.join(app.arena, " ", rest);
-        return cmdRgaPreview(app, path);
-    }
-    try app.err.print("nix: unknown flag \"{s}\" (run `nix --help` for usage)\n", .{flag});
-    return 1;
+        .preview => cmdPreview(app, try std.mem.join(app.arena, " ", rest)),
+        .rga_preview => cmdRgaPreview(app, try std.mem.join(app.arena, " ", rest)),
+    };
 }
 
 fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
@@ -312,7 +310,7 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     }
 
     // Find first action flag.
-    var action: ?[]const u8 = null;
+    var action: ?grammar.ActionVerb = null;
     var action_idx: usize = 0;
     for (rest, 0..) |a, i| {
         if (aliasAction(a)) |v| {
@@ -323,34 +321,36 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     }
     if (action == null) return aliasAddOrResolve(app, alias, rest);
 
+    const act = action.?;
     const pre = rest[0..action_idx];
     const action_args = rest[action_idx + 1 ..];
     // Global flags are legal before the action (`nix a --no-prompt --run cmd`); anything
     // else there is a mistake. After the action, tokens belong to the action.
     for (pre) |a| if (!isGlobalFlag(a)) {
-        try app.err.print("nix: unexpected positional \"{s}\" before --{s}\n", .{ a, action.? });
+        try app.err.print("nix: unexpected positional \"{s}\" before {s}\n", .{ a, grammar.flagFor(act) });
         return 1;
     };
-    const act = action.?;
-    if (eql(act, "resolve")) return cmdResolve(app, alias);
-    if (eql(act, "remove")) return cmdRemove(app, alias, action_args);
-    if (eql(act, "edit")) return cmdEdit(app, alias, action_args);
-    if (eql(act, "explore")) return cmdExplore(app, alias, action_args);
-    if (eql(act, "run")) return cmdRun(app, alias, action_args);
-    if (eql(act, "yank")) return cmdYank(app, alias, action_args);
-    if (eql(act, "grep")) return cmdGrep(app, alias, action_args);
-    if (eql(act, "find")) return cmdFind(app, alias, action_args);
-    if (eql(act, "paste")) return cmdPaste(app, alias, action_args);
-    if (eql(act, "env")) {
-        const dir = (try resolveAliasPath(app, alias)) orelse return 1;
-        return env_zig.cmdEnv(app, alias, dir, action_args);
-    }
-    // A note is keyed on the NAME, not the directory, so it deliberately does
-    // not resolve the alias: notes for a project whose drive is unplugged (or
-    // whose dir is gone) must still be readable and appendable.
-    if (eql(act, "note")) return notes.cmdNote(app, alias, action_args);
-    try app.err.print("nix: unknown action \"--{s}\" (run `nix --help` for usage)\n", .{act});
-    return 1;
+    // Exhaustive over grammar.ActionVerb: a new action cannot reach here
+    // unhandled, so there is no "unknown action" arm left to write.
+    return switch (act) {
+        .resolve => cmdResolve(app, alias),
+        .remove => cmdRemove(app, alias, action_args),
+        .edit => cmdEdit(app, alias, action_args),
+        .explore => cmdExplore(app, alias, action_args),
+        .run => cmdRun(app, alias, action_args),
+        .yank => cmdYank(app, alias, action_args),
+        .grep => cmdGrep(app, alias, action_args),
+        .find => cmdFind(app, alias, action_args),
+        .paste => cmdPaste(app, alias, action_args),
+        .env => blk: {
+            const dir = (try resolveAliasPath(app, alias)) orelse break :blk 1;
+            break :blk env_zig.cmdEnv(app, alias, dir, action_args);
+        },
+        // A note is keyed on the NAME, not the directory, so it deliberately does
+        // not resolve the alias: notes for a project whose drive is unplugged (or
+        // whose dir is gone) must still be readable and appendable.
+        .note => notes.cmdNote(app, alias, action_args),
+    };
 }
 
 /// bareAliasColon reports whether the only thing said about this alias is a
@@ -365,7 +365,7 @@ fn bareAliasColon(rest: [][]const u8) bool {
     for (rest) |a| {
         if (isGlobalFlag(a)) continue;
         if (aliasAction(a)) |v| {
-            if (eql(v, "note")) return false;
+            if (v == .note) return false;
             continue;
         }
         count += 1;
@@ -967,41 +967,16 @@ fn renamedMulticallAction(cfg: config.Config, argv0: []const u8) ?[]const u8 {
     return null;
 }
 
+/// actionFlag is the multicall layer's bridge into the grammar table: a wrapper
+/// slot's action verb ("grep") back to the canonical flag it desugars to
+/// ("--grep"). "navigate" is the `o` slot's own verb and not an action at all,
+/// so it resolves to null and the caller keeps its args as they are.
 fn actionFlag(action: []const u8) ?[]const u8 {
-    const map = [_]struct { k: []const u8, v: []const u8 }{
-        .{ .k = "edit", .v = "--edit" }, .{ .k = "explore", .v = "--explore" },
-        .{ .k = "yank", .v = "--yank" }, .{ .k = "paste", .v = "--paste" },
-        .{ .k = "run", .v = "--run" },   .{ .k = "grep", .v = "--grep" },
-        .{ .k = "find", .v = "--find" },
-    };
-    for (map) |m| if (eql(action, m.k)) return m.v;
-    return null;
+    const verb = std.meta.stringToEnum(grammar.ActionVerb, action) orelse return null;
+    return grammar.flagFor(verb);
 }
 
-fn systemVerb(flag: []const u8) ?[]const u8 {
-    const map = [_]struct { k: []const u8, v: []const u8 }{
-        .{ .k = "--list", .v = "list" },                 .{ .k = "--ls", .v = "list" },
-        .{ .k = "-l", .v = "list" },                     .{ .k = "--list-names", .v = "list-names" },
-        .{ .k = "--which", .v = "which" },               .{ .k = "-w", .v = "which" },
-        .{ .k = "--edit", .v = "edit" },                 .{ .k = "-e", .v = "edit" },
-        .{ .k = "--contexts", .v = "contexts" },         .{ .k = "-c", .v = "contexts" },
-        .{ .k = "--prune", .v = "prune" },               .{ .k = "--sweep", .v = "sweep" },
-        .{ .k = "--picker-check", .v = "picker-check" }, .{ .k = "--doctor", .v = "doctor" },
-        .{ .k = "-D", .v = "doctor" },                   .{ .k = "--groups", .v = "groups" },
-        .{ .k = "-G", .v = "groups" },                   .{ .k = "--init", .v = "init" },
-        .{ .k = "-I", .v = "init" },                     .{ .k = "--sync", .v = "sync" },
-        .{ .k = "-S", .v = "sync" },                     .{ .k = "--sync-bin", .v = "sync-bin" },
-        .{ .k = "--preview", .v = "preview" },           .{ .k = "--version", .v = "version" },
-        .{ .k = "--export", .v = "export" },             .{ .k = "--import", .v = "import" },
-        .{ .k = "--rga-preview", .v = "rga-preview" },   .{ .k = "-v", .v = "version" },
-        .{ .k = "--secret", .v = "secret" },             .{ .k = "--trust", .v = "trust" },
-        .{ .k = "--agent", .v = "agent" },               .{ .k = "--actions", .v = "actions" },
-        .{ .k = "-A", .v = "actions" },                  .{ .k = "--notes", .v = "notes" },
-        .{ .k = "-N", .v = "notes" },
-    };
-    for (map) |m| if (eql(flag, m.k)) return m.v;
-    return null;
-}
+const systemVerb = grammar.systemVerb;
 
 /// cmdAgent renders a command spec for an agent. Bare `nix --agent` lists the
 /// topics; `nix --agent <topic>` renders one; a wrapper's `<cmd> --agent`
@@ -1105,40 +1080,16 @@ fn printUsage(app: *App) !void {
     }
     try w.writeByte('\n');
 
+    // ACTIONS, COMMANDS and GLOBAL FLAGS render from the grammar tables, the
+    // same way SHORTCUTS renders from the spec table. They used to be heredocs
+    // maintained by hand next to a parser that had its own list, and they
+    // drifted: --notes/-N and the --note action shipped and appeared in neither.
+    try w.writeAll("ACTIONS  (nix <alias> --<action> ...)\n");
+    try writeGrammarRows(w, grammar.Action, &grammar.actions);
+    try w.writeAll("\nCOMMANDS\n");
+    try writeGrammarRows(w, grammar.System, &grammar.system);
+
     try w.writeAll(
-        \\ACTIONS  (nix <alias> --<action> ...)
-        \\  --resolve            print the resolved path
-        \\  --edit,    -e        open in your editor
-        \\  --explore, -x [pat]  open in the file manager; with a pattern, pick files -> open them
-        \\  --yank,    -y [pat]  copy the path; with a pattern, pick files -> copy the files
-        \\  --paste,   -p        save the clipboard into the dir
-        \\  --run,     -r <cmd>  run a command at the dir (`:name` runs a saved action)
-        \\  --grep,    -g <pat>  ripgrep search (add --all/-a to search via rga)
-        \\  --find,    -f [pat]  fuzzy-find files
-        \\  --env                print the project's environment (.nix/env.toml), with provenance
-        \\  --remove,  --rm      forget the alias
-        \\
-        \\COMMANDS
-        \\  --list,    -l        list every alias  (--list-names for bare names)
-        \\  --which,  -w [path]  print the alias containing a path (default: cwd)
-        \\  --edit,    -e        open ~/.nix in your editor
-        \\  --prune              interactively remove stale aliases
-        \\  --sweep   [--min N]  find noisy dir trees to exclude from the picker
-        \\  --picker-check <name>   show why dirs are shown/hidden in the `o` picker
-        \\  --doctor,  -D        check tools/config and what the picker will use
-        \\  --groups,  -G        list alias groups  (+<group> --list shows members)
-        \\  --actions, -A [pat]  every alias's actions in one picker; Enter runs the pick
-        \\  --contexts, -c       list global @-segment contexts
-        \\  --init,    -I        set up ~/.nix, wrappers, and PATH
-        \\  --sync,    -S        regenerate wrappers and generated files
-        \\  --sync-bin           install projects' [bin] exports into ~/.nix/bin
-        \\  --secret  set|rm|list [NAME]   manage ${secret:NAME} values for actions (Windows Credential Manager)
-        \\  --trust   <alias> [segment|env]  approve an alias's project actions, scripts, context sources and env.toml as they stand
-        \\  --export  [file]     write a portable backup (aliases/groups/config/actions; stdout if no file)
-        \\  --import  <file>     merge a backup (skips existing; --replace for a full restore)
-        \\  --agent   [topic]    full command spec for an agent (`<cmd> --agent` works too)
-        \\  --version, -v        print version and platform
-        \\  --help,    -h        show this help
         \\
         \\GROUPS  (multi-alias sets in ~/.nix/groups.toml)
         \\  nix <member>+<group>        add an alias to a group (creates it)
@@ -1151,16 +1102,47 @@ fn printUsage(app: *App) !void {
         \\  p  +<group> [name]          pick ONE member, paste the clipboard there
         \\
         \\GLOBAL FLAGS  (accepted by every command, before or after the verb)
-        \\  --no-prompt          never open a picker or ask; print what it would
-        \\                       have offered and act on nothing
-        \\  --force              go through with an act that would otherwise ask.
-        \\                       Today: repointing an existing alias, which
-        \\                       forgets the path it had. NOT implied by
-        \\                       --no-prompt - "don't block me" and "overwrite
-        \\                       what I have" are different statements
-        \\  --json, -j           machine-readable output where a command has it
         \\
     );
+    try writeGrammarRows(w, grammar.Global, &grammar.globals);
+}
+
+/// writeGrammarRows renders one grammar table as a help block: the accepted
+/// spellings, the argument sketch, then the description, each column padded to
+/// the widest row so the descriptions line up whatever the flags are. Internal
+/// commands (nix re-invoking itself for a preview pane) are skipped, and a help
+/// string with newlines continues on the next line, indented to its column.
+fn writeGrammarRows(w: *Io.Writer, comptime R: type, rows: []const R) !void {
+    // Two rows (--secret, --trust) have argument sketches three times longer
+    // than any other. Sizing the column to them would indent every description
+    // past half the terminal, so they overflow their column instead and push
+    // only their own description right.
+    const args_cap = 12;
+    var flag_w: usize = 0;
+    var args_w: usize = 0;
+    var nbuf: [48]u8 = undefined;
+    for (rows) |r| {
+        if (r.visibility == .internal) continue;
+        flag_w = @max(flag_w, dispWidth(grammar.spellings(&nbuf, r.flags)));
+        const aw = dispWidth(r.args);
+        if (aw <= args_cap) args_w = @max(args_w, aw);
+    }
+    for (rows) |r| {
+        if (r.visibility == .internal) continue;
+        const names = grammar.spellings(&nbuf, r.flags);
+        try w.writeAll("  ");
+        try w.writeAll(names);
+        try writeSpaces(w, flag_w + 1 - dispWidth(names));
+        try w.writeAll(r.args);
+        const aw = dispWidth(r.args);
+        try writeSpaces(w, if (aw > args_w) 2 else args_w + 2 - aw);
+        var lines = std.mem.splitScalar(u8, r.help, '\n');
+        try w.print("{s}\n", .{lines.first()});
+        while (lines.next()) |cont| {
+            try writeSpaces(w, 2 + flag_w + 1 + args_w + 2);
+            try w.print("{s}\n", .{cont});
+        }
+    }
 }
 
 // Pull every module's test blocks into the exe test binary. Without these
@@ -1195,6 +1177,7 @@ test {
     _ = bin_exports;
     _ = agentdocs;
     _ = env_zig;
+    _ = grammar;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
 }
 
@@ -1370,27 +1353,14 @@ test "humanAge: never / today / 1d / Nd buckets" {
     try std.testing.expectEqualStrings("5d ago", try humanAge(a, now - 5 * day, now));
 }
 
-test "flag maps: systemVerb, aliasAction, actionFlag" {
-    try std.testing.expectEqualStrings("list", systemVerb("--list").?);
-    try std.testing.expectEqualStrings("prune", systemVerb("--prune").?);
-    try std.testing.expect(systemVerb("--bogus") == null);
-    // File deletion was removed: --remove/--rm are no longer system verbs.
-    try std.testing.expect(systemVerb("--remove") == null);
-    try std.testing.expect(systemVerb("--rm") == null);
-
-    try std.testing.expectEqualStrings("edit", aliasAction("-e").?);
-    try std.testing.expectEqualStrings("remove", aliasAction("--remove").?);
-    try std.testing.expect(aliasAction("acme") == null);
-
+// The flag maps themselves are grammar.zig's, and are tested there. What is
+// main's is the bridge from a wrapper's action verb back to a canonical flag.
+test "actionFlag bridges a wrapper's verb to its canonical flag" {
     try std.testing.expectEqualStrings("--grep", actionFlag("grep").?);
+    try std.testing.expectEqualStrings("--yank", actionFlag("yank").?);
+    // `o`'s verb is navigation, not an alias action: the caller keeps its args.
     try std.testing.expect(actionFlag("navigate") == null);
-
-    try std.testing.expectEqualStrings("doctor", systemVerb("--doctor").?);
-    try std.testing.expectEqualStrings("doctor", systemVerb("-D").?);
-    try std.testing.expectEqualStrings("groups", systemVerb("--groups").?);
-    try std.testing.expectEqualStrings("groups", systemVerb("-G").?);
-    try std.testing.expectEqualStrings("secret", systemVerb("--secret").?);
-    try std.testing.expectEqualStrings("trust", systemVerb("--trust").?);
+    try std.testing.expect(actionFlag("nonsense") == null);
 }
 
 test "setGlobalFlags: stops at the first action flag and at --" {
