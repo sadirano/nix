@@ -50,7 +50,14 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     if (argv[0].len > 0 and argv[0][0] == ':') {
         const call = switch (try parseActionCall(app, argv)) {
             .invalid => return 1,
-            .list => return listActions(app, alias, target),
+            // A bare `:` never reaches here: dispatchAlias routes it to the
+            // alias-scoped palette before any command's handler runs, so that
+            // `o <alias> :` and `r <alias> :` answer identically. This stays as
+            // the honest reply if that routing is ever changed.
+            .list => {
+                try app.err.writeAll("nix: name the action after ':' (e.g. r <alias> :test)\n");
+                return 1;
+            },
             .call => |c| c,
         };
         if (with_deps) return runWithDeps(app, call, alias, target, outside);
@@ -505,57 +512,6 @@ pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_defa
         }
     }
     return merged.items;
-}
-
-/// listActions prints an alias's actions (project-local merged over central,
-/// over machine-wide defaults) as a padded NAME/COMMAND table — the
-/// `r <alias> :` form.
-pub fn listActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
-    const pp = try actions.projectPath(app.arena, dir);
-    const merged = try mergedActions(app, alias, dir, true);
-    if (merged.len == 0) {
-        try app.out.print("no actions for \"{s}\" - define them in {s}\n", .{ alias, pp });
-        return 0;
-    }
-    // Which of these actions are also global commands. Only this alias's own
-    // exports count: a machine-wide `_default` export belongs to no alias, and
-    // repeating it under every one would bury the real rows - the same reason
-    // the palette suppresses _default actions.
-    const installed = bin_exports.loadManifest(app.arena, app.io, app.home) catch &.{};
-
-    var width: usize = "ACTION".len;
-    var cmd_w: usize = "COMMAND".len;
-    var glob_w: usize = "GLOBAL".len;
-    var described = false;
-    var any_global = false;
-    for (merged) |a| {
-        width = @max(width, a.name.len);
-        cmd_w = @max(cmd_w, @min(a.command.len, app_zig.max_command_cols));
-        if (a.description.len > 0) described = true;
-        if (globalName(installed, alias, a.name)) |g| {
-            any_global = true;
-            glob_w = @max(glob_w, g.len);
-        }
-    }
-    // The DESCRIPTION column appears only when something has one, so a file
-    // that documents nothing still prints exactly the table it printed before.
-    // It goes last: the command is what the row is about, the prose is the
-    // footnote, and an undocumented action then just ends at its command.
-    try padPrint(app.out, "ACTION", width + 2);
-    if (any_global) try padPrint(app.out, "GLOBAL", glob_w + 2);
-    if (described) {
-        try padPrint(app.out, "COMMAND", cmd_w + 2);
-        try app.out.writeAll("DESCRIPTION\n");
-    } else try app.out.writeAll("COMMAND\n");
-    for (merged) |a| {
-        try padPrint(app.out, a.name, width + 2);
-        if (any_global) try padPrint(app.out, globalName(installed, alias, a.name) orelse "", glob_w + 2);
-        if (described and a.description.len > 0) {
-            try padPrint(app.out, a.command, cmd_w + 2);
-            try app.out.print("{s}\n", .{app_zig.ellipsize(app.arena, a.description)});
-        } else try app.out.print("{s}\n", .{a.command});
-    }
-    return 0;
 }
 
 /// globalName returns the command name an alias's action is installed as on

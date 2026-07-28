@@ -181,13 +181,19 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "--force") == null, "re-registering the same path asks nothing", r);
         _ = try c.run(&.{ "--force", "pa", pa }); // point it back
 
-        // A token that cannot be a path never reaches aliases.toml. This is the
-        // `o i :` case: it used to resolve against the cwd, overwrite, save, and
-        // only then crash trying to enter it.
-        r = try c.run(&.{ "pa", ":" });
+        // A token that cannot be a path never reaches aliases.toml. `o i :` used
+        // to resolve ":" against the cwd, overwrite, save, and only THEN crash
+        // trying to enter it.
+        r = try c.run(&.{ "pa", "we|rd" });
         r2 = try c.run(&.{ "pa", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not a usable path") != null and
             pathEql(trim(r2.out), pa), "a non-path argument is refused and leaves the alias intact", r);
+
+        // And a bare `:` is not a path at all - it asks what the alias can run,
+        // the same answer `r pa :` gives. Registration must not see it.
+        r = try c.run(&.{ "pa", ":" });
+        r2 = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r2.out), pa), "a bare `:` after an alias lists, and registers nothing", r);
 
         r = try c.run(&.{ "pb", pb });
         c.check(r.code == 0, "second alias registers", r);
@@ -523,11 +529,29 @@ pub fn main(init: std.process.Init) !void {
         // Global flags may lead it, exactly as they may lead any command.
         r = try c.run(&.{ ":", "no-such-action-anywhere" });
         c.check(r.code == 1, "a `:` pattern matching nothing exits 1", r);
-        // The per-alias form is untouched: there the colon has an alias in front
-        // of it and already means "list THIS alias's actions".
+        // The per-alias form narrows to that alias, so it drops the ALIAS column
+        // (one repeated value down the page answers nothing).
         r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ACTION") != null and
-            std.mem.indexOf(u8, r.out, "ALIAS") == null, "`<alias> --run :` still lists just that alias", r);
+            std.mem.indexOf(u8, r.out, "ALIAS") == null, "`<alias> --run :` lists just that alias", r);
+        // And it is the SAME answer from any command - the routing happens
+        // before any command's own handler, so `o pa :` cannot mean "register
+        // ':' as pa's path" the way it once did.
+        const via_run = r.out;
+        for ([_][]const u8{ "--edit", "--explore", "--yank", "--grep", "--find" }) |verb| {
+            r = try c.run(&.{ "pa", verb, ":" });
+            c.check(r.code == 0 and std.mem.eql(u8, r.out, via_run), "a trailing `:` answers the same through every command", r);
+        }
+        // Bare `nix <alias> :` (no verb at all) is the form that used to hit the
+        // add path and register ":" as a directory.
+        r = try c.run(&.{ "pa", ":" });
+        c.check(r.code == 0 and std.mem.eql(u8, r.out, via_run), "a trailing `:` with no verb lists too", r);
+        // A picker needs somebody who can answer it. Unattended (the harness
+        // pipes stdout and ignores stdin) it must PRINT, never open fzf - that
+        // is what `r <alias> :` did before it became a picker, and a hang here
+        // would strand every script that lists actions.
+        r = try c.run(&.{ "pa", "--run", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ACTION") != null, "an unattended `:` prints instead of opening the picker", r);
     }
 
     // --- notes (--note / --notes) ----------------------------------------------

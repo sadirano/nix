@@ -257,7 +257,10 @@ pub const specs = [_]Spec{
         \\hands --no-prompt to build. nix's own flags must come before --run.
         \\
         \\`:<name>` runs a saved action from the project's .nix/actions.toml;
-        \\`nix <alias> --run :` lists them. A bare name matching a file in
+        \\`nix <alias> --run :` lists them - as does a trailing bare `:` after
+        \\ANY command (`nix <alias> --edit :`), which opens a picker when someone
+        \\can answer it and prints the table when nobody can (your shell
+        \\included, so it is safe to run). A bare name matching a file in
         \\.nix/scripts/ runs that script. The child gets $NIX_ALIAS and
         \\$NIX_ALIAS_PATH. `r +<group> <cmd>` fans the command across members.
         \\

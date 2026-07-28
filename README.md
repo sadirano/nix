@@ -348,7 +348,7 @@ There's no new syntax to learn: a run of `#` lines directly above an action is j
 
 ```powershell
 r acme :test              # run acme's `test` action in acme's dir
-r acme :                  # list acme's actions
+r acme :                  # pick from acme's actions (o acme : and e acme : are the same)
 r acme -o :serve          # start it in a window of its own and come straight back
 r acme :test -- --json    # pass arguments through to the command
 r acme :build :test       # a chain: in order, stopping at the first failure
@@ -478,7 +478,11 @@ beta   :deploy   npm run deploy && echo shipped
 
 Enter runs the pick exactly as `r <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `r` would run. The pattern is a plain case-insensitive substring across every column, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `r <any-alias> :<name>`).
 
-**A bare `:` is the shortest way in**, from any command: `r :`, `o :`, `nix :` all open the palette, and anything after it pre-filters (`r : deploy`). It's the alias-less form of `r <alias> :` — the same colon, one scope wider: with an alias in front it lists that project's actions, without one it lists every project's. Nothing was given up to allow it, since `:` was never a legal alias name.
+**A bare `:` is the shortest way in**, from any command: `r :`, `o :`, `nix :` all open the palette, and anything after it pre-filters (`r : deploy`). It's the alias-less form of `r <alias> :` — the same colon, one scope wider: with an alias in front it opens that project's actions, without one it opens every project's. Nothing was given up to allow it, since `:` was never a legal alias name.
+
+**With an alias in front, every command answers the same.** `o acme :`, `e acme :`, `y acme :` and `r acme :` all open the picker scoped to acme, with Tab multi-select just like the global palette — one pick runs here, several fan out into a window each. The command you happened to type is irrelevant once the colon is the only thing you said about the alias, which is why `o acme :` no longer tries to register `:` as acme's path. A trailing `:` never navigates, either: it answered a question, and stacking a shell on top of that would be two things from one word.
+
+Where nobody can answer a picker — `--no-prompt`, a pipe, a script, an agent's shell — it prints the table instead of opening fzf, which is what `r <alias> :` always did. Same if fzf isn't installed.
 
 **Mark several with Tab and they all start, in parallel, each in a window of its own.** Two actions can't share one terminal — the output would interleave and only one of them could read the keyboard — so a multi-pick fans out into a new shell per action (a new console on Windows, opened in that action's directory with its `NIX_ALIAS` and scripts on `PATH`) and nix returns immediately. Build three projects, or bring up a server and its worker, from one picker:
 
