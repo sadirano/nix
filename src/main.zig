@@ -30,6 +30,7 @@ const nav = @import("nav.zig");
 const cmd_groups = @import("cmd_groups.zig");
 const paste = @import("paste.zig");
 const bin_exports = @import("bin_exports.zig");
+const exports = @import("exports.zig");
 const palette = @import("palette.zig");
 const secret = @import("secret.zig");
 const context = @import("context.zig");
@@ -160,7 +161,7 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         // Returns from here rather than joining the dispatch below: the caller's
         // words belong to the action, so they must not pass setGlobalFlags or
         // any of nix's own parsing.
-        if (try bin_exports.lookupExport(app.arena, app.io, app.home, base)) |ex| {
+        if (try exports.lookupExport(app.arena, app.io, app.home, base)) |ex| {
             return run_zig.cmdExport(app, base, ex.alias, ex.action, args);
         }
         break :blk null;
@@ -1142,6 +1143,16 @@ fn printUsage(app: *App) !void {
         \\  sg/ff/r +<group> ...        search / run across every member
         \\  s/y +<group> [pat]          open / copy member dirs; with a pattern, pick files
         \\  p  +<group> [name]          pick ONE member, paste the clipboard there
+        \\
+        \\GLOBAL FLAGS  (accepted by every command, before or after the verb)
+        \\  --no-prompt          never open a picker or ask; print what it would
+        \\                       have offered and act on nothing
+        \\  --force              go through with an act that would otherwise ask.
+        \\                       Today: repointing an existing alias, which
+        \\                       forgets the path it had. NOT implied by
+        \\                       --no-prompt - "don't block me" and "overwrite
+        \\                       what I have" are different statements
+        \\  --json, -j           machine-readable output where a command has it
         \\
     );
 }
