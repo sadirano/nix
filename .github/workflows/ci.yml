@@ -24,25 +24,15 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Format check
-        run: zig fmt --check src build.zig build.zig.zon
-
-      - name: Test
-        run: zig build test
-
-      # Drive the real exe through add/resolve/remove/groups/actions/segments/
-      # export→import against a scratch NIX_HOME — the dispatch/IO seam the
-      # unit tests can't reach.
-      - name: End-to-end
-        run: zig build e2e
-
-      # Make sure the portable release build (baseline CPU, Windows target) still
-      # compiles — the artifact shipped to users.
-      - name: Build (release, portable)
-        run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
-
-      # POSIX paths (bash snippet, xdg-open, find fallbacks) are Windows-first
-      # and never exercised — but they should at least keep COMPILING. A cheap
-      # cross-compile catches bit-rot without committing to POSIX support.
-      - name: Build (linux, compile check)
-        run: zig build -Dtarget=x86_64-linux
+      # One step, defined in build.zig, so the same gate runs here and on a dev
+      # machine (`r nix :ci`, and .githooks/pre-push). Splitting it back into
+      # per-check steps here would recreate the drift this replaced: the format
+      # check and the linux canary used to exist only in this file, so they were
+      # only ever discovered after a push.
+      #
+      # It runs, in order: zig fmt --check; unit tests; the e2e harness against
+      # the real exe and a scratch NIX_HOME; the portable release build (baseline
+      # CPU, Windows target) that users install; and a linux cross-compile canary
+      # for the never-exercised POSIX paths.
+      - name: CI gate
+        run: zig build ci

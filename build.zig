@@ -34,6 +34,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // One options module shared by every compile below: `createModule` per
+    // artifact would compile a separate copy of the same baked strings.
+    const options_mod = build_options.createModule();
+
     const exe = b.addExecutable(.{
         .name = "nix",
         .root_module = b.createModule(.{
@@ -41,7 +45,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "build_options", .module = build_options.createModule() },
+                .{ .name = "build_options", .module = options_mod },
             },
         }),
     });
@@ -95,6 +99,56 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    // `zig build ci` is the gate .github/workflows/ci.yml runs, runnable here.
+    // Nothing on a dev machine used to run it, so the format check and the
+    // linux compile canary were only ever discovered after a push - three of
+    // twelve commits at one point were `fix: zig fmt` / `fix: CI`. Keep the
+    // steps and their order identical to the workflow: when one of them moves,
+    // both files have to move together or this stops being a gate.
+    const fmt_check = b.addFmt(.{
+        .paths = &.{ "src", "build.zig", "build.zig.zon" },
+        .check = true,
+    });
+
+    // The artifact users install: baseline CPU (a native build crashes with an
+    // illegal instruction on machines lacking the dev box's extensions) and an
+    // explicit Windows target, so the check holds whatever `zig build` defaults
+    // to here. Compiled, never installed - `zig build` alone still writes only
+    // the ordinary exe to zig-out.
+    const portable = b.addExecutable(.{
+        .name = "nix-portable",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .x86_64,
+                .os_tag = .windows,
+                .cpu_model = .baseline,
+            }),
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "build_options", .module = options_mod }},
+        }),
+    });
+
+    // POSIX paths (bash snippet, xdg-open, find fallbacks) are Windows-first
+    // and never exercised, but they should at least keep COMPILING. This is a
+    // bit-rot canary, not a claim of POSIX support.
+    const linux_check = b.addExecutable(.{
+        .name = "nix-linux-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
+            .optimize = .Debug,
+            .imports = &.{.{ .name = "build_options", .module = options_mod }},
+        }),
+    });
+
+    const ci_step = b.step("ci", "Everything CI runs: fmt check, tests, e2e, portable + linux builds");
+    ci_step.dependOn(&fmt_check.step);
+    ci_step.dependOn(test_step);
+    ci_step.dependOn(e2e_step);
+    ci_step.dependOn(&portable.step);
+    ci_step.dependOn(&linux_check.step);
 }
 
 // gitDescribe returns `git describe --tags --always --dirty` for the build

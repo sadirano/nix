@@ -1,0 +1,21 @@
+#!/bin/sh
+# Run the same gate CI runs, before anything leaves this machine.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Skip a single push:     NIX_SKIP_PREPUSH=1 git push
+#
+# The skip exists on purpose. A hook you cannot get past is a hook people
+# disable permanently the first time it is wrong.
+
+if [ -n "$NIX_SKIP_PREPUSH" ]; then
+    echo "pre-push: skipped (NIX_SKIP_PREPUSH set)"
+    exit 0
+fi
+
+echo "pre-push: zig build ci"
+if ! zig build ci; then
+    echo ""
+    echo "pre-push: 'zig build ci' failed, push aborted."
+    echo "          Fix it, or push anyway with NIX_SKIP_PREPUSH=1 git push"
+    exit 1
+fi

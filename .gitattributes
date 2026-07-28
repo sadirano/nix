@@ -2,3 +2,6 @@
 # which would check sources out as CRLF and fail the CI format gate.
 *.zig text eol=lf
 *.zon text eol=lf
+
+# Git hooks are run by sh; CRLF makes the shebang line unusable.
+.githooks/* text eol=lf
