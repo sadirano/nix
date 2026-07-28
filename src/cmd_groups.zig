@@ -21,6 +21,7 @@ const notes = @import("notes.zig");
 const nav = @import("nav.zig");
 const paste = @import("paste.zig");
 const picker = @import("picker.zig");
+const grammar = @import("grammar.zig");
 
 const App = app_zig.App;
 const isGlobalFlag = app_zig.isGlobalFlag;
@@ -89,11 +90,27 @@ pub fn cmdGroups(app: *App) !u8 {
     return 0;
 }
 
-/// groupAction maps a flag to a group action verb: `--list` plus the alias
-/// action flags (run/yank/grep/find/remove/…) reused via aliasAction.
-fn groupAction(flag: []const u8) ?[]const u8 {
-    if (eql(flag, "--list") or eql(flag, "-l")) return "list";
-    return aliasAction(flag);
+/// A group verb: `--list` (groups only) plus every alias action flag, reused
+/// from the grammar table so a new action is offered to `+group` too - and,
+/// because dispatchGroupRef switches over it exhaustively, must be answered
+/// there with either a fan-out or an explicit "single-alias only".
+const GroupVerb = union(enum) {
+    list,
+    action: grammar.ActionVerb,
+
+    /// The flag as the user typed it, for error messages.
+    fn flag(v: GroupVerb) []const u8 {
+        return switch (v) {
+            .list => "--list",
+            .action => |a| grammar.flagFor(a),
+        };
+    }
+};
+
+fn groupAction(f: []const u8) ?GroupVerb {
+    if (eql(f, "--list") or eql(f, "-l")) return .list;
+    if (aliasAction(f)) |a| return .{ .action = a };
+    return null;
 }
 
 /// dispatchGroupRef handles `+group <action> …`. Bare `+group` lists members.
@@ -103,7 +120,7 @@ fn groupAction(flag: []const u8) ?[]const u8 {
 /// --paste (member picker → paste there). Per-alias-only actions (--edit)
 /// error.
 pub fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
-    var action: ?[]const u8 = null;
+    var action: ?GroupVerb = null;
     var idx: usize = 0;
     for (rest, 0..) |a, i| {
         if (groupAction(a)) |v| {
@@ -119,28 +136,40 @@ pub fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
         };
         return cmdGroupList(app, group);
     }
+    const act = action.?;
     for (rest[0..idx]) |a| if (!isGlobalFlag(a)) {
-        try app.err.print("nix: unexpected argument \"{s}\" before --{s}\n", .{ a, action.? });
+        try app.err.print("nix: unexpected argument \"{s}\" before {s}\n", .{ a, act.flag() });
         return 1;
     };
     const aargs = rest[idx + 1 ..];
-    const act = action.?;
-    if (eql(act, "list")) return cmdGroupList(app, group);
-    if (eql(act, "remove")) return cmdGroupDelete(app, group);
-    if (eql(act, "resolve")) return cmdGroupResolve(app, group, aargs);
-    if (eql(act, "run")) return cmdGroupRun(app, group, aargs);
-    if (eql(act, "yank")) return cmdGroupYank(app, group, aargs);
-    if (eql(act, "explore")) return cmdGroupExplore(app, group, aargs);
-    if (eql(act, "paste")) return cmdGroupPaste(app, group, aargs);
-    if (eql(act, "grep")) return cmdGroupGrep(app, group, aargs);
-    if (eql(act, "find")) return cmdGroupFind(app, group, aargs);
-    // A group note is not a fan-out: "this whole workstream is blocked" is one
-    // thought about the set, so it goes in the group's own file (`+work.md`) and
-    // not into each member's. Groups have no directory, which is the other
-    // reason notes had to live under $home to be able to have this at all.
-    if (eql(act, "note")) return notes.cmdNote(app, try std.fmt.allocPrint(app.arena, "+{s}", .{group}), aargs);
-    try app.err.print("nix: --{s} is a single-alias action, not supported on group +{s}\n", .{ act, group });
-    return 1;
+    const verb = switch (act) {
+        .list => return cmdGroupList(app, group),
+        .action => |v| v,
+    };
+    return switch (verb) {
+        .remove => cmdGroupDelete(app, group),
+        .resolve => cmdGroupResolve(app, group, aargs),
+        .run => cmdGroupRun(app, group, aargs),
+        .yank => cmdGroupYank(app, group, aargs),
+        .explore => cmdGroupExplore(app, group, aargs),
+        .paste => cmdGroupPaste(app, group, aargs),
+        .grep => cmdGroupGrep(app, group, aargs),
+        .find => cmdGroupFind(app, group, aargs),
+        // A group note is not a fan-out: "this whole workstream is blocked" is one
+        // thought about the set, so it goes in the group's own file (`+work.md`) and
+        // not into each member's. Groups have no directory, which is the other
+        // reason notes had to live under $home to be able to have this at all.
+        .note => notes.cmdNote(app, try std.fmt.allocPrint(app.arena, "+{s}", .{group}), aargs),
+        // Per-alias by nature: one editor window or one environment per member
+        // is not a fan-out anyone wants.
+        .edit, .env => blk: {
+            try app.err.print(
+                "nix: {s} is a single-alias action, not supported on group +{s}\n",
+                .{ grammar.flagFor(verb), group },
+            );
+            break :blk 1;
+        },
+    };
 }
 
 /// cmdGroupList prints a group's members with each alias resolved to its path

@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const config = @import("config.zig");
+const grammar = @import("grammar.zig");
 
 /// Safety is the "can an agent run this itself?" tier. It is the first thing
 /// a spec renders because it is the only field that changes what an agent
@@ -976,6 +977,54 @@ pub fn renderIndex(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
 }
 
 // ---- tests ------------------------------------------------------------------
+
+test "the grammar's spec pointers and the spec table agree" {
+    // Forward: a command that claims a spec must have one. `.spec = ""` is the
+    // deliberate "help line is enough" answer, and the field has no default, so
+    // adding a command forces that call rather than defaulting to undocumented.
+    for (grammar.system) |r| {
+        if (r.spec.len == 0) continue;
+        std.testing.expect(find(r.spec) != null) catch |e| {
+            std.debug.print("no spec for grammar topic \"{s}\"\n", .{r.spec});
+            return e;
+        };
+    }
+    for (grammar.actions) |r| {
+        if (r.spec.len == 0) continue;
+        std.testing.expect(find(r.spec) != null) catch |e| {
+            std.debug.print("no spec for grammar topic \"{s}\"\n", .{r.spec});
+            return e;
+        };
+    }
+    // Reverse: a spec whose topic is a FLAG must still be a flag nix parses -
+    // otherwise renaming or dropping a command leaves an agent reading a spec
+    // for something the binary no longer answers to.
+    for (&specs) |*s| {
+        if (!std.mem.startsWith(u8, s.topic, "--")) continue;
+        std.testing.expect(grammar.knows(s.topic)) catch |e| {
+            std.debug.print("spec topic \"{s}\" is not a flag nix parses\n", .{s.topic});
+            return e;
+        };
+    }
+}
+
+test "every flag a safe form tells an agent to run is one nix parses" {
+    // safe_form is the invocation an agent copies verbatim, so a flag rename
+    // that misses this table hands agents a command that fails. Checked against
+    // the parser's own tables rather than against a second list of flag names.
+    // Only safe_form: `examples` legitimately carry the user's flags
+    // (`--port`, `--prod`) for commands nix merely runs.
+    for (&specs) |*s| {
+        var it = std.mem.tokenizeScalar(u8, s.safe_form, ' ');
+        while (it.next()) |tok| {
+            if (tok.len < 2 or tok[0] != '-') continue;
+            std.testing.expect(grammar.knows(tok)) catch |e| {
+                std.debug.print("safe_form for \"{s}\" uses unknown flag \"{s}\"\n", .{ s.topic, tok });
+                return e;
+            };
+        }
+    }
+}
 
 test "every shortcut slot has a spec" {
     for (config.builtinShortcuts()) |b| {
