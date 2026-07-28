@@ -24,6 +24,7 @@ const Ctx = struct {
     work: []const u8,
     checks: usize = 0,
     fails: usize = 0,
+    skips: usize = 0,
 
     fn run(c: *Ctx, args: []const []const u8) !RunResult {
         var argv: std.ArrayList([]const u8) = .empty;
@@ -61,6 +62,21 @@ const Ctx = struct {
         if (res) |r| {
             std.debug.print("  code: {d}\n  stdout: {s}\n  stderr: {s}\n", .{ r.code, r.out, r.err });
         }
+    }
+
+    /// skip records a check that could not run here - a search path whose
+    /// external tool (rg, fd) is not installed. Counted and printed rather than
+    /// dropped in silence: a gate that leaves no trace reads exactly like a
+    /// check nobody wrote, and the tally at the end would call it a pass.
+    fn skip(c: *Ctx, name: []const u8, needs: []const u8) void {
+        c.skips += 1;
+        std.debug.print("skip {s} (needs {s})\n", .{ name, needs });
+    }
+
+    /// has reports whether a tool is on PATH, for gating the checks that shell
+    /// out to it.
+    fn has(c: *Ctx, name: []const u8) bool {
+        return proc.findInPath(c.arena, c.io, c.env, name) != null;
     }
 };
 
@@ -580,18 +596,36 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "+work", "--note", "whole", "workstream", "blocked" });
         c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "notes", "+work.md" })), "a group note lands in +group.md", r);
 
-        // The search view: rows are <key>.md:<line>:<text>, so the filename is
-        // the alias and a cross-project view needs no header.
-        r = try c.run(&.{ "--no-prompt", "--notes", "API" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:1:") != null and
-            std.mem.indexOf(u8, r.out, "blocked on the API key") != null, "--notes prints alias-keyed rows", r);
-        // No pattern lists everything, across every note.
+        // The search view is the `sg` pipeline pointed at the notes dir, so it
+        // needs ripgrep - and without it every one of these exits 1 on "rg not
+        // found", including the no-match check, which would pass for the wrong
+        // reason. Gate them the way the --grep checks below are gated.
+        if (c.has("rg")) {
+            // Rows are <key>.md:<line>:<text>, so the filename is the alias and
+            // a cross-project view needs no header.
+            r = try c.run(&.{ "--no-prompt", "--notes", "API" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:1:") != null and
+                std.mem.indexOf(u8, r.out, "blocked on the API key") != null, "--notes prints alias-keyed rows", r);
+            // No pattern lists everything, across every note.
+            r = try c.run(&.{ "--no-prompt", "--notes" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
+                std.mem.indexOf(u8, r.out, "+work.md:") != null, "--notes with no pattern lists every line", r);
+            // No match is exit 1 with nothing opened, the picker contract.
+            r = try c.run(&.{ "--no-prompt", "--notes", "zzz-no-such-note" });
+            c.check(r.code == 1, "--notes reports no matches with exit 1", r);
+        } else {
+            c.skip("--notes prints alias-keyed rows", "rg");
+            c.skip("--notes with no pattern lists every line", "rg");
+            c.skip("--notes reports no matches with exit 1", "rg");
+        }
+
+        // The empty case needs no search tool at all: with no notes directory
+        // --notes says so and exits 1 rather than handing rg a missing path.
+        // Pointed at the spare home, which nothing has captured a note into.
+        try c.env.put("NIX_HOME", home2);
         r = try c.run(&.{ "--no-prompt", "--notes" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
-            std.mem.indexOf(u8, r.out, "+work.md:") != null, "--notes with no pattern lists every line", r);
-        // No match is exit 1 with nothing opened, the picker contract.
-        r = try c.run(&.{ "--no-prompt", "--notes", "zzz-no-such-note" });
-        c.check(r.code == 1, "--notes reports no matches with exit 1", r);
+        try c.env.put("NIX_HOME", home);
+        c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "no notes yet") != null, "--notes with no notes dir explains and exits 1", r);
 
         // A note is keyed on the NAME, so removing the alias must not touch it -
         // and doctor reports the orphan rather than tidying it away.
@@ -1239,16 +1273,19 @@ pub fn main(init: std.process.Init) !void {
     {
         try writeFile(&c, join(&c, &.{ pa, "haystack.txt" }), "alpha\nneedle-here\nomega\n");
 
-        if (proc.findInPath(arena, io, c.env, "fd") != null) {
+        if (c.has("fd")) {
             var r = try c.run(&.{ "pa", "--no-prompt", "--find", "haystack" });
             c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "haystack.txt") != null and
                 std.mem.indexOf(u8, r.out, "\x1b[") == null, "--no-prompt --find prints uncoloured rows", r);
 
             r = try c.run(&.{ "pa", "--no-prompt", "--find", "zzznomatchzzz" });
             c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "no matches") != null, "--no-prompt --find reports no matches with exit 1", r);
+        } else {
+            c.skip("--no-prompt --find prints uncoloured rows", "fd");
+            c.skip("--no-prompt --find reports no matches with exit 1", "fd");
         }
 
-        if (proc.findInPath(arena, io, c.env, "rg") != null) {
+        if (c.has("rg")) {
             var r = try c.run(&.{ "pa", "--no-prompt", "--grep", "needle-here" });
             c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "haystack.txt") != null and
                 std.mem.indexOf(u8, r.out, "needle-here") != null and
@@ -1256,6 +1293,9 @@ pub fn main(init: std.process.Init) !void {
 
             r = try c.run(&.{ "pa", "--no-prompt", "--grep", "zzznomatchzzz" });
             c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "no matches") != null, "--no-prompt --grep reports no matches with exit 1", r);
+        } else {
+            c.skip("--no-prompt --grep prints uncoloured file:line:text", "rg");
+            c.skip("--no-prompt --grep reports no matches with exit 1", "rg");
         }
 
         // Picking a paste destination has no non-interactive equivalent, so the
@@ -1287,7 +1327,7 @@ pub fn main(init: std.process.Init) !void {
         c.check((r.code == 0 or r.code == 1) and shaped, "--doctor --json emits valid JSON with sections", r);
     }
 
-    std.debug.print("\ne2e: {d} checks, {d} failure(s)\n", .{ c.checks, c.fails });
+    std.debug.print("\ne2e: {d} checks, {d} failure(s), {d} skipped\n", .{ c.checks, c.fails, c.skips });
     if (c.fails > 0) {
         std.debug.print("scratch kept for inspection: {s}\n", .{root});
         std.process.exit(1);
