@@ -18,7 +18,13 @@ extern "kernel32" fn GetConsoleProcessList(lpdwProcessList: [*]u32, dwProcessCou
 /// than an answer, and reading "" as a decision would be a refusal (or a
 /// confirmation) dressed up as one.
 pub fn interactive() bool {
-    if (!is_windows) return std.posix.isatty(0);
+    // Off Windows: a tcgetattr that succeeds IS isatty - fd 0 only has terminal
+    // attributes when it is a terminal - and unlike Io.File.isTty it needs no
+    // Io handle, so the predicate stays callable from anywhere.
+    if (!is_windows) {
+        _ = std.posix.tcgetattr(0) catch return false;
+        return true;
+    }
     const h = GetStdHandle(STD_INPUT_HANDLE) orelse return false;
     var mode: u32 = 0;
     return GetConsoleMode(h, &mode) != 0;
@@ -307,6 +313,25 @@ extern "kernel32" fn LoadLibraryA(lpLibFileName: [*:0]const u8) callconv(.winapi
 extern "kernel32" fn GetProcAddress(hModule: *anyopaque, lpProcName: [*:0]const u8) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn GetLastError() callconv(.winapi) u32;
 
+/// ElevateError is spelled out rather than inferred because off Windows the
+/// function returns on its first line, and an inferred set would then hold only
+/// the errors that early return can produce. Callers that name
+/// error.ElevationDeclined (run.zig does, to report a refusal as a decision)
+/// would stop compiling for every non-Windows target - which is exactly what
+/// the linux compile check exists to catch, and did.
+pub const ElevateError = error{
+    /// No elevation here: not Windows, or shell32/ShellExecuteExW is missing.
+    ElevationUnsupported,
+    /// "No" at the UAC prompt.
+    ElevationDeclined,
+    /// The shell refused for any other reason.
+    SpawnFailed,
+    OutOfMemory,
+    /// A command string that is not valid WTF-8 cannot be handed to the wide
+    /// API. Unreachable in practice - argv arrives as WTF-8 already.
+    InvalidWtf8,
+};
+
 /// spawnElevated starts `command` in an ELEVATED shell of its own, after the
 /// UAC prompt the user answers. It never waits: an elevated process runs under
 /// a different token and cannot write into this console, so it gets its own
@@ -320,7 +345,7 @@ extern "kernel32" fn GetLastError() callconv(.winapi) u32;
 /// one: the elevated process is built by the shell, with the invoking user's
 /// own environment. Anything the command needs to inherit has to be written
 /// into the command string itself (see run.zig's elevated prelude).
-pub fn spawnElevated(arena: std.mem.Allocator, command: []const u8, cwd: []const u8, comspec: []const u8) !void {
+pub fn spawnElevated(arena: std.mem.Allocator, command: []const u8, cwd: []const u8, comspec: []const u8) ElevateError!void {
     if (!is_windows) return error.ElevationUnsupported;
     const shell32 = LoadLibraryA("shell32.dll") orelse return error.ElevationUnsupported;
     const exec: ShellExecuteExWFn = @ptrCast(@alignCast(GetProcAddress(shell32, "ShellExecuteExW") orelse
