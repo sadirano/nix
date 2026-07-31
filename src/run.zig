@@ -115,6 +115,19 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 pub const depth_var = "NIX_EXPORT_DEPTH";
 const max_depth = 2;
 
+/// The name the export was invoked under, published to the action it runs.
+///
+/// An export is a COPY of nix installed under the user's chosen name, so at
+/// runtime the process is `q.exe`, not `nix.exe`, and nothing else in the
+/// environment says which name that was. An action that has to recognise its own
+/// process - walking the ancestry to find where nix sits, say - would otherwise
+/// have to repeat the name as a literal in its command line, which goes stale
+/// silently the moment the `[bin]` key is renamed.
+///
+/// Without the extension, matching what the user typed and what a process name
+/// reads as (`q`, not `q.exe`).
+pub const export_var = "NIX_EXPORT";
+
 /// cmdExport runs a `[bin]` action export: the global command `ship`, resolved
 /// from the manifest to an alias and an action.
 ///
@@ -136,6 +149,7 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
         return 1;
     }
     try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+    try app.env.put(export_var, name);
 
     const machine_wide = std.mem.eql(u8, alias, actions.default_owner);
     var dir: []const u8 = undefined;
