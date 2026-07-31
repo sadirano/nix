@@ -140,21 +140,6 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     // Nothing is given up: ':' is not a legal alias name (validateAliasName
     // refuses it), so this token could not previously mean anything else - it
     // was an "unknown alias" error.
-    if (bareColon(args)) |pat| {
-        setGlobalFlags(app, args);
-        return palette.cmdActions(app, pat);
-    }
-
-    // A leading `:<name>` RUNS that machine-wide action, in the directory the
-    // user is standing in: `r :deploy`, `nix :deploy`. Same reading as the bare
-    // `:` above - one scope wider than `r <alias> :<name>` - and checked in the
-    // same place, before multicall desugaring, so every wrapper gets it at once.
-    // The bare form asks which actions exist; this one names the answer.
-    if (leadingActionCall(args)) |argv| {
-        setGlobalFlags(app, args);
-        return run_zig.cmdHere(app, argv);
-    }
-
     const mc_action = multicallAction(argv0) orelse blk: {
         // Not a builtin wrapper and not `nix` itself: it may be a [shortcuts]
         // rename, whose wrapper is installed under the custom name. Config is
@@ -178,6 +163,28 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         }
         break :blk null;
     };
+
+    // The colon forms, resolved AFTER argv0: a `[bin]` action export has already
+    // returned above, because the caller's words belong to that action - `ship :`
+    // and `ship :foo` are ship's arguments, not questions asked of nix.
+    //
+    // A bare `:` asks which actions exist, from any command. Naming one runs it,
+    // in the directory the user is standing in (`r :deploy`, `nix :deploy`) -
+    // the same colon as `r <alias> :<name>`, one scope wider.
+    if (bareColon(args)) |pat| {
+        setGlobalFlags(app, args);
+        return palette.cmdActions(app, pat);
+    }
+    if (leadingActionCall(args)) |argv| {
+        setGlobalFlags(app, args);
+        // ...except from the EDITOR, where "run it" was never the sensible
+        // reading. `e :deploy` opens where :deploy is defined, seeding a stub if
+        // it is not defined yet - `u <name>` for actions, which is what the
+        // user\ folder's convenience was.
+        if (mc_action != null and eql(mc_action.?, "edit")) return cmdEditAction(app, argv);
+        return run_zig.cmdHere(app, argv);
+    }
+
     if (mc_action) |action| {
         const d = desugarMultiCall(app.arena, action, args) catch |e| return e;
         if (d.is_nav) return navigate(app, d.nav_alias);
@@ -608,6 +615,65 @@ fn cmdEdit(app: *App, alias: []const u8, files: [][]const u8) !u8 {
     }
     try app.out.flush();
     return proc.runInherit(app.io, argv.items, dir) catch |e| {
+        try app.err.print("nix: editor {s}: {s}\n", .{ ed, @errorName(e) });
+        return 1;
+    };
+}
+
+/// cmdEditAction opens the file that defines a machine-wide action, seeding a
+/// stub when the name is new: `e :deploy` is `u deploy` for actions. Naming a
+/// thing and getting it open in the editor, created if absent, is the whole
+/// convenience the noir `user\` folder used to provide - the part that did not
+/// survive moving personal scripts into declared actions.
+///
+/// Machine-wide (`~/.nix/actions/_default.toml`) to match what `nix :<name>`
+/// runs: the pair has to name the same file, or editing would open one command
+/// and running would find another. `e <alias> :<name>` reaches a project's.
+///
+/// Only the FIRST name is used - `e :a :b` opens one file at one stub, and the
+/// chain form has no meaning for editing.
+fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
+    const call = switch (try run_zig.parseActionCall(app, argv)) {
+        .invalid => return 1,
+        .list => {
+            try app.err.writeAll("nix: name the action after ':' (e.g. e :deploy)\n");
+            return 1;
+        },
+        .call => |c| c,
+    };
+    const name = call.names[0];
+    const path = try actions.defaultPath(app.arena, app.home);
+    const body = app_zig.readFileMaybe(app, path) orelse "";
+
+    // Seed only what is missing. An existing action is opened untouched — the
+    // editor is not the place to discover nix rewrote your file. hasKey, not
+    // find: a stub written by an earlier `e :<name>` has an empty value, which
+    // parseTable drops, and find would report it missing every time.
+    if (!actions.hasKey(body, "actions", name)) {
+        var b: std.ArrayList(u8) = .empty;
+        try b.appendSlice(app.arena, body);
+        if (body.len > 0 and body[body.len - 1] != '\n') try b.append(app.arena, '\n');
+        // A file with no [actions] table yet (or none at all) needs the header
+        // before the first key, or the line parses as nothing.
+        if (std.mem.indexOf(u8, body, "[actions]") == null) {
+            if (body.len > 0) try b.append(app.arena, '\n');
+            try b.appendSlice(app.arena, "[actions]\n");
+        }
+        try b.appendSlice(app.arena, "\n# ");
+        try b.appendSlice(app.arena, name);
+        try b.appendSlice(app.arena, " - what it does (this comment is the description nix shows)\n");
+        try b.appendSlice(app.arena, name);
+        try b.appendSlice(app.arena, " = \"\"\n");
+        try util.writeFileAtomic(app.arena, app.io, path, b.items);
+        try app.err.print("nix: added a stub for :{s} in {s}\n", .{ name, path });
+    }
+
+    const ed = resolveEditor(app) orelse {
+        try app.err.writeAll("nix: no $EDITOR set and none of nvim/vim/code/nano/notepad found on PATH\n");
+        return 1;
+    };
+    try app.out.flush();
+    return proc.runInherit(app.io, &.{ ed, path }, app.home) catch |e| {
         try app.err.print("nix: editor {s}: {s}\n", .{ ed, @errorName(e) });
         return 1;
     };
