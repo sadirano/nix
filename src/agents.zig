@@ -1,13 +1,18 @@
 //! ~/.nix/AGENTS.md generation — an agent-facing guide to the installed
 //! command surface, written by --init/--sync alongside the shell snippet.
 //!
-//! The guide is an *installed artifact*, deliberately not a repo-level
-//! AGENTS.md: repo files are auto-read by agent tools the moment a stranger
-//! clones, which is the wrong consent model for machine-wide instructions
-//! (and reads as prompt injection). Written by --init, it exists only on
-//! machines whose owner installed nix, and --sync keeps it honest about
-//! [shortcuts] renames. nix never wires it into any agent's config — the
-//! README shows the one-line import users add themselves.
+//! The guide is an *installed artifact*, and what it describes is why: a whole
+//! MACHINE's command surface. Instructions for driving someone's machine have
+//! no business arriving in a clone, auto-read by their agent the moment they
+//! fetch a directory alias manager - that is the wrong consent model, and it
+//! reads as prompt injection. So this one is written by --init and exists only
+//! on machines whose owner installed nix, with --sync keeping it honest about
+//! [shortcuts] renames. nix never wires it into any agent's config - the README
+//! shows the one-line import users add themselves.
+//!
+//! The repo's own AGENTS.md is a different thing and not a contradiction: it is
+//! contributor documentation, scoped to this repository, no wider than the
+//! checkout it travels in. The rule is about SCOPE, not about the filename.
 
 const std = @import("std");
 const Io = std.Io;
