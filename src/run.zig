@@ -160,6 +160,65 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
     return runAction(app, cmd, ctx_alias, dir, action, false);
 }
 
+/// cmdHere runs `r :<name>` - a machine-wide action, in the directory the user
+/// is standing in. It is `[bin]`'s machine-wide export without the export: the
+/// same lookup, the same gate, the same run, reached by typing the action's
+/// name instead of installing a command for it.
+///
+/// MACHINE-WIDE ONLY (`~/.nix/actions/_default.toml`), never the cwd project's
+/// own actions. `:<name>` has to mean one command wherever it is typed - if it
+/// also read the project underfoot, the same words would run different things
+/// in different directories, and picking the "nearest" one is exactly the guess
+/// nix does not make. To run a project's action, name its alias: `r acme :build`.
+/// The alias containing the cwd is still resolved, but only for context (env,
+/// scripts on PATH, $NIX_ALIAS), the same way a machine-wide export gets it.
+pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
+    // Same parser as `r <alias> :name`, so the colon grammar - chains, the
+    // optional `--`, and "arguments go to a single action, not a chain" - is
+    // defined once and cannot drift between the two forms.
+    const call = switch (try parseActionCall(app, argv)) {
+        .invalid => return 1,
+        // Unreachable in practice: a bare `:` is routed to the palette before
+        // this is called. Kept as the honest reply if that ever changes.
+        .list => {
+            try app.err.writeAll("nix: name the action after ':' (e.g. r :deploy)\n");
+            return 1;
+        },
+        .call => |c| c,
+    };
+
+    var depth: u8 = 0;
+    if (app.env.get(depth_var)) |d| depth = std.fmt.parseInt(u8, d, 10) catch 0;
+    if (depth >= max_depth) {
+        try app.err.print("nix: :{s} called itself {d} levels deep - stopping\n", .{ call.names[0], depth });
+        return 1;
+    }
+    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try std.process.currentPath(app.io, &buf);
+    const dir = try app.arena.dupe(u8, buf[0..n]);
+    const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
+    const ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+
+    // A chain stops at the first failure, exactly as `r <alias> :a :b` does.
+    for (call.names) |name| {
+        const r = (try resolveExportAction(app, actions.default_owner, "", name)) orelse {
+            try app.err.print("nix: no machine-wide action \":{s}\"\n", .{name});
+            try app.err.writeAll("  (`nix :` lists every action; add one under [actions] in\n");
+            try app.err.writeAll("   ~/.nix/actions/_default.toml, or name the alias that owns it: `r <alias> :<name>`)\n");
+            return 1;
+        };
+        const cmd = try applyArgs(app.arena, r.command, call.args);
+        // from_project = false: _default.toml lives under ~/.nix, the user's own
+        // and ungated. A `sudo` command still routes through the gate.
+        if (!try provenance.gateAction(app, ctx_alias, dir, name, cmd, false, stripSudo(cmd) != null, .may_prompt)) return 1;
+        const code = try runAction(app, cmd, ctx_alias, dir, name, false);
+        if (code != 0) return code;
+    }
+    return 0;
+}
+
 /// resolveExportAction looks up the action a `[bin]` export names. ONE lookup
 /// for both sides of the feature - bin_exports calls it to validate and
 /// fingerprint a declaration, cmdExport calls it to run one - so the command a

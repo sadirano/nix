@@ -216,6 +216,12 @@ pub fn validateAliasName(name: []const u8) !void {
         // `+` is the group sigil (`pa+projects`); reserve it like `@` so member
         // names can never be confused with the member+group split. See groups.zig.
         if (c == '+') return error.PlusInName;
+        // `:` is the action sigil, and a LEADING one names an action to run in
+        // the current directory (`r :deploy`, main.zig). Reserve it like `@` and
+        // `+`: main.zig's dispatch has always claimed ':' could not be an alias,
+        // and until this check it could - `nix :x <path>` registered one, which
+        // no `:`-leading token could ever have reached again.
+        if (c == ':') return error.ColonInName;
         // A space gets its own error: it's the most common typo (`nix my app …`)
         // and "ControlInName" reads as gibberish for it.
         if (c == ' ') return error.SpaceInName;

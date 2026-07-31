@@ -360,6 +360,37 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "defonly") != null, "`--run :` lists machine-wide defaults too", r);
 
+        // `:<action>` with no alias: the machine-wide action, run where the user
+        // is standing. Reads as the alias-less form of `r <alias> :<name>`, the
+        // way a bare `:` is the alias-less form of `r <alias> :`.
+        r = try c.run(&.{":defonly"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "default-only") != null, "`:name` runs a machine-wide action", r);
+
+        // MACHINE-WIDE ONLY. pa's own `hello` prints from-project and the central
+        // layer's prints central-only; neither is in scope here, because `:name`
+        // has to mean one command wherever it is typed.
+        r = try c.run(&.{":hello"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-default") != null and
+            std.mem.indexOf(u8, r.out, "from-project") == null, "`:name` reads the machine-wide layer alone", r);
+
+        // And it runs in the CURRENT directory: the action writes a file, which
+        // has to land in the cwd rather than in any alias dir.
+        try writeFile(&c, join(&c, &.{ home, "actions", "_default.toml" }), "[actions]\nhello = \"echo from-default\"\nonly = \"echo from-default\"\ndefonly = \"echo default-only\"\nmark = \"echo x > colon-here.txt\"\n");
+        r = try c.run(&.{":mark"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ c.work, "colon-here.txt" }), ""), "x") != null, "`:name` runs in the current directory", r);
+
+        r = try c.run(&.{":nosuchdefault"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no machine-wide action") != null, "an unknown `:name` errors", r);
+
+        // The colon grammar is parsed once (parseActionCall), so the chain rule
+        // is the same one `r <alias> :a :b arg` follows.
+        r = try c.run(&.{ ":defonly", ":defonly", "arg" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "chain") != null, "arguments to a `:name` chain are refused", r);
+
+        // The sigil is reserved, which is what makes a leading `:` unambiguous.
+        r = try c.run(&.{ "a:b", join(&c, &.{ root, "colon" }) });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "action sigil") != null, "a colon in an alias name is rejected", r);
+
         r = try c.run(&.{ "_default", join(&c, &.{ root, "reserved" }) });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "reserved") != null, "registering the _default alias is rejected", r);
 

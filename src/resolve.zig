@@ -33,6 +33,7 @@ pub fn nameErrorText(e: anyerror) ?[]const u8 {
         error.PathSeparatorInName => "names can't contain / or \\",
         error.AtInName => "names can't contain @ (the segment sigil)",
         error.PlusInName => "names can't contain + (the group sigil)",
+        error.ColonInName => "names can't contain : (the action sigil)",
         error.SpaceInName => "names can't contain spaces",
         error.ControlInName => "names can't contain control characters",
         error.TomlMetaInName => "names can't contain [ ] = # or quotes",
