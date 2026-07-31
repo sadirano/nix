@@ -671,11 +671,13 @@ foreign = "warn"    # default: report it in --sync/--doctor, but never delete it
 
 `nix --doctor` reports the full picture: an export whose alias or source is gone, a new version awaiting your OK, an export edited in place, a declared export not yet installed, and any foreign file in `~/.nix/bin`.
 
+**[The cookbook](COOKBOOK.md)** collects the recipes this pattern is good for — an ad-hoc `sudo`, a `q` that closes the shell you typed it in, a `ps1` runner — plus the handful of things that bite people writing their first `_default.toml`.
+
 ## Tab completion
 
 On Unix-likes, every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports bash/zsh tab-completion of alias names via the `~/.nix/shell/nix.sh` snippet. The completer calls `nix --list-names` under the hood — a dedicated path that bypasses TOML parsing so Tab stays instant.
 
-On Windows there is no completion (and no shell snippet): the commands are plain `.exe`s on PATH and work in any shell as-is. Earlier versions generated `~/.nix/shell/nix.ps1` for PowerShell completion plus a `q` (exit) helper; `--sync` removes that retired file — if you used `q`, add `function q { exit }` to your `$PROFILE`.
+On Windows there is no completion (and no shell snippet): the commands are plain `.exe`s on PATH and work in any shell as-is. Earlier versions generated `~/.nix/shell/nix.ps1` for PowerShell completion plus a `q` (exit) helper; `--sync` removes that retired file. If you used `q`, [the cookbook](COOKBOOK.md#q--close-the-shell-you-typed-it-in) has a version that needs no profile glue and works in cmd and PowerShell alike — note that a `function q { exit }` in `$PROFILE` only ever worked in the shell that defined it.
 
 ## AI agents
 
