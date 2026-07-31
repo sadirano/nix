@@ -395,6 +395,20 @@ Run it elevated? [y/N]
 
 A remembered "yes" would mean an administrator command line nobody has read since the day it was approved, which is exactly the thing worth reading. Unattended — piped, redirected, or under `--no-prompt` — an elevated action refuses rather than running; it could never have answered UAC anyway.
 
+#### Vetted lines: `[confirm] trusted`
+
+That reasoning holds for an action that runs *whatever it is handed* — a passthrough like `sudo = "sudo {args}"` — and buys nothing for a fixed line you wrote once and re-read every time you type its name. `hosts` opens one file; there is no hidden command for the prompt to reveal. List those in `config.toml` and nix stops asking:
+
+```toml
+[confirm]
+# elevate these without nix asking first; UAC still does
+trusted = ["hosts", "env"]
+```
+
+It waives **nix's** confirmation and nothing else. UAC still prompts — that is the check that actually stops an unwanted elevation — and an unattended run still refuses, listed or not, because UAC cannot be answered where nobody is watching.
+
+The list lives in `config.toml`, not in an actions file, and that is deliberate: `config.toml` is yours and travels with no repo, so a cloned `actions.toml` can never grant itself the exemption. For the same reason a listed name is ignored the moment the invocation touches project bytes — listing `deploy` exempts *your* `deploy`, never a cloned repo's elevated one, and never a central action whose command runs a project script.
+
 ### Actions that arrived with a clone
 
 A project's `.nix/actions.toml` is committed, which means `git clone` brings it with the code, and `r acme :build` would run whatever it says. Choosing the *name* is not consent to the *command*. So the first run of a file nix hasn't seen approved shows what it is about to run:

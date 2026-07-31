@@ -40,6 +40,22 @@ pub const Config = struct {
     /// (`o +group`). Empty → per-OS defaults on Windows (wt/start), required on
     /// Unix (no probing).
     nav_terminal: []const u8 = "",
+    /// [confirm] trusted: action names that may elevate without nix's own
+    /// confirmation - UAC still asks, nix does not ask first.
+    ///
+    /// The prompt it waives exists because the UAC dialog names the SHELL, not
+    /// the command line it was handed, so for a stored action nix's prompt is
+    /// the only place that line is ever shown. That is worth keeping for an
+    /// action that runs whatever it is given (`sudo = "sudo {args}"`), and
+    /// worth nothing for a fixed line the user wrote once and reads every time
+    /// they type its name (`hosts`).
+    ///
+    /// It lives HERE, in config.toml, and not in an actions file, because
+    /// config.toml is the user's own and travels with no repo: a cloned
+    /// actions.toml can never grant itself the exemption. For the same reason
+    /// the exemption is refused when the invocation touches project bytes at
+    /// all - see provenance.decide.
+    confirm_trusted: []const []const u8 = &.{},
     /// [notify] on_finish: command template run after every foreground
     /// `r <alias> :action` finishes — the notification hook (e.g. hoot).
     /// Placeholders: {alias} {action} {exit} {status} {duration} {level}
@@ -221,6 +237,22 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             if (std.mem.eql(u8, key, "on_finish")) cfg.notify_on_finish = try arena.dupe(u8, stripQuotes(val_start));
             if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, stripQuotes(val_start));
             if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "confirm")) {
+            if (std.mem.eql(u8, key, "trusted")) {
+                // Same multi-line gather as [picker]'s arrays.
+                var buf: std.ArrayList(u8) = .empty;
+                try buf.appendSlice(arena, val_start);
+                while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
+                    i += 1;
+                    const cont = std.mem.trim(u8, all.items[i], " \t\r");
+                    if (cont.len > 0 and cont[0] == '#') continue;
+                    try buf.append(arena, ' ');
+                    try buf.appendSlice(arena, cont);
+                }
+                cfg.confirm_trusted = try parseStringArray(arena, buf.items);
+            }
             continue;
         }
         if (!std.mem.eql(u8, section, "picker")) continue;

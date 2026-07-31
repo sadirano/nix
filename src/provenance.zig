@@ -21,6 +21,7 @@ const actions = @import("actions.zig");
 const context = @import("context.zig");
 const proc = @import("proc.zig");
 const store = @import("store.zig");
+const config = @import("config.zig");
 
 const App = app_zig.App;
 
@@ -56,8 +57,27 @@ pub const Decision = enum {
 /// runs. It is not the same question as "did the name come from the project
 /// layer": a central, user-written action calling `python tools/deploy.py` still
 /// executes cloned code, and gating on who named it would have missed that.
-pub fn decide(elevated: bool, has_cloned: bool, implicit: bool, approved: bool, can_prompt: bool) Decision {
-    if (elevated) return if (can_prompt) .confirm_elevated else .refuse_elevated;
+/// `trusted` is the caller's answer to "is this name in config.toml's
+/// [confirm] trusted list" - the user declaring, in a file no clone can reach,
+/// that this particular action is a vetted line rather than an open door. It
+/// waives the confirmation and nothing else: UAC still asks, which is the check
+/// that actually stops an unwanted elevation.
+///
+/// It is deliberately ANDed with `!has_cloned`. A trusted name must not carry
+/// its exemption onto project bytes - `deploy` in the list must never silence
+/// the prompt for a cloned repo's own elevated `deploy`, nor for a central
+/// action whose command runs a project script. The exemption is for lines the
+/// user wrote and can re-read at any time, and cloned code is neither.
+///
+/// A non-interactive run still REFUSES rather than elevating unattended, listed
+/// or not: UAC cannot be answered where nobody is watching, so waiving nix's
+/// prompt there would only raise a dialog onto an empty desk.
+pub fn decide(elevated: bool, has_cloned: bool, implicit: bool, approved: bool, can_prompt: bool, trusted: bool) Decision {
+    if (elevated) {
+        if (!can_prompt) return .refuse_elevated;
+        if (trusted and !has_cloned) return .allow;
+        return .confirm_elevated;
+    }
     if (!has_cloned or implicit or approved) return .allow;
     return if (can_prompt) .confirm_unapproved else .refuse_unapproved;
 }
@@ -197,6 +217,16 @@ fn canPrompt(app: *App, mode: Mode) bool {
     return mode == .may_prompt and !app.no_prompt and interactive();
 }
 
+/// isConfirmTrusted reports whether config.toml's `[confirm] trusted` names this
+/// action. Read here rather than threaded in, so every caller of gateAction gets
+/// it without each having to remember to load config. A config that will not
+/// read means "not listed" - an unreadable file must fail toward the prompt.
+fn isConfirmTrusted(app: *App, name: []const u8) bool {
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return false;
+    for (cfg.confirm_trusted) |t| if (store.eqlFoldAscii(t, name)) return true;
+    return false;
+}
+
 /// gateAction decides whether a named action may run, printing and recording as
 /// `decide` dictates. `elevated` is passed in rather than detected here
 /// (run.stripSudo owns the marker) so the policy stays free of the run path.
@@ -233,7 +263,8 @@ pub fn gateAction(
     // Everything the user may want to read before answering: the declaration and
     // the scripts it points at.
     const viewable = try withDecl(app, decl, refs);
-    switch (decide(elevated, has_cloned, implicit, approved, canPrompt(app, mode))) {
+    const trusted = elevated and isConfirmTrusted(app, name);
+    switch (decide(elevated, has_cloned, implicit, approved, canPrompt(app, mode), trusted)) {
         .allow => return true,
         .refuse_elevated => {
             try app.err.print("nix: :{s} runs as administrator, which needs a confirmation:\n", .{name});
@@ -466,24 +497,45 @@ test "decide: elevated is answered before provenance, approval cannot suppress i
     for ([_]bool{ true, false }) |has_cloned| {
         for ([_]bool{ true, false }) |implicit| {
             for ([_]bool{ true, false }) |approved| {
-                try std.testing.expectEqual(Decision.confirm_elevated, decide(true, has_cloned, implicit, approved, true));
-                try std.testing.expectEqual(Decision.refuse_elevated, decide(true, has_cloned, implicit, approved, false));
+                try std.testing.expectEqual(Decision.confirm_elevated, decide(true, has_cloned, implicit, approved, true, false));
+                try std.testing.expectEqual(Decision.refuse_elevated, decide(true, has_cloned, implicit, approved, false, false));
             }
         }
     }
 }
 
+test "decide: [confirm] trusted waives the prompt, but never over cloned code" {
+    // Listed and nothing cloned in play: the user's own vetted line. UAC still
+    // asks; nix does not ask first. True regardless of the ledger, which the
+    // elevated path ignores either way.
+    for ([_]bool{ true, false }) |implicit| {
+        for ([_]bool{ true, false }) |approved| {
+            try std.testing.expectEqual(Decision.allow, decide(true, false, implicit, approved, true, true));
+        }
+    }
+    // The moment project bytes are involved the exemption is gone - a listed
+    // `deploy` must not silence the prompt for a cloned repo's own elevated
+    // `deploy`, nor for a central action that runs a project script.
+    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, false, false, true, true));
+    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, true, true, true, true));
+    // And it never turns a refusal into a run: UAC cannot be answered where
+    // nobody is watching, so a non-interactive elevated call still refuses.
+    try std.testing.expectEqual(Decision.refuse_elevated, decide(true, false, false, false, false, true));
+    // Unlisted is exactly the old behaviour.
+    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, false, false, false, true, false));
+}
+
 test "decide: only unapproved cloned code is gated" {
     // Nothing cloned in play - a central action naming no project script, or a
     // typed command: the user is the provenance.
-    try std.testing.expectEqual(Decision.allow, decide(false, false, false, false, true));
+    try std.testing.expectEqual(Decision.allow, decide(false, false, false, false, true, false));
     // A project under $home is code the user wrote, not code that arrived.
-    try std.testing.expectEqual(Decision.allow, decide(false, true, true, false, true));
+    try std.testing.expectEqual(Decision.allow, decide(false, true, true, false, true, false));
     // Approved bytes run without asking again - that is what approval buys.
-    try std.testing.expectEqual(Decision.allow, decide(false, true, false, true, true));
+    try std.testing.expectEqual(Decision.allow, decide(false, true, false, true, true, false));
     // Unapproved: ask if there is someone to ask, refuse if there is not.
-    try std.testing.expectEqual(Decision.confirm_unapproved, decide(false, true, false, false, true));
-    try std.testing.expectEqual(Decision.refuse_unapproved, decide(false, true, false, false, false));
+    try std.testing.expectEqual(Decision.confirm_unapproved, decide(false, true, false, false, true, false));
+    try std.testing.expectEqual(Decision.refuse_unapproved, decide(false, true, false, false, false, false));
 }
 
 test "reviewable: interpreted source yes, build output no" {
