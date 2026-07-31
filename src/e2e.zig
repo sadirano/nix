@@ -445,6 +445,26 @@ pub fn main(init: std.process.Init) !void {
         try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\n");
     }
 
+    // --- watch mode refusals (r --watch) ---------------------------------------
+    //
+    // The loop itself cannot be driven from here: it holds the terminal until
+    // Ctrl-C, and proving it reruns needs a real filesystem event with no way to
+    // stop afterwards. The DECISIONS around it are testable, and they are the
+    // part that has to hold for an agent - watch.zig unit-tests the ignore rule
+    // and the notification-buffer walk, which is where the substance is.
+    {
+        var r = try c.run(&.{ "--no-prompt", "pa", "--run", "--watch", ":hello" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--no-prompt") != null, "--watch refuses under --no-prompt rather than blocking forever", r);
+
+        r = try c.run(&.{ "pa", "--run", "--watch", "--outside", ":hello" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--outside") != null, "--watch and --outside refuse each other", r);
+
+        // The refusals must not be the flag going unrecognized: without them,
+        // the same command runs once and exits 0.
+        r = try c.run(&.{ "pa", "--run", ":hello" });
+        c.check(r.code == 0, "the same action without --watch still runs once", r);
+    }
+
     // --- provenance gate (cloned actions and scripts) --------------------------
     // On its own alias: every check here turns on approval state, and sharing pa
     // would make these tests and the ones above depend on each other's order.

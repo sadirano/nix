@@ -69,6 +69,10 @@ pub const Config = struct {
     /// [bin] foreign: strictness for files in ~/.nix/bin that nix didn't
     /// install (see ForeignPolicy). Default warn.
     bin_foreign: ForeignPolicy = .warn,
+    /// [watch] exclude: extra paths `r --watch` ignores, ADDED to watch's own
+    /// defaults (never replacing them - the defaults are what stops a run's own
+    /// output from triggering the next run). See watch.excludeDefaults.
+    watch_exclude: []const []const u8 = &.{},
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -150,8 +154,9 @@ pub fn sweptPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 }
 
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
-/// [grep] all, [nav] terminal, [notify] on_finish, and [bin] foreign. Unknown
-/// sections are ignored. A missing file yields the zero Config.
+/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted, [bin] foreign,
+/// and [watch] exclude. Unknown sections are ignored. A missing file yields the
+/// zero Config.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     const p = try configPath(arena, home);
     const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
@@ -187,17 +192,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             // which would shadow the canonical binary in ~/.nix/bin.
             var customs: [][]const u8 = undefined;
             if (val_start.len > 0 and val_start[0] == '[') {
-                // Gather to the closing ']' (may span lines), like [picker].
-                var buf: std.ArrayList(u8) = .empty;
-                try buf.appendSlice(arena, val_start);
-                while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
-                    i += 1;
-                    const cont = std.mem.trim(u8, all.items[i], " \t\r");
-                    if (cont.len > 0 and cont[0] == '#') continue;
-                    try buf.append(arena, ' ');
-                    try buf.appendSlice(arena, cont);
-                }
-                customs = try parseStringArray(arena, buf.items);
+                customs = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
             } else {
                 customs = try arena.alloc([]const u8, 1);
                 customs[0] = stripQuotes(val_start);
@@ -241,17 +236,15 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         }
         if (std.mem.eql(u8, section, "confirm")) {
             if (std.mem.eql(u8, key, "trusted")) {
-                // Same multi-line gather as [picker]'s arrays.
-                var buf: std.ArrayList(u8) = .empty;
-                try buf.appendSlice(arena, val_start);
-                while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
-                    i += 1;
-                    const cont = std.mem.trim(u8, all.items[i], " \t\r");
-                    if (cont.len > 0 and cont[0] == '#') continue;
-                    try buf.append(arena, ' ');
-                    try buf.appendSlice(arena, cont);
-                }
-                cfg.confirm_trusted = try parseStringArray(arena, buf.items);
+                cfg.confirm_trusted = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, section, "watch")) {
+            // Additions to watch's ignore defaults, never a replacement - see
+            // Config.watch_exclude.
+            if (std.mem.eql(u8, key, "exclude")) {
+                cfg.watch_exclude = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
             }
             continue;
         }
@@ -259,19 +252,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         if (std.mem.eql(u8, key, "exclude") or std.mem.eql(u8, key, "exclude_extra") or
             std.mem.eql(u8, key, "search_roots"))
         {
-            // Gather text until the array's closing ']' (may span lines).
-            // Comment lines inside the array are skipped — their quoted text
-            // must not parse as elements, nor a ']' in one end the array.
-            var buf: std.ArrayList(u8) = .empty;
-            try buf.appendSlice(arena, val_start);
-            while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
-                i += 1;
-                const cont = std.mem.trim(u8, all.items[i], " \t\r");
-                if (cont.len > 0 and cont[0] == '#') continue;
-                try buf.append(arena, ' ');
-                try buf.appendSlice(arena, cont);
-            }
-            const arr = try parseStringArray(arena, buf.items);
+            const arr = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
             if (std.mem.eql(u8, key, "exclude")) {
                 cfg.picker_exclude = arr;
             } else if (std.mem.eql(u8, key, "exclude_extra")) {
@@ -363,6 +344,27 @@ pub fn pickerExcludes(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: C
         try out.append(arena, f);
     }
     return out.items;
+}
+
+/// gatherArray collects an array value's text starting at `val_start`,
+/// following it across lines to the closing ']' and advancing `i` past the ones
+/// it consumed. Comment lines inside the array are skipped: their quoted text
+/// must not parse as elements, nor a ']' in one end the array early.
+///
+/// Every multi-line array in this file goes through here. Four hand-written
+/// copies of the same loop is how one of them ends up with a subtly different
+/// idea of where an array stops.
+fn gatherArray(arena: std.mem.Allocator, all: []const []const u8, i: *usize, val_start: []const u8) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, val_start);
+    while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i.* + 1 < all.len) {
+        i.* += 1;
+        const cont = std.mem.trim(u8, all[i.*], " \t\r");
+        if (cont.len > 0 and cont[0] == '#') continue;
+        try buf.append(arena, ' ');
+        try buf.appendSlice(arena, cont);
+    }
+    return buf.items;
 }
 
 /// parseBool reads a TOML-ish boolean: true/1/yes/on (case-insensitive) → true;
