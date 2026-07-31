@@ -498,6 +498,20 @@ pub fn main(init: std.process.Init) !void {
         // ...and it refuses by showing the line UAC would not have shown.
         c.check(std.mem.indexOf(u8, r.err, "sudo echo elevated") != null, "the elevated refusal shows the command UAC would hide", r);
 
+        // `[confirm] trusted` waives nix's confirmation for a vetted line - but
+        // it must NOT reach a project's own elevated action of the same name,
+        // or a cloned repo would inherit an exemption the user wrote for their
+        // own command. Unattended still refuses either way (UAC is unanswerable
+        // here), so the refusal message is what the check reads.
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[confirm]\ntrusted = [\"install\"]\n");
+        r = try c.run(&.{ "pg", "--run", ":install" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null, "a listed name does not exempt a PROJECT elevated action", r);
+        // The list itself parses and is scoped to the [confirm] section.
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[confirm]\ntrusted = [\n  # a comment inside the array\n  \"install\",\n  \"other\",\n]\n");
+        r = try c.run(&.{ "pg", "--run", ":install" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null, "a multi-line trusted array parses without breaking the gate", r);
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
+
         // Scripts beside the actions file are the same cloned code reached by a
         // different spelling, so `r pg hello` is gated too.
         const script = join(&c, &.{ pg, ".nix", "scripts", if (proc.is_windows) "hello.cmd" else "hello.sh" });
