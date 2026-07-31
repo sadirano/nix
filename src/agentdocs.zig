@@ -276,6 +276,11 @@ pub const specs = [_]Spec{
         \\you need. `--deps :<name>` runs the [deps] graph first (see
         \\`--agent actions`).
         \\
+        \\`--watch` reruns the command every time a file under the alias dir
+        \\changes, and does not return until Ctrl-C. NEVER use it: it is refused
+        \\under --no-prompt for exactly that reason, and the single run you
+        \\actually want is the same command without the flag.
+        \\
         \\On FAILURE, nix waits for Enter if it is the only process attached to
         \\its console - a shortcut launch, where the window would otherwise close
         \\on the error message. It never holds in a shell you already had open,

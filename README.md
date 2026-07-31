@@ -508,6 +508,32 @@ started beta :deploy
 
 The single pick is unchanged: one action still runs right here, in the foreground, with its `[notify]` hook. A fan-out has no finish for nix to observe, so it reports only that everything started — the windows are where you watch them.
 
+### Rerun on change (`--watch`)
+
+The inner loop is save → test → look. `r <alias> --watch :test` closes it: the action runs once, then again every time a file under the alias directory changes, until you press Ctrl-C. No watchexec or nodemon to install — it's a `ReadDirectoryChangesW` call, so it's Windows-only for now.
+
+```
+r acme --watch :test
+r acme --watch zig build test     # any r command, not just a saved action
+```
+
+Between runs it prints a status line to stderr (so a piped transcript still separates the command's own output from nix's bookkeeping):
+
+```
+watching acme - 3 runs, last: ok in 1m23s - Ctrl-C to stop
+```
+
+**An in-flight run is never killed.** Everything saved while a build is running coalesces into exactly one follow-up run when it finishes — cutting a compiler off mid-write is how you get a corrupt cache or a half-written `zig-out`, and the worst case here is waiting out one stale run. Bursts are debounced ~300ms, so one save that touches five files is one rerun, not five.
+
+Ignored by default: `.git`, `.hg`, `.svn`, `.zig-cache`, `zig-out`, `node_modules`, `dist`, `target`, and `.nix` — the directories a run *writes*, which would otherwise make every run trigger the next one forever. These are matched as whole path components, so `src/targeting.zig` still triggers a rerun even though `target` is on the list. Add your own with `[watch] exclude`; it **adds to** the defaults rather than replacing them (a config that switched them off would be an infinite rebuild loop):
+
+```toml
+[watch]
+exclude = ["coverage", "docs/generated"]
+```
+
+An entry containing a separator is matched as a path fragment instead of a component. Every rerun fires `[notify] on_finish` as usual, which is the save → build → toast loop. `--watch` refuses to combine with `--outside` (one holds the terminal, the other hands it back) and refuses under `--no-prompt` (it is nothing but blocking) — so agents run the action once instead.
+
 ### Completion notifications
 
 Long actions launched via `r` finish silently — and `long-cmd && notify` misses the one case that most deserves a notification (failure). Set a `[notify] on_finish` hook in `~/.nix/config.toml` and **every** foreground `:action` reports its outcome through it, single runs and `r +group :build` fan-outs alike:

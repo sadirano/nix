@@ -17,6 +17,7 @@ const provenance = @import("provenance.zig");
 const deps = @import("deps.zig");
 const exports = @import("exports.zig");
 const env_zig = @import("env.zig");
+const watch = @import("watch.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -31,21 +32,48 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     var argv = action_args;
     var outside = false;
     var with_deps = false;
-    // Both flags sit before the action, and either order reads naturally, so
-    // accept them in either.
+    var watching = false;
+    // All three flags sit before the action, and any order reads naturally, so
+    // accept them in any.
     while (argv.len > 0) {
         if (eql(argv[0], "-o") or eql(argv[0], "--outside")) {
             outside = true;
         } else if (eql(argv[0], "--deps")) {
             with_deps = true;
+        } else if (eql(argv[0], "--watch")) {
+            watching = true;
         } else break;
         argv = argv[1..];
     }
     if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
+    if (watching) {
+        // --outside hands the terminal straight back, and a detached command
+        // has no finish to observe: the loop would spin, spawning a window per
+        // change with nothing reporting whether any of them worked.
+        if (outside) {
+            try app.err.writeAll("nix: --watch and --outside pull in opposite directions - one holds this terminal to report each run, the other hands it back\n");
+            return 1;
+        }
+        // --no-prompt is a declaration that nothing may block. --watch is
+        // nothing BUT blocking: it occupies the terminal until Ctrl-C. An agent
+        // that wants the same effect runs the action once.
+        if (app.no_prompt) {
+            try app.err.writeAll("nix: --watch holds the terminal until Ctrl-C, which --no-prompt rules out - run the action once instead\n");
+            return 1;
+        }
+    }
     if (argv.len == 0) {
         try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `r <alias> :`)\n");
         return 1;
     }
+    if (watching) return watchLoop(app, alias, target, argv, with_deps);
+    return runOnce(app, alias, target, argv, outside, with_deps);
+}
+
+/// runOnce is one pass of `r`: a named action (or chain), a project script, or a
+/// literal command. Split out from cmdRun so watch mode has a body to call
+/// again - everything before it is flag parsing that must happen exactly once.
+fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8, outside: bool, with_deps: bool) !u8 {
     // Named action(s): a leading ':' on the first token (`r <alias> :test`). A
     // bare ':' lists the alias's actions. Runs as a shell string in the alias dir.
     if (argv[0].len > 0 and argv[0][0] == ':') {
@@ -105,6 +133,57 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
         return 1;
     };
+}
+
+/// watchLoop is `--watch`: run, then rerun whenever something under the alias
+/// dir changes, until Ctrl-C. A held-open foreground command, never a daemon -
+/// the watch lives exactly as long as this invocation, so there is no state to
+/// clean up and nothing to forget is running.
+///
+/// The status line goes to STDERR, so a `--watch` transcript still pipes: the
+/// command's own output stays on stdout, unmixed with nix's bookkeeping.
+///
+/// Every rerun goes through runOnce, which means an action's [notify] on_finish
+/// fires each time - the save/build/toast loop this exists to close.
+fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8, with_deps: bool) !u8 {
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const exclude_set = try watch.excludes(app.arena, cfg);
+    var w = watch.Watcher.init(app.arena, app.io, dir) catch |e| {
+        try app.err.print("nix: --watch: cannot watch {s} ({s})\n", .{ dir, @errorName(e) });
+        if (!proc.is_windows) try app.err.writeAll("  watch mode is Windows-only for now\n");
+        return 1;
+    };
+    defer w.deinit();
+
+    var runs: usize = 0;
+    var code: u8 = 0;
+    while (true) {
+        runs += 1;
+        const t0 = Io.Clock.awake.now(app.io).nanoseconds;
+        code = try runOnce(app, alias, dir, argv, false, with_deps);
+        const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
+        const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
+
+        try app.out.flush();
+        try app.err.print("watching {s} - {d} run{s}, last: {s} in {s} - Ctrl-C to stop\n", .{
+            alias,
+            runs,
+            if (runs == 1) "" else "s",
+            if (code == 0) "ok" else try std.fmt.allocPrint(app.arena, "exit {d}", .{code}),
+            try notify.fmtDuration(app.arena, ms),
+        });
+        try app.err.flush();
+
+        // Blocks here until something worth rerunning for changes. Null means
+        // the watch itself ended (the directory went away, a handle failed);
+        // the last run's exit code is the honest answer for that.
+        const hit = (try w.next(exclude_set)) orelse {
+            try app.err.writeAll("nix: --watch: the watch ended\n");
+            return code;
+        };
+        try app.err.print("\n==> {s} changed - rerunning\n", .{hit});
+        try app.err.flush();
+    }
 }
 
 /// The environment variable that stops an exported action from re-entering
