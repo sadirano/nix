@@ -640,6 +640,8 @@ ship = ":deploy"                # an action
 
 **Your words go to the action, never to nix.** `ship --no-prompt` hands `--no-prompt` to the command; at the call site `ship` is a program, not a nix invocation wearing a program's name. The cost, deliberately accepted: `ship --help` is your script's help, and `nix --actions` is where you ask nix about it.
 
+The action is told the name it was invoked under, as **`NIX_EXPORT`** (`ship`, without the extension). Since the installed file is a copy of nix renamed by you, at runtime the process is `ship.exe` and nothing else in the environment says so — an action that has to recognise its own process, walking the ancestry to find where nix sits for instance, would otherwise repeat the name as a literal that goes stale the moment you rename the `[bin]` key.
+
 The value is **one bare action name**. `-o :build :test` is refused rather than quietly read as a path, which keeps permitting flags and chains later a widening rather than a change of meaning.
 
 The same line in `~/.nix/actions/<alias>.toml` keeps the export private to this machine; in `~/.nix/actions/_default.toml` it becomes a **personal global with no alias directory**, so it runs in *the current* one — the case a loose `.cmd` on your PATH usually served, now declared in one greppable file that `--doctor` keeps honest:

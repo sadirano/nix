@@ -1041,9 +1041,9 @@ pub fn main(init: std.process.Init) !void {
         const pa_actions = join(&c, &.{ pa, ".nix", "actions.toml" });
         const restore = readFileOr(&c, pa_actions, "");
         const decls =
-            "[actions]\nship = \"echo shipped\"\nwhoson = \"echo alias=%NIX_ALIAS%\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n";
+            "[actions]\nship = \"echo shipped\"\nwhoson = \"echo alias=%NIX_ALIAS% export=%NIX_EXPORT%\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n";
         const posix_decls =
-            "[actions]\nship = \"echo shipped\"\nwhoson = \"echo alias=$NIX_ALIAS\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n";
+            "[actions]\nship = \"echo shipped\"\nwhoson = \"echo alias=$NIX_ALIAS export=$NIX_EXPORT\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n";
         try writeActions(&c, "pa", pa, if (proc.is_windows) decls else posix_decls);
 
         const ext = if (proc.is_windows) ".exe" else "";
@@ -1086,14 +1086,22 @@ pub fn main(init: std.process.Init) !void {
             c.exe = join(&c, &.{ home, "bin", "whence.exe" });
             r = try c.run(&.{});
             c.exe = real_exe;
-            c.check(r.code == 0 and hasLineFold(r.out, "alias=pa"), "an export runs in its alias dir from anywhere", r);
+            // Substring, not hasLineFold: the action echoes both variables on
+            // one line, so a whole-line match would pin the two checks together.
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "alias=pa") != null, "an export runs in its alias dir from anywhere", r);
+            // ...and it knows the NAME it was invoked under. An export is a copy
+            // of nix renamed by the user, so at runtime the process is
+            // `whence.exe`, and nothing else in the environment says so. An
+            // action that has to recognise its own process would otherwise
+            // repeat the name as a literal that goes stale when [bin] is edited.
+            c.check(std.mem.indexOf(u8, r.out, "export=whence") != null, "an export publishes its own name as NIX_EXPORT", r);
         }
 
         // Consent is per version, and an action's version is its command text.
         try writeActions(&c, "pa", pa, if (proc.is_windows)
-            "[actions]\nship = \"echo shipped-v2\"\nwhoson = \"echo alias=%NIX_ALIAS%\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n"
+            "[actions]\nship = \"echo shipped-v2\"\nwhoson = \"echo alias=%NIX_ALIAS% export=%NIX_EXPORT%\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n"
         else
-            "[actions]\nship = \"echo shipped-v2\"\nwhoson = \"echo alias=$NIX_ALIAS\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n");
+            "[actions]\nship = \"echo shipped-v2\"\nwhoson = \"echo alias=$NIX_ALIAS export=$NIX_EXPORT\"\n[bin]\nsend = \":ship\"\nwhence = \":whoson\"\n");
         r = try c.run(&.{"--doctor"});
         c.check(std.mem.indexOf(u8, r.out, "not yet allowed") != null, "editing an exported action re-arms consent", r);
         r = try c.run(&.{"--sync-bin"});
