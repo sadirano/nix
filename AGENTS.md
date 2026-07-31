@@ -1,6 +1,13 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Contributor guide for working **on** nix - build, test, and the architecture that
+takes several files to see. Coding agents read this file automatically; humans
+are the other audience, and nothing here is written only for a machine.
+
+> Not to be confused with `~/.nix/AGENTS.md`, which nix *generates* on
+> `--init`/`--sync` (see `src/agents.zig`). That one teaches an agent the
+> command surface of a machine where the user installed nix. This one is scoped
+> to this repository and travels with it, the way any contributor doc does.
 
 ## What this is
 
@@ -81,10 +88,10 @@ drift. Adding a command means touching them, not just the dispatcher:
   line, `~/.nix/AGENTS.md`, and `<cmd> --agent` / `nix --agent <topic>`. Every
   grammar row declares which spec topic covers it (`spec: ""` means "help line
   only"), and a test checks both directions.
-- `agents.zig` - generates `~/.nix/AGENTS.md` at `--init`/`--sync` time.
-  **Never add a repo-root `AGENTS.md`**: the guide is an installed artifact,
-  written only on machines whose owner installed nix, because a repo file every
-  cloner's agent auto-reads is the wrong consent model.
+- `agents.zig` - renders `~/.nix/AGENTS.md` at `--init`/`--sync` time. That
+  guide describes a whole *machine*, so it stays an installed artifact and is
+  never shipped in a repo: instructions for driving someone's machine have no
+  business arriving in a clone. Edit the template here, never the installed file.
 
 ### The shared seam
 
