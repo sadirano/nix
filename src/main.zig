@@ -145,6 +145,16 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         return palette.cmdActions(app, pat);
     }
 
+    // A leading `:<name>` RUNS that machine-wide action, in the directory the
+    // user is standing in: `r :deploy`, `nix :deploy`. Same reading as the bare
+    // `:` above - one scope wider than `r <alias> :<name>` - and checked in the
+    // same place, before multicall desugaring, so every wrapper gets it at once.
+    // The bare form asks which actions exist; this one names the answer.
+    if (leadingActionCall(args)) |argv| {
+        setGlobalFlags(app, args);
+        return run_zig.cmdHere(app, argv);
+    }
+
     const mc_action = multicallAction(argv0) orelse blk: {
         // Not a builtin wrapper and not `nix` itself: it may be a [shortcuts]
         // rename, whose wrapper is installed under the custom name. Config is
@@ -204,6 +214,22 @@ fn bareColon(args: [][]const u8) ?[][]const u8 {
         return args[i + 1 ..];
     }
     return null; // nothing but global flags: not the colon form
+}
+
+/// leadingActionCall reports whether the first non-global token is `:<name>` -
+/// an action to run in the current directory - and returns that token onward,
+/// which is what parseActionCall expects (names first, then arguments).
+///
+/// Only a LEADING one counts, the same rule bareColon follows: in
+/// `r acme :build` the colon has an alias in front of it and already means
+/// something. Returning null there leaves that path untouched.
+fn leadingActionCall(args: [][]const u8) ?[][]const u8 {
+    for (args, 0..) |a, i| {
+        if (isGlobalFlag(a)) continue;
+        if (a.len > 1 and a[0] == ':') return args[i..];
+        return null; // a real first word: an alias, a flag, something else
+    }
+    return null;
 }
 
 /// setGlobalFlags scans the tokens nix itself consumes for the process-wide
@@ -1052,6 +1078,7 @@ fn printUsage(app: *App) !void {
         \\  nix <alias> --<action>      run an action against an alias
         \\  nix --<command>             system-wide command
         \\  nix <seg>@<alias>           resolve a sub-alias segment (see README)
+        \\  nix :<action>               run a machine-wide action here (`nix :` lists them)
         \\
         \\SHORTCUTS  (installed by `nix --init`; rename in config.toml [shortcuts])
         \\
