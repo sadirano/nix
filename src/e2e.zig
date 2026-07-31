@@ -1152,6 +1152,33 @@ pub fn main(init: std.process.Init) !void {
         c.exe = real_exe;
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "invalid group token") != null, "o with a malformed group token errors, no picker", r);
 
+        // `e :<name>` EDITS the action rather than running it - `u <name>` for
+        // actions. attrib stands in for the editor: it takes a path, prints one
+        // line and exits, where the default notepad would block CI on a window.
+        const e_exe = join(&c, &.{ root, "e.exe" });
+        try writeFile(&c, e_exe, exe_bytes);
+        try c.env.put("EDITOR", "attrib");
+        const def_actions = join(&c, &.{ home, "actions", "_default.toml" });
+        const before = readFileOr(&c, def_actions, "");
+        c.exe = e_exe;
+        r = try c.run(&.{":brandnew"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "added a stub") != null and
+            std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), "brandnew") != null, "`e :name` seeds a stub for a new action", r);
+        // Idempotent: the stub it just wrote has an empty value, which
+        // parseTable drops - hasKey is what keeps this from stuttering.
+        r = try c.run(&.{":brandnew"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "added a stub") == null and
+            std.mem.count(u8, readFileOr(&c, def_actions, ""), "brandnew = ") == 1, "`e :name` on an existing action does not re-seed", r);
+        // And it did not disturb what was already there.
+        c.check(std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), before) != null or before.len == 0, "`e :name` appends without rewriting the file", r);
+        c.exe = real_exe;
+        try c.env.put("EDITOR", "notepad");
+
+        // An unfilled stub is deliberately not runnable: parseTable drops an
+        // empty command, so `:name` reports it missing rather than running "".
+        r = try c.run(&.{":brandnew"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no machine-wide action") != null, "an unfilled stub is not runnable", r);
+
         // A [shortcuts] rename: a wrapper installed under the custom name must
         // desugar to the builtin slot's action, not fall through to `nix <alias>`.
         const show_exe = join(&c, &.{ root, "show.exe" });

@@ -118,6 +118,46 @@ pub fn commentText(line: []const u8) ?[]const u8 {
     return null; // nothing but rule characters
 }
 
+/// hasKey reports whether `section` DECLARES `name` at all - including an entry
+/// whose value is empty, which parseTable drops on purpose (an action with no
+/// command is not runnable, and must not appear in listings or be runnable by
+/// accident). Editing needs that weaker question: `e :deploy` writes an empty
+/// stub for the user to fill in, and must not write a second one over it the
+/// next time it is called.
+pub fn hasKey(data: []const u8, section: []const u8, name: []const u8) bool {
+    var in_section = false;
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
+            in_section = store.eqlFoldAscii(line[1..end], section);
+            continue;
+        }
+        if (!in_section) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        if (store.eqlFoldAscii(std.mem.trim(u8, line[0..eq], " \t"), name)) return true;
+    }
+    return false;
+}
+
+test "hasKey sees an empty stub that parseTable drops" {
+    const body = "[actions]\n\n# deploy - todo\ndeploy = \"\"\nbuild = \"zig build\"\n";
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    // parseTable skips the empty one, which is why hasKey exists.
+    const parsed = try parseTable(arena_state.allocator(), body, "actions");
+    try std.testing.expect(find(parsed, "deploy") == null);
+    try std.testing.expect(find(parsed, "build") != null);
+    try std.testing.expect(hasKey(body, "actions", "deploy"));
+    try std.testing.expect(hasKey(body, "actions", "DEPLOY")); // case-insensitive
+    try std.testing.expect(hasKey(body, "actions", "build"));
+    try std.testing.expect(!hasKey(body, "actions", "nope"));
+    // A key outside the section does not count.
+    try std.testing.expect(!hasKey("[bin]\ndeploy = \"x\"\n", "actions", "deploy"));
+}
+
 /// find returns the command for `name` (case-insensitive), or null.
 pub fn find(list: []const Action, name: []const u8) ?[]const u8 {
     for (list) |a| if (store.eqlFoldAscii(a.name, name)) return a.command;
