@@ -315,7 +315,13 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 - [ ] `scoop update nix-nightly` still works.
 - [ ] Release notes lead with an **Upgrading** section if anything breaks.
 
-## 13. Promote
+<!-- gate:stop - everything below is confirmed AFTER publishing, so the stable
+     tag does NOT wait on it. `status` still lists these, and they are still
+     yours to do; they simply cannot block the push that creates the thing they
+     describe. Do not move this marker upward: anything above it is what the
+     gate actually enforces. -->
+
+## 13. Promote (post-publish, not gated)
 
 - [ ] `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z` (the same commit
       as the candidate unless fixes landed - if they did, cut a new pre and
