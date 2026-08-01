@@ -32,9 +32,23 @@ note() { printf '%s\n' "$*"; }
 # the stable tag itself resolve to ONE issue: v0.11.0-pre3 -> v0.11.0.
 versionOf() { printf '%s' "${1%%-*}"; }
 
-# uncheckedLines lists the boxes still open. Issue bodies come back from the
-# API with CRLF, hence the tolerant line end.
-uncheckedLines() { grep -n '^- \[ \]' || true; }
+# GATE_STOP marks the end of the gated region. Items below it are confirmed
+# AFTER publishing - the release is Latest, Excavator moved the bucket, `scoop
+# update nix` reports the new version - so gating on them would require
+# certifying the future in order to be allowed to create it. The v0.11.0 cycle
+# ended with exactly that deadlock and only cleared it by ticking four boxes
+# describing a release that did not exist yet, which is the sort of tick that
+# teaches you to stop trusting the whole record.
+GATE_STOP='^<!-- gate:stop'
+
+# uncheckedLines lists the boxes still open IN THE GATED REGION. Issue bodies
+# come back from the API with CRLF, hence the tolerant line end.
+uncheckedLines() { sed "/$GATE_STOP/q" | grep -n '^- \[ \]' || true; }
+
+# postPublishLines lists the open boxes BELOW the marker: still real work, just
+# not the tag's business. Reported by `status` so they cannot be forgotten
+# merely because nothing blocks on them.
+postPublishLines() { sed -n "/$GATE_STOP/,\$p" | grep -n '^- \[ \]' || true; }
 
 # candidateSha reads the commit out of the "Candidate: <tag> (<sha>)" header CI
 # stamps. Empty means the checklist never named a build, which is itself a
@@ -159,6 +173,15 @@ cmdStatus() {
         note "$(printf '%s\n' "$left" | wc -l | tr -d ' ') item(s) left:"
         printf '%s\n' "$left"
     fi
+    # Shown separately, never counted: these block nothing, and the point of
+    # printing them is that "the tag will publish" must not read as "done".
+    local after
+    after="$(printf '%s\n' "$body" | postPublishLines)"
+    if [ -n "$after" ]; then
+        note ""
+        note "$(printf '%s\n' "$after" | wc -l | tr -d ' ') post-publish item(s) (not gated):"
+        printf '%s\n' "$after"
+    fi
 }
 
 cmdClose() {
@@ -204,6 +227,17 @@ cmdSelftest() {
     got="$(printf -- '- [x] all done\n' | uncheckedLines | wc -l | tr -d ' ')"
     [ "$got" = "0" ] || die "uncheckedLines on a complete list: got $got want 0"
 
+    # The gated region ends at the marker, and everything below it is reported
+    # but never counted.
+    local split
+    split="$(printf -- '- [ ] gated\n<!-- gate:stop -->\n- [ ] after one\n- [ ] after two\n')"
+    got="$(printf '%s\n' "$split" | uncheckedLines | wc -l | tr -d ' ')"
+    [ "$got" = "1" ] || die "uncheckedLines past gate:stop: got $got want 1"
+    got="$(printf '%s\n' "$split" | postPublishLines | wc -l | tr -d ' ')"
+    [ "$got" = "2" ] || die "postPublishLines: got $got want 2"
+    got="$(printf -- '- [ ] a\n- [ ] b\n' | postPublishLines | wc -l | tr -d ' ')"
+    [ "$got" = "0" ] || die "postPublishLines with no marker: got $got want 0"
+
     got="$(printf 'no header here\n' | candidateSha)"
     [ -z "$got" ] || die "candidateSha with no header: got $got want empty"
 
@@ -224,7 +258,18 @@ cmdSelftest() {
     grep -q '^- \[ \]' <<<"$template_body" ||
         die "the template has no unchecked boxes, so the gate would pass on an untouched copy"
 
-    note "release-checklist selftest: ok"
+    # The marker is load-bearing in the WRONG direction if it drifts upward: a
+    # gate:stop near the top silently un-gates the whole checklist and every
+    # release publishes green. Assert the gated region still has boxes in it,
+    # which is the one property that cannot be eyeballed in a 300-line file.
+    local gated_n
+    gated_n="$(printf '%s\n' "$template_body" | uncheckedLines | wc -l | tr -d ' ')"
+    [ "$gated_n" -gt 0 ] ||
+        die "the template has no unchecked boxes ABOVE $GATE_STOP - the gate would pass on an untouched copy."
+    grep -q "$GATE_STOP" <<<"$template_body" ||
+        note "note: template has no $GATE_STOP marker; every box is gated."
+
+    note "release-checklist selftest: ok ($gated_n gated boxes in the template)"
 }
 
 # ---- entry point ------------------------------------------------------------
