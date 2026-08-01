@@ -70,7 +70,14 @@ esac
 export STUB_CAPTURE="$W/capture.md" STUB_LOG="$W/gh.log"
 : > "$STUB_LOG"
 head_sha="$(git rev-parse HEAD)"
-old_sha="$(git rev-parse HEAD~3)"
+# The stale-candidate test needs a sha with WATCHED changes after it, so it
+# cannot be a fixed distance back: HEAD~3 silently stops testing anything the
+# moment the last three commits are docs or CI only, and verify then correctly
+# reports no drift while the test still demands a failure. Anchor to the newest
+# commit that actually touched the watched paths and step one behind it.
+watched_tip="$(git log -1 --format=%H -- src/ build.zig build.zig.zon)"
+[ -n "$watched_tip" ] || { echo "no commit touching src/ found; cannot test drift" >&2; exit 1; }
+old_sha="$(git rev-parse "$watched_tip^")"
 
 pass=0; fail=0
 ok()   { pass=$((pass + 1)); echo "ok   $1"; }
