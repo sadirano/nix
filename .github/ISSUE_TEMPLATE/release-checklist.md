@@ -213,12 +213,46 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       command worked" is not evidence the file applied; read `--env`, or
       check the variable itself.
 - [ ] Variables do not leak between members of a group fan-out or a `--deps`
-      chain. Give exactly ONE member an env.toml, then fan out over the
-      group: `r +<group> cmd /c "echo %MYVAR%"` must show the value in one
-      block and show it ABSENT (not merely overwritten) in the others.
-      run.zig removes each layer before injecting the next, and this is the
-      only place that is observable - a leak here hands one project's
+      chain. run.zig removes each layer before injecting the next, and this
+      is the only place that is observable - a leak hands one project's
       credentials to the next command in the chain.
+
+      ```powershell
+      $root = "$env:TEMP\env-check"
+      Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+      $a = "$root\home\proja"; $b = "$root\home\projb"
+      New-Item -ItemType Directory -Force "$a\.nix","$b\.nix" | Out-Null
+      $env:NIX_HOME = "$root\home"
+      nix proja $a
+      nix projb $b
+      # ONLY proja declares it
+      Set-Content "$a\.nix\env.toml" "[env]`nLEAKVAR = `"from-proja`""
+      nix proja+grp
+      nix projb+grp
+      nix +grp --run cmd /c "echo LEAKVAR=%LEAKVAR%"
+      ```
+
+      Expected - the value in exactly ONE block, and UNSET (not merely a
+      different value) in the other:
+
+      ```
+      == proja  (...\proja) ==
+      LEAKVAR=from-proja
+      == projb  (...\projb) ==
+      LEAKVAR=%LEAKVAR%
+      ```
+
+      An unexpanded `%LEAKVAR%` is cmd echoing a variable that does not
+      exist, which is the proof wanted: absent, not overwritten.
+
+      Sanity-check first that the layer injected at all - `nix proja --run
+      cmd /c "echo %LEAKVAR%"` must print the value. If it prints `%LEAKVAR%`
+      the env file was never applied (unapproved env.toml runs WITHOUT the
+      layer rather than refusing), and the fan-out proves nothing: both
+      blocks would look clean for the wrong reason.
+
+      Then repeat over a `--deps` chain, which needs `nix --trust` on every
+      alias in it - see the `--deps` step above.
 
 ## 8. `[bin]` exports
 
