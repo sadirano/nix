@@ -1,4 +1,4 @@
-//! The `sg` search command: ripgrep (or ripgrep-all with --all) rooted at
+//! The `g` search command: ripgrep (or ripgrep-all with --all) rooted at
 //! one alias dir or fanned across group members, streamed live into fzf, with
 //! hits opened in the editor at the line (or the default app for rga document
 //! hits). Also the rga preview verb the picker re-invokes the binary for.
@@ -54,7 +54,7 @@ pub fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     return grepIn(app, &.{.{ .name = alias, .path = target }}, args);
 }
 
-/// grepIn runs `sg` over one or more targets (one alias dir, or a group's
+/// grepIn runs `g` over one or more targets (one alias dir, or a group's
 /// member dirs). `--all`/`-a` (or `[grep] all = true` in config) routes to
 /// ripgrep-all (rga), a fundamentally different search: matches live inside PDFs,
 /// office docs, archives, etc., where line numbers and a bat/editor open make no
@@ -75,7 +75,7 @@ pub fn grepIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
     return grepRg(app, targets, filtered.items);
 }
 
-/// grepRg is the classic `sg`: ripgrep → fzf over file:line:text, bat preview,
+/// grepRg is the classic `g`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
 fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "rg") == null) {
@@ -150,8 +150,8 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     return openSelectionsInEditor(app, cwd, sel, true);
 }
 
-/// grepRga is `sg --all`: like grepRg but with ripgrep-all, so each fzf row is
-/// an individual match (filterable by content, the way sg works) reaching inside
+/// grepRga is `g --all`: like grepRg but with ripgrep-all, so each fzf row is
+/// an individual match (filterable by content, the way `g` works) reaching inside
 /// PDFs, office docs, archives, etc. The preview re-extracts the row's file via
 /// our `--rga-preview` verb (the query rides in NIX_RGA_QUERY so fzf's preview
 /// shell never has to quote it). What differs from grepRg is opening: a match's
@@ -171,7 +171,7 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     var query: []const u8 = if (gargs.len > 0) gargs[0] else "";
     const extras = if (gargs.len > 1) gargs[1..] else gargs[0..0];
     if (query.len == 0) {
-        try app.err.writeAll("nix: --all search needs a pattern (usage: sg <alias> <pat> --all)\n");
+        try app.err.writeAll("nix: --all search needs a pattern (usage: g <alias> <pat> --all)\n");
         return 1;
     }
     var relaxed = false;
@@ -228,7 +228,7 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
 /// openRgaSelections routes rga match rows (`file:line:text`). A file that opens
 /// with the OS handler (PDF/docx/…) is launched once via the default app — the
 /// `line` there is a page/locator the editor can't use; everything else goes to
-/// the editor at its line, reusing the sg open path. Repeated rows for the same
+/// the editor at its line, reusing the `g` open path. Repeated rows for the same
 /// default-app file collapse to a single launch.
 fn openRgaSelections(app: *App, target: []const u8, selection: []const u8) !u8 {
     var editor_lines: std.ArrayList(u8) = .empty; // text hits, kept as file:line:text
@@ -292,7 +292,7 @@ fn leadingLineNo(line: []const u8) ?usize {
 /// `file:line:text` row and picks the renderer in three tiers, matching how
 /// openRgaSelections opens each kind:
 ///   1. directory  -> our own path preview (cmdPreview lists it),
-///   2. text file  -> bat, highlighting/centring the matched line (like sg),
+///   2. text file  -> bat, highlighting/centring the matched line (like `g`),
 ///   3. otherwise  -> rga --pretty (PDF/office/archive extract), trimmed to the
 ///      selected line's neighbourhood when the locator is a real line number.
 /// Text vs. doc is decided by opensWithDefaultApp — the same predicate the open

@@ -61,14 +61,14 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\running, searching, and file movement go through them. When telling the user
         \\how to open, run, or find something, prefer the nix syntax below over raw
         \\cd/absolute-path instructions - e.g. "I added a deploy action; run it with
-        \\`{[r]s} acme :deploy`".
+        \\`{[x]s} acme :deploy`".
         \\
         \\## Commands (what the user types)
         \\
         \\{[table]s}
-        \\Extras: `{[r]s} <alias> :<name>` runs a saved action (`{[r]s} <alias> :` lists
+        \\Extras: `{[x]s} <alias> :<name>` runs a saved action (`{[x]s} <alias> :` lists
         \\them); `{[o]s} docs@acme` resolves a sub-alias segment; `+group` fans a command
-        \\across a set of aliases (`{[r]s} +work git pull`); `nix <name> <path>` registers
+        \\across a set of aliases (`{[x]s} +work git pull`); `nix <name> <path>` registers
         \\a new alias.
         \\
         \\**Every command has a full spec for you: `<cmd> --agent`** (or
@@ -78,12 +78,12 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\## Guidance for agents
         \\
         \\1. **Suggest nix forms.** When work produces something runnable or openable,
-        \\   give the user the nix one-liner: `{[r]s} <alias> :test`,
-        \\   `{[e]s} <alias> src/main.zig`, `{[s]s} <alias> report.pdf`, `{[sg]s} <alias> TODO`.
+        \\   give the user the nix one-liner: `{[x]s} <alias> :test`,
+        \\   `{[e]s} <alias> src/main.zig`, `{[s]s} <alias> report.pdf`, `{[g]s} <alias> TODO`.
         \\2. **Discover aliases before suggesting.** `nix --list` prints every alias
         \\   with its path; `nix --list-names` prints bare names; `nix <alias>` resolves
         \\   one to its absolute path; `nix --which [path]` prints the alias containing
-        \\   a path (default: cwd) - and inside a `{[r]s}`/`{[o]s}` session `$NIX_ALIAS` /
+        \\   a path (default: cwd) - and inside a `{[x]s}`/`{[o]s}` session `$NIX_ALIAS` /
         \\   `$NIX_ALIAS_PATH` are already set. Use the alias that maps to the directory
         \\   you worked in - don't invent names. If none covers it, suggest registering
         \\   one: `nix <name> <path>`.
@@ -91,8 +91,8 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   lists every action already wired up on this machine (alias, name,
         \\   command, description) - check there before writing a command line
         \\   of your own. A bare `:` after any command is the interactive
-        \\   shorthand for it (`{[r]s} :`), and `<cmd> <alias> :` narrows it to
-        \\   one project (`{[o]s} acme :` and `{[r]s} acme :` are the same
+        \\   shorthand for it (`{[x]s} :`), and `<cmd> <alias> :` narrows it to
+        \\   one project (`{[o]s} acme :` and `{[x]s} acme :` are the same
         \\   question) - both print rather than open a picker when nobody can
         \\   answer, so they are safe to run yourself. `{[e]s} acme :` is not:
         \\   from the editor the same question CREATES the project's
@@ -101,10 +101,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   recurring build/test/serve/deploy command, add it to the project's
         \\   `.nix/actions.toml` under `[actions]` - with a `#` comment above it,
         \\   which nix shows as the action's description - and point the user at
-        \\   `{[r]s} <alias> :<name>`. Full scripts go in the project's `.nix/scripts/`
-        \\   and run by bare name: `{[r]s} <alias> build`. Personal machine-wide
+        \\   `{[x]s} <alias> :<name>`. Full scripts go in the project's `.nix/scripts/`
+        \\   and run by bare name: `{[x]s} <alias> build`. Personal machine-wide
         \\   actions live in `~/.nix/actions/_default.toml` (lowest precedence,
-        \\   available via `{[r]s} <any-alias> :<name>`). A tool the project
+        \\   available via `{[x]s} <any-alias> :<name>`). A tool the project
         \\   builds that should be runnable from anywhere goes under `[bin]` in
         \\   the same actions.toml (e.g. `hoot = "zig-out/bin/hoot.exe"`);
         \\   `nix --sync-bin` installs it into `~/.nix/bin`, which is on PATH.
@@ -116,9 +116,9 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   global that runs in the CURRENT directory. An export whose action
         \\   lives in a committed actions.toml will not install until the user
         \\   runs `nix --trust <alias>`.
-        \\   Actions take arguments (`{[r]s} <alias> :test -- --json`, appended or
+        \\   Actions take arguments (`{[x]s} <alias> :test -- --json`, appended or
         \\   substituted into an `{{args}}` placeholder) and chain in order,
-        \\   stopping at the first failure (`{[r]s} <alias> :build :test`). An
+        \\   stopping at the first failure (`{[x]s} <alias> :build :test`). An
         \\   action whose command begins with `sudo` runs ELEVATED in its own
         \\   console - it raises a UAC prompt only the user can answer, so never
         \\   put one in a command you expect to run unattended.
@@ -129,10 +129,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   `nix --trust <alias>` - that is the check working, not a bug, and
         \\   `--trust` is never yours to run. Files under `~/.nix` are not gated.
         \\   A project can declare `[deps] needs = ["other-alias"]`, and
-        \\   `{[r]s} <alias> --deps :build` then runs each dependency's own
+        \\   `{[x]s} <alias> --deps :build` then runs each dependency's own
         \\   `:build` first, in order, aborting up front if any of them lacks it.
         \\   Configuration the commands NEED goes in `.nix/env.toml` under
-        \\   `[env]`, and is set for every `{[r]s} <alias> ...` and every
+        \\   `[env]`, and is set for every `{[x]s} <alias> ...` and every
         \\   `{[o]s} <alias>` session (`~/.nix/env/<alias>.toml` is the private
         \\   per-machine override, and it wins). Same trust gate as actions.toml,
         \\   so a file you just wrote will not inject until the user approves it.
@@ -148,9 +148,9 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   one only when asked.
         \\5. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
         \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
-        \\   to get the path, then use the absolute path. `{[r]s} <alias> <cmd>` works
+        \\   to get the path, then use the absolute path. `{[x]s} <alias> <cmd>` works
         \\   fine from agent shells.
-        \\6. **Add `--no-prompt` instead of avoiding the pickers.** `{[sg]s}`, `{[ff]s}`,
+        \\6. **Add `--no-prompt` instead of avoiding the pickers.** `{[g]s}`, `{[f]s}`,
         \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, `nix --notes`, and `nix --prune`/`--sweep` open fzf and would block a
         \\   non-interactive shell. With `--no-prompt` they print what they would have
         \\   offered and act on nothing: `nix <alias> --no-prompt --grep <pat>`,
@@ -169,10 +169,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\## Example phrasing
         \\
         \\> Done - I wired the build and added actions. From anywhere:
-        \\> - `{[r]s} acme :test` - run the test suite
-        \\> - `{[r]s} acme :deploy` - build and deploy
+        \\> - `{[x]s} acme :test` - run the test suite
+        \\> - `{[x]s} acme :deploy` - build and deploy
         \\> - `{[e]s} acme src/server.zig` - jump to the entry point
-        \\> - `{[sg]s} acme "TODO(auth)"` - find the follow-ups I left
+        \\> - `{[g]s} acme "TODO(auth)"` - find the follow-ups I left
         \\
     , .{
         .table = try commandTable(arena, cfg),
@@ -181,9 +181,9 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .s = config.shortcutFor(cfg, "s"),
         .y = config.shortcutFor(cfg, "y"),
         .p = config.shortcutFor(cfg, "p"),
-        .r = config.shortcutFor(cfg, "r"),
-        .sg = config.shortcutFor(cfg, "sg"),
-        .ff = config.shortcutFor(cfg, "ff"),
+        .x = config.shortcutFor(cfg, "x"),
+        .g = config.shortcutFor(cfg, "g"),
+        .f = config.shortcutFor(cfg, "f"),
     });
     return b.items;
 }
@@ -203,7 +203,7 @@ test "render uses default names" {
     defer arena_state.deinit();
     const out = try render(arena_state.allocator(), .{});
     try std.testing.expect(std.mem.indexOf(u8, out, "| `o <alias> [path]` |") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "`r <alias> :<name>`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "`x <alias> :<name>`") != null);
     // The table carries the safety tier, and the guide points at the specs.
     try std.testing.expect(std.mem.indexOf(u8, out, "| user-surface |") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "`<cmd> --agent`") != null);
@@ -214,7 +214,7 @@ test "render honours [shortcuts] renames" {
     defer arena_state.deinit();
     const cfg = config.Config{ .shortcuts = &.{
         .{ .builtin = "s", .custom = "show" },
-        .{ .builtin = "r", .custom = "run" },
+        .{ .builtin = "x", .custom = "run" },
     } };
     const out = try render(arena_state.allocator(), cfg);
     try std.testing.expect(std.mem.indexOf(u8, out, "| `show <alias> [pat]` |") != null);

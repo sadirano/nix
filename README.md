@@ -10,9 +10,9 @@ One TOML file holds every alias, one binary serves every command. State lives in
 
 ![o navigation](assets/navigate.gif)
 
-**Search inside PDFs, office docs and archives.** `sg <alias> <pat> --all` runs the search with [ripgrep-all](https://github.com/phiresky/ripgrep-all) — matches found *inside* documents become individual, content-filterable fzf rows; pick one and it opens in your editor (text) or its default app (PDF).
+**Search inside PDFs, office docs and archives.** `g <alias> <pat> --all` runs the search with [ripgrep-all](https://github.com/phiresky/ripgrep-all) — matches found *inside* documents become individual, content-filterable fzf rows; pick one and it opens in your editor (text) or its default app (PDF).
 
-![sg --all (ripgrep-all document search)](assets/sg-all.gif)
+![g --all (ripgrep-all document search)](assets/g-all.gif)
 
 **Clipboard → file from any prompt.** `p <alias> [name]` drops the clipboard into the alias directory — a screenshot saves as `.png`, text as `.md`, Explorer-copied files/folders copy in recursively — and copies the saved path back out.
 
@@ -53,11 +53,11 @@ zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
 zig-out\bin\nix.exe --sync                 # deploy into ~/.nix/bin
 ```
 
-(Both are saved as project actions in `.nix/actions.toml` — once the repo is registered as an alias, `r <alias> :build` and `r <alias> :sync` run them from anywhere.)
+(Both are saved as project actions in `.nix/actions.toml` — once the repo is registered as an alias, `x <alias> :build` and `x <alias> :sync` run them from anywhere.)
 
 `nix --init` creates `~/.nix/`, installs the `.exe` command wrappers into `~/.nix/bin`, and adds that dir to your user PATH — restart your shell once and the short commands below are live in every shell (PowerShell, cmd, anything). It never touches your shell profile; the wrappers on PATH are the whole integration on Windows. (On Unix-likes a snippet written to `~/.nix/shell/` *is* the integration — shell functions that cd in place — so there you add the printed line to `.bashrc`/`.zshrc` yourself.)
 
-One PowerShell gotcha: pwsh resolves aliases before PATH exes, and `r` is a built-in alias for `Invoke-History` — so of the eight commands it's the one pwsh silently shadows. Add `Remove-Item Alias:r -Force` to your `$PROFILE` (cmd and clink have no alias layer and are unaffected). Or sidestep it entirely: give the slot a second spelling with `[shortcuts]` — `r = ["r", "x"]` keeps `r` everywhere it already works and adds `x` for the shells that steal it.
+The run command is `x`, not `r`, for a PowerShell reason: pwsh resolves aliases before PATH exes, and `r` is its built-in alias for `Invoke-History` — so `r` was the one command the shell silently shadowed. `x` is free in every shell. If your hands already know `r`, give the slot both spellings with `[shortcuts]` — `x = ["x", "r"]` — and add `Remove-Item Alias:r -Force` to your `$PROFILE` so pwsh stops answering first.
 
 ## Use
 
@@ -75,10 +75,10 @@ y acme                                     # print the path and copy it to the c
 y acme invoice                             # pick files (fzf) → copy the FILES to the clipboard
 p acme                                     # save clipboard content into the alias dir, copy the saved path back
 p acme shot                                # …with a name (image→shot.png, text→shot.md)
-r acme zig build test                      # run a command at that path
-sg acme TODO                               # ripgrep search under the dir → fzf → open the hit in your editor
-sg acme invoice --all                      # search inside PDFs/office docs/archives too (ripgrep-all)
-ff acme config                             # fuzzy-find files under the dir → fzf → open the selection
+x acme zig build test                      # run a command at that path
+g acme TODO                                # ripgrep search under the dir → fzf → open the hit in your editor
+g acme invoice --all                       # search inside PDFs/office docs/archives too (ripgrep-all)
+f acme config                              # fuzzy-find files under the dir → fzf → open the selection
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
 nix acme --env                             # what the project's .nix/env.toml sets, and where each value came from
 nix --list                                 # show every alias
@@ -97,9 +97,9 @@ Clipboard fine print: `y <alias> <pat>` copies the picked files as a real file d
 
 ## Search and find
 
-`sg` streams every ripgrep match into fzf as its own content-filterable row, with a live `bat` preview; Tab marks several, Enter opens the selection(s) in your editor at the matched line. `sg <alias> <pat> --all` (or `-a`) searches with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) instead, so matches reach **inside PDFs, office documents, archives, ebooks, and more** — the preview shows the extracted text, and a document hit opens in its default app (its "line" is really a page, not an editor position). Set `[grep] all = true` in `config.toml` to make `rga` the default for every `sg`.
+`g` streams every ripgrep match into fzf as its own content-filterable row, with a live `bat` preview; Tab marks several, Enter opens the selection(s) in your editor at the matched line. `g <alias> <pat> --all` (or `-a`) searches with [ripgrep-all](https://github.com/phiresky/ripgrep-all) (`rga`) instead, so matches reach **inside PDFs, office documents, archives, ebooks, and more** — the preview shows the extracted text, and a document hit opens in its default app (its "line" is really a page, not an editor position). Set `[grep] all = true` in `config.toml` to make `rga` the default for every `g`.
 
-`ff` shares the same fzf-with-preview picker, choosing its file lister by what's available — Everything's `es` on Windows, else `fd`, else `find`. Enter opens directories and default-app file types (PDF, images, archives, …) with the OS handler, everything else in your editor.
+`f` shares the same fzf-with-preview picker, choosing its file lister by what's available — Everything's `es` on Windows, else `fd`, else `find`. Enter opens directories and default-app file types (PDF, images, archives, …) with the OS handler, everything else in your editor.
 
 ## Configuration
 
@@ -116,12 +116,12 @@ Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`,
 
 `~/.nix/config.toml` holds the optional sections.
 
-`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`); the value is the name you'd rather type:
+`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`); the value is the name you'd rather type:
 
 ```toml
 [shortcuts]
 s = "show"     # type `show acme` instead of `s acme`
-ff = "fzf"
+f = "fzf"
 ```
 
 Custom names follow the alias name rules (no spaces, separators, or TOML metacharacters) and can't be `nix` itself; an unusable rename is ignored and the slot keeps its built-in name.
@@ -130,12 +130,12 @@ A slot can also take **several names** — list them as an array, and each one g
 
 ```toml
 [shortcuts]
-r = ["r", "x"]   # keep `r`, add `x` — dodges pwsh's built-in `r` alias without retraining your hands
+x = ["x", "r"]   # keep `x`, add back `r` — the spelling the run command used to have
 ```
 
-The first listed name is the primary (the one `--help` and the agent guide show). With a single string the rename *replaces* the letter; with an array, exactly the names you list answer — so `["r", "x"]` is how you say "both".
+The first listed name is the primary (the one `--help` and the agent guide show). With a single string the rename *replaces* the letter; with an array, exactly the names you list answer — so `["x", "r"]` is how you say "both".
 
-**Friendly names.** New to nix and the single letters feel cryptic? Rename every slot to the spelled-out word in one go. `ff` becomes `findfile` rather than `find`, so it never clashes with the built-in `find.exe`:
+**Friendly names.** New to nix and the single letters feel cryptic? Rename every slot to the spelled-out word in one go. `f` becomes `findfile` rather than `find`, so it never clashes with the built-in `find.exe`:
 
 ```toml
 [shortcuts]
@@ -144,14 +144,14 @@ e  = "edit"       # open the dir/file in your editor
 s  = "show"       # open the dir in the file manager
 y  = "yank"       # copy the path (or picked files)
 p  = "paste"      # save the clipboard into the dir
-r  = "run"        # run a command / saved action
-sg = "search"     # ripgrep search under the dir
-ff = "findfile"   # fuzzy-find files under the dir
+x  = "run"        # run a command / saved action
+g  = "search"     # ripgrep search under the dir
+f  = "findfile"   # fuzzy-find files under the dir
 ```
 
-These *replace* the letters (the renamed slot's short form stops answering); use the array form (`r = ["r", "run"]`) on any slot where you want both. The same preset ships commented out in the starter `config.toml`.
+These *replace* the letters (the renamed slot's short form stops answering); use the array form (`x = ["x", "run"]`) on any slot where you want both. The same preset ships commented out in the starter `config.toml`.
 
-`[grep]` sets the `sg` default — `all = true` makes every search run `rga`; the per-run `--all`/`-a` flag flips a single search either way:
+`[grep]` sets the `g` default — `all = true` makes every search run `rga`; the per-run `--all`/`-a` flag flips a single search either way:
 
 ```toml
 [grep]
@@ -230,7 +230,7 @@ cache = "1h"
 ```
 
 ```powershell
-r task:123@project agent     # runs set_vars 123 -> client_name=acme
+x task:123@project agent     # runs set_vars 123 -> client_name=acme
                              # cd <project>/acme/123, then runs `agent` there
 ```
 
@@ -293,10 +293,10 @@ A **group** is a named set of aliases, kept in `~/.nix/groups.toml`. Use it to j
 o pa+work                # add alias `pa` to group `work` (creates it), then navigate
 o +work                  # pick members in fzf: the first selection cd's the current
                          #   shell, each additional selection opens a new terminal
-sg +work TODO            # ripgrep across every member's dir, into one fzf picker
+g +work TODO            # ripgrep across every member's dir, into one fzf picker
                          #   rows read `member\rel\path`, not the absolute root
-ff +work config          # fuzzy-find files across every member
-r  +work git pull        # run a command in each member dir (per-dir header)
+f +work config          # fuzzy-find files across every member
+x  +work git pull        # run a command in each member dir (per-dir header)
 s  +work                 # open every member dir in the file manager
 s  +work invoice         # pick files across every member → open with default apps
 y  +work                 # copy every member path to the clipboard
@@ -325,7 +325,7 @@ terminal = "wezterm start --cwd {dir}"
 
 ## Per-alias actions
 
-Save named commands per alias and run them from anywhere with `r <alias> :<name>` — like `package.json` scripts, but language-agnostic. Actions are plain shell strings (so `&&`, pipes, and redirects work), run in the alias directory.
+Save named commands per alias and run them from anywhere with `x <alias> :<name>` — like `package.json` scripts, but language-agnostic. Actions are plain shell strings (so `&&`, pipes, and redirects work), run in the alias directory.
 
 ```toml
 # <alias-dir>/.nix/actions.toml   (commit it with the project)
@@ -338,7 +338,7 @@ serve  = "npm run dev"
 deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
 ```
 
-You don't have to write that file from scratch: **`e acme :` opens it, creating it from a commented template** when the alias has no actions yet — the template is inert (every sample is commented out), and it points at the neighbours a project file grows into, `[bin]`, `[deps]` and `.nix/env.toml`. `e acme :deploy` does the same one action at a time, seeding an empty stub for a name that doesn't exist yet and opening the file there. Only the editor writes: `o acme :` and `r acme :` are the read-only forms of the same question.
+You don't have to write that file from scratch: **`e acme :` opens it, creating it from a commented template** when the alias has no actions yet — the template is inert (every sample is commented out), and it points at the neighbours a project file grows into, `[bin]`, `[deps]` and `.nix/env.toml`. `e acme :deploy` does the same one action at a time, seeding an empty stub for a name that doesn't exist yet and opening the file there. Only the editor writes: `o acme :` and `x acme :` are the read-only forms of the same question.
 
 **Descriptions come from the comment above an action.** The command says what runs; the comment says *why*, and listings show it in a DESCRIPTION column:
 
@@ -352,28 +352,28 @@ test    zig build test
 There's no new syntax to learn: a run of `#` lines directly above an action is joined into one line of prose and becomes its description, so files that were already commented this way gain descriptions without being touched. A blank line between the comment and the action detaches it (that's how a file-header comment avoids describing the first action), a banner rule of dashes is never mistaken for prose, and the column only appears when something actually has one. `nix --actions` searches descriptions too — `nix --actions "not reversible"` finds the dangerous ones — and `--export`/`--import` carry them, so a `--replace` restore can't quietly drop them.
 
 ```powershell
-r acme :test              # run acme's `test` action in acme's dir
-r acme :                  # pick from acme's actions (o acme : asks the same)
-r acme -o :serve          # start it in a window of its own and come straight back
-r acme :test -- --json    # pass arguments through to the command
-r acme :build :test       # a chain: in order, stopping at the first failure
-r +work :test             # run each member's own `test` action (members without it are skipped)
+x acme :test              # run acme's `test` action in acme's dir
+x acme :                  # pick from acme's actions (o acme : asks the same)
+x acme -o :serve          # start it in a window of its own and come straight back
+x acme :test -- --json    # pass arguments through to the command
+x acme :build :test       # a chain: in order, stopping at the first failure
+x +work :test             # run each member's own `test` action (members without it are skipped)
 ```
 
-**Arguments** are appended to the command, so `r acme :test -- --json` runs `zig build test --json`. The `--` is optional; it's there for when the argument would otherwise look like one of nix's own flags. If the command contains `{args}`, the arguments are substituted there instead of appended — for the ones whose arguments belong in the middle:
+**Arguments** are appended to the command, so `x acme :test -- --json` runs `zig build test --json`. The `--` is optional; it's there for when the argument would otherwise look like one of nix's own flags. If the command contains `{args}`, the arguments are substituted there instead of appended — for the ones whose arguments belong in the middle:
 
 ```toml
 [actions]
 serve = "npm run dev -- --port {args} --open"
 ```
 
-Words are re-quoted as they were typed: `r acme :commit -- -m "two words"` reaches the shell with `"two words"` intact, as one word. Quotes written *in* the command survive too — nix builds the shell's command line itself rather than handing it to a layer that would rewrite every `"` as `\"`.
+Words are re-quoted as they were typed: `x acme :commit -- -m "two words"` reaches the shell with `"two words"` intact, as one word. Quotes written *in* the command survive too — nix builds the shell's command line itself rather than handing it to a layer that would rewrite every `"` as `\"`.
 
-`-o` on an action now means what it always said: a real console window of its own, opened in the alias directory and left open so you can read it, with nix returning immediately. (On a literal command — `r acme -o some.exe` — `-o` still just starts the program detached and hands you back the prompt; that path is for launching apps, not for watching output.)
+`-o` on an action now means what it always said: a real console window of its own, opened in the alias directory and left open so you can read it, with nix returning immediately. (On a literal command — `x acme -o some.exe` — `-o` still just starts the program detached and hands you back the prompt; that path is for launching apps, not for watching output.)
 
-**Chains** run several actions in order, in this terminal, stopping at the first failure — the `&&` you would otherwise have typed, without naming the alias twice. Each link runs exactly as it would alone, under a `==> acme :test` header so the transcript can be read back. Arguments are refused for a chain (`r acme :build :test -- --release` has no honest answer to *which* action gets the flag): name one action, or pass none.
+**Chains** run several actions in order, in this terminal, stopping at the first failure — the `&&` you would otherwise have typed, without naming the alias twice. Each link runs exactly as it would alone, under a `==> acme :test` header so the transcript can be read back. Arguments are refused for a chain (`x acme :build :test -- --release` has no honest answer to *which* action gets the flag): name one action, or pass none.
 
-Actions resolve from three places, most specific winning: `<alias-dir>/.nix/actions.toml` (travels with the repo) overrides `~/.nix/actions/<alias>.toml` (private, per-machine), which overrides `~/.nix/actions/_default.toml` — **machine-wide defaults** for personal cross-project actions (`claude`, `git status`, …) defined once and available via `r <any-alias> :<name>` without leaking into committed repos (`_default` is reserved; it can't be registered as an alias). A leading `:` is what marks a saved action — without it, `r <alias> <cmd>` still runs `<cmd>` literally.
+Actions resolve from three places, most specific winning: `<alias-dir>/.nix/actions.toml` (travels with the repo) overrides `~/.nix/actions/<alias>.toml` (private, per-machine), which overrides `~/.nix/actions/_default.toml` — **machine-wide defaults** for personal cross-project actions (`claude`, `git status`, …) defined once and available via `x <any-alias> :<name>` without leaking into committed repos (`_default` is reserved; it can't be registered as an alias). A leading `:` is what marks a saved action — without it, `x <alias> <cmd>` still runs `<cmd>` literally.
 
 ### Actions that need administrator rights
 
@@ -385,9 +385,9 @@ Write `sudo` in front of the command. That's the whole syntax:
 install = "sudo .\\scripts\\install-service.ps1"
 ```
 
-`r acme :install` raises a UAC prompt and, once you accept, runs the command in an **elevated console of its own** — elevation hands back a process under a different token, and that process cannot write into this terminal, so pretending otherwise would just lose the output. The window opens in the alias directory and stays open so you can read it; nix reports `started acme :install (elevated)` and returns immediately. There's no exit code to wait for and no `[notify]` hook, for the same reason `--outside` has neither.
+`x acme :install` raises a UAC prompt and, once you accept, runs the command in an **elevated console of its own** — elevation hands back a process under a different token, and that process cannot write into this terminal, so pretending otherwise would just lose the output. The window opens in the alias directory and stays open so you can read it; nix reports `started acme :install (elevated)` and returns immediately. There's no exit code to wait for and no `[notify]` hook, for the same reason `--outside` has neither.
 
-The marker has to be the first word — it elevates the command, not one link of a `&&` chain — and it survives into listings, so `r acme :` and the palette both show which actions will prompt. Since the elevated shell is the administrator's session, not yours, nix writes the alias context (`NIX_ALIAS`, `NIX_ALIAS_PATH`, and the `.nix/scripts` directories *prepended* to the admin's `PATH`) into the command as a `set` prelude. Answering "No" to UAC is reported as `elevation declined - nothing was run`. On non-Windows nothing is intercepted: there `sudo` is a real program and the line runs as written.
+The marker has to be the first word — it elevates the command, not one link of a `&&` chain — and it survives into listings, so `x acme :` and the palette both show which actions will prompt. Since the elevated shell is the administrator's session, not yours, nix writes the alias context (`NIX_ALIAS`, `NIX_ALIAS_PATH`, and the `.nix/scripts` directories *prepended* to the admin's `PATH`) into the command as a `set` prelude. Answering "No" to UAC is reported as `elevation declined - nothing was run`. On non-Windows nothing is intercepted: there `sudo` is a real program and the line runs as written.
 
 **An elevated action asks every time**, and there is no way to remember the answer. UAC does show a dialog, but it names the *shell* — `cmd.exe` — not the command line it was handed, so it can't tell you what you are agreeing to. This prompt is the only place that text is ever displayed:
 
@@ -415,7 +415,7 @@ The list lives in `config.toml`, not in an actions file, and that is deliberate:
 
 ### Actions that arrived with a clone
 
-A project's `.nix/actions.toml` is committed, which means `git clone` brings it with the code, and `r acme :build` would run whatever it says. Choosing the *name* is not consent to the *command*. So the first run of a file nix hasn't seen approved shows what it is about to run:
+A project's `.nix/actions.toml` is committed, which means `git clone` brings it with the code, and `x acme :build` would run whatever it says. Choosing the *name* is not consent to the *command*. So the first run of a file nix hasn't seen approved shows what it is about to run:
 
 ```
 nix: acme's :ship wants to run:
@@ -431,13 +431,13 @@ Those referenced files are part of the approval, not just the display: editing `
 
 Approving records those files' **current bytes**, so it runs silently from then on — until a `git pull` rewrites any of them, which re-arms the prompt. That's the same hash discipline context sources and `[bin]` exports already use: what you approved is the text you read, not the filename. `nix --trust <alias>` approves an alias's actions, its `.nix/scripts`, and its context sources in one gesture, which is the sane way to take on a fresh clone; `nix --doctor` lists which aliases are still waiting.
 
-Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.toml`, `~/.nix/scripts`, a project that lives under `~/.nix`, and anything you type as a literal command (`r acme git status`) run untouched — they're under your home directory or you wrote them just now, and there the provenance is you. Scripts get the same treatment as the actions file beside them, since gating `:build` while leaving `r acme build` open would only move the unreviewed code one filename over.
+Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.toml`, `~/.nix/scripts`, a project that lives under `~/.nix`, and anything you type as a literal command (`x acme git status`) run untouched — they're under your home directory or you wrote them just now, and there the provenance is you. Scripts get the same treatment as the actions file beside them, since gating `:build` while leaving `x acme build` open would only move the unreviewed code one filename over.
 
 **Nothing can approve on your behalf.** Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead. That's deliberate: an agent approving a repo it just cloned is the check approving itself.
 
 ### Failures don't vanish from a shortcut
 
-Pin `r nix :build :sync` to the Start menu and Windows makes a console for it, then destroys that console the moment nix exits — so a failure prints its message and disappears in the same instant. When nix is the **only** process attached to its console, it knows the window is about to go with it, and waits:
+Pin `x nix :build :sync` to the Start menu and Windows makes a console for it, then destroys that console the moment nix exits — so a failure prints its message and disappears in the same instant. When nix is the **only** process attached to its console, it knows the window is about to go with it, and waits:
 
 ```
 nix: :build failed (exit 1) - stopping
@@ -462,7 +462,7 @@ needs = ["hoot", "libx"]
 ```
 
 ```powershell
-r acme --deps :build      # hoot's :build, then libx's, then acme's
+x acme --deps :build      # hoot's :build, then libx's, then acme's
 ```
 
 Each dependency runs **its own** action of that name, so nothing here says how to build anything — the graph only says what comes first. Members are alias names, not paths, so the graph follows a repo when it moves. The walk is depth-first, and a diamond (two dependencies sharing a third) builds the shared one once, early enough for both.
@@ -475,14 +475,14 @@ It is **strict, and strict before it starts.** A `needs` naming an unregistered 
 nix: hoot :build failed (exit 3) - stopping
 ```
 
-That strictness is the difference from a group, deliberately. `r +work git pull` should keep going when one member is offline; a build chain *is* its completeness, and half a world built is worse than none because it looks like success. Plain `r acme :build` is untouched — dependencies run only when asked.
+That strictness is the difference from a group, deliberately. `x +work git pull` should keep going when one member is offline; a build chain *is* its completeness, and half a world built is worse than none because it looks like success. Plain `x acme :build` is untouched — dependencies run only when asked.
 
 ### The palette (`nix --actions`)
 
 Actions are declared per alias but invoked from anywhere, so the thing you forget is rarely the command — it's *which alias owns it*. `nix --actions` (`-A`) gathers every alias's actions into one fzf view and runs the pick in its own directory:
 
 ```powershell
-r :                              # the shorthand: any nix command + a bare `:`
+x :                              # the shorthand: any nix command + a bare `:`
 nix --actions                    # pick from everything wired up on this machine
 nix --actions deploy             # pre-filter by alias, action name, or command text
 nix --no-prompt --actions        # just print the table, run nothing
@@ -495,13 +495,13 @@ acme   :test     zig build test
 beta   :deploy   npm run deploy && echo shipped
 ```
 
-Enter runs the pick exactly as `r <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `r` would run. The pattern is a plain case-insensitive substring across every column, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `r <any-alias> :<name>`).
+Enter runs the pick exactly as `x <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `x` would run. The pattern is a plain case-insensitive substring across every column, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `x <any-alias> :<name>`).
 
-**A bare `:` is the shortest way in**, from any command: `r :`, `o :`, `nix :` all open the palette, and anything after it pre-filters (`r : deploy`). It's the alias-less form of `r <alias> :` — the same colon, one scope wider: with an alias in front it opens that project's actions, without one it opens every project's. Nothing was given up to allow it, since `:` was never a legal alias name.
+**A bare `:` is the shortest way in**, from any command: `x :`, `o :`, `nix :` all open the palette, and anything after it pre-filters (`x : deploy`). It's the alias-less form of `x <alias> :` — the same colon, one scope wider: with an alias in front it opens that project's actions, without one it opens every project's. Nothing was given up to allow it, since `:` was never a legal alias name.
 
-**With an alias in front, every command answers the same.** `o acme :`, `e acme :`, `y acme :` and `r acme :` all open the picker scoped to acme, with Tab multi-select just like the global palette — one pick runs here, several fan out into a window each. The command you happened to type is irrelevant once the colon is the only thing you said about the alias, which is why `o acme :` no longer tries to register `:` as acme's path. A trailing `:` never navigates, either: it answered a question, and stacking a shell on top of that would be two things from one word.
+**With an alias in front, every command answers the same.** `o acme :`, `e acme :`, `y acme :` and `x acme :` all open the picker scoped to acme, with Tab multi-select just like the global palette — one pick runs here, several fan out into a window each. The command you happened to type is irrelevant once the colon is the only thing you said about the alias, which is why `o acme :` no longer tries to register `:` as acme's path. A trailing `:` never navigates, either: it answered a question, and stacking a shell on top of that would be two things from one word.
 
-Where nobody can answer a picker — `--no-prompt`, a pipe, a script, an agent's shell — it prints the table instead of opening fzf, which is what `r <alias> :` always did. Same if fzf isn't installed.
+Where nobody can answer a picker — `--no-prompt`, a pipe, a script, an agent's shell — it prints the table instead of opening fzf, which is what `x <alias> :` always did. Same if fzf isn't installed.
 
 **Mark several with Tab and they all start, in parallel, each in a window of its own.** Two actions can't share one terminal — the output would interleave and only one of them could read the keyboard — so a multi-pick fans out into a new shell per action (a new console on Windows, opened in that action's directory with its `NIX_ALIAS` and scripts on `PATH`) and nix returns immediately. Build three projects, or bring up a server and its worker, from one picker:
 
@@ -514,11 +514,11 @@ The single pick is unchanged: one action still runs right here, in the foregroun
 
 ### Rerun on change (`--watch`)
 
-The inner loop is save → test → look. `r <alias> --watch :test` closes it: the action runs once, then again every time a file under the alias directory changes, until you press Ctrl-C. No watchexec or nodemon to install — it's a `ReadDirectoryChangesW` call, so it's Windows-only for now.
+The inner loop is save → test → look. `x <alias> --watch :test` closes it: the action runs once, then again every time a file under the alias directory changes, until you press Ctrl-C. No watchexec or nodemon to install — it's a `ReadDirectoryChangesW` call, so it's Windows-only for now.
 
 ```
-r acme --watch :test
-r acme --watch zig build test     # any r command, not just a saved action
+x acme --watch :test
+x acme --watch zig build test     # any x command, not just a saved action
 ```
 
 Between runs it prints a status line to stderr (so a piped transcript still separates the command's own output from nix's bookkeeping):
@@ -540,14 +540,14 @@ An entry containing a separator is matched as a path fragment instead of a compo
 
 ### Completion notifications
 
-Long actions launched via `r` finish silently — and `long-cmd && notify` misses the one case that most deserves a notification (failure). Set a `[notify] on_finish` hook in `~/.nix/config.toml` and **every** foreground `:action` reports its outcome through it, single runs and `r +group :build` fan-outs alike:
+Long actions launched via `x` finish silently — and `long-cmd && notify` misses the one case that most deserves a notification (failure). Set a `[notify] on_finish` hook in `~/.nix/config.toml` and **every** foreground `:action` reports its outcome through it, single runs and `x +group :build` fan-outs alike:
 
 ```toml
 [notify]
 on_finish = 'hoot send "{message}" --tag {alias} --level {level}'
 ```
 
-The template runs in the alias dir after the action exits, with placeholders expanded: `{alias}`, `{action}`, `{exit}`, `{status}` (`ok`/`fail`), `{duration}` (`850ms`, `12s`, `1m23s`), `{level}` (`info` on success, `warn` on failure — so a level-aware notifier keeps success quiet and toasts failure), and `{message}` (a composed one-liner, e.g. `:build failed (exit 2) after 1m23s`). Like `[nav] terminal`, it's tokenized and spawned directly rather than through a shell, and expansion happens per token — so a bare `{message}` stays a single argument, quoted or not; prefix `cmd /c` (or `sh -c '…'`) if you really want shell operators. The hook also sees `NIX_ALIAS`, `NIX_ACTION`, `NIX_ACTION_EXIT`, and `NIX_ACTION_DURATION_MS` in its environment, so it can just as well be a bare script name from `.nix/scripts`. It's an observer only: its own exit code is ignored and the action's is passed through untouched. Detached runs (`r <alias> -o :serve`) and literal commands (`r <alias> <cmd>`) don't notify — the hook is for the named, repeatable things.
+The template runs in the alias dir after the action exits, with placeholders expanded: `{alias}`, `{action}`, `{exit}`, `{status}` (`ok`/`fail`), `{duration}` (`850ms`, `12s`, `1m23s`), `{level}` (`info` on success, `warn` on failure — so a level-aware notifier keeps success quiet and toasts failure), and `{message}` (a composed one-liner, e.g. `:build failed (exit 2) after 1m23s`). Like `[nav] terminal`, it's tokenized and spawned directly rather than through a shell, and expansion happens per token — so a bare `{message}` stays a single argument, quoted or not; prefix `cmd /c` (or `sh -c '…'`) if you really want shell operators. The hook also sees `NIX_ALIAS`, `NIX_ACTION`, `NIX_ACTION_EXIT`, and `NIX_ACTION_DURATION_MS` in its environment, so it can just as well be a bare script name from `.nix/scripts`. It's an observer only: its own exit code is ignored and the action's is passed through untouched. Detached runs (`x <alias> -o :serve`) and literal commands (`x <alias> <cmd>`) don't notify — the hook is for the named, repeatable things.
 
 Two sibling keys record what the clipboard commands actually did, for the "wait, what exactly did that copy?" moments — no more re-checking:
 
@@ -559,7 +559,7 @@ on_yank  = 'hoot send "{message}" --tag {alias}'   # yanked path C:/work/acme ·
 
 They fire only on success (a failed `p`/`y` already has your eyes on it) with `{alias}`, `{message}`, `{status}` (`ok`), and `{level}` (`info`) — quiet log entries, never toasts, made to be read back later from the notifier's inbox.
 
-For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `r acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). It fans out too: `r +work build` runs each member's own script. Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
+For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `x acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). It fans out too: `x +work build` runs each member's own script. Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
 
 ## Per-project environment (`.nix/env.toml`)
 
@@ -573,7 +573,7 @@ API_BASE     = "https://staging.internal"
 ACME_TOKEN   = "${secret:acme-api}"
 ```
 
-Every `r acme <cmd>`, every `r acme :action`, every `r +work <cmd>` fan-out, and every `o acme` session gets them. Nothing to source, nothing to remember, and no `.env` file the repo has to gitignore.
+Every `x acme <cmd>`, every `x acme :action`, every `x +work <cmd>` fan-out, and every `o acme` session gets them. Nothing to source, nothing to remember, and no `.env` file the repo has to gitignore.
 
 **The private layer wins.** `~/.nix/env/<alias>.toml` has the same `[env]` shape and overrides the committed file per key — deliberately the opposite of the actions rule. The committed file is the project's *defaults*, the thing that should work for everyone who clones it; the central file is the only place your machine's real database can go without dirtying the repo:
 
@@ -599,7 +599,7 @@ env for acme
   DATABASE_URL  central  postgres://box.local:5433/acme
 ```
 
-**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. The resolved value exists only in that child's environment — `--env` prints the reference (and tells you when nothing is stored under it), `--export` carries the reference, and no listing ever sees the secret. On a `r`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
+**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. The resolved value exists only in that child's environment — `--env` prints the reference (and tells you when nothing is stored under it), `--export` carries the reference, and no listing ever sees the secret. On an `x`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
 
 `PATH`, `PATHEXT`, `COMSPEC` and anything starting with `NIX_` are refused, and say so. PATH is composed by `.nix/scripts` and `[bin]`, which nix rebuilds on every run; a value set here would be both overridden and later removed as stale. Names that aren't shell-referenceable at all (`my key`, `1BAD`) are refused for the same reason: a variable that silently never arrives costs an afternoon.
 
@@ -635,7 +635,7 @@ Text is joined from the remaining words, so quoting is never needed — the poin
 - 2026-07-26 23:47:30 - key arrived, segments.zig green, next is the cache TTL
 ```
 
-`nix --notes` (`-N`) is the `sg` pipeline pointed at the notes directory, so rows arrive as `acme.md:12:- 2026-07-26 …` — **the filename is the alias**, which is what makes a cross-project view readable without a header. Enter opens your editor on that exact line, Tab marks several, and `--no-prompt` prints the rows and opens nothing. With no pattern you get every line.
+`nix --notes` (`-N`) is the `g` pipeline pointed at the notes directory, so rows arrive as `acme.md:12:- 2026-07-26 …` — **the filename is the alias**, which is what makes a cross-project view readable without a header. Enter opens your editor on that exact line, Tab marks several, and `--no-prompt` prints the rows and opens nothing. With no pattern you get every line.
 
 **They live in `~/.nix/notes/`, not in your repos**, and that's the whole design rather than an implementation detail. A project-local notes file has to be either committed — publishing your private half-thoughts — or gitignored, and an ignored file is precisely what `git clean -fdx` deletes. Central files survive `clean`, a re-clone, and deleting the project; they give groups a home at all (a group has no directory); they can't diverge across two clones of one remote; `--notes` stays complete when a project drive is unplugged; and a cloned repo can never ship you notes it wrote.
 
@@ -666,7 +666,7 @@ hoot = "zig-out/bin/hoot.exe"   # a file
 ship = ":deploy"                # an action
 ```
 
-`ship --prod` now runs acme's `:deploy`, in acme's directory, from anywhere — the whole of `r acme :deploy -- --prod` under a name of your choosing. What lands in `~/.nix/bin` is a copy of nix that recognizes the name it was invoked under, which is exactly how the `o`/`r`/`e` wrappers already work. That matters beyond tidiness: a `.cmd` trampoline would put `cmd.exe` on the console as a second process, and the [failure hold](#failures-dont-vanish-from-a-shortcut) — which fires only when nix is the *sole* process there — would silently stop working the day you pinned `ship` to the Start menu.
+`ship --prod` now runs acme's `:deploy`, in acme's directory, from anywhere — the whole of `x acme :deploy -- --prod` under a name of your choosing. What lands in `~/.nix/bin` is a copy of nix that recognizes the name it was invoked under, which is exactly how the `o`/`x`/`e` wrappers already work. That matters beyond tidiness: a `.cmd` trampoline would put `cmd.exe` on the console as a second process, and the [failure hold](#failures-dont-vanish-from-a-shortcut) — which fires only when nix is the *sole* process there — would silently stop working the day you pinned `ship` to the Start menu.
 
 **Your words go to the action, never to nix.** `ship --no-prompt` hands `--no-prompt` to the command; at the call site `ship` is a program, not a nix invocation wearing a program's name. The cost, deliberately accepted: `ship --help` is your script's help, and `nix --actions` is where you ask nix about it.
 
@@ -689,7 +689,7 @@ Consent works the same as for a file, with the action's **command text** as the 
 
 Putting a binary on your PATH is always an explicit act, **per version**. `nix --sync` never installs on your behalf: a name it hasn't seen before, *and* a version whose source changed since you last allowed it, are only listed for review — you run `nix --sync-bin` to allow them. So registering an alias for someone else's repo never puts a command on PATH as a side effect of routine syncing, and a tool you use can't silently swap to a freshly-built binary underneath you. (The fingerprint that makes this work is a content hash recorded next to each export in the manifest.) And since an export can shadow a tool you already have (a scoop shim, a system binary), the sync warns whenever an export name also resolves elsewhere on PATH — legitimate when it's your own build overriding a packaged one, but never a surprise.
 
-Membership is declarative, so the bin can't rot: every installed file is recorded in `~/.nix/exports.toml` with its owning alias and content hash, removing the `[bin]` line (or the alias) removes the file on the next sync, and a name claimed by two aliases is refused loudly — nobody wins until one renames. Wrapper names (`o`, `r`, `nix`, …) and DOS device names (`nul`, `con`, …) are reserved. An alias whose directory is merely *unreachable* (unplugged drive, network share down) keeps its exports installed — unknown is not undeclared; only removing the alias or the `[bin]` line uninstalls.
+Membership is declarative, so the bin can't rot: every installed file is recorded in `~/.nix/exports.toml` with its owning alias and content hash, removing the `[bin]` line (or the alias) removes the file on the next sync, and a name claimed by two aliases is refused loudly — nobody wins until one renames. Wrapper names (`o`, `x`, `nix`, …) and DOS device names (`nul`, `con`, …) are reserved. An alias whose directory is merely *unreachable* (unplugged drive, network share down) keeps its exports installed — unknown is not undeclared; only removing the alias or the `[bin]` line uninstalls.
 
 `~/.nix/bin` is nix-managed territory: **don't edit or drop files into it by hand.** An export you hand-edit in place is detected (its bytes no longer match the version you allowed, while the source is unchanged) and **restored** to the allowed version on the next sync, with a warning. For a file nix never installed, the `[bin]` config decides how strict to be:
 
@@ -705,13 +705,13 @@ foreign = "warn"    # default: report it in --sync/--doctor, but never delete it
 
 ## Tab completion
 
-On Unix-likes, every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `r`, `sg`, `ff`) supports bash/zsh tab-completion of alias names via the `~/.nix/shell/nix.sh` snippet. The completer calls `nix --list-names` under the hood — a dedicated path that bypasses TOML parsing so Tab stays instant.
+On Unix-likes, every command that takes an alias (`o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`) supports bash/zsh tab-completion of alias names via the `~/.nix/shell/nix.sh` snippet. The completer calls `nix --list-names` under the hood — a dedicated path that bypasses TOML parsing so Tab stays instant.
 
 On Windows there is no completion (and no shell snippet): the commands are plain `.exe`s on PATH and work in any shell as-is. Earlier versions generated `~/.nix/shell/nix.ps1` for PowerShell completion plus a `q` (exit) helper; `--sync` removes that retired file. If you used `q`, [the cookbook](COOKBOOK.md#q--close-the-shell-you-typed-it-in) has a version that needs no profile glue and works in cmd and PowerShell alike — note that a `function q { exit }` in `$PROFILE` only ever worked in the shell that defined it.
 
 ## AI agents
 
-`nix --init` also writes `~/.nix/AGENTS.md`, a short guide that teaches coding agents your command surface — so they say "run it with `r acme :test`" instead of quoting absolute paths, register repeatable commands as actions, and know to resolve with `nix <alias>` rather than `o` in their own non-interactive shells. `nix --sync` regenerates it, so the guide always shows your effective `[shortcuts]` names.
+`nix --init` also writes `~/.nix/AGENTS.md`, a short guide that teaches coding agents your command surface — so they say "run it with `x acme :test`" instead of quoting absolute paths, register repeatable commands as actions, and know to resolve with `nix <alias>` rather than `o` in their own non-interactive shells. `nix --sync` regenerates it, so the guide always shows your effective `[shortcuts]` names.
 
 nix never registers the file with any agent itself — wiring it up is a deliberate, per-user step. For Claude Code, import it from your global memory file, `~/.claude/CLAUDE.md`:
 
@@ -723,7 +723,7 @@ Other tools can point at the same file wherever they take custom instructions.
 
 `nix --init` (covered under Install) is idempotent — re-run it any time. `nix --sync` regenerates the agent guide and the command wrappers (plus the shell snippet on Unix-likes) after you move the binary or edit `config.toml`. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
 
-`nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh). Group fan-outs are charged to the group itself — a `+name` key in the same file — never to the members, so an alias's own frecency only moves when you use it directly. Prune still won't ambush you: members of a recently used group inherit its recency in the ranking, marked `(via +group)`, so an alias you only ever reach through `r +work …` doesn't rank as never-used.
+`nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh). Group fan-outs are charged to the group itself — a `+name` key in the same file — never to the members, so an alias's own frecency only moves when you use it directly. Prune still won't ambush you: members of a recently used group inherit its recency in the ranking, marked `(via +group)`, so an alias you only ever reach through `x +work …` doesn't rank as never-used.
 
 `nix --sweep` finds picker noise you didn't think of: it scans the whole Everything index for directories with 100+ unfiltered subfolders (`--min N` tunes the threshold) and offers the worst offenders in an fzf multi-select. Enter appends the marked subtrees to `~/.nix/picker.swept` (a third exclusion layer, one fragment per line); `--no-prompt` just prints the ranking. Directories containing a registered alias target are never offered.
 
@@ -731,7 +731,7 @@ Other tools can point at the same file wherever they take custom instructions.
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, the per-project `[env]` layers, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
-`nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no usage recording, no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `r <alias> <cmd>`, a `:action`, group fan-outs — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
+`nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no usage recording, no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `x <alias> <cmd>`, a `:action`, group fan-outs — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
 
 ## License
 

@@ -882,7 +882,7 @@ test "isReservedName: wrappers, builtins under rename, canonical nix" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     try std.testing.expect(isReservedName(a, .{}, "nix"));
-    try std.testing.expect(isReservedName(a, .{}, "R")); // builtin slot, case-folded
+    try std.testing.expect(isReservedName(a, .{}, "X")); // builtin slot, case-folded
     // A rename reserves BOTH spellings: the new name and the vacated builtin.
     const cfg = config.Config{ .shortcuts = &.{.{ .builtin = "s", .custom = "show" }} };
     try std.testing.expect(isReservedName(a, cfg, "show"));

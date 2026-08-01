@@ -23,7 +23,7 @@ function, and a manual PATH entry — and works the same in cmd and PowerShell.
 ### `sudo` — run anything elevated
 
 nix's `sudo` marker elevates a *declared* action, but a typed command line
-(`r acme sudo whoami`) isn't one. `{args}` closes the gap: the action becomes
+(`x acme sudo whoami`) isn't one. `{args}` closes the gap: the action becomes
 whatever you hand it.
 
 ```toml
@@ -140,7 +140,7 @@ already runs by bare name with those flags supplied for you, picking `pwsh` when
 present and Windows PowerShell when it isn't:
 
 ```
-<project>/.nix/scripts/build.ps1     ->     r acme build --release
+<project>/.nix/scripts/build.ps1     ->     x acme build --release
 ```
 
 The recipe is for scripts you'd rather keep at their natural place in the repo
@@ -171,7 +171,7 @@ pause = "pause"
 ```
 
 Meant as the last link of a chain launched from a shortcut, where the console is
-destroyed the moment the command exits: `r nix :build :sync :pause`. A chain
+destroyed the moment the command exits: `x nix :build :sync :pause`. A chain
 stops at the first failure, so this runs only when everything before it
 succeeded — to read an *error*, launch via `cmd /k`, which holds either way.
 

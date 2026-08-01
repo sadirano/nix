@@ -1,4 +1,4 @@
-//! The `ff` fuzzy-find command: list files under one alias dir (or across a
+//! The `f` fuzzy-find command: list files under one alias dir (or across a
 //! group) with es/fd/find, pick in fzf with a preview, and open the picks —
 //! default-app types via the OS handler, everything else in the editor.
 
@@ -31,7 +31,7 @@ pub fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     return findIn(app, &.{.{ .name = alias, .path = target }}, args);
 }
 
-/// findIn runs `ff` over one or more targets (one alias dir, or a group's
+/// findIn runs `f` over one or more targets (one alias dir, or a group's
 /// member dirs). fd leads (portable, instant on a subtree); a single-alias
 /// Windows box without fd uses es; POSIX find is the last resort. Multi-root (a
 /// group) runs one producer per member so rows read `alias\rel\path`; the
@@ -48,14 +48,14 @@ pub fn findIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
     };
 }
 
-/// FindPick is the outcome of running the `ff` picker: a selection (newline-
+/// FindPick is the outcome of running the `f` picker: a selection (newline-
 /// separated paths, relative to roots[0] unless absolute), a clean cancel, a
 /// setup failure (message already printed), or `printed` — the --no-prompt
 /// path, where the rows went to stdout and there is nothing left to act on.
 pub const FindPick = union(enum) { selected: []const u8, cancelled, failed, printed: u8 };
 
 /// findPick runs the fuzzy file picker over one or more targets and returns the
-/// selection without acting on it — shared by `ff` (which opens) and `y <alias>
+/// selection without acting on it — shared by `f` (which opens) and `y <alias>
 /// <pat>` (which copies the files to the clipboard). Multi-root rows come back
 /// alias-prefixed (`alias\rel`); callers expand them via expandPrefixedSelection.
 pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !FindPick {
@@ -90,7 +90,7 @@ pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !Fi
         for (extras) |x| try prod.append(app.arena, x);
     } else {
         if (multi)
-            try app.err.writeAll("nix: ff on a group needs fd (or POSIX find)\n")
+            try app.err.writeAll("nix: f on a group needs fd (or POSIX find)\n")
         else
             try app.err.writeAll("nix: no file finder found (install fd)\n");
         return .failed;

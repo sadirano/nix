@@ -32,7 +32,7 @@ pub const Config = struct {
     picker_search_roots: [][]const u8 = &.{},
     /// [shortcuts] overrides: builtin slot name → custom command name.
     shortcuts: []const Shortcut = &.{},
-    /// [grep] all = true makes `sg` search with ripgrep-all (rga) by default,
+    /// [grep] all = true makes `g` search with ripgrep-all (rga) by default,
     /// as if `--all` were always passed. The per-search flag still works too.
     grep_all: bool = false,
     /// [nav] terminal: command template (with a `{dir}` placeholder) used to open
@@ -76,18 +76,26 @@ pub const Config = struct {
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
+///
+/// The names ARE the slots: `[shortcuts]` keys are these strings, so renaming a
+/// slot renames the config key too. The run/search/find slots are `x`, `g` and
+/// `f` rather than `r`, `sg` and `ff`: `r` is a pwsh alias for Invoke-History
+/// and was the one command the shell silently shadowed, and once that one moves
+/// to a single free letter the two-letter names beside it have no reason to
+/// stay two letters. Anyone who wants the old spelling asks for it by name
+/// (`[shortcuts] x = ["x", "r"]`).
 pub fn builtinShortcuts() []const Shortcut {
     return &.{
-        .{ .builtin = "o", .custom = "o" },   .{ .builtin = "e", .custom = "e" },
-        .{ .builtin = "s", .custom = "s" },   .{ .builtin = "y", .custom = "y" },
-        .{ .builtin = "p", .custom = "p" },   .{ .builtin = "r", .custom = "r" },
-        .{ .builtin = "sg", .custom = "sg" }, .{ .builtin = "ff", .custom = "ff" },
+        .{ .builtin = "o", .custom = "o" }, .{ .builtin = "e", .custom = "e" },
+        .{ .builtin = "s", .custom = "s" }, .{ .builtin = "y", .custom = "y" },
+        .{ .builtin = "p", .custom = "p" }, .{ .builtin = "x", .custom = "x" },
+        .{ .builtin = "g", .custom = "g" }, .{ .builtin = "f", .custom = "f" },
     };
 }
 
 /// shortcutFor returns the PRIMARY command name for a builtin slot, honouring
 /// any [shortcuts] override in config.toml (falls back to the slot name itself).
-/// A multi-name slot (`r = ["r", "x"]`) keeps its first listed name as the
+/// A multi-name slot (`x = ["x", "r"]`) keeps its first listed name as the
 /// primary — the one help text, the agent guide, and the POSIX snippet use;
 /// the extra names still get wrappers via resolvedShortcutNames.
 pub fn shortcutFor(cfg: Config, slot: []const u8) []const u8 {
@@ -97,7 +105,7 @@ pub fn shortcutFor(cfg: Config, slot: []const u8) []const u8 {
 
 /// resolvedShortcutNames returns the effective command names (defaults with any
 /// config overrides applied), deduplicated case-insensitively and sorted. A slot
-/// may carry SEVERAL names (an array override like `r = ["r", "x"]` — extra
+/// may carry SEVERAL names (an array override like `x = ["x", "r"]` — extra
 /// spellings that dodge a shell builtin while keeping the familiar one); every
 /// listed name becomes a wrapper, so they all appear here.
 pub fn resolvedShortcutNames(arena: std.mem.Allocator, cfg: Config) ![][]const u8 {
@@ -183,7 +191,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         const val_start = std.mem.trim(u8, line[eq + 1 ..], " \t");
         if (std.mem.eql(u8, section, "shortcuts")) {
             // value is a (possibly quoted) command name, or an array of names —
-            // `r = ["r", "x"]` gives a slot several spellings (each becomes a
+            // `x = ["x", "r"]` gives a slot several spellings (each becomes a
             // wrapper; the FIRST listed is the primary shown in docs/help), so a
             // name a shell shadows (pwsh's `r`) gets an alternate without losing
             // the familiar one. key is the builtin slot. An unusable name is
@@ -423,12 +431,12 @@ test "resolvedShortcutNames: defaults sorted; override replaces a slot" {
 
     // Defaults are the identity names, sorted.
     const def = try resolvedShortcutNames(a, .{});
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "r", "s", "sg", "y" }), def);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "s", "x", "y" }), def);
 
     // Rename `s` -> `show`: it replaces s and the list stays sorted.
     const shortcuts = [_]Shortcut{.{ .builtin = "s", .custom = "show" }};
     const got = try resolvedShortcutNames(a, .{ .shortcuts = &shortcuts });
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "r", "sg", "show", "y" }), got);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "show", "x", "y" }), got);
 }
 
 test "multi-name slot: every listed name resolves; first stays primary" {
@@ -436,22 +444,23 @@ test "multi-name slot: every listed name resolves; first stays primary" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    // r = ["r", "x"] parses to two entries for the same slot.
+    // x = ["x", "r"] parses to two entries for the same slot - the way anyone
+    // who wants the pre-x spelling of the run slot back asks for it.
     const shortcuts = [_]Shortcut{
-        .{ .builtin = "r", .custom = "r" },
-        .{ .builtin = "r", .custom = "x" },
+        .{ .builtin = "x", .custom = "x" },
+        .{ .builtin = "x", .custom = "r" },
     };
     const cfg: Config = .{ .shortcuts = &shortcuts };
     const got = try resolvedShortcutNames(a, cfg);
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "r", "s", "sg", "x", "y" }), got);
-    // Help/guide/snippet keep showing the familiar first name.
-    try std.testing.expectEqualStrings("r", shortcutFor(cfg, "r"));
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "r", "s", "x", "y" }), got);
+    // Help/guide/snippet keep showing the first name.
+    try std.testing.expectEqualStrings("x", shortcutFor(cfg, "x"));
 
     // Duplicate spellings collapse (case-insensitively).
     const dup = [_]Shortcut{
-        .{ .builtin = "r", .custom = "x" },
-        .{ .builtin = "r", .custom = "X" },
+        .{ .builtin = "x", .custom = "r" },
+        .{ .builtin = "x", .custom = "R" },
     };
     const got2 = try resolvedShortcutNames(a, .{ .shortcuts = &dup });
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "ff", "o", "p", "s", "sg", "x", "y" }), got2);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "r", "s", "y" }), got2);
 }

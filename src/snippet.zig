@@ -75,8 +75,8 @@ pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []con
             };
             if (!in_use) try renamed_away.append(arena, bsc.builtin);
         }
-        // A custom name renamed away to ANOTHER custom name (e.g. sg="g" then
-        // sg="gg") isn't a builtin, so the loop above never sees it — only the
+        // A custom name renamed away to ANOTHER custom name (e.g. g="gg" then
+        // g="ggg") isn't a builtin, so the loop above never sees it — only the
         // wrapper manifest remembers "g" was installed last time. Fold those
         // into the same delete pass.
         const prev = try loadWrapperManifest(arena, io, home);
@@ -113,9 +113,9 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     const s = config.shortcutFor(cfg, "s");
     const y = config.shortcutFor(cfg, "y");
     const p = config.shortcutFor(cfg, "p");
-    const r = config.shortcutFor(cfg, "r");
-    const sg = config.shortcutFor(cfg, "sg");
-    const ff = config.shortcutFor(cfg, "ff");
+    const x = config.shortcutFor(cfg, "x");
+    const g = config.shortcutFor(cfg, "g");
+    const f = config.shortcutFor(cfg, "f");
 
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "# nix shell integration (generated; do not edit - run 'nix --sync')\n");
@@ -158,9 +158,9 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --explore \"$@\"; }}\n", .{s});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --yank \"$@\"; }}\n", .{y});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --paste \"$@\"; }}\n", .{p});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --run \"$@\"; }}\n", .{r});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --grep \"$@\"; }}\n", .{sg});
-    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --find \"$@\"; }}\n\n", .{ff});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --run \"$@\"; }}\n", .{x});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --grep \"$@\"; }}\n", .{g});
+    try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --find \"$@\"; }}\n\n", .{f});
 
     var joined: std.ArrayList(u8) = .empty;
     for (names, 0..) |n, i| {

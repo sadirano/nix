@@ -1031,10 +1031,10 @@ pub fn main(init: std.process.Init) !void {
 
         // Wrapper names and DOS device names are refused (declarations kept in
         // the same file stay installed — a bad line doesn't take down the rest).
-        try writeFile(&c, pa_actions, try std.fmt.allocPrint(arena, "{s}r = \"tools/greet.cmd\"\nnul = \"tools/greet.cmd\"\n", .{bin_decls}));
+        try writeFile(&c, pa_actions, try std.fmt.allocPrint(arena, "{s}x = \"tools/greet.cmd\"\nnul = \"tools/greet.cmd\"\n", .{bin_decls}));
         r = try c.run(&.{"--sync-bin"});
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "wrapper") != null and
-            !proc.pathExists(io, join(&c, &.{ home, "bin", "r.cmd" })), "a wrapper name is refused as an export", r);
+            !proc.pathExists(io, join(&c, &.{ home, "bin", "x.cmd" })), "a wrapper name is refused as an export", r);
         c.check(std.mem.indexOf(u8, r.err, "device") != null and proc.pathExists(io, inst_cmd), "a DOS device name is refused; valid siblings survive", r);
 
         // An unreachable alias dir protects its exports: unknown is not
@@ -1261,18 +1261,19 @@ pub fn main(init: std.process.Init) !void {
         // desugar to the builtin slot's action, not fall through to `nix <alias>`.
         const show_exe = join(&c, &.{ root, "show.exe" });
         try writeFile(&c, show_exe, exe_bytes);
-        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nr = \"show\"\n");
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nx = \"show\"\n");
         c.exe = show_exe;
         r = try c.run(&.{ "pa", ":hello" });
         c.exe = real_exe;
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a renamed wrapper ([shortcuts]) desugars via argv0", r);
 
-        // A multi-name slot: `r = ["r", "x"]` — the extra spelling desugars to
-        // the same slot (the pwsh-collision escape hatch keeps `r` too).
-        const x_exe = join(&c, &.{ root, "x.exe" });
-        try writeFile(&c, x_exe, exe_bytes);
-        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nr = [\"r\", \"x\"]\n");
-        c.exe = x_exe;
+        // A multi-name slot: `x = ["x", "r"]` — the extra spelling desugars to
+        // the same slot, which is how anyone keeps typing `r` for the run
+        // command now that the slot itself is named `x`.
+        const r_exe = join(&c, &.{ root, "r.exe" });
+        try writeFile(&c, r_exe, exe_bytes);
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nx = [\"x\", \"r\"]\n");
+        c.exe = r_exe;
         r = try c.run(&.{ "pa", ":hello" });
         c.exe = real_exe;
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a multi-name slot's extra wrapper desugars via argv0", r);
@@ -1485,7 +1486,7 @@ pub fn main(init: std.process.Init) !void {
     {
         var r = try c.run(&.{"--agent"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "# nix agent specs") != null and
-            std.mem.indexOf(u8, r.out, "`sg`") != null, "--agent lists the topics", r);
+            std.mem.indexOf(u8, r.out, "`g`") != null, "--agent lists the topics", r);
 
         r = try c.run(&.{ "--agent", "y" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "# y <alias> [pat]") != null and

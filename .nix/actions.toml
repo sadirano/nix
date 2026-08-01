@@ -1,4 +1,4 @@
-# nix project actions - run with `r <alias> :<name>` (list with `r <alias> :`).
+# nix project actions - run with `x <alias> :<name>` (list with `x <alias> :`).
 
 [actions]
 # Portable build: -Dcpu=baseline avoids baking the dev machine's CPU

@@ -1,6 +1,6 @@
 //! The `+group` command layer: dispatching group
 //! references and `member+group` adds, and fanning every command family
-//! across the resolved members — one picker over all roots for sg/ff, a
+//! across the resolved members — one picker over all roots for g/f, a
 //! per-dir run for r, open/copy-all for s/y, pick-one for p.
 
 const std = @import("std");
@@ -480,7 +480,7 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
     return rc;
 }
 
-/// cmdGroupGrep / cmdGroupFind fan `sg` / `ff` across a group's member dirs as a
+/// cmdGroupGrep / cmdGroupFind fan `g` / `f` across a group's member dirs as a
 /// single multi-root search (one unified fzf picker with `alias\rel` rows).
 fn cmdGroupGrep(app: *App, group: []const u8, args: [][]const u8) !u8 {
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;

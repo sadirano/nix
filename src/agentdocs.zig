@@ -143,12 +143,12 @@ pub const specs = [_]Spec{
         \\and config.
         \\
         \\The colon forms EDIT where an action is defined, rather than running it
-        \\(`${cmd:o}`/`${cmd:r}` run). `${cmd:e} :<name>` opens
+        \\(`${cmd:o}`/`${cmd:x}` run). `${cmd:e} :<name>` opens
         \\~/.nix/actions/_default.toml, seeding an empty stub when the name is
         \\new. `${cmd:e} <alias> :` opens that project's .nix/actions.toml, and
         \\CREATES it from a commented template when the alias has no actions yet -
         \\the one place a listing writes anything, and the reason
-        \\`${cmd:o} <alias> :` / `${cmd:r} <alias> :` are the read-only forms of
+        \\`${cmd:o} <alias> :` / `${cmd:x} <alias> :` are the read-only forms of
         \\the same question.
         \\
         \\`e` is deliberately single-alias: it does not fan out over a +group.
@@ -194,7 +194,7 @@ pub const specs = [_]Spec{
             "`${cmd:s} acme invoice` - pick among matches, open the picks",
             "`nix acme --no-prompt --explore invoice` - list matches, open nothing",
         },
-        .see_also = &.{ "ff", "y" },
+        .see_also = &.{ "f", "y" },
     },
     .{
         .slot = "y",
@@ -254,8 +254,8 @@ pub const specs = [_]Spec{
         .see_also = &.{"y"},
     },
     .{
-        .slot = "r",
-        .topic = "r",
+        .slot = "x",
+        .topic = "x",
         .args = "<alias> <cmd...>",
         .summary = "run a command at the alias dir",
         .safety = .safe,
@@ -273,7 +273,7 @@ pub const specs = [_]Spec{
         \\can answer it and prints the table when nobody can (your shell
         \\included, so it is safe to run). A bare name matching a file in
         \\.nix/scripts/ runs that script. The child gets $NIX_ALIAS and
-        \\$NIX_ALIAS_PATH. `r +<group> <cmd>` fans the command across members.
+        \\$NIX_ALIAS_PATH. `${cmd:x} +<group> <cmd>` fans the command across members.
         \\
         \\Actions take arguments (`--run :test -- --json`, appended to the
         \\command or substituted into its {args}) and chain in order, stopping at
@@ -303,21 +303,21 @@ pub const specs = [_]Spec{
         \\removes the cd-then-run dance from anything you tell the user to do.
         \\
         \\When a project grows a recurring build/test/deploy command, add it to
-        \\.nix/actions.toml under [actions] and hand the user `${cmd:r} <alias>
+        \\.nix/actions.toml under [actions] and hand the user `${cmd:x} <alias>
         \\:<name>` rather than the raw command line. See `--agent actions`.
         ,
-        .suggest = "Give runnable work as an action, not a command line: `${cmd:r} <alias> :test`.",
+        .suggest = "Give runnable work as an action, not a command line: `${cmd:x} <alias> :test`.",
         .examples = &.{
-            "`${cmd:r} acme git status` - run at the project dir",
-            "`${cmd:r} acme :deploy` - run a saved action",
-            "`${cmd:r} +work git pull` - across every member of a group",
+            "`${cmd:x} acme git status` - run at the project dir",
+            "`${cmd:x} acme :deploy` - run a saved action",
+            "`${cmd:x} +work git pull` - across every member of a group",
             "`nix acme --run zig build test` - the canonical form",
         },
         .see_also = &.{ "actions", "groups" },
     },
     .{
-        .slot = "sg",
-        .topic = "sg",
+        .slot = "g",
+        .topic = "g",
         .args = "<alias> <pat>",
         .summary = "ripgrep search under the alias dir (fzf UI)",
         .safety = .blocks,
@@ -327,7 +327,7 @@ pub const specs = [_]Spec{
         \\Streams ripgrep into fzf over `file:line:text` rows with a bat preview,
         \\and opens the picks in the editor at the matched line. `--all` searches
         \\via ripgrep-all instead, reaching inside PDFs, office docs and archives.
-        \\`sg +<group> <pat>` searches every member in one picker, rows prefixed
+        \\`${cmd:g} +<group> <pat>` searches every member in one picker, rows prefixed
         \\by alias.
         \\
         \\Search flags pass through to ripgrep: `nix acme --grep TODO -t zig`.
@@ -342,17 +342,17 @@ pub const specs = [_]Spec{
         \\equivalent, and it is the better choice when you want flags this form
         \\doesn't reach.
         ,
-        .suggest = "Leave follow-ups findable: `${cmd:sg} <alias> \"TODO(auth)\"`.",
+        .suggest = "Leave follow-ups findable: `${cmd:g} <alias> \"TODO(auth)\"`.",
         .examples = &.{
-            "`${cmd:sg} acme TODO` - search and pick interactively",
+            "`${cmd:g} acme TODO` - search and pick interactively",
             "`nix acme --no-prompt --grep TODO` - print matches, open nothing",
             "`nix acme --no-prompt --grep TODO -t zig` - ripgrep flags pass through",
         },
-        .see_also = &.{ "ff", "groups" },
+        .see_also = &.{ "f", "groups" },
     },
     .{
-        .slot = "ff",
-        .topic = "ff",
+        .slot = "f",
+        .topic = "f",
         .args = "<alias> [pat]",
         .summary = "fuzzy-find files under the alias dir",
         .safety = .blocks,
@@ -362,7 +362,7 @@ pub const specs = [_]Spec{
         \\Lists files under the alias dir (fd, else Everything's es on Windows,
         \\else POSIX find), picks in fzf with a preview, and opens the picks -
         \\default-app types via the OS handler, everything else in the editor.
-        \\`ff +<group>` spans members, rows prefixed by alias.
+        \\`${cmd:f} +<group>` spans members, rows prefixed by alias.
         ,
         .agent_use =
         \\The plain form blocks on fzf. The safe form prints the matching paths
@@ -372,12 +372,12 @@ pub const specs = [_]Spec{
         \\matching what the picker would show - join them onto `nix <alias>` when
         \\you need absolute paths.
         ,
-        .suggest = "When the user is hunting for a file: `${cmd:ff} <alias> <pat>`.",
+        .suggest = "When the user is hunting for a file: `${cmd:f} <alias> <pat>`.",
         .examples = &.{
-            "`${cmd:ff} acme .zig` - pick among matches, open the picks",
+            "`${cmd:f} acme .zig` - pick among matches, open the picks",
             "`nix acme --no-prompt --find .zig` - print matches, open nothing",
         },
-        .see_also = &.{ "sg", "s" },
+        .see_also = &.{ "g", "s" },
     },
 
     // ---- system commands ----
@@ -420,7 +420,7 @@ pub const specs = [_]Spec{
         .agent_use =
         \\This is how you name the place you are working. After editing files in
         \\a repo, `nix --which` tells you the alias to put in your summary, so
-        \\the user gets `${cmd:r} acme :test` instead of an absolute path.
+        \\the user gets `${cmd:x} acme :test` instead of an absolute path.
         ,
         .examples = &.{
             "`nix --which` - the alias for the current directory",
@@ -472,7 +472,7 @@ pub const specs = [_]Spec{
             "`nix --no-prompt --actions deploy` - what deploys, and where",
             "`nix --actions` - pick one and run it",
         },
-        .see_also = &.{ "actions", "r" },
+        .see_also = &.{ "actions", "x" },
     },
     .{
         .topic = "--doctor",
@@ -639,12 +639,12 @@ pub const specs = [_]Spec{
         \\Creating .nix/actions.toml and .nix/scripts/ inside a project is
         \\encouraged - unlike ~/.nix state, these belong to the repo.
         ,
-        .suggest = "Wire the command once, then reference it: `${cmd:r} <alias> :test`.",
+        .suggest = "Wire the command once, then reference it: `${cmd:x} <alias> :test`.",
         .examples = &.{
-            "`${cmd:r} acme :` - list this project's actions",
-            "`${cmd:r} acme :test` - run one",
+            "`${cmd:x} acme :` - list this project's actions",
+            "`${cmd:x} acme :test` - run one",
         },
-        .see_also = &.{ "r", "--actions", "--secret", "--sync-bin", "env" },
+        .see_also = &.{ "x", "--actions", "--secret", "--sync-bin", "env" },
     },
     .{
         .topic = "env",
@@ -700,7 +700,7 @@ pub const specs = [_]Spec{
             "`nix acme --env` - the merged environment, with provenance",
             "`nix --trust acme env` - the user approves the committed file",
         },
-        .see_also = &.{ "actions", "--secret", "r" },
+        .see_also = &.{ "actions", "--secret", "x" },
     },
     .{
         .topic = "groups",
@@ -715,8 +715,8 @@ pub const specs = [_]Spec{
         \\    nix +<group> --list         list members
         \\    nix +<group> --remove       delete the group
         \\
-        \\Commands fan out over a group: `r +work git pull` runs everywhere,
-        \\`sg +work TODO` searches every member in one picker. Two deliberate
+        \\Commands fan out over a group: `${cmd:x} +work git pull` runs everywhere,
+        \\`${cmd:g} +work TODO` searches every member in one picker. Two deliberate
         \\exceptions: `e` stays single-alias, and `p +group` picks ONE
         \\destination.
         ,
@@ -728,13 +728,13 @@ pub const specs = [_]Spec{
         \\Group forms that open a picker (`o +group`, `p +group`) have no useful
         \\non-interactive behaviour and refuse to run under --no-prompt.
         ,
-        .suggest = "For work spanning several repos: `${cmd:r} +work git pull`.",
+        .suggest = "For work spanning several repos: `${cmd:x} +work git pull`.",
         .examples = &.{
             "`nix --groups` - list groups",
             "`nix acme+work` - add acme to +work",
-            "`${cmd:r} +work git status` - fan out a command",
+            "`${cmd:x} +work git status` - fan out a command",
         },
-        .see_also = &.{ "r", "sg" },
+        .see_also = &.{ "x", "g" },
     },
     .{
         .topic = "notes",
@@ -775,7 +775,7 @@ pub const specs = [_]Spec{
             "`nix --no-prompt --notes acme` - read what is recorded, open nothing",
             "`nix acme --note blocked on the API key` - capture a line (when asked)",
         },
-        .see_also = &.{ "sg", "state" },
+        .see_also = &.{ "g", "state" },
     },
     .{
         .topic = "segments",
@@ -1054,11 +1054,11 @@ test "expand substitutes effective command names" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const cfg = config.Config{ .shortcuts = &.{.{ .builtin = "r", .custom = "run" }} };
-    try std.testing.expectEqualStrings("run acme :test", try expand(arena, cfg, "${cmd:r} acme :test"));
+    const cfg = config.Config{ .shortcuts = &.{.{ .builtin = "x", .custom = "run" }} };
+    try std.testing.expectEqualStrings("run acme :test", try expand(arena, cfg, "${cmd:x} acme :test"));
     // Unrenamed slots fall back to the slot name; text without a placeholder
     // is passed straight through.
-    try std.testing.expectEqualStrings("sg acme TODO", try expand(arena, cfg, "${cmd:sg} acme TODO"));
+    try std.testing.expectEqualStrings("g acme TODO", try expand(arena, cfg, "${cmd:g} acme TODO"));
     try std.testing.expectEqualStrings("no placeholder", try expand(arena, cfg, "no placeholder"));
 }
 
@@ -1081,10 +1081,10 @@ test "renderTopic emits machine facts only when present" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const bare = try renderTopic(arena, .{}, find("sg").?, .{});
+    const bare = try renderTopic(arena, .{}, find("g").?, .{});
     try std.testing.expect(std.mem.indexOf(u8, bare, "On this machine") == null);
 
-    const with = try renderTopic(arena, .{}, find("sg").?, .{ .missing_tools = &.{"rg"} });
+    const with = try renderTopic(arena, .{}, find("g").?, .{ .missing_tools = &.{"rg"} });
     try std.testing.expect(std.mem.indexOf(u8, with, "`rg` is NOT on PATH") != null);
 }
 

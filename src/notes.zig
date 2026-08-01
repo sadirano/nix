@@ -162,7 +162,7 @@ fn openInEditor(app: *App, path: []const u8) !u8 {
     };
 }
 
-/// cmdNotes searches every note at once - the `sg` pipeline pointed at the notes
+/// cmdNotes searches every note at once - the `g` pipeline pointed at the notes
 /// directory, so rows come out as `<key>.md:<line>:<text>` and the filename IS
 /// the alias. Enter opens the editor on that line; --no-prompt prints the rows
 /// and opens nothing, the contract every other picker has.
