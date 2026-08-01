@@ -35,25 +35,7 @@ The Scoop package pulls in the tools the interactive commands lean on (`bat`, `f
 
 Each tagged release publishes a Windows `.zip` on the [Releases](https://github.com/sadirano/nix/releases) page — download, unpack, put `nix.exe` on your `PATH`, then run `nix --init`.
 
-### If your antivirus flags the download
-
-**The binaries are unsigned, and Windows Defender may quarantine them** — usually as `Trojan:Win32/Sabsik.TE.A!ml`. The `!ml` suffix marks it as a machine-learning guess about a *static file*, not a match against known malware: the file is scanned on download, before it has run, so nothing it actually does was ever observed. What the model weighs is that the binary is unsigned and brand new, so almost nobody has downloaded that exact hash yet. Every release starts from zero on both counts.
-
-It doesn't help that nix's real behaviour reads like a dropper if you don't know what it is. `nix --init` writes copies of itself into `~/.nix/bin` under eight other names (those are the `o`/`e`/`s`/`y`/`p`/`r`/`sg`/`ff` commands — one binary that checks how it was invoked), adds that directory to your per-user `PATH` in the registry, and `r <alias> <cmd>` exists to launch other programs. All of it is the documented job, all of it is in the source, and none of it looks innocent to a classifier.
-
-There is no network code anywhere in nix: no sockets, no downloads, no telemetry, no contact with any remote host.
-
-**Verifying what you downloaded.** Releases are built entirely in public CI on GitHub-hosted runners, never on a developer machine, by [`.github/workflows/release.yml`](.github/workflows/release.yml) — statically linked, not packed or obfuscated. Every build's full log is public under [Actions](https://github.com/sadirano/nix/actions), showing the exact commit and toolchain that produced the artifact. To confirm your copy is that artifact:
-
-```powershell
-Get-FileHash .\nix.exe -Algorithm SHA256
-```
-
-For `v0.11.0` that is `2c3286ca6abe8678c44f2cab7b413d793c318f4f561df434231c6ed00cbd093d`.
-
-If you'd rather not trust a binary at all, build it yourself — it's one command, and the next section covers it.
-
-False positives are reported to Microsoft as they come up, which clears the detection for everyone rather than one machine at a time. Adding a Defender exclusion works too, but treat that as a last resort: clicking past this warning is a habit worth not building.
+**Prefer Scoop if you can.** The binaries are unsigned, and a browser download of an unsigned `.zip` is what antivirus scanners weigh hardest; installing through Scoop avoids that path, verifies the published hash for you, and makes `scoop update nix` the way you get the next version. Releases are built entirely in public CI on GitHub-hosted runners by [`.github/workflows/release.yml`](.github/workflows/release.yml), with every build's log public under [Actions](https://github.com/sadirano/nix/actions) — or skip binaries altogether and build it yourself, which is one command.
 
 ### Build from source
 
