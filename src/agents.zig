@@ -37,7 +37,7 @@ pub fn write(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: config.Con
 fn commandTable(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "| Command | Meaning | Agent |\n|---|---|---|\n");
-    var buf: [8]*const agentdocs.Spec = undefined;
+    var buf: [config.builtinShortcuts().len]*const agentdocs.Spec = undefined;
     for (agentdocs.wrapperSpecs(&buf)) |s| {
         try b.print(arena, "| `{s} {s}` | {s} | {s} |\n", .{
             config.shortcutFor(cfg, s.slot), s.args, s.summary, s.safety.label(),
@@ -70,6 +70,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\them); `{[o]s} docs@acme` resolves a sub-alias segment; `+group` fans a command
         \\across a set of aliases (`{[x]s} +work git pull`); `nix <name> <path>` registers
         \\a new alias.
+        \\
+        \\`{[q]s}` is the exception to everything below: it closes the shell it
+        \\runs in, so running it yourself ends your own session mid-task. Suggest
+        \\it, never call it.
         \\
         \\**Every command has a full spec for you: `<cmd> --agent`** (or
         \\`nix --agent <topic>`; bare `nix --agent` lists the topics). Each one states
@@ -184,6 +188,7 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .x = config.shortcutFor(cfg, "x"),
         .g = config.shortcutFor(cfg, "g"),
         .f = config.shortcutFor(cfg, "f"),
+        .q = config.shortcutFor(cfg, "q"),
     });
     return b.items;
 }

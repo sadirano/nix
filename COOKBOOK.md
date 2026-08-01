@@ -55,71 +55,16 @@ suh = ":suhere"
 
 ### `q` — close the shell you typed it in
 
-An action runs in a *child* of your shell, and a child cannot make its parent
-`exit` — only kill it. Which means finding it first.
+Nothing to write: `q` is a built-in command. It terminates the process that
+started it, refusing unless that process really is a shell (cmd, powershell,
+pwsh, bash, sh, zsh, fish, nu) - from Windows Terminal, an IDE or a shortcut the
+process above can be the terminal host itself, and closing that would take every
+other tab with it. `q --dry-run` names the target without touching it.
 
-The chain under an exported action is:
-
-```
-pwsh.exe     <- the script
-cmd.exe      <- nix's `cmd /c` wrapper
-q.exe        <- the export: a copy of nix, renamed
-cmd.exe      <- your shell                  <- close this
-```
-
-So walk up to the export and take the process above it. `NIX_EXPORT` carries the
-name nix was invoked under, so nothing is hardcoded and renaming the `[bin]` key
-keeps working.
-
-Save as `~/.nix/scripts/qkill.ps1`:
-
-```powershell
-param([string]$Export = $env:NIX_EXPORT, [switch]$DryRun)
-if (-not $Export) { Write-Error "q: no NIX_EXPORT - run this as a [bin] export"; exit 1 }
-
-function Get-ParentOf($proc) {
-    try { if ($proc.Parent) { return $proc.Parent } } catch { }
-    $ppid = (Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.Id)" -ErrorAction SilentlyContinue).ParentProcessId
-    if ($ppid) { return Get-Process -Id $ppid -ErrorAction SilentlyContinue }
-    return $null
-}
-
-$cur = Get-Process -Id $PID
-$base = [IO.Path]::GetFileNameWithoutExtension($Export)
-$found = $null
-for ($i = 0; $i -lt 8 -and $cur; $i++) {
-    if ($cur.ProcessName -ieq $base) { $found = $cur; break }
-    $cur = Get-ParentOf $cur
-}
-if (-not $found) { Write-Error "q: did not find $Export above this process"; exit 1 }
-
-$target = Get-ParentOf $found
-if (-not $target) { Write-Error "q: nothing above $Export to close"; exit 1 }
-
-# The guard, not decoration: from Windows Terminal, VS Code or a .lnk the parent
-# can be WindowsTerminal.exe / Code.exe / explorer.exe, and killing that takes
-# the whole application down rather than one shell.
-if (@('cmd','powershell','pwsh','bash','sh') -notcontains $target.ProcessName.ToLower()) {
-    Write-Error "q: refusing - the process above is $($target.ProcessName), not a shell"
-    exit 1
-}
-
-if ($DryRun) { "q: would close $($target.ProcessName) (PID $($target.Id))"; exit 0 }
-Stop-Process -Id $target.Id -Force
-```
-
-```toml
-[actions]
-q = 'pwsh -NoProfile -NoLogo -ExecutionPolicy Bypass -File "%USERPROFILE%/.nix/scripts/qkill.ps1" {args}'
-
-[bin]
-q = ":q"
-```
-
-`q -DryRun` prints the target without touching it. Two things to know: it is a
-hard kill, so a shell holding unflushed state (clink's history, for one) may lose
-it; and from PowerShell it closes your PowerShell, which is usually what you want
-but is the case where a mistake costs most.
+The recipe that used to live here walked the process tree from a `[bin]` export
+up to the shell. That walk was only needed because an exported action runs
+through `cmd /c` and a PowerShell host; the built-in is a wrapper copy of nix,
+spawned by the shell directly, so its parent IS the target.
 
 ### `ps1` — run a PowerShell script
 
@@ -210,7 +155,8 @@ script's source and exits 0, looking like success. Use `.nix/scripts/` and a bar
 name, or the `ps1` recipe above.
 
 **`exit` in an action exits nix's child shell, not yours.** `q = "exit"` looks
-reasonable and does nothing at all. See the `q` recipe for why.
+reasonable and does nothing at all - an action runs in a child, and a child
+cannot make its parent return. That is what the built-in `q` is for.
 
 **Check a name before you take it.** `ps` is `Get-Process` in PowerShell and `r`
 is `Invoke-History`; a shell's own alias always wins over an exe on PATH:
