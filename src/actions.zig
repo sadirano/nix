@@ -75,6 +75,42 @@ pub const project_template =
     \\
 ;
 
+/// default_template seeds `~/.nix/actions/_default.toml` when `e :` is the
+/// first thing that ever asks for it. Same shape as project_template and inert
+/// for the same reason, but about the machine-wide file's own powers: an action
+/// here answers from ANY alias, a `[bin]` line here makes a global command that
+/// runs in the CURRENT directory, and nothing here is ever trust-gated because
+/// it lives under $home and the user wrote it.
+pub const default_template =
+    \\# Personal machine-wide actions - the lowest-precedence layer, available
+    \\# from any alias as `x <any-alias> :<name>`. A project's own
+    \\# .nix/actions.toml and ~/.nix/actions/<alias>.toml both override a name
+    \\# declared here.
+    \\#
+    \\# The comment block above an action IS its description, so say WHY it
+    \\# exists - the command already says what it does.
+    \\#
+    \\# Nothing below is active yet. Uncomment a line and edit it.
+    \\
+    \\[actions]
+    \\# gs = "git status"
+    \\
+    \\# A command beginning with `sudo` runs ELEVATED in a console of its own,
+    \\# and asks every time - UAC names the shell, not the line it was handed.
+    \\# hosts = "sudo notepad %SystemRoot%\\System32\\drivers\\etc\\hosts"
+    \\
+    \\# [bin] turns an action into a command that works from anywhere, installed
+    \\# by `nix --sync-bin`. Declared HERE it has no alias dir, so it runs in
+    \\# whatever directory you call it from:
+    \\#
+    \\#   [bin]
+    \\#   hosts = ":hosts"
+    \\#
+    \\# Nothing under ~/.nix is trust-gated: you wrote it, and no clone can
+    \\# reach it. That is the difference from a project's actions.toml.
+    \\
+;
+
 /// centralPath: <home>/actions/<alias>.toml — private, per-alias.
 pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8) ![]const u8 {
     const file = try std.fmt.allocPrint(arena, "{s}.toml", .{alias});
@@ -307,7 +343,7 @@ test "parseTable: a description never crosses a section boundary" {
     try std.testing.expectEqualStrings("", bins[0].description);
 }
 
-test "project_template is inert: it declares no action and no export" {
+test "both templates are inert: they declare no action and no export" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -320,6 +356,12 @@ test "project_template is inert: it declares no action and no export" {
     // The header IS there, so the first uncommented line lands in the table
     // rather than parsing as nothing.
     try std.testing.expect(std.mem.indexOf(u8, project_template, "[actions]\n") != null);
+    // The machine-wide one stands under the same rule: `e :` writes it, and a
+    // template shipping a live action would put a command on every alias at
+    // once - including the `sudo` example, which would prompt for elevation.
+    try std.testing.expectEqual(@as(usize, 0), (try parse(a, default_template)).len);
+    try std.testing.expectEqual(@as(usize, 0), (try parseTable(a, default_template, "bin")).len);
+    try std.testing.expect(std.mem.indexOf(u8, default_template, "[actions]\n") != null);
 }
 
 test "centralPath / projectPath shape" {

@@ -174,6 +174,13 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     // the same colon as `r <alias> :<name>`, one scope wider.
     if (bareColon(args)) |pat| {
         setGlobalFlags(app, args);
+        // From the EDITOR, a bare `:` opens the file those actions come from
+        // rather than a picker that runs one - the machine-wide half of what
+        // `e <alias> :` does for a project, and the only short way to reach
+        // ~/.nix/actions/_default.toml without naming an action already in it.
+        // A pattern still means "search the palette": narrowing a list is a
+        // question, not an edit.
+        if (pat.len == 0 and mc_action != null and eql(mc_action.?, "edit")) return cmdEditDefaultActions(app);
         return palette.cmdActions(app, pat);
     }
     if (leadingActionCall(args)) |argv| {
@@ -687,6 +694,25 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
         try app.err.print("nix: added a stub for :{s} in {s}\n", .{ name, path });
     }
 
+    return app_zig.openFileInEditor(app, path, app.home);
+}
+
+/// cmdEditDefaultActions opens ~/.nix/actions/_default.toml, seeding it from a
+/// commented template when it does not exist yet: `e :` for the machine-wide
+/// file, exactly as `e <alias> :` is for a project's.
+///
+/// It is the answer to "how do I edit my personal actions" - before this, the
+/// only short way in was `e :<name>` naming an action already in the file, so
+/// the file you had not written yet was the one you could not open.
+fn cmdEditDefaultActions(app: *App) !u8 {
+    const path = try actions.defaultPath(app.arena, app.home);
+    if (!proc.fileExists(app.io, path)) {
+        util.writeFileAtomic(app.arena, app.io, path, actions.default_template) catch |e| {
+            try app.err.print("nix: create {s}: {s}\n", .{ path, @errorName(e) });
+            return 1;
+        };
+        try app.err.print("nix: created {s} - uncomment an action to define one\n", .{path});
+    }
     return app_zig.openFileInEditor(app, path, app.home);
 }
 
