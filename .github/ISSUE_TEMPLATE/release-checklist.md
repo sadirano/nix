@@ -92,7 +92,21 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 - [ ] `r +<group> <cmd>` fans out in each member dir, labelled per member.
 - [ ] `s`/`y` `+<group> <pat>` show `alias\rel` rows; picks open or copy.
 - [ ] `p +<group>` pastes into the picked member.
-- [ ] 🧪 A malformed group token errors and does **not** fall through to a picker.
+- [ ] 🧪 A malformed group token errors and does **not** fall through to a
+      picker. Run on a REAL console - an agent shell refuses pickers anyway, so
+      failing there proves nothing. Each exits non-zero, prints the message
+      below, and opens NO picker:
+      - `o +` / `y pa+` -> `nix: invalid group token "..." (EmptyGroupName)`
+      - `r +nosuch echo hi` -> `nix: unknown group "+nosuch"`
+
+      The failure being guarded: an unknown PLAIN alias deliberately hands off
+      to the directory picker to register it on the fly (resolve.zig). A bad
+      `+token` treated as an ordinary alias name lands in that same path, so
+      instead of an error you get a menu offering to register `+` as an alias -
+      and in `r +<group> <cmd>` a fan-out could quietly run the command
+      somewhere it was never aimed at. Control: `o nosuchalias` SHOULD open the
+      picker. If all three print `unknown alias`, the group namespace is not
+      failing closed.
 
 ## 6. Actions, provenance and secrets
 
