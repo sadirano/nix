@@ -359,9 +359,9 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     {
         const Tool = struct { name: []const u8, feature: []const u8 };
         const tools = [_]Tool{
-            .{ .name = "bat", .feature = "syntax-highlighted preview (ff/sg)" },
-            .{ .name = "rg", .feature = "sg search" },
-            .{ .name = "rga", .feature = "sg --all (search PDFs/office docs/archives)" },
+            .{ .name = "bat", .feature = "syntax-highlighted preview (f/g)" },
+            .{ .name = "rg", .feature = "g search" },
+            .{ .name = "rga", .feature = "g --all (search PDFs/office docs/archives)" },
         };
         for (tools) |t| {
             if (proc.findInPath(app.arena, app.io, app.env, t.name)) |p| {

@@ -34,13 +34,13 @@ const starter_config =
     \\# After editing, run: nix --sync  (then restart your shell)
     \\#
     \\# [shortcuts] renames the built-in command functions
-    \\# (o, e, s, y, p, r, sg, ff). An array gives a slot several names -
-    \\# every listed one answers, the first is the primary (e.g. keep `r`
-    \\# and add `x` for shells whose built-in `r` alias shadows it):
+    \\# (o, e, s, y, p, x, g, f). An array gives a slot several names -
+    \\# every listed one answers, the first is the primary (e.g. keep `x`
+    \\# and add back `r`, the spelling the run command used to have):
     \\#
     \\#   [shortcuts]
     \\#   s = "show"
-    \\#   r = ["r", "x"]
+    \\#   x = ["x", "r"]
     \\#
     \\# Prefer spelled-out names to the letters? Uncomment this full preset - a
     \\# friendlier setup that trades each short name for a word (findfile, not
@@ -52,11 +52,11 @@ const starter_config =
     \\#   s  = "show"       # open the dir in the file manager
     \\#   y  = "yank"       # copy the path (or picked files)
     \\#   p  = "paste"      # save the clipboard into the dir
-    \\#   r  = "run"        # run a command / saved action
-    \\#   sg = "search"     # ripgrep search under the dir
-    \\#   ff = "findfile"   # fuzzy-find files under the dir
+    \\#   x  = "run"        # run a command / saved action
+    \\#   g  = "search"     # ripgrep search under the dir
+    \\#   f  = "findfile"   # fuzzy-find files under the dir
     \\#
-    \\# [grep] tunes the sg search. `all = true` makes sg search with
+    \\# [grep] tunes the `g` search. `all = true` makes `g` search with
     \\# ripgrep-all (rga) by default - same as passing --all on every search:
     \\#
     \\#   [grep]
@@ -71,7 +71,7 @@ const starter_config =
     \\#   [picker]
     \\#   search_roots = ['~/projects', 'D:\\work']
     \\#
-    \\# [notify] on_finish runs a notifier after every foreground `r <alias>
+    \\# [notify] on_finish runs a notifier after every foreground `x <alias>
     \\# :action` finishes, with {alias} {action} {exit} {status} {duration}
     \\# {level} {message} expanded - so long builds report completion (and
     \\# especially failure) without per-action boilerplate. With a notifier
@@ -379,7 +379,7 @@ fn writeFileAtomic(app: *App, path: []const u8, data: []const u8) !void {
 /// merely added an action would delete the user's global commands.
 fn writeActionsFile(app: *App, path: []const u8, list: []const actions.Action, bins: []const actions.Action) !void {
     var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(app.arena, "# nix per-alias actions - run with `r <alias> :<name>`\n\n[actions]\n");
+    try b.appendSlice(app.arena, "# nix per-alias actions - run with `x <alias> :<name>`\n\n[actions]\n");
     for (list) |ac| try appendEntry(app, &b, ac);
     if (bins.len > 0) {
         try b.appendSlice(app.arena, "\n# global commands - installed by `nix --sync-bin`\n[bin]\n");
@@ -452,7 +452,7 @@ pub fn cmdInit(app: *App) !u8 {
     // 4. Shell rc / $PROFILE: never touched. On Windows the wrappers on PATH
     // are the whole integration; on POSIX users add the snippet line themselves.
     if (proc.is_windows) {
-        try app.err.writeAll("restart your shell to activate o/e/s/y/p/r, sg/ff\n");
+        try app.err.writeAll("restart your shell to activate o/e/s/y/p/x, g/f\n");
         // PowerShell resolves aliases before PATH exes, and `r` is a built-in
         // alias (Invoke-History) — the one wrapper pwsh silently shadows.
         try app.err.writeAll("PowerShell users: the built-in `r` alias shadows r.exe - add to $PROFILE:  Remove-Item Alias:r -Force\n");

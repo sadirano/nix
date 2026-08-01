@@ -18,7 +18,7 @@ One TOML file holds every alias; one binary serves every command. State lives in
 ## Build, test, run
 
 The repo is registered as a nix alias itself, so the saved actions in
-`.nix/actions.toml` are the shortest forms (`r <alias> :build`, `:sync`, `:ci`,
+`.nix/actions.toml` are the shortest forms (`x <alias> :build`, `:sync`, `:ci`,
 `:checklist`). The raw commands:
 
 ```powershell
@@ -68,7 +68,7 @@ the Windows Credential Manager, which is why the e2e harness excludes them.
 ### Multicall binary
 
 The same exe is installed into `~/.nix/bin` under every command name (`o`, `e`,
-`s`, `y`, `p`, `r`, `sg`, `ff`) plus any `[shortcuts]` rename, and recovers the
+`s`, `y`, `p`, `x`, `g`, `f`) plus any `[shortcuts]` rename, and recovers the
 action from `argv[0]` (`main.multicallAction`). With `~/.nix/bin` on the
 persistent user PATH there is no shell snippet on Windows; POSIX still gets shell
 functions from `snippet.zig`. Consequence for the dev loop: **`zig build` alone

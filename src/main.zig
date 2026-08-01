@@ -57,7 +57,7 @@ pub fn main(init: std.process.Init) !void {
     proc.enableUtf8Console();
 
     // Streaming, not positional: these streams are SHARED with the commands nix
-    // spawns. A positional writer tracks its own offset, so `r acme :build
+    // spawns. A positional writer tracks its own offset, so `x acme :build
     // :test > log.txt 2>&1` would write a header, let the child append after it,
     // then write the next header back over the child's output. Appending is the
     // only mode that agrees with a file pointer other processes also move.
@@ -243,7 +243,7 @@ fn leadingActionCall(args: [][]const u8) ?[][]const u8 {
 /// flags (--json/-j, --no-prompt/-q). The scan stops at `--` and at the first
 /// action flag: everything after `--run`/`--grep`/... belongs to that action's
 /// command or pattern and must not flip nix's own switches (`r a build -q`
-/// hands --no-prompt to build; `sg a pat --json` hands --json to rg).
+/// hands --no-prompt to build; `g a pat --json` hands --json to rg).
 fn setGlobalFlags(app: *App, args: []const []const u8) void {
     for (args) |a| {
         if (eql(a, "--")) break;
@@ -495,7 +495,7 @@ fn cmdAdd(app: *App, alias: []const u8, raw_path: []const u8) !u8 {
             // something else entirely, so name the thing they probably wanted.
             if (eql(raw_path, ":")) {
                 const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
-                try app.err.print("  to see what \"{s}\" can run, use `{s} {s} :`\n", .{ alias, config.shortcutFor(cfg, "r"), alias });
+                try app.err.print("  to see what \"{s}\" can run, use `{s} {s} :`\n", .{ alias, config.shortcutFor(cfg, "x"), alias });
             }
         } else if (e == error.Cancelled) {
             // confirmRepoint already explained itself; adding "nix: Cancelled"
@@ -681,7 +681,7 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
 
 /// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it
 /// mirrors `y <alias> <pat>`: an exact existing file opens directly (the
-/// original `s <alias> <file>` form), anything else runs the ff picker and
+/// original `s <alias> <file>` form), anything else runs the `f` picker and
 /// opens every selection with the OS handler — pick files to open instead of
 /// files to copy.
 fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
@@ -911,7 +911,7 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     return paste.pasteClipboardInto(app, alias, target, name);
 }
 
-/// cmdYank: `y <alias> <pat>` runs the ff picker and copies the selected FILES
+/// cmdYank: `y <alias> <pat>` runs the `f` picker and copies the selected FILES
 /// to the clipboard as an OS file drop; bare `y <alias>` copies the path text.
 fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     var has_pat = false;
@@ -1020,8 +1020,8 @@ fn slotAction(slot: []const u8) ?[]const u8 {
     const map = [_]struct { k: []const u8, v: []const u8 }{
         .{ .k = "o", .v = "navigate" }, .{ .k = "e", .v = "edit" },
         .{ .k = "s", .v = "explore" },  .{ .k = "y", .v = "yank" },
-        .{ .k = "p", .v = "paste" },    .{ .k = "r", .v = "run" },
-        .{ .k = "sg", .v = "grep" },    .{ .k = "ff", .v = "find" },
+        .{ .k = "p", .v = "paste" },    .{ .k = "x", .v = "run" },
+        .{ .k = "g", .v = "grep" },     .{ .k = "f", .v = "find" },
     };
     for (map) |m| if (eql(slot, m.k)) return m.v;
     return null;
@@ -1190,7 +1190,7 @@ fn printUsage(app: *App) !void {
         \\  nix +<group> [--list]       list a group's members
         \\  nix +<group> --remove       delete the group
         \\  o  +<group>                 pick members (fzf): first cd's here, rest open windows
-        \\  sg/ff/r +<group> ...        search / run across every member
+        \\  g/f/x +<group> ...          search / run across every member
         \\  s/y +<group> [pat]          open / copy member dirs; with a pattern, pick files
         \\  p  +<group> [name]          pick ONE member, paste the clipboard there
         \\
@@ -1285,9 +1285,9 @@ test "desugarMultiCall: a wrapper's lone --agent names its own slot" {
     const d = try desugarMultiCall(a, "yank", &argv);
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--agent", "y" }), d.args);
 
-    // `sg --agent` -> `nix --agent sg` (multi-character slot).
+    // `g --agent` -> `nix --agent g`.
     const d2 = try desugarMultiCall(a, "grep", &argv);
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--agent", "sg" }), d2.args);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--agent", "g" }), d2.args);
 
     // `o --agent` too, even though navigate is otherwise special-cased.
     const d3 = try desugarMultiCall(a, "navigate", &argv);
@@ -1377,8 +1377,8 @@ test "desugarMultiCall: navigate with no args opens the aliases file" {
 test "multicallAction: wrapper-name mapping, .exe stripping, case-fold" {
     try std.testing.expectEqualStrings("navigate", multicallAction("o").?);
     try std.testing.expectEqualStrings("edit", multicallAction("e.exe").?);
-    try std.testing.expectEqualStrings("grep", multicallAction("SG").?);
-    try std.testing.expectEqualStrings("find", multicallAction("C:/bin/ff.exe").?);
+    try std.testing.expectEqualStrings("grep", multicallAction("G").?);
+    try std.testing.expectEqualStrings("find", multicallAction("C:/bin/f.exe").?);
     // The canonical binary name is not a multicall wrapper.
     try std.testing.expect(multicallAction("nix") == null);
     try std.testing.expect(multicallAction("unknown") == null);
@@ -1387,7 +1387,7 @@ test "multicallAction: wrapper-name mapping, .exe stripping, case-fold" {
 test "renamedMulticallAction: [shortcuts] renames map to the builtin's action" {
     const cfg = config.Config{ .shortcuts = &.{
         .{ .builtin = "s", .custom = "show" },
-        .{ .builtin = "sg", .custom = "search" },
+        .{ .builtin = "g", .custom = "search" },
     } };
     try std.testing.expectEqualStrings("explore", renamedMulticallAction(cfg, "C:/bin/show.exe").?);
     try std.testing.expectEqualStrings("grep", renamedMulticallAction(cfg, "SEARCH").?);

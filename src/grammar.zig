@@ -135,9 +135,9 @@ pub const actions = [_]Action{
     .{ .flags = &.{ "--explore", "-x" }, .verb = .explore, .args = "[pat]", .help = "open in the file manager; with a pattern, pick files -> open them", .spec = "s" },
     .{ .flags = &.{ "--yank", "-y" }, .verb = .yank, .args = "[pat]", .help = "copy the path; with a pattern, pick files -> copy the files", .spec = "y" },
     .{ .flags = &.{ "--paste", "-p" }, .verb = .paste, .help = "save the clipboard into the dir", .spec = "p" },
-    .{ .flags = &.{ "--run", "-r" }, .verb = .run, .args = "<cmd>", .help = "run a command at the dir (`:name` runs a saved action)", .spec = "r" },
-    .{ .flags = &.{ "--grep", "-g" }, .verb = .grep, .args = "<pat>", .help = "ripgrep search (add --all/-a to search via rga)", .spec = "sg" },
-    .{ .flags = &.{ "--find", "-f" }, .verb = .find, .args = "[pat]", .help = "fuzzy-find files", .spec = "ff" },
+    .{ .flags = &.{ "--run", "-r" }, .verb = .run, .args = "<cmd>", .help = "run a command at the dir (`:name` runs a saved action)", .spec = "x" },
+    .{ .flags = &.{ "--grep", "-g" }, .verb = .grep, .args = "<pat>", .help = "ripgrep search (add --all/-a to search via rga)", .spec = "g" },
+    .{ .flags = &.{ "--find", "-f" }, .verb = .find, .args = "[pat]", .help = "fuzzy-find files", .spec = "f" },
     .{ .flags = &.{"--env"}, .verb = .env, .help = "print the project's environment (.nix/env.toml), with provenance", .spec = "env" },
     .{ .flags = &.{"--note"}, .verb = .note, .args = "<text>", .help = "append a line to the alias's notes", .spec = "notes" },
     .{ .flags = &.{ "--remove", "--rm" }, .verb = .remove, .help = "forget the alias", .spec = "" },
@@ -195,7 +195,7 @@ pub fn isGlobal(flag: []const u8) bool {
 }
 
 /// flagFor returns an action's canonical spelling - the inverse of aliasAction,
-/// used when the multicall layer rewrites `sg acme pat` into the canonical
+/// used when the multicall layer rewrites `g acme pat` into the canonical
 /// `nix acme --grep pat`.
 pub fn flagFor(verb: ActionVerb) []const u8 {
     for (actions) |r| {

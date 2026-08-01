@@ -69,7 +69,7 @@ pub fn printProducerRows(app: *App, targets: []const GroupTarget, argv: []const 
     return 0;
 }
 
-/// A picker row, as `sg` and `ff` emit it and as fzf hands it back:
+/// A picker row, as `g` and `f` emit it and as fzf hands it back:
 ///
 ///     [<alias>\]<path>[:<line>[:<text>]]
 ///
