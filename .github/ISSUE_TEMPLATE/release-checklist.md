@@ -90,8 +90,18 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 ## 5. Groups
 
 - [ ] `r +<group> <cmd>` fans out in each member dir, labelled per member.
+      Setup: `nix a+demo` then `nix b+demo` (the MEMBER goes before the `+`,
+      the group after); `nix +demo --list` confirms both. `r +demo cmd /c cd`
+      must print one labelled block per member, each showing that member's
+      OWN directory. Count the blocks against `--list` rather than just
+      checking output appeared - the failure being guarded is a fan-out that
+      silently visits fewer directories than the group has members.
 - [ ] `s`/`y` `+<group> <pat>` show `alias\rel` rows; picks open or copy.
-- [ ] `p +<group>` pastes into the picked member.
+      The `alias\rel` prefix is the point: without it, two members holding a
+      file with the same relative name are indistinguishable in the picker.
+- [ ] `p +<group>` pastes into the picked member. `p` is a deliberate
+      exception that picks ONE destination instead of fanning out, so confirm
+      it wrote to exactly one member and not to every one of them.
 - [ ] 🧪 A malformed group token errors and does **not** fall through to a
       picker. Run on a REAL console - an agent shell refuses pickers anyway, so
       failing there proves nothing. Each exits non-zero, prints the message
@@ -111,51 +121,117 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 ## 6. Actions, provenance and secrets
 
 - [ ] 🧪 A freshly cloned project's `.nix/actions.toml` asks before its first
-      run, and refuses (does not hang) with no console.
+      run, and refuses (does not hang) with no console. Two halves, both
+      required. On a REAL console `r <alias> :<action>` prints the command
+      and its source file and waits for y/N. In a shell with NO console (an
+      agent's, or a piped one) it must refuse and exit non-zero - never hang
+      waiting on input nobody can supply, never silently run.
+      Verify by SIDE EFFECT, not by output: give the action something
+      observable (`hello = "cmd /c echo x > BREACH.txt"`) and confirm the
+      file does not exist. The refusal quotes the command back at you for
+      review, so grepping stdout for it cannot tell "refused" from "ran".
+      `.nix/scripts/` files are gated identically: `r <alias> <script-name>`.
 - [ ] 🧪 `nix --trust <alias>` approves it; editing the file asks again.
+      After `--trust` the same action runs. Then change one character in
+      actions.toml and re-run: it must ask AGAIN. Guards the gate keying on
+      the file's identity rather than its contents - approving once must
+      never bless every future edit that arrives with a `git pull`.
 - [ ] An action beginning with `sudo` raises the UAC prompt and runs elevated
-      in its own console.
+      in its own console. Cannot be run unattended by design, so this one
+      needs you at the machine. Confirm the elevated console is a SEPARATE
+      window, and that declining the UAC prompt fails the action cleanly
+      rather than falling back to running it unelevated.
 - [ ] `${secret:NAME}` resolves from Credential Manager, and the value does
-      **not** appear in the elevated command line or in any log.
+      **not** appear in the elevated command line or in any log. Store one
+      with `nix --secret set SMOKE_TEST` yourself - the whole indirection
+      exists so the value never enters a transcript or shell history.
+      Reference it from an action, run it, then confirm: `nix --secret list`
+      shows the NAME only, and the value appears in neither the console
+      output, nor the action's log, nor Task Manager's command-line column
+      for the elevated process.
 - [ ] `r <alias> --deps :build` runs dependencies first and stops at the first
-      failure.
+      failure. Set `[deps] needs = ["other"]`, give both aliases a `:build`,
+      and make the DEPENDENCY fail. The chain must stop there and never reach
+      the dependent's own `:build`. A build order that continues past a
+      failed dependency produces a binary from stale inputs, which is worse
+      than no build at all.
 
 ## 7. Per-project environment
 
 - [ ] ⚠️ `.nix/env.toml` variables reach a real `r` command, and `nix <alias>
-      --env` shows their provenance.
+      --env` shows their provenance. `r <alias> cmd /c "echo %MYVAR%"` prints
+      the value, and `nix <alias> --env` lists it with the layer that set it.
+      Check the layering too: the private `~/.nix/env/<alias>.toml` must WIN
+      over the committed project file for the same key.
+      Note the gate differs from actions here. An unapproved env.toml does
+      NOT refuse - it runs WITHOUT that layer and says so once. So "the
+      command worked" is not evidence the file applied; read `--env`, or
+      check the variable itself.
 - [ ] Variables do not leak between members of a group fan-out or a `--deps`
-      chain.
+      chain. Give exactly ONE member an env.toml, then fan out over the
+      group: `r +<group> cmd /c "echo %MYVAR%"` must show the value in one
+      block and show it ABSENT (not merely overwritten) in the others.
+      run.zig removes each layer before injecting the next, and this is the
+      only place that is observable - a leak here hands one project's
+      credentials to the next command in the chain.
 
 ## 8. `[bin]` exports
 
 - [ ] `nix --sync-bin` installs a project's export into `~/.nix/bin`; the name
-      runs from any directory.
+      runs from any directory. Declare `[bin] mytool = "zig-out/bin/x.exe"`,
+      run `nix --sync-bin`, then invoke `mytool` from an UNRELATED directory -
+      an export that only works inside the project dir is the bug. An export
+      declared in a committed actions.toml needs `nix --trust <alias>` first,
+      so confirm a fresh clone does not install commands as a side effect of
+      merely being registered.
 - [ ] A rebuilt binary asks for consent again; a tampered or no-longer-declared
-      export is reported by `nix --doctor`.
+      export is reported by `nix --doctor`. Rebuild the exported exe and
+      re-run: consent is per-version, so it must ask again. Then delete the
+      `[bin]` line (or edit the installed copy) and confirm `--doctor` names
+      the drift instead of passing. Guards a wrapper left on PATH that
+      nothing in the repo declares any more.
 
 ## 9. `[notify]` hooks
 
 - [ ] `on_finish`, `on_paste` and `on_yank` fire against the real notifier, with
-      quoting intact.
+      quoting intact. Quoting is the whole risk: the hook is spawned directly
+      rather than through `cmd /c`, because cmd mangles MSVC-escaped quotes.
+      So send a message containing SPACES and a quote, and confirm the
+      notifier receives it as ONE argument rather than several. Exercise all
+      three triggers - a long `r` finishing, a `p`, and a `y` - and confirm
+      on_finish also fires for a FAILING command, not only a successful one.
 
 ## 10. Doctor and notes on the real machine
 
 - [ ] ⚠️ `nix --doctor` is green; `-q` shows only problems; `--json` parses.
+      Against the REAL store, not a scratch one - the point of this step is
+      your actual machine's tools and config. Pipe the JSON through a parser
+      instead of eyeballing it: `nix --doctor --json | ConvertFrom-Json`.
 - [ ] ⚠️ `nix <alias> --note <text>` appends, and `nix --notes <pat>` finds it.
+      Append twice and confirm the second did not overwrite the first.
+      `nix --no-prompt --notes <pat>` prints `<alias>.md:<line>:<text>` rows
+      and opens nothing.
 
 ## 11. Backup and rollback
 
 - [ ] ⚠️ `nix --export backup.toml` against the real store; stash it with the
-      `~/.nix` snapshot. This is the rollback artifact for this release.
+      `~/.nix` snapshot. This is the rollback artifact for this release, so
+      take it BEFORE anything else in this section touches the store, and
+      keep it somewhere the release itself cannot overwrite.
 - [ ] 🧪 `--import` merges without overwriting, and `--import --replace`
-      restores exactly.
+      restores exactly. In a scratch NIX_HOME: import over an alias of the
+      same name and confirm the EXISTING path survives (merge never
+      overwrites), then `--import --replace` and confirm the path becomes the
+      file's. Check that groups and action descriptions survive the round
+      trip too, not just alias names.
 
 ## 12. Release hygiene
 
 - [ ] Release CI is green on the candidate tag.
 - [ ] The pre-release is marked **Pre-release** on GitHub and is not "Latest"
-      (Excavator's checkver reads `/releases/latest`).
+      (Excavator's checkver reads `/releases/latest`). Check the API rather
+      than the web page: `gh api repos/:owner/:repo/releases/latest --jq
+      .tag_name` must NOT return the pre.
 - [ ] The stable Scoop bucket has **not** moved to the pre.
 - [ ] `scoop update nix-nightly` still works.
 - [ ] Release notes lead with an **Upgrading** section if anything breaks.
@@ -164,7 +240,10 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 - [ ] `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z` (the same commit
       as the candidate unless fixes landed - if they did, cut a new pre and
-      re-verify from section 1).
+      re-verify from section 1). The gate refuses on any change to `src/`,
+      `build.zig` or `build.zig.zon` since the candidate, so a push that is
+      accepted is itself evidence the binary matches what you verified.
+      Docs-only commits do not trip it and do not invalidate this checklist.
 - [ ] The release publishes as **Latest**.
 - [ ] Excavator bumps the stable bucket. Do not hand-edit it.
 - [ ] `scoop update nix` on the daily machine; `nix --version` matches the tag.
