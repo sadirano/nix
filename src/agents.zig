@@ -147,9 +147,11 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   `nix --no-prompt --notes [pat]` prints every captured line as
         \\   `<alias>.md:<line>:<text>` and opens nothing. It is where the user
         \\   records "blocked on X, resume at Y", and often the only explanation
-        \\   for why a project is mid-change. WRITING is theirs: `nix <alias>
-        \\   --note <text>` captures their working memory in their words, so add
-        \\   one only when asked.
+        \\   for why a project is mid-change. `nix <alias> --no-prompt --notes`
+        \\   narrows that to one alias (what the user types as `{[n]s} <alias>`).
+        \\   WRITING is theirs: `nix <alias> --note <text>` (`{[n]s} <alias>
+        \\   <text>`) captures their working memory in their words, so add one
+        \\   only when asked.
         \\5. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
         \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
         \\   to get the path, then use the absolute path. `{[x]s} <alias> <cmd>` works
@@ -189,6 +191,7 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .g = config.shortcutFor(cfg, "g"),
         .f = config.shortcutFor(cfg, "f"),
         .q = config.shortcutFor(cfg, "q"),
+        .n = config.shortcutFor(cfg, "n"),
     });
     return b.items;
 }

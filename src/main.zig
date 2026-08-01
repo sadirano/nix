@@ -246,9 +246,17 @@ fn leadingActionCall(args: [][]const u8) ?[][]const u8 {
 /// command or pattern and must not flip nix's own switches (`r a build -q`
 /// hands --no-prompt to build; `g a pat --json` hands --json to rg).
 fn setGlobalFlags(app: *App, args: []const []const u8) void {
+    // The action-flag stop only applies once an ALIAS has been named: that is
+    // the grammar where a flag hands the rest of the line to a command. A
+    // leading dashed token is the system grammar, where the same spelling can
+    // mean something else entirely (`nix --notes` searches every note; `nix
+    // acme --notes` searches one alias's), and stopping there would drop nix's
+    // own flags from `nix --notes --no-prompt <pat>`.
+    var named_alias = false;
     for (args) |a| {
         if (eql(a, "--")) break;
-        if (aliasAction(a) != null) break;
+        if (named_alias and aliasAction(a) != null) break;
+        if (!startsWithDash(a)) named_alias = true;
         if (eql(a, "--json") or eql(a, "-j")) app.json = true;
         if (eql(a, "--no-prompt")) app.no_prompt = true;
         if (eql(a, "--force")) app.force = true;
@@ -393,6 +401,7 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
         // not resolve the alias: notes for a project whose drive is unplugged (or
         // whose dir is gone) must still be readable and appendable.
         .note => notes.cmdNote(app, alias, action_args),
+        .notes => notes.cmdAliasNotes(app, alias, action_args, grep),
     };
 }
 
@@ -977,6 +986,47 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
         for (args, 0..) |a, i| out[1 + i] = a;
         return .{ .args = out, .nav_alias = "", .is_nav = false };
     }
+    // `n` is one command over two scopes and two directions, which the generic
+    // "<alias> <flag> <rest>" rewrite below cannot express:
+    //
+    //   n                   -> nix --notes            every alias's notes
+    //   n acme              -> nix acme --notes       one alias's, read
+    //   n acme blocked on X -> nix acme --note ...    one alias's, written
+    //
+    // Reading with no words and writing with them is the whole ergonomic: a
+    // thought gets captured in the time it takes to type it, and looking one up
+    // costs a word less than that.
+    if (eql(action, "note") and !(args.len == 1 and eql(args[0], "--agent"))) {
+        // The alias is the first token that is neither a global flag nor a flag
+        // of nix's own - `n --no-prompt acme` names one just as `n acme` does,
+        // and an agent will type it that way.
+        var alias_at: ?usize = null;
+        for (args, 0..) |a, i| {
+            if (isGlobalFlag(a)) continue;
+            if (!startsWithDash(a)) alias_at = i;
+            break;
+        }
+        const at = alias_at orelse {
+            const out = try arena.alloc([]const u8, args.len + 1);
+            out[0] = "--notes";
+            for (args, 0..) |a, i| out[1 + i] = a;
+            return .{ .args = out, .nav_alias = "", .is_nav = false };
+        };
+        // Words after the alias are the note being written; none means read.
+        var words: usize = 0;
+        for (args[at + 1 ..]) |a| if (!isGlobalFlag(a)) {
+            words += 1;
+        };
+        // The flag is inserted right after the alias, leaving every other token
+        // where it was: a global flag typed BEFORE the alias has to stay there,
+        // or setGlobalFlags stops at the action flag before ever reading it.
+        const out = try arena.alloc([]const u8, args.len + 1);
+        for (args[0..at], 0..) |a, i| out[i] = a;
+        out[at] = args[at];
+        out[at + 1] = if (words == 0) "--notes" else "--note";
+        for (args[at + 1 ..], 0..) |a, i| out[at + 2 + i] = a;
+        return .{ .args = out, .nav_alias = "", .is_nav = false };
+    }
     if (args.len == 0) {
         if (eql(action, "navigate")) {
             const a = try arena.alloc([]const u8, 1);
@@ -1034,7 +1084,7 @@ fn slotAction(slot: []const u8) ?[]const u8 {
         .{ .k = "s", .v = "explore" },  .{ .k = "y", .v = "yank" },
         .{ .k = "p", .v = "paste" },    .{ .k = "x", .v = "run" },
         .{ .k = "g", .v = "grep" },     .{ .k = "f", .v = "find" },
-        .{ .k = "q", .v = "quit" },
+        .{ .k = "q", .v = "quit" },     .{ .k = "n", .v = "note" },
     };
     for (map) |m| if (eql(slot, m.k)) return m.v;
     return null;
@@ -1378,6 +1428,36 @@ test "desugarMultiCall: leading-dash first arg passes through untouched" {
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--list", "x" }), d.args);
 }
 
+test "desugarMultiCall note: reading with no words, writing with them" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // `n` alone is every alias's notes.
+    const all = try desugarMultiCall(a, "note", &.{});
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"--notes"}), all.args);
+
+    // `n acme` reads one alias's; `n acme <words>` writes one.
+    var one = [_][]const u8{"acme"};
+    const read = try desugarMultiCall(a, "note", &one);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "acme", "--notes" }), read.args);
+
+    var words = [_][]const u8{ "acme", "blocked", "on", "the", "key" };
+    const write = try desugarMultiCall(a, "note", &words);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "acme", "--note", "blocked", "on", "the", "key" }), write.args);
+
+    // A global flag before the alias still names one - and STAYS in front, or
+    // setGlobalFlags would stop at the injected action flag before reading it.
+    var flagged = [_][]const u8{ "--no-prompt", "acme" };
+    const q = try desugarMultiCall(a, "note", &flagged);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--no-prompt", "acme", "--notes" }), q.args);
+
+    // Nothing but flags is still the global form.
+    var bare = [_][]const u8{"--no-prompt"};
+    const bare_all = try desugarMultiCall(a, "note", &bare);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "--notes", "--no-prompt" }), bare_all.args);
+}
+
 test "desugarMultiCall: navigate with no args opens the aliases file" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -1488,6 +1568,19 @@ test "setGlobalFlags: stops at the first action flag and at --" {
     // System command tails still count (no action flag involved).
     setGlobalFlags(&app, &.{ "--prune", "--no-prompt" });
     try std.testing.expect(app.no_prompt);
+
+    app.no_prompt = false;
+    // A system flag that SHARES a spelling with an alias action is still the
+    // system one when no alias was named, so nix's own flags after it count.
+    // (`nix --notes --no-prompt <pat>` printed rows before `--notes` joined the
+    // action table, and must keep doing so.)
+    setGlobalFlags(&app, &.{ "--notes", "--no-prompt", "pat" });
+    try std.testing.expect(app.no_prompt);
+
+    app.no_prompt = false;
+    // With an alias in front it IS the action, and the stop applies again.
+    setGlobalFlags(&app, &.{ "acme", "--notes", "--no-prompt" });
+    try std.testing.expect(!app.no_prompt);
 
     // `-q` is not a global flag: it belongs to whatever command it lands on
     // (`--doctor -q` is doctor's quiet mode, `--grep pat -q` is ripgrep's).

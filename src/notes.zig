@@ -188,6 +188,34 @@ pub fn cmdNotes(app: *App, rest: [][]const u8, grep: anytype) !u8 {
     return grep.grepIn(app, &.{.{ .name = "notes", .path = dir }}, args.items);
 }
 
+/// cmdAliasNotes is cmdNotes scoped to one key: what `n <alias>` shows, and the
+/// reading half of the same command whose writing half is `--note <text>`.
+///
+/// Same pipeline, narrowed with rg's own `--glob` rather than by pointing it at
+/// the file: rows then stay `<key>.md:<line>:<text>`, identical to the ones
+/// `nix --notes` produces, so the picker, the preview and the editor open all
+/// work without a second row shape to parse.
+pub fn cmdAliasNotes(app: *App, key: []const u8, rest: [][]const u8, grep: anytype) !u8 {
+    const path = try filePath(app.arena, app.home, key);
+    if (!proc.pathExists(app.io, path)) {
+        try app.err.print("nix: no notes for \"{s}\" yet - capture one with `nix {s} --note <text>`\n", .{ key, key });
+        return 1;
+    }
+    var args: std.ArrayList([]const u8) = .empty;
+    for (rest) |a| {
+        if (app_zig.isGlobalFlag(a)) continue;
+        try args.append(app.arena, a);
+    }
+    // The query goes first (grepRg reads args[0] as the pattern and passes the
+    // rest to rg), so the glob is appended after it. `^` is the every-line
+    // pattern cmdNotes uses, for the same reason.
+    if (args.items.len == 0) try args.append(app.arena, "^");
+    try args.append(app.arena, "--glob");
+    try args.append(app.arena, try fileName(app.arena, key));
+    const dir = try dirPath(app.arena, app.home);
+    return grep.grepIn(app, &.{.{ .name = "notes", .path = dir }}, args.items);
+}
+
 // ---- tests -------------------------------------------------------------------
 
 test "bullet: dated, one line, ends in a newline" {
