@@ -1226,6 +1226,23 @@ pub fn main(init: std.process.Init) !void {
             std.mem.count(u8, readFileOr(&c, def_actions, ""), "brandnew = ") == 1, "`e :name` on an existing action does not re-seed", r);
         // And it did not disturb what was already there.
         c.check(std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), before) != null or before.len == 0, "`e :name` appends without rewriting the file", r);
+        // Bare `e :` opens the machine-wide actions file - the only short way
+        // in that does not require already knowing an action inside it. Every
+        // other command's bare `:` still opens the palette.
+        const def_before = readFileOr(&c, def_actions, "");
+        c.exe = e_exe;
+        r = try c.run(&.{":"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ACTION") == null and
+            std.mem.eql(u8, readFileOr(&c, def_actions, ""), def_before), "`e :` opens the machine-wide actions file untouched", r);
+        Io.Dir.cwd().deleteFile(io, def_actions) catch {};
+        r = try c.run(&.{":"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "created") != null and
+            std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), "[actions]") != null, "`e :` seeds _default.toml when it does not exist", r);
+        try writeFile(&c, def_actions, def_before);
+        c.exe = real_exe;
+        r = try c.run(&.{":"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "created") == null, "a bare `:` from any other command still asks, it does not edit", r);
+
         // `e <alias> :` on a project with no actions creates the file from the
         // template and opens it - the list form's half of the same convenience.
         // The machine-wide layer is emptied first, because an alias inherits

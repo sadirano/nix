@@ -143,9 +143,11 @@ pub const specs = [_]Spec{
         \\and config.
         \\
         \\The colon forms EDIT where an action is defined, rather than running it
-        \\(`${cmd:o}`/`${cmd:x}` run). `${cmd:e} :<name>` opens
-        \\~/.nix/actions/_default.toml, seeding an empty stub when the name is
-        \\new. `${cmd:e} <alias> :` opens that project's .nix/actions.toml, and
+        \\(`${cmd:o}`/`${cmd:x}` run). `${cmd:e} :` opens the machine-wide
+        \\~/.nix/actions/_default.toml, creating it from a commented template if
+        \\it does not exist yet; `${cmd:e} :<name>` opens that same file, seeding
+        \\an empty stub when the name is new.
+        \\`${cmd:e} <alias> :` opens that project's .nix/actions.toml, and
         \\CREATES it from a commented template when the alias has no actions yet -
         \\the one place a listing writes anything, and the reason
         \\`${cmd:o} <alias> :` / `${cmd:x} <alias> :` are the read-only forms of
