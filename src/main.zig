@@ -675,6 +675,7 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
     // editor is not the place to discover nix rewrote your file. hasKey, not
     // find: a stub written by an earlier `e :<name>` has an empty value, which
     // parseTable drops, and find would report it missing every time.
+    var final = body;
     if (!actions.hasKey(body, "actions", name)) {
         var b: std.ArrayList(u8) = .empty;
         try b.appendSlice(app.arena, body);
@@ -692,9 +693,18 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
         try b.appendSlice(app.arena, " = \"\"\n");
         try util.writeFileAtomic(app.arena, app.io, path, b.items);
         try app.err.print("nix: added a stub for :{s} in {s}\n", .{ name, path });
+        final = b.items;
     }
 
-    return app_zig.openFileInEditor(app, path, app.home);
+    // Open ON the declaration. Naming an action is a statement about which line
+    // you meant, and a file with thirty of them makes the difference between
+    // editing it and finding it first. A freshly seeded stub lands on its own
+    // empty value, with the cursor where the command goes.
+    const line = if (actions.lineOf(final, "actions", name)) |n|
+        try std.fmt.allocPrint(app.arena, "{d}", .{n})
+    else
+        "";
+    return app_zig.openFileInEditor(app, path, line, app.home);
 }
 
 /// cmdEditDefaultActions opens ~/.nix/actions/_default.toml, seeding it from a
@@ -713,7 +723,7 @@ fn cmdEditDefaultActions(app: *App) !u8 {
         };
         try app.err.print("nix: created {s} - uncomment an action to define one\n", .{path});
     }
-    return app_zig.openFileInEditor(app, path, app.home);
+    return app_zig.openFileInEditor(app, path, "", app.home);
 }
 
 /// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it

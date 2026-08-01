@@ -156,7 +156,7 @@ fn seedAndEdit(app: *App, dir: []const u8, path: []const u8) !u8 {
         };
         try app.err.print("nix: created {s} - uncomment an action to define one\n", .{path});
     }
-    return app_zig.openFileInEditor(app, path, dir);
+    return app_zig.openFileInEditor(app, path, "", dir);
 }
 
 /// pickAndRun renders the entries, opens fzf over them, and runs what came back:
