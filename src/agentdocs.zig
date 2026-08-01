@@ -421,6 +421,44 @@ pub const specs = [_]Spec{
         },
         .see_also = &.{"o"},
     },
+    .{
+        .slot = "n",
+        .topic = "n",
+        .args = "[alias] [text...]",
+        .summary = "read notes, or capture one on an alias",
+        .safety = .blocks,
+        .safe_form = "nix --no-prompt --notes [pat]",
+        .needs_tools = &.{ "rg", "fzf" },
+        .detail =
+        \\One command over two scopes, in two directions:
+        \\
+        \\    ${cmd:n}                    every alias's notes  (nix --notes)
+        \\    ${cmd:n} acme               one alias's, read    (nix acme --notes)
+        \\    ${cmd:n} acme blocked on X  one alias's, written (nix acme --note ...)
+        \\
+        \\Words after the alias are joined into a dated bullet, so nothing needs
+        \\quoting; with no words it reads instead of writing. A group works the
+        \\same way and keeps its own file (`${cmd:n} +work`).
+        \\
+        \\Reading is the `${cmd:g}` pipeline over ~/.nix/notes, so rows are
+        \\`<alias>.md:<line>:<text>` and Enter opens the editor there. See the
+        \\`notes` topic for what the files are and why they live under $home.
+        ,
+        .agent_use =
+        \\Reading is safe and often the point: `nix --no-prompt --notes <pat>`
+        \\prints the rows and opens nothing. Do that when picking up work in a
+        \\project you have not seen this session.
+        \\
+        \\Writing is the user's. Capture a note only when asked, in their words -
+        \\see the `notes` topic.
+        ,
+        .suggest = "To leave yourself a marker: `${cmd:n} <alias> <what you were doing>`.",
+        .examples = &.{
+            "`${cmd:n} acme` - read acme's notes",
+            "`nix --no-prompt --notes acme` - the same, printed, opening nothing",
+        },
+        .see_also = &.{ "notes", "g" },
+    },
 
     // ---- system commands ----
 

@@ -1276,6 +1276,34 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "close the shell") != null, "`q --agent` renders q's own spec", r);
         c.exe = real_exe;
 
+        // `n` is one command over two scopes and two directions: words after
+        // the alias write a note, no words read them back, and no alias at all
+        // reads every note. All three go through the canonical forms, so this
+        // checks the desugaring rather than the notes themselves.
+        const n_exe = join(&c, &.{ root, "n.exe" });
+        try writeFile(&c, n_exe, exe_bytes);
+        c.exe = n_exe;
+        r = try c.run(&.{ "pa", "wrapper", "captured", "this" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "noted in") != null and
+            std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "notes", "pa.md" }), ""), "wrapper captured this") != null, "`n <alias> <words>` captures a note", r);
+        r = try c.run(&.{ "--no-prompt", "pa" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
+            std.mem.indexOf(u8, r.out, "wrapper captured this") != null, "`n <alias>` with no words reads that alias's notes", r);
+        // The global flag sits BEFORE the alias here, which is where an agent
+        // puts it - and where a desugaring that appended it would lose it.
+        r = try c.run(&.{"--no-prompt"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`n` with no alias reads every note", r);
+        r = try c.run(&.{ "--no-prompt", "nosuchalias" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no notes for") != null, "`n` on an alias with no notes says so", r);
+        c.exe = real_exe;
+        // The canonical spelling of the read form parses too - the wrapper and
+        // `nix <alias> --notes` must name the same thing.
+        // The flag goes BEFORE the action here, the same rule every other
+        // alias action follows (`nix <alias> --no-prompt --find <pat>`):
+        // everything after an action flag belongs to that action.
+        r = try c.run(&.{ "pa", "--no-prompt", "--notes" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`nix <alias> --notes` is the canonical read form", r);
+
         // A [shortcuts] rename: a wrapper installed under the custom name must
         // desugar to the builtin slot's action, not fall through to `nix <alias>`.
         const show_exe = join(&c, &.{ root, "show.exe" });

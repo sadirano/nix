@@ -63,6 +63,10 @@ pub const ActionVerb = enum {
     find,
     env,
     note,
+    /// `nix <alias> --notes`: READ this alias's notes (the `--note` above
+    /// writes one). Same spelling as the system `--notes`, one scope narrower -
+    /// the pair `--edit` already forms across the two tables.
+    notes,
     remove,
 };
 
@@ -142,6 +146,7 @@ pub const actions = [_]Action{
     .{ .flags = &.{ "--find", "-f" }, .verb = .find, .args = "[pat]", .help = "fuzzy-find files", .spec = "f" },
     .{ .flags = &.{"--env"}, .verb = .env, .help = "print the project's environment (.nix/env.toml), with provenance", .spec = "env" },
     .{ .flags = &.{"--note"}, .verb = .note, .args = "<text>", .help = "append a line to the alias's notes", .spec = "notes" },
+    .{ .flags = &.{"--notes"}, .verb = .notes, .args = "[pat]", .help = "search this alias's notes (the `n <alias>` command)", .spec = "n" },
     .{ .flags = &.{ "--remove", "--rm" }, .verb = .remove, .help = "forget the alias", .spec = "" },
 };
 

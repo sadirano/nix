@@ -79,6 +79,7 @@ x acme zig build test                      # run a command at that path
 g acme TODO                                # ripgrep search under the dir → fzf → open the hit in your editor
 g acme invoice --all                       # search inside PDFs/office docs/archives too (ripgrep-all)
 f acme config                              # fuzzy-find files under the dir → fzf → open the selection
+n acme blocked on the API key              # capture a note (n acme reads them back)
 q                                          # close this shell (see below)
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
 nix acme --env                             # what the project's .nix/env.toml sets, and where each value came from
@@ -125,7 +126,7 @@ Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`,
 
 `~/.nix/config.toml` holds the optional sections.
 
-`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`, `q`); the value is the name you'd rather type:
+`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`, `q`, `n`); the value is the name you'd rather type:
 
 ```toml
 [shortcuts]
@@ -625,16 +626,23 @@ It never refuses the command or the navigation over an environment file; being u
 
 One deliberate gap: an **elevated** (`sudo`) action gets the environment too, minus anything resolved from a secret. Elevation carries variables in as a `set` prelude on a command line, and a command line is readable in the process list by anyone on the machine; nix names each variable it withheld rather than passing the credential up there.
 
-## Notes (`--note` / `nix --notes`)
+## Notes (`n`)
 
 Re-entering a project costs more than finding the directory. The expensive part is remembering where you left off, and no amount of navigation speed helps with that. So every alias gets a freeform markdown file:
 
 ```powershell
-nix acme --note blocked on the API key, resume at segments.zig
-nix +work --note whole workstream is waiting on procurement
+n acme blocked on the API key, resume at segments.zig    # capture a thought
+n acme                           # read acme's notes back
+n +work waiting on procurement   # a group keeps its own file
+n                                # every project's notes at once
+n procurement                    # ...unless a word matches an alias: see below
+```
+
+`n` reads with no words after the alias and writes with them, which is the whole ergonomic: capturing costs one word more than thinking it. The canonical forms are `nix acme --note <text>` (write), `nix acme --notes` (read one), and `nix --notes [pat]` (read all) — so `n <word>` where `<word>` happens to be a registered alias reads that alias rather than searching for the word; `nix --notes <word>` is the unambiguous search.
+
+```powershell
 nix acme --note                  # no text: open the file in your editor
-nix --notes                      # search every project's notes at once
-nix --notes procurement          # ...or jump straight to one
+nix --no-prompt --notes acme     # print the rows, open nothing
 ```
 
 Text is joined from the remaining words, so quoting is never needed — the point is capturing a thought in the time it takes to type it. Each capture appends a dated bullet, seconds included, because two notes in the same minute is the normal case when you're working through something:
@@ -644,7 +652,7 @@ Text is joined from the remaining words, so quoting is never needed — the poin
 - 2026-07-26 23:47:30 - key arrived, segments.zig green, next is the cache TTL
 ```
 
-`nix --notes` (`-N`) is the `g` pipeline pointed at the notes directory, so rows arrive as `acme.md:12:- 2026-07-26 …` — **the filename is the alias**, which is what makes a cross-project view readable without a header. Enter opens your editor on that exact line, Tab marks several, and `--no-prompt` prints the rows and opens nothing. With no pattern you get every line.
+Reading is the `g` pipeline pointed at the notes directory, so rows arrive as `acme.md:12:- 2026-07-26 …` — **the filename is the alias**, which is what makes a cross-project view readable without a header. Enter opens your editor on that exact line, Tab marks several, and `--no-prompt` prints the rows and opens nothing. With no pattern you get every line. `n acme` is the same picker narrowed to one file, so the row shape (and everything that parses it) stays identical.
 
 **They live in `~/.nix/notes/`, not in your repos**, and that's the whole design rather than an implementation detail. A project-local notes file has to be either committed — publishing your private half-thoughts — or gitignored, and an ignored file is precisely what `git clean -fdx` deletes. Central files survive `clean`, a re-clone, and deleting the project; they give groups a home at all (a group has no directory); they can't diverge across two clones of one remote; `--notes` stays complete when a project drive is unplugged; and a cloned repo can never ship you notes it wrote.
 

@@ -160,6 +160,8 @@ pub fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
         // not into each member's. Groups have no directory, which is the other
         // reason notes had to live under $home to be able to have this at all.
         .note => notes.cmdNote(app, try std.fmt.allocPrint(app.arena, "+{s}", .{group}), aargs),
+        // Reading it back is the same single file, for the same reason.
+        .notes => notes.cmdAliasNotes(app, try std.fmt.allocPrint(app.arena, "+{s}", .{group}), aargs, grep),
         // Per-alias by nature: one editor window or one environment per member
         // is not a fan-out anyone wants.
         .edit, .env => blk: {
