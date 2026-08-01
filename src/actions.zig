@@ -213,9 +213,21 @@ pub fn commentText(line: []const u8) ?[]const u8 {
 /// stub for the user to fill in, and must not write a second one over it the
 /// next time it is called.
 pub fn hasKey(data: []const u8, section: []const u8, name: []const u8) bool {
+    return lineOf(data, section, name) != null;
+}
+
+/// lineOf is hasKey with the answer editors need: the 1-based line the entry is
+/// declared on, so `e :deploy` can open the file AT the command instead of at
+/// the top of a file that may hold thirty of them.
+///
+/// The declaration line, not its comment block: the command is the thing you
+/// came to change, and a description above it is still on screen from there.
+pub fn lineOf(data: []const u8, section: []const u8, name: []const u8) ?usize {
     var in_section = false;
+    var n: usize = 0;
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |raw| {
+        n += 1;
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
@@ -225,9 +237,9 @@ pub fn hasKey(data: []const u8, section: []const u8, name: []const u8) bool {
         }
         if (!in_section) continue;
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        if (store.eqlFoldAscii(std.mem.trim(u8, line[0..eq], " \t"), name)) return true;
+        if (store.eqlFoldAscii(std.mem.trim(u8, line[0..eq], " \t"), name)) return n;
     }
-    return false;
+    return null;
 }
 
 test "hasKey sees an empty stub that parseTable drops" {
@@ -341,6 +353,26 @@ test "parseTable: a description never crosses a section boundary" {
     try std.testing.expectEqualStrings("describes the build action", acts[0].description);
     const bins = try parseTable(a, data, "bin");
     try std.testing.expectEqualStrings("", bins[0].description);
+}
+
+test "lineOf: the declaration line, not the comment above it" {
+    const body =
+        "# file header\n" ++ // 1
+        "\n" ++ // 2
+        "[actions]\n" ++ // 3
+        "# what build is for\n" ++ // 4
+        "build = \"zig build\"\n" ++ // 5
+        "\n" ++ // 6
+        "deploy = \"\"\n" ++ // 7
+        "[bin]\n" ++ // 8
+        "build = \"x\"\n"; // 9
+    try std.testing.expectEqual(@as(usize, 5), lineOf(body, "actions", "build").?);
+    // An empty stub is still a declaration - it is exactly what `e :deploy`
+    // wrote last time and where the cursor belongs this time.
+    try std.testing.expectEqual(@as(usize, 7), lineOf(body, "actions", "deploy").?);
+    // Section-scoped: the [bin] entry of the same name is a different line.
+    try std.testing.expectEqual(@as(usize, 9), lineOf(body, "bin", "build").?);
+    try std.testing.expect(lineOf(body, "actions", "nope") == null);
 }
 
 test "both templates are inert: they declare no action and no export" {

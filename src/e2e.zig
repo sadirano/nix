@@ -1208,17 +1208,38 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "invalid group token") != null, "o with a malformed group token errors, no picker", r);
 
         // `e :<name>` EDITS the action rather than running it - `u <name>` for
-        // actions. attrib stands in for the editor: it takes a path, prints one
-        // line and exits, where the default notepad would block CI on a window.
+        // actions. A one-line .cmd stands in for the editor: it echoes the argv
+        // it was handed and exits, where the default notepad would block CI on
+        // a window - and echoing is what lets the line-jump check below see
+        // what the editor was actually told to open.
         const e_exe = join(&c, &.{ root, "e.exe" });
         try writeFile(&c, e_exe, exe_bytes);
-        try c.env.put("EDITOR", "attrib");
+        const fake_editor = join(&c, &.{ root, "fakeed.cmd" });
+        try writeFile(&c, fake_editor, "@echo off\r\necho EDITARGS %*\r\n");
+        try c.env.put("EDITOR", fake_editor);
         const def_actions = join(&c, &.{ home, "actions", "_default.toml" });
         const before = readFileOr(&c, def_actions, "");
         c.exe = e_exe;
         r = try c.run(&.{":brandnew"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "added a stub") != null and
             std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), "brandnew") != null, "`e :name` seeds a stub for a new action", r);
+        // …and opens AT the declaration: naming an action says which line you
+        // meant, and a file of thirty of them makes the difference between
+        // editing it and finding it first. The stub's own line is what the
+        // editor is handed.
+        {
+            const seeded = readFileOr(&c, def_actions, "");
+            var want: usize = 0;
+            var ln: usize = 0;
+            var it = std.mem.splitScalar(u8, seeded, '\n');
+            while (it.next()) |l| {
+                ln += 1;
+                if (std.mem.startsWith(u8, std.mem.trim(u8, l, " \t\r"), "brandnew =")) want = ln;
+            }
+            const jump = try std.fmt.allocPrint(arena, "+{d}", .{want});
+            c.check(want > 0 and std.mem.indexOf(u8, r.out, jump) != null, "`e :name` opens the editor at the declaration's line", r);
+        }
+
         // Idempotent: the stub it just wrote has an empty value, which
         // parseTable drops - hasKey is what keeps this from stuttering.
         r = try c.run(&.{":brandnew"});

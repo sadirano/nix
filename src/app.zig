@@ -8,6 +8,7 @@ const Io = std.Io;
 const proc = @import("proc.zig");
 const segments = @import("segments.zig");
 const grammar = @import("grammar.zig");
+const editor = @import("editor.zig");
 
 pub const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -141,13 +142,22 @@ pub fn resolveEditor(app: *App) ?[]const u8 {
 /// the same way - write the file, then open it - and the launch half is what
 /// they share. `cwd` is where the editor is started, which only matters for the
 /// editors that read a project config from it.
-pub fn openFileInEditor(app: *App, path: []const u8, cwd: []const u8) !u8 {
+///
+/// `line` is "" for the top of the file, or a 1-based line rendered in the
+/// editor's own dialect (`+N`, `--goto file:N`) - the same translation the grep
+/// and find pickers use to land on a match, so `e :deploy` opens ON the
+/// declaration rather than at the top of a file holding thirty of them.
+pub fn openFileInEditor(app: *App, path: []const u8, line: []const u8, cwd: []const u8) !u8 {
     const ed = resolveEditor(app) orelse {
         try app.err.writeAll("nix: no $EDITOR set and none of nvim/vim/code/nano/notepad found on PATH\n");
         return 1;
     };
+    const tail = try editor.editorArgs(app.arena, ed, &.{.{ .file = path, .line = line }});
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(app.arena, ed);
+    for (tail) |a| try argv.append(app.arena, a);
     try app.out.flush();
-    return proc.runInherit(app.io, &.{ ed, path }, cwd) catch |e| {
+    return proc.runInherit(app.io, argv.items, cwd) catch |e| {
         try app.err.print("nix: editor {s}: {s}\n", .{ ed, @errorName(e) });
         return 1;
     };
