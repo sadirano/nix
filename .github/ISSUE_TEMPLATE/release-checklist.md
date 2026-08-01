@@ -64,8 +64,10 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 ## 3. Wrappers and `[shortcuts]`
 
-- [ ] 🧪 Add a rename (e.g. `g = "sg"`), `nix --sync`: the new wrapper appears
-      and dispatches by argv0.
+- [ ] 🧪 Add a rename (e.g. `sg = "g"` - the KEY is the builtin slot, the value
+      is the new name), `nix --sync`: the new wrapper appears and dispatches by
+      argv0. Reversing it (`g = "sg"`) names no builtin slot, so it is silently
+      ignored and nothing happens - that is the config being wrong, not `--sync`.
 - [ ] 🧪 Rename again: the **old** wrapper exe is deleted (custom-to-custom
       included).
 - [ ] 🧪 An invalid shortcut name leaves the builtin working and installs
