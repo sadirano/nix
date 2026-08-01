@@ -13,6 +13,7 @@
 #   open   <tag> <sha>   a pre-release tag opens (or re-stamps) the issue
 #   verify <tag> <sha>   a stable tag refuses to publish unless it is complete
 #   close  <tag>         after publishing, archive it into the release notes
+#   paths                print the paths whose change invalidates a checklist
 #   selftest             exercise the parsing on fixtures, no network
 #
 # verify is FAIL-CLOSED: no issue means no release.
@@ -22,6 +23,23 @@ set -euo pipefail
 TEMPLATE=".github/ISSUE_TEMPLATE/release-checklist.md"
 LABEL="release"
 OVERRIDE_LABEL="release:override"
+
+# WATCHED is every path that determines the BYTES we publish. A change to one of
+# them since the verified build means the checklist describes a different binary.
+#
+# release.yml is in the list because it compiles, packages and publishes the
+# artifact: editing it produces a different download with `src/` untouched, which
+# is precisely the "the checklist does not describe this binary" case the gate
+# exists to catch, reachable through the one file the gate was not looking at.
+#
+# Deliberately NOT here: this script and its test. They change the GATE, not the
+# artifact, and watching them would make every improvement to the checker
+# invalidate the checklist it was improving.
+#
+# The test anchors its fixture to this same list via `paths`, so the two cannot
+# drift apart - they were separate literals until one of them silently stopped
+# testing anything.
+WATCHED=(src/ build.zig build.zig.zon .github/workflows/release.yml)
 
 die() { printf '::error::%s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -139,7 +157,7 @@ cmdVerify() {
     # only speaks for the binary it was run against, so source changes since
     # then invalidate it - deliberately hard to ignore, with one explicit way
     # out for a release that changed nothing users run.
-    changed="$(git log --oneline "$sha..$head" -- src/ build.zig build.zig.zon)"
+    changed="$(git log --oneline "$sha..$head" -- "${WATCHED[@]}")"
     if [ -n "$changed" ]; then
         printf '%s\n' "$changed" >&2
         # Not `gh ... | grep -q`: under pipefail, grep quitting early can leave
@@ -278,10 +296,11 @@ tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
 case "${1:-}" in
+    paths)    printf '%s\n' "${WATCHED[@]}" ;;
     open)     cmdOpen "${2:?tag}" "${3:?sha}" ;;
     verify)   cmdVerify "${2:?tag}" "${3:?sha}" ;;
     close)    cmdClose "${2:?tag}" ;;
     status)   cmdStatus ;;
     selftest) cmdSelftest ;;
-    *) die "usage: release-checklist.sh open|verify|close <tag> [sha] | status | selftest" ;;
+    *) die "usage: release-checklist.sh paths | open|verify|close <tag> [sha] | status | selftest" ;;
 esac

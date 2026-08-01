@@ -75,8 +75,15 @@ head_sha="$(git rev-parse HEAD)"
 # moment the last three commits are docs or CI only, and verify then correctly
 # reports no drift while the test still demands a failure. Anchor to the newest
 # commit that actually touched the watched paths and step one behind it.
-watched_tip="$(git log -1 --format=%H -- src/ build.zig build.zig.zon)"
-[ -n "$watched_tip" ] || { echo "no commit touching src/ found; cannot test drift" >&2; exit 1; }
+#
+# The list comes from the script itself (`paths`) rather than being repeated
+# here. When these were two literals, adding a path to one of them would have
+# left this fixture anchored to the old set - a test that still passes while
+# measuring the wrong thing.
+mapfile -t watched < <(bash "$S" paths)
+[ "${#watched[@]}" -gt 0 ] || { echo "release-checklist.sh paths returned nothing" >&2; exit 1; }
+watched_tip="$(git log -1 --format=%H -- "${watched[@]}")"
+[ -n "$watched_tip" ] || { echo "no commit touching ${watched[*]} found; cannot test drift" >&2; exit 1; }
 old_sha="$(git rev-parse "$watched_tip^")"
 
 pass=0; fail=0
