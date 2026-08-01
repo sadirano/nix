@@ -94,7 +94,9 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   shorthand for it (`{[r]s} :`), and `<cmd> <alias> :` narrows it to
         \\   one project (`{[o]s} acme :` and `{[r]s} acme :` are the same
         \\   question) - both print rather than open a picker when nobody can
-        \\   answer, so they are safe to run yourself.
+        \\   answer, so they are safe to run yourself. `{[e]s} acme :` is not:
+        \\   from the editor the same question CREATES the project's
+        \\   .nix/actions.toml from a template when there is nothing to list.
         \\   If a project needs a
         \\   recurring build/test/serve/deploy command, add it to the project's
         \\   `.nix/actions.toml` under `[actions]` - with a `#` comment above it,

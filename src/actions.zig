@@ -23,6 +23,58 @@ pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 
     return std.fs.path.join(arena, &.{ alias_dir, ".nix", "actions.toml" });
 }
 
+/// project_template seeds a project's first `.nix/actions.toml`, written by
+/// `e <alias> :` when the alias has no actions yet: naming the file and leaving
+/// the user to create it was the one half of `e :<name>`'s convenience that the
+/// list form never had.
+///
+/// Inert like the `--init` starter config: every line is commented out, so the
+/// file declares nothing until it is edited. That matters more here than there,
+/// because this file is COMMITTED - a template that shipped a live `build`
+/// action would put a command into the repo that nobody chose.
+///
+/// It teaches the two things the format does not announce about itself: that the
+/// comment above an entry is the description nix shows, and that the neighbours
+/// (`[bin]`, `[deps]`, `.nix/scripts/`, `.nix/env.toml`) exist at all. Command
+/// names are spelled canonically (`r`), not with the local [shortcuts] rename:
+/// the reader may be a colleague who cloned the repo.
+pub const project_template =
+    \\# nix project actions - run with `r <alias> :<name>` (list with `r <alias> :`).
+    \\#
+    \\# The comment block above an action IS its description: it is what
+    \\# `r <alias> :` shows beside the name. Say WHY the action exists - the
+    \\# command already says what it does.
+    \\#
+    \\# Nothing below is active yet. Uncomment a line and edit it.
+    \\
+    \\[actions]
+    \\# build = "zig build"
+    \\
+    \\# Arguments are appended: `r <alias> :test -- --json`. Put {args} in the
+    \\# command to place them somewhere other than the end.
+    \\# test = "zig build test"
+    \\
+    \\# Anything longer than one line belongs in .nix/scripts/ rather than inside
+    \\# a quoted string here. A script there runs by bare name: `r <alias> ship`.
+    \\
+    \\# [bin] exports an action as a command that works from anywhere, installed
+    \\# by `nix --sync-bin`:
+    \\#
+    \\#   [bin]
+    \\#   ship = ":deploy"
+    \\
+    \\# [deps] names the other aliases this project builds on.
+    \\# `r <alias> --deps :build` then runs each dependency's own :build first:
+    \\#
+    \\#   [deps]
+    \\#   needs = ["other-alias"]
+    \\
+    \\# Configuration these commands NEED goes in .nix/env.toml under [env], not
+    \\# here. Credentials go there as ${secret:NAME} references - never as literal
+    \\# values in a committed file.
+    \\
+;
+
 /// centralPath: <home>/actions/<alias>.toml — private, per-alias.
 pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8) ![]const u8 {
     const file = try std.fmt.allocPrint(arena, "{s}.toml", .{alias});
@@ -253,6 +305,21 @@ test "parseTable: a description never crosses a section boundary" {
     try std.testing.expectEqualStrings("describes the build action", acts[0].description);
     const bins = try parseTable(a, data, "bin");
     try std.testing.expectEqualStrings("", bins[0].description);
+}
+
+test "project_template is inert: it declares no action and no export" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // Every sample is commented out, so a project that has just been seeded is
+    // in exactly the state it was before, plus a file to edit. If this ever
+    // fails, `e <alias> :` started putting a command nobody chose into a repo.
+    try std.testing.expectEqual(@as(usize, 0), (try parse(a, project_template)).len);
+    try std.testing.expectEqual(@as(usize, 0), (try parseTable(a, project_template, "bin")).len);
+    try std.testing.expect(!hasKey(project_template, "actions", "build"));
+    // The header IS there, so the first uncommented line lands in the table
+    // rather than parsing as nothing.
+    try std.testing.expect(std.mem.indexOf(u8, project_template, "[actions]\n") != null);
 }
 
 test "centralPath / projectPath shape" {

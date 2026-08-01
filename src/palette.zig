@@ -105,7 +105,14 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
 /// Machine-wide `_default` actions are included, because they are genuinely
 /// runnable here - the global palette suppresses them only because listing them
 /// once per alias would bury everything else.
-pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
+///
+/// `seed` is set only by the EDITOR form. With nothing to list, `e <alias> :`
+/// creates the project's actions.toml from a commented template and opens it,
+/// which is what `e <alias> :<name>` has always done for a name that does not
+/// exist yet. It cannot go in the shared branch below: `o <alias> :` and
+/// `r <alias> :` land here too, and writing into a repo as a side effect of
+/// ASKING what is runnable would be wrong.
+pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8, seed: bool) !u8 {
     var entries: std.ArrayList(Entry) = .empty;
     const installed = exports.load(app.arena, app.io, app.home) catch &.{};
     for (try run_zig.mergedActions(app, alias, dir, true)) |a| {
@@ -118,11 +125,38 @@ pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8) !u8 {
         });
     }
     if (entries.items.len == 0) {
-        try app.out.print("no actions for \"{s}\" - define them in {s}\n", .{ alias, try actions.projectPath(app.arena, dir) });
+        const path = try actions.projectPath(app.arena, dir);
+        if (seed) return seedAndEdit(app, dir, path);
+        try app.out.print("no actions for \"{s}\" - define them in {s}\n", .{ alias, path });
         return 0;
     }
     std.mem.sort(Entry, entries.items, {}, lessThan);
     return pickAndRun(app, entries.items, false, "");
+}
+
+/// seedAndEdit writes the project actions template and opens it, for an
+/// `e <alias> :` that found nothing to list.
+///
+/// It writes only when the file is ABSENT. A file that exists but declares no
+/// actions is still the user's - it may hold a `[bin]` table, or a `[deps]`
+/// block, or an `[actions]` header they are halfway through - and discovering
+/// that nix rewrote it is not something an editor command should ever do. Then
+/// the outcome is the same either way: the file that defines this project's
+/// actions, open.
+///
+/// The write creates `.nix/` if it is missing (writeFileAtomic does), silently:
+/// the message names the file, and the directory it sits in is not a separate
+/// event. Nothing here consults the provenance gate - it guards RUNNING cloned
+/// code, and this file was written locally with no runnable line in it.
+fn seedAndEdit(app: *App, dir: []const u8, path: []const u8) !u8 {
+    if (!proc.fileExists(app.io, path)) {
+        util.writeFileAtomic(app.arena, app.io, path, actions.project_template) catch |e| {
+            try app.err.print("nix: create {s}: {s}\n", .{ path, @errorName(e) });
+            return 1;
+        };
+        try app.err.print("nix: created {s} - uncomment an action to define one\n", .{path});
+    }
+    return app_zig.openFileInEditor(app, path, dir);
 }
 
 /// pickAndRun renders the entries, opens fzf over them, and runs what came back:

@@ -339,7 +339,15 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     // and it is what stopped `o i :` from registering ":" as a path.
     if (bareAliasColon(rest)) {
         const dir = (try resolve.resolveAliasPath(app, alias)) orelse return 1;
-        return palette.cmdAliasActions(app, alias, dir);
+        // …with one command's form differing: from the EDITOR, a project with no
+        // actions gets the file created and opened rather than named at it. The
+        // desugared `--edit` is still in `rest` here, which is the only surviving
+        // trace of which wrapper asked - the alias listing itself is deliberately
+        // the same question for o/r/e, so the difference has to be read here.
+        const from_editor = for (rest) |a| {
+            if (aliasAction(a)) |v| if (v == .edit) break true;
+        } else false;
+        return palette.cmdAliasActions(app, alias, dir, from_editor);
     }
 
     // Find first action flag.
@@ -668,15 +676,7 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
         try app.err.print("nix: added a stub for :{s} in {s}\n", .{ name, path });
     }
 
-    const ed = resolveEditor(app) orelse {
-        try app.err.writeAll("nix: no $EDITOR set and none of nvim/vim/code/nano/notepad found on PATH\n");
-        return 1;
-    };
-    try app.out.flush();
-    return proc.runInherit(app.io, &.{ ed, path }, app.home) catch |e| {
-        try app.err.print("nix: editor {s}: {s}\n", .{ ed, @errorName(e) });
-        return 1;
-    };
+    return app_zig.openFileInEditor(app, path, app.home);
 }
 
 /// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it

@@ -142,10 +142,20 @@ pub const specs = [_]Spec{
         \\found on PATH). Bare `nix -e` opens ~/.nix itself for editing aliases
         \\and config.
         \\
+        \\The colon forms EDIT where an action is defined, rather than running it
+        \\(`${cmd:o}`/`${cmd:r}` run). `${cmd:e} :<name>` opens
+        \\~/.nix/actions/_default.toml, seeding an empty stub when the name is
+        \\new. `${cmd:e} <alias> :` opens that project's .nix/actions.toml, and
+        \\CREATES it from a commented template when the alias has no actions yet -
+        \\the one place a listing writes anything, and the reason
+        \\`${cmd:o} <alias> :` / `${cmd:r} <alias> :` are the read-only forms of
+        \\the same question.
+        \\
         \\`e` is deliberately single-alias: it does not fan out over a +group.
         ,
         .agent_use =
-        \\Don't run it - it spawns a GUI window and takes the user's focus.
+        \\Don't run it - it spawns a GUI window and takes the user's focus, and
+        \\the colon forms write a file before they do.
         \\
         \\You already have file tools: resolve with `nix <alias>` and read or edit
         \\the file directly. Reach for `e` only in what you TELL the user.
