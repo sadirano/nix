@@ -21,6 +21,32 @@ pub fn eqlFoldAscii(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+/// eqlPathAscii compares two path fragments the way Windows treats them:
+/// case-folded, and with `/` and `\` interchangeable.
+///
+/// eqlFoldAscii is not enough for paths, because one directory reaches
+/// different call sites in different spellings — `aliases.toml` stores forward
+/// slashes, `$NIX_HOME` arrives however the user's shell spelled it, and a
+/// joined path carries the OS separator. A comparison that distinguishes them
+/// silently decides two names for one directory are two directories.
+pub fn eqlPathAscii(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ca, cb| {
+        const la = if (ca == '\\') '/' else std.ascii.toLower(ca);
+        const lb = if (cb == '\\') '/' else std.ascii.toLower(cb);
+        if (la != lb) return false;
+    }
+    return true;
+}
+
+test "eqlPathAscii: separators and case are both ignored" {
+    try std.testing.expect(eqlPathAscii("C:/Users/x/.nix", "C:\\Users\\x\\.nix"));
+    try std.testing.expect(eqlPathAscii("C:/USERS/X/.NIX", "c:\\users\\x\\.nix"));
+    try std.testing.expect(eqlPathAscii("a/b", "a\\b"));
+    try std.testing.expect(!eqlPathAscii("C:/Users/x/.nix", "C:/Users/y/.nix"));
+    try std.testing.expect(!eqlPathAscii("a/b", "a/bc"));
+}
+
 /// stripQuotes removes one pair of surrounding quotes (single or double), if
 /// present. Escapes are not interpreted — for values that are literal text.
 pub fn stripQuotes(s: []const u8) []const u8 {
