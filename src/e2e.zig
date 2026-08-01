@@ -1213,6 +1213,42 @@ pub fn main(init: std.process.Init) !void {
             std.mem.count(u8, readFileOr(&c, def_actions, ""), "brandnew = ") == 1, "`e :name` on an existing action does not re-seed", r);
         // And it did not disturb what was already there.
         c.check(std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), before) != null or before.len == 0, "`e :name` appends without rewriting the file", r);
+        // `e <alias> :` on a project with no actions creates the file from the
+        // template and opens it - the list form's half of the same convenience.
+        // The machine-wide layer is emptied first, because an alias inherits
+        // _default's actions and would then have something to list.
+        const def_saved = readFileOr(&c, def_actions, "");
+        Io.Dir.cwd().deleteFile(io, def_actions) catch {};
+        const bare = join(&c, &.{ root, "proj", "bare" });
+        try util.mkdirAll(io, bare);
+        c.exe = real_exe; // registering is nix's own form, not the e wrapper's
+        _ = try c.run(&.{ "bare", bare });
+        const bare_actions = join(&c, &.{ bare, ".nix", "actions.toml" });
+        c.exe = e_exe;
+        r = try c.run(&.{ "bare", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "created") != null and
+            std.mem.indexOf(u8, readFileOr(&c, bare_actions, ""), "[actions]") != null, "`e <alias> :` seeds actions.toml when there is nothing to list", r);
+        // The seeded file is inert, so the alias still has no actions - and the
+        // gate does not ask about a file nix just wrote itself.
+        c.exe = real_exe;
+        r = try c.run(&.{ "bare", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "no actions for") != null and
+            std.mem.indexOf(u8, r.err, "--trust") == null, "the seeded template declares nothing and trips no trust prompt", r);
+        // Second time round it opens what is there rather than rewriting it: an
+        // editor command must never be how you discover nix ate your file.
+        try writeFile(&c, bare_actions, "# mine\n[bin]\n");
+        c.exe = e_exe;
+        r = try c.run(&.{ "bare", ":" });
+        c.check(r.code == 0 and std.mem.eql(u8, readFileOr(&c, bare_actions, ""), "# mine\n[bin]\n") and
+            std.mem.indexOf(u8, r.err, "created") == null, "`e <alias> :` opens an existing actions.toml untouched", r);
+        // And the read-only forms stay read-only: `o`/`r` name the file, they
+        // do not write into a repo for having been asked a question.
+        Io.Dir.cwd().deleteFile(io, bare_actions) catch {};
+        c.exe = real_exe;
+        r = try c.run(&.{ "bare", ":" });
+        c.check(r.code == 0 and !proc.pathExists(io, bare_actions), "`r <alias> :` with no actions creates nothing", r);
+        try writeFile(&c, def_actions, def_saved);
+
         c.exe = real_exe;
         try c.env.put("EDITOR", "notepad");
 

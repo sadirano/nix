@@ -356,6 +356,8 @@ serve  = "npm run dev"
 deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
 ```
 
+You don't have to write that file from scratch: **`e acme :` opens it, creating it from a commented template** when the alias has no actions yet — the template is inert (every sample is commented out), and it points at the neighbours a project file grows into, `[bin]`, `[deps]` and `.nix/env.toml`. `e acme :deploy` does the same one action at a time, seeding an empty stub for a name that doesn't exist yet and opening the file there. Only the editor writes: `o acme :` and `r acme :` are the read-only forms of the same question.
+
 **Descriptions come from the comment above an action.** The command says what runs; the comment says *why*, and listings show it in a DESCRIPTION column:
 
 ```
@@ -369,7 +371,7 @@ There's no new syntax to learn: a run of `#` lines directly above an action is j
 
 ```powershell
 r acme :test              # run acme's `test` action in acme's dir
-r acme :                  # pick from acme's actions (o acme : and e acme : are the same)
+r acme :                  # pick from acme's actions (o acme : asks the same)
 r acme -o :serve          # start it in a window of its own and come straight back
 r acme :test -- --json    # pass arguments through to the command
 r acme :build :test       # a chain: in order, stopping at the first failure

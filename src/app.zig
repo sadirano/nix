@@ -133,6 +133,26 @@ pub fn resolveEditor(app: *App) ?[]const u8 {
     return null;
 }
 
+/// openFileInEditor spawns the resolved editor on ONE file and returns its exit
+/// code, reporting the two ways that can fail (no editor anywhere, editor would
+/// not start) in the words every other caller already used.
+///
+/// The `e :<name>` stub seeder and the `e <alias> :` template seeder both end
+/// the same way - write the file, then open it - and the launch half is what
+/// they share. `cwd` is where the editor is started, which only matters for the
+/// editors that read a project config from it.
+pub fn openFileInEditor(app: *App, path: []const u8, cwd: []const u8) !u8 {
+    const ed = resolveEditor(app) orelse {
+        try app.err.writeAll("nix: no $EDITOR set and none of nvim/vim/code/nano/notepad found on PATH\n");
+        return 1;
+    };
+    try app.out.flush();
+    return proc.runInherit(app.io, &.{ ed, path }, cwd) catch |e| {
+        try app.err.print("nix: editor {s}: {s}\n", .{ ed, @errorName(e) });
+        return 1;
+    };
+}
+
 /// padPrint writes `s` padded out to `width`. A value too long for its column
 /// still gets the two-space gap the padding would have provided: columns are
 /// capped in places (see max_command_cols), and an overflowing one must not run
