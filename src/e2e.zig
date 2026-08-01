@@ -1162,6 +1162,19 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "risky{s}", .{ext}) })), "--trust unblocks the export, and sync-bin installs it", r);
         try writeFile(&c, pg_actions, pg_restore);
 
+        // An export whose name BECOMES a command wrapper is refused - and the
+        // prune pass must not then delete the wrapper as an undeclared export
+        // it once owned. That is how a real machine lost `q.exe`: the export
+        // was declared before `q` was a builtin, so the manifest still credited
+        // the name to _default.
+        const q_file = join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "q{s}", .{ext}) });
+        const def_pre = join(&c, &.{ home, "actions", "_default.toml" });
+        const def_pre_restore = readFileOr(&c, def_pre, "");
+        try writeFile(&c, join(&c, &.{ home, "exports.toml" }), try std.fmt.allocPrint(arena, "[exports]\nq{s} = \"_default deadbeef :q\"\n", .{ext}));
+        _ = try c.run(&.{"--sync"}); // installs the wrappers, then prunes exports
+        c.check(proc.pathExists(io, q_file), "an export whose name became a wrapper does not delete the wrapper", null);
+        try writeFile(&c, def_pre, def_pre_restore);
+
         // A machine-wide export (_default.toml) has no alias dir, so it runs
         // where it was called - the case a loose .cmd on PATH usually serves.
         const def = join(&c, &.{ home, "actions", "_default.toml" });

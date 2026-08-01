@@ -513,6 +513,10 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
     var current: usize = 0;
     var updated: usize = 0;
     var restored: usize = 0;
+    // Action exports whose only difference was a rebuilt nix binary: re-copied
+    // in silence and counted as current, because nothing about the export
+    // changed - only the shared binary underneath it.
+    var refreshed: usize = 0;
     var locked: std.ArrayList([]const u8) = .empty;
     var pending: std.ArrayList([]const u8) = .empty;
     var blocked: std.ArrayList([]const u8) = .empty;
@@ -589,7 +593,15 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
             }
             // On-disk differs. If the consented version is unchanged, the file
             // itself was edited in place (tampered) - heal it and warn.
-            const tampered = consented;
+            //
+            // Except for an ACTION export, whose installed bytes are the nix
+            // binary itself: rebuilding nix makes every one of them differ while
+            // its fingerprint (owner, action, command) is untouched. Calling
+            // that tampering accused the user of hand-editing their own exports
+            // on every single `:build :sync`, which is both wrong and the kind
+            // of warning people learn to scroll past.
+            const rebuilt = consented and ex.kind == .action;
+            const tampered = consented and !rebuilt;
             writeReplaceAtomic(app, dst, content) catch {
                 try locked.append(app.arena, ex.file);
                 if (prior) |m| try manifest.append(app.arena, m); // keep truthful prior state
@@ -599,6 +611,8 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
             if (tampered) {
                 restored += 1;
                 try app.err.print("  restored {s} - it was edited in {s}; do not change exports by hand, edit {s}'s source and run `nix --sync-bin`\n", .{ ex.file, bin, ex.alias });
+            } else if (rebuilt) {
+                refreshed += 1;
             } else {
                 updated += 1;
                 try app.err.print("  {s}  <- {s}\n", .{ ex.file, originLabel(app.arena, ex) });
@@ -637,6 +651,14 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
             try app.err.print("  keeping {s} - {s}'s directory is unreachable (reconnect it, or remove the alias to drop the export)\n", .{ m.file, m.alias });
             continue;
         }
+        // A name that has BECOME a command wrapper is no longer ours to delete.
+        // That is not hypothetical: `q` shipped as a builtin slot, which refuses
+        // the identically-named export above and so drops it from the plan - and
+        // this loop would then delete the wrapper `--sync` had just installed,
+        // leaving the machine without a command it ships. The export record goes
+        // either way; the collision message already said why.
+        const stem = if (std.mem.lastIndexOfScalar(u8, m.file, '.')) |i| m.file[0..i] else m.file;
+        if (isReservedName(app.arena, cfg, stem)) continue;
         const p = try std.fs.path.join(app.arena, &.{ bin, m.file });
         if (proc.pathExists(app.io, p)) {
             Io.Dir.cwd().deleteFile(app.io, p) catch {
@@ -674,7 +696,7 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
 
     try writeManifest(app, manifest.items);
 
-    try app.err.print("bin exports: {d} current ({d} updated, {d} restored), {d} removed  -> {s}\n", .{ current + updated + restored, updated, restored, removed + purged, bin });
+    try app.err.print("bin exports: {d} current ({d} updated, {d} restored), {d} removed  -> {s}\n", .{ current + updated + restored + refreshed, updated, restored, removed + purged, bin });
     if (pending.items.len > 0) {
         try app.err.print("not installed by --sync (needs your OK): {s}\n  review them, then run `nix --sync-bin` to allow\n", .{try std.mem.join(app.arena, ", ", pending.items)});
     }

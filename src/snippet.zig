@@ -95,8 +95,17 @@ pub fn regenerate(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []con
             if (!already_queued) try renamed_away.append(arena, p.name);
         }
         const bin = try std.fs.path.join(arena, &.{ home, "bin" });
-        const stale = try installExeWrappers(arena, io, bin, exe, names, renamed_away.items);
-        try saveWrapperManifest(arena, io, home, names);
+        var undeleted: std.ArrayList([]const u8) = .empty;
+        const stale = try installExeWrappers(arena, io, bin, exe, names, renamed_away.items, &undeleted);
+        // A name whose wrapper could NOT be deleted stays in the manifest, or
+        // this sync forgets it and no later one ever tries again: the file is
+        // then orphaned on PATH for good, answering with an old binary and
+        // reported as foreign forever. The manifest records what is on disk,
+        // not what we hoped to leave there.
+        var recorded: std.ArrayList([]const u8) = .empty;
+        try recorded.appendSlice(arena, names);
+        try recorded.appendSlice(arena, undeleted.items);
+        try saveWrapperManifest(arena, io, home, recorded.items);
         return stale;
     }
     try writeBash(arena, io, home, exe, cfg);
@@ -185,15 +194,28 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
 /// writeExeAtomic). Returns the names whose wrapper STILL could not be
 /// replaced AND whose on-disk copy differs from the new binary — those keep
 /// answering with the OLD version until updated.
-fn installExeWrappers(arena: std.mem.Allocator, io: Io, bin: []const u8, exe: []const u8, names: [][]const u8, renamed_away: []const []const u8) ![]const []const u8 {
+fn installExeWrappers(
+    arena: std.mem.Allocator,
+    io: Io,
+    bin: []const u8,
+    exe: []const u8,
+    names: [][]const u8,
+    renamed_away: []const []const u8,
+    undeleted: *std.ArrayList([]const u8),
+) ![]const []const u8 {
     try mkdirAll(io, bin);
     sweepStale(arena, io, bin);
     const ext = if (is_windows) ".exe" else "";
     // Renamed-away builtin wrappers: delete so the old name stops answering.
-    // Best-effort — a locked (running) exe stays until the next sync.
+    // A locked (running) exe stays until the next sync - and comes back in
+    // `undeleted` so there IS a next sync that tries.
     for (renamed_away) |name| {
         const dst = try std.fmt.allocPrint(arena, "{s}{c}{s}{s}", .{ bin, std.fs.path.sep, name, ext });
-        Io.Dir.cwd().deleteFile(io, dst) catch {};
+        Io.Dir.cwd().deleteFile(io, dst) catch {
+            if (Io.Dir.cwd().statFile(io, dst, .{})) |_| {
+                try undeleted.append(arena, name);
+            } else |_| {}
+        };
     }
     const canonical = try std.fmt.allocPrint(arena, "{s}{c}nix{s}", .{ bin, std.fs.path.sep, ext });
     if (!samePath(canonical, exe)) {
