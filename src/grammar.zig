@@ -42,6 +42,7 @@ pub const SystemVerb = enum {
     @"export",
     import,
     agent,
+    quit,
     version,
     help,
     preview,
@@ -122,6 +123,7 @@ pub const system = [_]System{
     .{ .flags = &.{"--export"}, .verb = .@"export", .args = "[file]", .help = "write a portable backup (aliases/groups/config/actions; stdout if no file)", .spec = "" },
     .{ .flags = &.{"--import"}, .verb = .import, .args = "<file>", .help = "merge a backup (skips existing; --replace for a full restore)", .spec = "" },
     .{ .flags = &.{"--agent"}, .verb = .agent, .args = "[topic]", .help = "full command spec for an agent (`<cmd> --agent` works too)", .spec = "" },
+    .{ .flags = &.{"--quit"}, .verb = .quit, .args = "[--dry-run]", .help = "close the shell this ran in (the `q` command)", .spec = "q" },
     .{ .flags = &.{ "--version", "-v" }, .verb = .version, .help = "print version and platform", .spec = "" },
     .{ .flags = &.{ "--help", "-h" }, .verb = .help, .help = "show this help", .spec = "" },
     // nix re-invoking itself for an fzf preview pane. Not user grammar.

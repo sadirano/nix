@@ -79,6 +79,7 @@ x acme zig build test                      # run a command at that path
 g acme TODO                                # ripgrep search under the dir → fzf → open the hit in your editor
 g acme invoice --all                       # search inside PDFs/office docs/archives too (ripgrep-all)
 f acme config                              # fuzzy-find files under the dir → fzf → open the selection
+q                                          # close this shell (see below)
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
 nix acme --env                             # what the project's .nix/env.toml sets, and where each value came from
 nix --list                                 # show every alias
@@ -101,6 +102,14 @@ Clipboard fine print: `y <alias> <pat>` copies the picked files as a real file d
 
 `f` shares the same fzf-with-preview picker, choosing its file lister by what's available — Everything's `es` on Windows, else `fd`, else `find`. Enter opens directories and default-app file types (PDF, images, archives, …) with the OS handler, everything else in your editor.
 
+## Closing the shell (`q`)
+
+`q` closes the shell you typed it in. It's the one command that takes no alias: a child process can't make its parent return from a prompt — `exit` inside a command exits that command's own shell and nothing else — so ending the shell that ran you means terminating it.
+
+Which is exactly why it checks first. `q` refuses unless the process above it really is a shell (`cmd`, `powershell`, `pwsh`, `bash`, `sh`, `zsh`, `fish`, `nu`): started from Windows Terminal, an IDE, or a `.lnk`, the process above can be the terminal host itself, and closing *that* takes every other tab down with it. It also refuses when the parent is already gone — a pid is reused the moment its process ends, and a "parent" that started *after* you is somebody else holding the number. `q --dry-run` names the target and touches nothing.
+
+It's a hard kill, so a shell holding unflushed state (clink's history, for one) can lose it. Windows-only: on a POSIX shell, nix's integration is a shell function and `exit` already does this properly.
+
 ## Configuration
 
 Aliases live in `~/.nix/aliases.toml`. The format is one TOML table per alias:
@@ -116,7 +125,7 @@ Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`,
 
 `~/.nix/config.toml` holds the optional sections.
 
-`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`); the value is the name you'd rather type:
+`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`, `q`); the value is the name you'd rather type:
 
 ```toml
 [shortcuts]

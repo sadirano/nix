@@ -379,6 +379,48 @@ pub const specs = [_]Spec{
         },
         .see_also = &.{ "g", "s" },
     },
+    .{
+        .slot = "q",
+        .topic = "q",
+        .args = "[--dry-run]",
+        .summary = "close the shell you typed it in",
+        .safety = .user_surface,
+        // No safe_form: there is no non-destructive way to DO this, and
+        // `--dry-run` is a sub-flag of --quit rather than grammar of its own
+        // (the same reason `--grep`'s `--all` is absent from safe forms). The
+        // inspection form is in the examples instead.
+        .detail =
+        \\Terminates the process that started this one - your shell - which is
+        \\the only thing a child process can do about a parent's prompt: `exit`
+        \\in a command exits that command's own shell and nothing else.
+        \\
+        \\It refuses unless the process above really is a shell (cmd,
+        \\powershell, pwsh, bash, sh, zsh, fish, nu). Started from Windows
+        \\Terminal, an IDE or a shortcut, the process above can be the terminal
+        \\host itself, and closing that takes every other tab with it.
+        \\
+        \\It also refuses when the parent is already gone: a pid is reused as
+        \\soon as its process ends, so a parent whose start time is LATER than
+        \\this process's is somebody else holding the number.
+        \\
+        \\A hard kill, so a shell holding unflushed state (a history file, say)
+        \\can lose it. Windows-only: a POSIX shell integration is a function,
+        \\where `exit` already does this properly.
+        ,
+        .agent_use =
+        \\Never run it. It closes the terminal you are running in - which, in a
+        \\tool-call shell, ends the session mid-task with no output.
+        \\
+        \\`--dry-run` names the target and touches nothing, if you need to show
+        \\the user what it would close.
+        ,
+        .suggest = "To close that shell when you're done: `${cmd:q}`.",
+        .examples = &.{
+            "`${cmd:q}` - close this shell",
+            "`${cmd:q} --dry-run` - name the process it would close",
+        },
+        .see_also = &.{"o"},
+    },
 
     // ---- system commands ----
 
@@ -864,9 +906,10 @@ pub fn find(topic: []const u8) ?*const Spec {
     return null;
 }
 
-/// wrapperSpecs returns the shortcut-slot rows in declaration order - the eight
-/// that --help and the AGENTS.md table render.
-pub fn wrapperSpecs(buf: *[8]*const Spec) []*const Spec {
+/// wrapperSpecs returns the shortcut-slot rows in declaration order - the ones
+/// that --help and the AGENTS.md table render. The buffer is sized by the slot
+/// table, so adding a slot cannot silently drop a row here.
+pub fn wrapperSpecs(buf: *[config.builtinShortcuts().len]*const Spec) []*const Spec {
     var n: usize = 0;
     for (&specs) |*s| {
         if (s.slot.len == 0) continue;
@@ -1045,8 +1088,8 @@ test "every shortcut slot has a spec" {
     for (config.builtinShortcuts()) |b| {
         try std.testing.expect(find(b.builtin) != null);
     }
-    var buf: [8]*const Spec = undefined;
-    try std.testing.expectEqual(@as(usize, 8), wrapperSpecs(&buf).len);
+    var buf: [config.builtinShortcuts().len]*const Spec = undefined;
+    try std.testing.expectEqual(config.builtinShortcuts().len, wrapperSpecs(&buf).len);
 }
 
 test "expand substitutes effective command names" {

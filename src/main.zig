@@ -20,6 +20,7 @@ const app_zig = @import("app.zig");
 const sweep = @import("sweep.zig");
 const init_zig = @import("init.zig");
 const picker = @import("picker.zig");
+const quit = @import("quit.zig");
 const doctor = @import("doctor.zig");
 const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
@@ -318,6 +319,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .secret => secret.cmdSecret(app, rest),
         .trust => context.cmdTrust(app, rest, resolve, run_zig, env_zig),
         .agent => cmdAgent(app, rest),
+        .quit => quit.cmdQuit(app, rest),
         .init => blk: {
             for (rest) |a| {
                 try app.err.print("nix: unknown flag for --init: \"{s}\"\n", .{a});
@@ -965,6 +967,16 @@ const MultiCall = struct { args: [][]const u8, nav_alias: []const u8, is_nav: bo
 
 /// desugarMultiCall turns a wrapper invocation into canonical grammar argv.
 fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]const u8) !MultiCall {
+    // `q` is the one wrapper that names no alias: it acts on the terminal, not
+    // on a directory, so it rewrites straight to the canonical `nix --quit`
+    // instead of going through the alias grammar below. Its own `--agent` form
+    // still falls through to the shared handling.
+    if (eql(action, "quit") and !(args.len == 1 and eql(args[0], "--agent"))) {
+        const out = try arena.alloc([]const u8, args.len + 1);
+        out[0] = "--quit";
+        for (args, 0..) |a, i| out[1 + i] = a;
+        return .{ .args = out, .nav_alias = "", .is_nav = false };
+    }
     if (args.len == 0) {
         if (eql(action, "navigate")) {
             const a = try arena.alloc([]const u8, 1);
@@ -1022,6 +1034,7 @@ fn slotAction(slot: []const u8) ?[]const u8 {
         .{ .k = "s", .v = "explore" },  .{ .k = "y", .v = "yank" },
         .{ .k = "p", .v = "paste" },    .{ .k = "x", .v = "run" },
         .{ .k = "g", .v = "grep" },     .{ .k = "f", .v = "find" },
+        .{ .k = "q", .v = "quit" },
     };
     for (map) |m| if (eql(slot, m.k)) return m.v;
     return null;
@@ -1154,7 +1167,7 @@ fn printUsage(app: *App) !void {
     // `<cmd> --agent` can't drift apart. Names reflect config.toml [shortcuts]
     // overrides; pad to a shared column so descriptions stay aligned whatever
     // the (possibly renamed) names are. Widths are in display columns.
-    var wbuf: [8]*const agentdocs.Spec = undefined;
+    var wbuf: [config.builtinShortcuts().len]*const agentdocs.Spec = undefined;
     const rows = agentdocs.wrapperSpecs(&wbuf);
     var name_w: usize = 0;
     var args_w: usize = 0;

@@ -1246,7 +1246,7 @@ pub fn main(init: std.process.Init) !void {
         Io.Dir.cwd().deleteFile(io, bare_actions) catch {};
         c.exe = real_exe;
         r = try c.run(&.{ "bare", ":" });
-        c.check(r.code == 0 and !proc.pathExists(io, bare_actions), "`r <alias> :` with no actions creates nothing", r);
+        c.check(r.code == 0 and !proc.pathExists(io, bare_actions), "`x <alias> :` with no actions creates nothing", r);
         try writeFile(&c, def_actions, def_saved);
 
         c.exe = real_exe;
@@ -1256,6 +1256,25 @@ pub fn main(init: std.process.Init) !void {
         // empty command, so `:name` reports it missing rather than running "".
         r = try c.run(&.{":brandnew"});
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no machine-wide action") != null, "an unfilled stub is not runnable", r);
+
+        // `q` closes the shell above it, so the only thing an automated check
+        // can safely exercise is the refusal and the dry run. Here the harness
+        // spawns nix directly, so the process above is the e2e runner - not a
+        // shell - which is exactly the case the guard exists for.
+        const q_exe = join(&c, &.{ root, "q.exe" });
+        try writeFile(&c, q_exe, exe_bytes);
+        c.exe = q_exe;
+        r = try c.run(&.{});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not a shell") != null, "`q` refuses when the process above is not a shell", r);
+        r = try c.run(&.{"--dry-run"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not a shell") != null, "`q --dry-run` checks the same guard before naming a target", r);
+        r = try c.run(&.{"nonsense"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "unexpected argument") != null, "`q` takes no alias, so a stray argument is refused", r);
+        // The wrapper still answers `--agent` with its own spec, like every
+        // other slot - that path must not be swallowed by the --quit rewrite.
+        r = try c.run(&.{"--agent"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "close the shell") != null, "`q --agent` renders q's own spec", r);
+        c.exe = real_exe;
 
         // A [shortcuts] rename: a wrapper installed under the custom name must
         // desugar to the builtin slot's action, not fall through to `nix <alias>`.
