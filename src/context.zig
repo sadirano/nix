@@ -190,11 +190,19 @@ fn cachePath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 /// underHome reports whether a path lives inside the nix home. Declarations and
 /// scripts that BOTH live there are implicitly trusted: the ledger exists to
 /// gate code that arrived with a clone, not to make you approve the file you
-/// just wrote yourself. Compared case-insensitively on Windows.
+/// just wrote yourself.
+///
+/// Compared case-insensitively on Windows AND with `/` equivalent to `\`. The
+/// separator half is not cosmetic: the same directory arrives here spelled
+/// differently depending on which resolver produced it - `aliases.toml` stores
+/// forward slashes, a joined path carries the OS separator, and `$NIX_HOME` is
+/// whatever the user typed. While this compared separators literally, the
+/// exemption held or failed based on that spelling alone, so a `--deps` chain
+/// gated the dependency that a direct run of the same action did not.
 pub fn underHome(home: []const u8, path: []const u8) bool {
     if (path.len < home.len) return false;
     const head = path[0..home.len];
-    const same = if (proc.is_windows) util.eqlFoldAscii(head, home) else std.mem.eql(u8, head, home);
+    const same = if (proc.is_windows) util.eqlPathAscii(head, home) else std.mem.eql(u8, head, home);
     if (!same) return false;
     if (path.len == home.len) return true;
     const c = path[home.len];
@@ -850,4 +858,15 @@ test "underHome: inside, outside, boundary, prefix trap" {
     try std.testing.expect(!underHome("C:/Users/x/.nix", "C:/work/proj/.nix/segments.toml"));
     // "…/.nixon" must not count as inside "…/.nix".
     try std.testing.expect(!underHome("C:/Users/x/.nix", "C:/Users/x/.nixon/segments.toml"));
+    // Mixed separators name the SAME directory. aliases.toml stores forward
+    // slashes while a resolved path carries the OS separator, so both spellings
+    // reach this function for one directory - and while they compared
+    // literally, whichever form did not match $NIX_HOME lost the exemption.
+    if (proc.is_windows) {
+        try std.testing.expect(underHome("C:\\Users\\x\\.nix", "C:/Users/x/.nix/lib"));
+        try std.testing.expect(underHome("C:/Users/x/.nix", "C:\\Users\\x\\.nix\\lib"));
+        try std.testing.expect(underHome("C:/Users/x/.nix", "C:\\Users\\x\\.nix"));
+        // The prefix trap still has to hold with separators normalised.
+        try std.testing.expect(!underHome("C:/Users/x/.nix", "C:\\Users\\x\\.nixon\\lib"));
+    }
 }
