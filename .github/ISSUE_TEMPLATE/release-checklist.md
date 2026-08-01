@@ -150,11 +150,56 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       output, nor the action's log, nor Task Manager's command-line column
       for the elevated process.
 - [ ] `r <alias> --deps :build` runs dependencies first and stops at the first
-      failure. Set `[deps] needs = ["other"]`, give both aliases a `:build`,
-      and make the DEPENDENCY fail. The chain must stop there and never reach
-      the dependent's own `:build`. A build order that continues past a
-      failed dependency produces a binary from stale inputs, which is worse
-      than no build at all.
+      failure. A build order that continues past a failed dependency produces
+      a binary from stale inputs, which is worse than no build at all.
+
+      Setup (scratch: `NIX_HOME` keeps the aliases AND the approvals out of
+      the real `~/.nix`):
+
+      ```powershell
+      $root = "$env:TEMP\deps-check"
+      Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+      $lib = "$root\lib"; $app = "$root\app"
+      New-Item -ItemType Directory -Force "$lib\.nix","$app\.nix" | Out-Null
+      $env:NIX_HOME = "$root\home"
+      nix lib $lib
+      nix app $app
+      Set-Content "$lib\.nix\actions.toml" @'
+      [actions]
+      build = "cmd /c echo lib > LIB_RAN.txt && exit 1"
+      '@
+      Set-Content "$app\.nix\actions.toml" @'
+      [deps]
+      needs = ["lib"]
+
+      [actions]
+      build = "cmd /c echo app > APP_RAN.txt"
+      '@
+      nix --trust lib
+      nix --trust app
+      nix app --run --deps :build
+      ```
+
+      **Trust BOTH aliases first.** A `--deps` chain gates the dependency
+      even where the same action run directly would not, so without it the
+      run stops at `lib` on a refusal - which reads exactly like "stopped at
+      the first failure" and tempts you to tick this having tested the
+      provenance gate instead.
+
+      Assert by MARKER FILE, not stdout - a chain that prints the right thing
+      while running the wrong commands is still a bug:
+
+      | case | change | expect |
+      |---|---|---|
+      | A dependency fails | as above | non-zero; `LIB_RAN` yes, `APP_RAN` **no** |
+      | B dependency succeeds | drop `&& exit 1` | exit 0; both, lib first |
+      | C dependency lacks `:build` | rename lib's action | `:build is not defined by: lib`, `nothing was run`; NEITHER marker |
+      | D control, no `--deps` | omit the flag | exit 0; `LIB_RAN` **no**, `APP_RAN` yes |
+
+      D is what makes A meaningful: it proves the dependency is not consulted
+      without the flag, so A's `LIB_RAN` is `--deps` working rather than a
+      coincidence. C fires before the trust gate, being a pure declaration
+      check, so it is the one case that needs no `--trust`.
 
 ## 7. Per-project environment
 
