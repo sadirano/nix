@@ -1724,6 +1724,57 @@ pub fn main(init: std.process.Init) !void {
         c.check(r2.code != 0 and std.mem.indexOf(u8, r2.err, "one destination") != null, "p +group refuses under --no-prompt", r2);
     }
 
+    // --- context source bounds (issue #15) ---------------------------------------------
+    // Everything a source returns is kept: it lands in the arena, is written to
+    // contexts-cache.toml (rewritten whole on every put), and is exported into
+    // the environment of whatever runs next. Refused rather than truncated - a
+    // partially read answer can produce a path that looks right.
+    {
+        const pg = join(&c, &.{ root, "proj", "pg" });
+        _ = try c.run(&.{ "pg", pg });
+        const scripts = join(&c, &.{ pg, ".nix", "scripts" });
+        util.mkdirAll(io, scripts) catch {};
+        try writeFile(&c, join(&c, &.{ pg, ".nix", "segments.toml" }),
+            \\[[contexts]]
+            \\segment = "big"
+            \\run = "flood ${big}"
+            \\source-template = "/${who}"
+            \\
+        );
+
+        // A well-behaved source still works: the bound must not be so eager
+        // that it refuses the case the feature exists for.
+        try writeFile(&c, join(&c, &.{ scripts, "flood.cmd" }),
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo who=fine
+            \\
+        );
+        _ = try c.run(&.{ "--trust", "pg", "big" });
+        var r = try c.run(&.{ "big:1@pg", "--resolve" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "fine") != null, "a small context answer is unaffected by the bounds", r);
+
+        // One oversized VALUE: refused, and the variable is named.
+        try writeFile(&c, join(&c, &.{ scripts, "flood.cmd" }), try std.fmt.allocPrint(arena,
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo who={s}
+            \\
+        , .{"x" ** 5000}));
+        _ = try c.run(&.{ "--trust", "pg", "big" });
+        r = try c.run(&.{ "big:1@pg", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "who") != null and
+            std.mem.indexOf(u8, r.err, "limit") != null, "an oversized context value is refused, naming the variable", r);
+
+        // Too MANY variables: refused before any of them reach the environment.
+        var many: std.ArrayList(u8) = .empty;
+        try many.appendSlice(arena, "@echo off\r\n");
+        for (0..100) |i| try many.print(arena, ">>\"%NIX_CONTEXT_OUT%\" echo k{d}=v\r\n", .{i});
+        try writeFile(&c, join(&c, &.{ scripts, "flood.cmd" }), many.items);
+        _ = try c.run(&.{ "--trust", "pg", "big" });
+        r = try c.run(&.{ "big:1@pg", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "variables") != null and
+            std.mem.indexOf(u8, r.err, "limit") != null, "too many context variables is refused", r);
+    }
+
     // --- path dialects (--as, issue #24) -----------------------------------------------
     // The translation itself is a pure function with its own exhaustive unit
     // tests in dialects.zig; what these check is the WIRING - that the flag is
