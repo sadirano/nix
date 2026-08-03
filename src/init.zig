@@ -256,44 +256,18 @@ pub fn cmdImport(app: *App, rest: [][]const u8) !u8 {
 
     try app.err.print("importing {s}  ({s})\n", .{ path, if (replace) "replace" else "merge" });
 
-    // Aliases: replace → keep only the file's; merge → add names not present.
+    // Aliases and groups: one policy, two stores (see mergeById).
     {
         var list = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
-        if (replace) list.clearRetainingCapacity();
-        var added: usize = 0;
-        var skipped: usize = 0;
-        for (doc.aliases) |a| {
-            if (aliasIndex(list.items, a.name)) |i| {
-                if (replace) {
-                    list.items[i] = a; // last-wins within the file
-                } else skipped += 1;
-                continue;
-            }
-            try list.append(app.arena, a);
-            added += 1;
-        }
+        const m = try mergeById(store.Alias, app.arena, &list, doc.aliases, replace, aliasIndex);
         try store.saveAliases(app.arena, app.io, app.home, list.items);
-        try app.err.print("  aliases: +{d} added, {d} kept\n", .{ added, skipped });
+        try app.err.print("  aliases: +{d} added, {d} kept\n", .{ m.added, m.kept });
     }
-
-    // Groups: same policy, keyed by group name.
     {
         var list = try groups.loadGroups(app.arena, try groups.readGroupsFile(app.arena, app.io, app.home));
-        if (replace) list.clearRetainingCapacity();
-        var added: usize = 0;
-        var skipped: usize = 0;
-        for (doc.groups) |g| {
-            if (groups.findGroup(list.items, g.name)) |i| {
-                if (replace) {
-                    list.items[i] = g;
-                } else skipped += 1;
-                continue;
-            }
-            try list.append(app.arena, g);
-            added += 1;
-        }
+        const m = try mergeById(groups.Group, app.arena, &list, doc.groups, replace, groups.findGroup);
         try groups.saveGroups(app.arena, app.io, app.home, list.items);
-        try app.err.print("  groups:  +{d} added, {d} kept\n", .{ added, skipped });
+        try app.err.print("  groups:  +{d} added, {d} kept\n", .{ m.added, m.kept });
     }
 
     // Config: replace, or write only when there's no local config yet (merge
@@ -413,6 +387,68 @@ fn setFor(sets: []portable.AliasActions, alias: []const u8) ?portable.AliasActio
 fn aliasIndex(list: []const store.Alias, name: []const u8) ?usize {
     for (list, 0..) |a, i| if (store.eqlFoldAscii(a.name, name)) return i;
     return null;
+}
+
+/// What an import did to one store, for its line of the report.
+const Merged = struct { added: usize = 0, kept: usize = 0 };
+
+/// mergeById applies the import policy to a keyed central store: `--replace`
+/// keeps only what the file says, a plain merge adds the names that are not
+/// there yet and never overwrites one. `indexOf` is the store's own name
+/// lookup, so each keeps its own idea of what "the same row" means (#31).
+///
+/// One copy rather than one per store: adding a fifth central store is a call
+/// here, not a fifth chance to update three of four blocks and forget one.
+fn mergeById(
+    comptime T: type,
+    arena: std.mem.Allocator,
+    list: *std.ArrayList(T),
+    incoming: []const T,
+    replace: bool,
+    indexOf: *const fn ([]const T, []const u8) ?usize,
+) !Merged {
+    if (replace) list.clearRetainingCapacity();
+    var m: Merged = .{};
+    for (incoming) |item| {
+        if (indexOf(list.items, item.name)) |i| {
+            // last-wins within the file
+            if (replace) list.items[i] = item else m.kept += 1;
+            continue;
+        }
+        try list.append(arena, item);
+        m.added += 1;
+    }
+    return m;
+}
+
+test "mergeById: merge never overwrites, replace takes the file's version" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const incoming = [_]store.Alias{
+        .{ .name = "acme", .path = "D:/from-backup" },
+        .{ .name = "new", .path = "D:/new" },
+    };
+    var list: std.ArrayList(store.Alias) = .empty;
+    try list.append(a, .{ .name = "acme", .path = "C:/local" });
+
+    var m = try mergeById(store.Alias, a, &list, &incoming, false, aliasIndex);
+    try std.testing.expectEqual(@as(usize, 1), m.added);
+    try std.testing.expectEqual(@as(usize, 1), m.kept);
+    // The local path survives a merge: an import must never move an alias the
+    // user is standing in.
+    try std.testing.expectEqualStrings("C:/local", list.items[0].path);
+
+    list.clearRetainingCapacity();
+    try list.append(a, .{ .name = "acme", .path = "C:/local" });
+    try list.append(a, .{ .name = "gone", .path = "C:/gone" });
+    m = try mergeById(store.Alias, a, &list, &incoming, true, aliasIndex);
+    try std.testing.expectEqual(@as(usize, 2), m.added);
+    try std.testing.expectEqual(@as(usize, 0), m.kept);
+    // --replace is a restore: what the file does not name is gone.
+    try std.testing.expectEqual(@as(usize, 2), list.items.len);
+    try std.testing.expectEqualStrings("D:/from-backup", list.items[0].path);
 }
 
 /// writeFileAtomic writes via a private temp file + rename, mirroring
