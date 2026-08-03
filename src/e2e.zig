@@ -1727,8 +1727,8 @@ pub fn main(init: std.process.Init) !void {
     // --- $NIX_HOME never touches the machine's persistent PATH --------------------------
     // This harness runs --sync and --init against a scratch home, and both used
     // to append <scratch>/bin to the user's REAL registry PATH - one dead entry
-    // per run, 49 of them before anyone looked at the variable. The guard is
-    // store.isRelocatedHome; this is the check that keeps it.
+    // per run, accumulating silently. The guard is store.isRelocatedHome; these
+    // are the checks that keep it.
     {
         // The absent string is the POSITIVE report, not the substring "added" -
         // the note itself says "NOT added", so a naive check passes for the
@@ -2083,11 +2083,11 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("scratch kept for inspection: {s}\n", .{root});
         std.process.exit(1);
     }
-    // A skip fails the gate. Skips are how "green here" and "green on CI"
-    // stopped meaning the same thing: this machine has rg and fd, the runner
-    // had neither, so 7 checks quietly evaporated there and the pre-push hook
-    // could not have caught what CI was about to fail on. Whoever runs the
-    // gate has to run all of it, or say out loud that they are not.
+    // A skip fails the gate. Skips are how "green here" and "green on CI" stop
+    // meaning the same thing: a dev machine with rg and fd installed runs every
+    // check, a runner without them quietly runs fewer, and the pre-push hook
+    // then cannot catch what CI is about to fail on. Whoever runs the gate has
+    // to run all of it, or say out loud that they are not.
     if (c.skips > 0 and c.env.get("NIX_E2E_ALLOW_SKIPS") == null) {
         std.debug.print(
             \\

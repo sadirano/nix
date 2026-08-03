@@ -329,12 +329,8 @@ test "fileName and stem: a literal command files under run" {
     try std.testing.expectEqualStrings("build", stem("build"));
 }
 
-/// cmdLogs is `nix --logs [alias] [pattern]`: browse recordings.
-///
-/// The bare form spans every alias, because "why did last night's build fail"
-/// rarely arrives with the alias attached. `--no-prompt` prints the table and
-/// opens nothing, the same contract every other picker command keeps, and is
-/// the form an agent reads.
+/// cmdLogs is `nix --logs [alias]`: browse recordings, newest first. The bare
+/// form spans every alias. `--no-prompt` prints the table and opens nothing.
 pub fn cmdLogs(app: *App, rest: [][]const u8) !u8 {
     var alias: []const u8 = "";
     for (rest) |a| {

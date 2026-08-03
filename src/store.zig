@@ -28,13 +28,9 @@ pub fn resolveHome(arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]c
 /// isRelocatedHome reports whether $NIX_HOME moved nix's home away from the
 /// default `<userhome>/.nix`.
 ///
-/// It exists to keep a relocated install out of the MACHINE's persistent state.
-/// `--init`/`--sync` add `<home>/bin` to the user's PATH in the registry, and
-/// that is right for the real home and wrong for every other one: the e2e
-/// harness runs both against a scratch NIX_HOME, and each run appended a
-/// throwaway temp directory to the user's permanent PATH - 49 dead entries
-/// before anyone looked. Same reasoning the harness already applies to
-/// `--secret` (it edits the real Credential Manager); PATH simply had no guard.
+/// `--init`/`--sync` add `<home>/bin` to the user's registry PATH, which is
+/// right only for the real home: a scratch or per-project home is temporary,
+/// and a PATH entry pointing into one outlives the directory.
 pub fn isRelocatedHome(arena: std.mem.Allocator, env: *std.process.Environ.Map, home: []const u8) bool {
     const user = env.get("USERPROFILE") orelse env.get("HOME") orelse return true;
     const def = std.fs.path.join(arena, &.{ user, ".nix" }) catch return true;
@@ -84,17 +80,9 @@ pub fn readAliasesFile(arena: std.mem.Allocator, io: Io, home: []const u8) ![]co
     };
 }
 
-/// self_alias is the built-in name for nix's own home (~/.nix).
-///
-/// It exists because a config value that must point INTO ~/.nix had no short
-/// spelling, in the one tool whose purpose is that you never type absolute
-/// paths: hooks are spawned directly rather than through a shell, so
-/// `%USERPROFILE%` arrives as a literal and `pwsh -f ~/...` fails outright,
-/// and a relative path is resolved against whichever alias dir just ran.
-///
-/// `.nix` rather than `nix`: this machine, like any contributor's, already uses
-/// `nix` for the nix REPO, so an auto-reserved `nix` would collide on exactly
-/// the machines that matter. No project is plausibly named `.nix`.
+/// self_alias is the built-in name for nix's own home (~/.nix), so a config
+/// value pointing into it needs no absolute path. `.nix` rather than `nix`,
+/// which is commonly an alias for a checkout of this repo.
 pub const self_alias = ".nix";
 
 /// isSelfAlias reports whether a name means nix's own home. Case- and
@@ -104,13 +92,9 @@ pub fn isSelfAlias(name: []const u8) bool {
 }
 
 /// lookupAlias resolves a name to a host path, answering for the built-in
-/// `.nix` before aliases.toml is consulted.
-///
-/// The built-in wins over a stored entry of the same name on purpose. Users
-/// registered `.nix` by hand before it was built in (it was the only way to
-/// give a hook a portable path), and those entries point at the same place;
-/// letting a stale one win would mean an upgrade silently kept resolving to
-/// wherever ~/.nix used to be.
+/// `.nix` before aliases.toml. The built-in wins over a stored entry of the
+/// same name, so a hand-registered one from before it existed cannot keep
+/// resolving to a stale path.
 pub fn lookupAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8, home: []const u8) !?[]const u8 {
     if (isSelfAlias(name)) return try arena.dupe(u8, home);
     return scanForAlias(arena, data, name);
@@ -241,16 +225,10 @@ pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]co
     return names;
 }
 
-/// loadAliasesWithSelf is loadAliases plus the built-in `.nix`, for the commands
-/// that show the user what they can NAME (--list, --which).
-///
-/// The commands that manage aliases.toml as a file (--prune, --remove) keep
-/// using loadAliases: a built-in must never become a prune candidate or a
-/// removal target, and the discriminator is exactly "is this question about the
-/// file, or about the names that work".
-///
-/// A stored entry of the same name is dropped rather than shown beside the
-/// built-in - one name, one row.
+/// loadAliasesWithSelf is loadAliases plus the built-in `.nix`, for commands
+/// that show what can be NAMED (--list, --which). The file-management commands
+/// (--prune, --remove) keep using loadAliases, so a built-in can never become a
+/// prune candidate. A stored entry of the same name collapses into it.
 pub fn loadAliasesWithSelf(arena: std.mem.Allocator, data: []const u8, home: []const u8) !std.ArrayList(Alias) {
     var out = try loadAliases(arena, data);
     var i: usize = 0;
@@ -719,8 +697,8 @@ test "isRelocatedHome: only the default home may touch the machine's PATH" {
     if (is_windows) try std.testing.expect(!isRelocatedHome(a, &env, "C:/Users/Dev/.NIX"));
     try std.testing.expect(!isRelocatedHome(a, &env, "C:/Users/dev/.nix/"));
 
-    // Anything else is relocated. The scratch home the e2e harness uses is the
-    // case that put 49 dead temp directories in a real user's registry PATH.
+    // Anything else is relocated. A scratch home under the temp directory is
+    // the case that matters: the e2e harness uses one on every run.
     try std.testing.expect(isRelocatedHome(a, &env, "C:/Temp/nix-e2e-1785773171603/home"));
     try std.testing.expect(isRelocatedHome(a, &env, "C:/Users/dev/.nix-other"));
     try std.testing.expect(isRelocatedHome(a, &env, "D:/portable/.nix"));
