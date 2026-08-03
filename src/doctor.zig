@@ -159,18 +159,6 @@ fn renderJson(app: *App, d: *Doc) !void {
     try app.out.writeAll(b.items);
 }
 
-/// isScriptShim reports whether a resolved tool path is a script wrapper rather
-/// than a real executable — the case where a `.cmd`/`.bat` named `fd` shadows the
-/// real fd.exe on PATH. We must never run such a shim from a probe (it may launch
-/// an interactive tool and hang the diagnostic), so detect it by extension.
-fn isScriptShim(path: []const u8) bool {
-    const exts = [_][]const u8{ ".cmd", ".bat", ".ps1", ".sh", ".py" };
-    for (exts) |e| {
-        if (path.len >= e.len and std.ascii.eqlIgnoreCase(path[path.len - e.len ..], e)) return true;
-    }
-    return false;
-}
-
 fn firstLine(s: []const u8) []const u8 {
     return if (std.mem.indexOfScalar(u8, s, '\n')) |i| s[0..i] else s;
 }
@@ -266,88 +254,63 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         try d.row(.fail, "fzf", "not found - the picker can't run (install fzf)");
     }
 
-    // es — present AND functional? es.exe installs fine from GitHub but is dead
-    // unless the Everything service is running; a bounded probe distinguishes them.
-    var es_ok = false;
-    if (proc.findInPath(app.arena, app.io, app.env, "es")) |p| {
-        // Probe with the exact switch shape the picker uses (`/ad`, `-n`), so a
-        // "working" verdict here can't diverge from what the picker will run.
-        const out = proc.probeOutput(app.arena, app.io, &.{ "es", "/ad", "-n", "1" }, ".") catch "";
-        if (std.mem.trim(u8, out, " \t\r\n").len > 0) {
-            es_ok = true;
-            try d.row(.ok, "es", try std.fmt.allocPrint(app.arena, "Everything index working  ({s})", .{p}));
-        } else {
-            try d.row(.warn, "es", try std.fmt.allocPrint(app.arena, "present but Everything service not running  ({s})", .{p}));
+    // Every verdict below is ASKED of picker.zig rather than re-derived here.
+    // This section used to carry its own copy of the picker's rules, with
+    // comments saying so ("mirroring pickerSource so the report matches
+    // reality") - and the copies had drifted. See the note above ToolState.
+    const es = picker.esTool(app);
+    const fd = picker.fdTool(app);
+    const find = picker.findTool(app);
+
+    switch (es.state) {
+        .ok => try d.row(.ok, "es", try std.fmt.allocPrint(app.arena, "Everything index working  ({s})", .{es.path})),
+        .broken => {
+            try d.row(.warn, "es", try std.fmt.allocPrint(app.arena, "present but Everything service not running  ({s})", .{es.path}));
             try d.cont("-> picker can't use es; falling back to fd/find");
-        }
-    } else {
-        try d.row(.note, "es", "not installed (optional - gives instant whole-system reach)");
+        },
+        else => try d.row(.note, "es", "not installed (optional - gives instant whole-system reach)"),
     }
 
-    // fd — present AND real? A .cmd/.bat shadowing real fd is the trap, so detect
-    // by path before probing; only version-check a genuine executable.
-    var fd_ok = false;
-    if (proc.findInPath(app.arena, app.io, app.env, "fd")) |p| {
-        if (isScriptShim(p)) {
-            try d.row(.fail, "fd", try std.fmt.allocPrint(app.arena, "NOT real fd - resolves to a script: {s}", .{p}));
+    switch (fd.state) {
+        .ok => try d.row(.ok, "fd", try std.fmt.allocPrint(app.arena, "real {s}  ({s})", .{ firstLine(fd.detail), fd.path })),
+        .shim => {
+            try d.row(.fail, "fd", try std.fmt.allocPrint(app.arena, "NOT real fd - resolves to a script: {s}", .{fd.path}));
             try d.cont("a shim shadows the real fd.exe; fix PATH or rename the shim");
-        } else {
-            const ver = std.mem.trim(u8, proc.probeOutput(app.arena, app.io, &.{ "fd", "--version" }, ".") catch "", " \t\r\n");
-            if (std.mem.startsWith(u8, ver, "fd ")) {
-                fd_ok = true;
-                try d.row(.ok, "fd", try std.fmt.allocPrint(app.arena, "real {s}  ({s})", .{ firstLine(ver), p }));
-            } else {
-                try d.row(.warn, "fd", try std.fmt.allocPrint(app.arena, "found but did not report an fd version  ({s})", .{p}));
-            }
-        }
-    } else {
-        try d.row(.fail, "fd", "not found - install fd (the picker's fallback finder)");
+        },
+        .broken => try d.row(.warn, "fd", try std.fmt.allocPrint(app.arena, "found but did not report an fd version  ({s})", .{fd.path})),
+        .missing => try d.row(.fail, "fd", "not found - install fd (the picker's fallback finder)"),
     }
 
-    // find — only a real fallback off Windows (System32 find is not a file finder).
-    var find_ok = false;
-    if (!proc.is_windows) {
-        if (proc.findInPath(app.arena, app.io, app.env, "find")) |p| {
-            find_ok = true;
-            try d.row(.info, "find", try std.fmt.allocPrint(app.arena, "POSIX find fallback  ({s})", .{p}));
-        }
+    if (find.state == .ok) {
+        try d.row(.info, "find", try std.fmt.allocPrint(app.arena, "POSIX find fallback  ({s})", .{find.path}));
     }
 
-    // Resolved source — which finder the picker will actually pull candidates
-    // from (the es→fd→find fallback, resolved), mirroring pickerSource so the
-    // report matches reality. The bottom line of the section.
-    if (es_ok) {
-        try d.row(.ok, "=> uses", "es - Everything's instant, whole-system index");
-    } else if (fd_ok) {
-        try d.row(.ok, "=> uses", "fd - walks the search roots below");
-    } else if (find_ok) {
-        try d.row(.ok, "=> uses", "find - walks the search roots below");
-    } else {
-        try d.row(.fail, "=> uses", "NONE - no working finder; the picker will fail");
+    // The bottom line of the section, and the same call the picker makes.
+    const chosen = picker.chooseFinder(es.state, fd.state, find.state);
+    const roots = try picker.resolveRoots(app, cfg);
+    switch (chosen) {
+        .es => try d.row(.ok, "=> uses", "es - Everything's instant, whole-system index"),
+        .fd => try d.row(.ok, "=> uses", "fd - walks the search roots below"),
+        .find => try d.row(.ok, "=> uses", "find - walks the search roots below"),
+        .none => try d.row(.fail, "=> uses", "NONE - no working finder; the picker will fail"),
+    }
+    // A walking finder with nothing to walk fails exactly as hard as no finder,
+    // and the report used to say "=> uses fd" for that configuration and stop.
+    if (chosen != .es and chosen != .none and roots.existing.len == 0) {
+        try d.row(.fail, "=> uses", "...but no search root exists, so the picker will find nothing");
     }
 
     try d.section("Search scope  (used only when the picker falls back to fd/find)");
     {
-        // Mirror pickerStreamArgv's root resolution so the report matches reality.
-        var roots: std.ArrayList([]const u8) = .empty;
-        if (cfg.picker_search_roots.len > 0) {
-            try d.row(.info, "roots", "configured via [picker] search_roots");
-            for (cfg.picker_search_roots) |r| {
-                const t = std.mem.trim(u8, r, " \t");
-                if (t.len == 0) continue;
-                try roots.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env, t)));
-            }
-        } else if (proc.is_windows) {
-            try d.row(.info, "roots", "default: every fixed drive");
-            try roots.appendSlice(app.arena, try proc.fixedDriveRoots(app.arena));
-        } else {
-            try d.row(.info, "roots", "default: home directory");
-            if (app.env.get("HOME")) |h| try roots.append(app.arena, h);
+        switch (roots.origin) {
+            .configured => try d.row(.info, "roots", "configured via [picker] search_roots"),
+            .fixed_drives => try d.row(.info, "roots", "default: every fixed drive"),
+            .home => try d.row(.info, "roots", "default: home directory"),
         }
-        if (roots.items.len == 0) {
+        if (roots.all.len == 0) {
             try d.row(.warn, "", "no roots resolved - the fd/find fallback has nothing to walk");
         }
-        for (roots.items) |r| {
+        for (roots.all) |r| {
             // A configured root that doesn't exist is a misconfiguration worth a
             // warn; default fixed drives are pre-filtered to existing ones.
             if (proc.pathExists(app.io, r)) try d.row(.ok, "", r) else try d.row(.warn, "", try std.fmt.allocPrint(app.arena, "{s}  (does not exist)", .{r}));
@@ -557,16 +520,6 @@ test "appendJsonString: quotes, backslashes (Windows paths), control chars" {
     var b: std.ArrayList(u8) = .empty;
     try appendJsonString(a, &b, "C:\\x\\y \"q\"\n\x01");
     try std.testing.expectEqualStrings("\"C:\\\\x\\\\y \\\"q\\\"\\n\\u0001\"", b.items);
-}
-
-test "isScriptShim: scripts vs real executables" {
-    // Shadowing shims the doctor must never execute.
-    try std.testing.expect(isScriptShim("C:\\tools\\fd.cmd"));
-    try std.testing.expect(isScriptShim("C:\\tools\\fd.BAT"));
-    try std.testing.expect(isScriptShim("/usr/local/bin/fd.sh"));
-    // Genuine executables (and the bare POSIX name) are fine to probe.
-    try std.testing.expect(!isScriptShim("C:\\scoop\\shims\\fd.exe"));
-    try std.testing.expect(!isScriptShim("/usr/bin/fd"));
 }
 
 test "firstLine: up to first newline, else whole string" {

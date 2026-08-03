@@ -36,6 +36,133 @@ const PickerSource = union(enum) {
     none,
 };
 
+// ---- the picker's decisions, as data (issue #30) -----------------------------
+//
+// --doctor and --picker-check exist so a user can trust what nix WILL do
+// without running it, and both used to answer by re-implementing this file's
+// logic a second time. doctor.zig said so in its own comments ("mirroring
+// pickerSource so the report matches reality"), which is the shape of a bug
+// waiting for someone to change one copy.
+//
+// They had already drifted in three places, one of them the wrong way round:
+// doctor rejected an fd that resolved to a .cmd shim, while the picker took any
+// fd on PATH and would have run a shim's argv; doctor read only HOME for the
+// default root where the picker reads USERPROFILE first; and doctor could
+// report "=> uses fd" for a configuration where the picker returns .none
+// because no root exists. The decisions below are now made once, here, and
+// merely RENDERED there.
+
+/// ToolState is what a finder is, as opposed to whether its name is on PATH.
+/// `shim` is the trap doctor already caught and the picker did not: a .cmd or
+/// .bat ahead of the real fd.exe answers findInPath and then cannot take fd's
+/// arguments.
+pub const ToolState = enum { ok, missing, shim, broken };
+
+/// Tool is one finder's resolved state, with what a diagnostic needs to render
+/// it. `detail` is the version line for fd, the resolved path otherwise.
+pub const Tool = struct {
+    state: ToolState = .missing,
+    path: []const u8 = "",
+    detail: []const u8 = "",
+};
+
+/// Finder is which source the picker will actually pull candidates from.
+pub const Finder = enum { es, fd, find, none };
+
+/// isScriptShim reports whether a resolved PATH entry is a script rather than a
+/// real executable - the .cmd/.bat that shadows fd.exe and takes none of its
+/// flags. Lives here because both the picker and its diagnostics need it.
+pub fn isScriptShim(path: []const u8) bool {
+    const exts = [_][]const u8{ ".cmd", ".bat", ".ps1", ".sh", ".py" };
+    for (exts) |e| {
+        if (path.len >= e.len and std.ascii.eqlIgnoreCase(path[path.len - e.len ..], e)) return true;
+    }
+    return false;
+}
+
+/// esTool probes Everything's CLI. es.exe installs fine from GitHub but is dead
+/// unless the Everything *service* is running, and a dead es returns nothing
+/// rather than failing - so presence on PATH is not the question.
+pub fn esTool(app: *App) Tool {
+    const p = proc.findInPath(app.arena, app.io, app.env, "es") orelse return .{};
+    // The same switch shape the real query uses, so a "working" verdict here
+    // cannot diverge from what the picker is about to run.
+    const out = proc.probeOutput(app.arena, app.io, &.{ "es", "/ad", "-n", "1" }, ".") catch "";
+    if (std.mem.trim(u8, out, " \t\r\n").len == 0) return .{ .state = .broken, .path = p };
+    return .{ .state = .ok, .path = p };
+}
+
+/// fdTool resolves fd, rejecting a script shim before probing and requiring the
+/// binary to identify itself. The picker used to accept anything named fd.
+pub fn fdTool(app: *App) Tool {
+    const p = proc.findInPath(app.arena, app.io, app.env, "fd") orelse return .{};
+    if (isScriptShim(p)) return .{ .state = .shim, .path = p };
+    const ver = std.mem.trim(u8, proc.probeOutput(app.arena, app.io, &.{ "fd", "--version" }, ".") catch "", " \t\r\n");
+    if (!std.mem.startsWith(u8, ver, "fd ")) return .{ .state = .broken, .path = p };
+    return .{ .state = .ok, .path = p, .detail = ver };
+}
+
+/// findTool resolves POSIX find. Never on Windows: System32's `find` is a DOS
+/// string-search tool that would answer findInPath and walk nothing.
+pub fn findTool(app: *App) Tool {
+    if (proc.is_windows) return .{};
+    const p = proc.findInPath(app.arena, app.io, app.env, "find") orelse return .{};
+    return .{ .state = .ok, .path = p };
+}
+
+/// chooseFinder is the fallback order, as a pure function of the three states so
+/// the diagnostic and the picker cannot rank them differently.
+pub fn chooseFinder(es: ToolState, fd: ToolState, find: ToolState) Finder {
+    if (es == .ok) return .es;
+    if (fd == .ok) return .fd;
+    if (find == .ok) return .find;
+    return .none;
+}
+
+/// RootOrigin is where the fd/find walk's search roots came from, which a
+/// diagnostic has to name and the walk itself does not care about.
+pub const RootOrigin = enum { configured, fixed_drives, home };
+
+/// Roots is the resolved search scope: every root the configuration implies,
+/// and the subset that exists. The picker walks `existing` and gives up when it
+/// is empty; a diagnostic reports both, because a configured root that is gone
+/// is the misconfiguration worth naming.
+pub const Roots = struct {
+    origin: RootOrigin,
+    all: []const []const u8,
+    existing: []const []const u8,
+};
+
+/// resolveRoots resolves `[picker] search_roots` (tilde-expanded, absolutised),
+/// defaulting to every fixed drive so a work tree on any drive is found
+/// config-free, and to the user's home where there are none.
+pub fn resolveRoots(app: *App, cfg: config.Config) !Roots {
+    var all: std.ArrayList([]const u8) = .empty;
+    var origin: RootOrigin = .configured;
+    if (cfg.picker_search_roots.len > 0) {
+        for (cfg.picker_search_roots) |r| {
+            const t = std.mem.trim(u8, r, " \t");
+            if (t.len == 0) continue;
+            try all.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env, t)));
+        }
+    } else {
+        const drives = try proc.fixedDriveRoots(app.arena);
+        if (drives.len > 0) {
+            origin = .fixed_drives;
+            try all.appendSlice(app.arena, drives);
+        } else {
+            origin = .home;
+            // USERPROFILE first, then HOME - the order resolveHome uses. Reading
+            // only HOME (as the report copy did) reports "no roots" on a machine
+            // where the picker works.
+            if (app.env.get("USERPROFILE") orelse app.env.get("HOME")) |h| try all.append(app.arena, h);
+        }
+    }
+    var existing: std.ArrayList([]const u8) = .empty;
+    for (all.items) |root| if (proc.pathExists(app.io, root)) try existing.append(app.arena, root);
+    return .{ .origin = origin, .all = all.items, .existing = existing.items };
+}
+
 /// pickerSource picks the candidate-directory source for the unknown-alias
 /// picker. Everything ('es') is the instant, whole-system source onix relies on;
 /// where it isn't available, or is installed but non-functional (returns
@@ -46,6 +173,11 @@ pub fn pickerSource(app: *App, cfg: config.Config, name: []const u8) !PickerSour
         // Quiet: a dead es prints "Everything IPC not found" to stderr — suppress
         // it so the fall-through is silent. es is indexed and instant, so we just
         // buffer its output; only the slow fd/find walk below needs streaming.
+        //
+        // The real query doubles as the liveness check (esTool's probe asks the
+        // same question with no name), so this stays a single es invocation: an
+        // empty result means the service is dead OR nothing matched, and both
+        // want the same fall-through.
         const out = proc.captureOutputQuiet(app.arena, app.io, &.{ "es", name, "/ad", "-n", "5000" }, ".") catch "";
         // es.exe can be present yet non-functional: the CLI installs fine from
         // GitHub, but where the Everything *service* can't be installed (e.g.
@@ -75,31 +207,18 @@ pub const picker_prune_globs = [_][]const u8{
 /// walk is run by the streaming caller, not here. Returns .none only when neither
 /// fd nor find is installed (or no configured root exists).
 fn pickerStreamArgv(app: *App, cfg: config.Config, name: []const u8) !PickerSource {
-    const have_fd = proc.findInPath(app.arena, app.io, app.env, "fd") != null;
-    // POSIX find only — Windows `find` is System32's DOS string-search tool, not
-    // a file finder, so never fall back to it there.
-    const have_find = !proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "find") != null;
-    if (!have_fd and !have_find) return .none;
+    // Same decision the diagnostic renders - and stricter than this function
+    // used to be: an fd that resolves to a .cmd shim is no longer accepted just
+    // for being on PATH, because its argv below is fd's and a shim takes none
+    // of it. --doctor has always reported that shim; now the picker acts on it.
+    const fd = fdTool(app);
+    const find = findTool(app);
+    const have_fd = fd.state == .ok;
+    if (!have_fd and find.state != .ok) return .none;
 
-    var roots: std.ArrayList([]const u8) = .empty;
-    if (cfg.picker_search_roots.len > 0) {
-        for (cfg.picker_search_roots) |r| {
-            const t = std.mem.trim(u8, r, " \t");
-            if (t.len == 0) continue;
-            try roots.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env, t)));
-        }
-    } else {
-        const drives = try proc.fixedDriveRoots(app.arena);
-        if (drives.len > 0) {
-            try roots.appendSlice(app.arena, drives);
-        } else if (app.env.get("USERPROFILE") orelse app.env.get("HOME")) |h| {
-            try roots.append(app.arena, h);
-        }
-    }
-    // Keep only roots that exist; one fd/find invocation walks them all.
-    var paths: std.ArrayList([]const u8) = .empty;
-    for (roots.items) |root| if (proc.pathExists(app.io, root)) try paths.append(app.arena, root);
-    if (paths.items.len == 0) return .none;
+    const roots = try resolveRoots(app, cfg);
+    const paths = roots.existing;
+    if (paths.len == 0) return .none;
 
     var argv: std.ArrayList([]const u8) = .empty;
     if (have_fd) {
@@ -113,11 +232,11 @@ fn pickerStreamArgv(app: *App, cfg: config.Config, name: []const u8) !PickerSour
         });
         for (picker_prune_globs) |g| try argv.appendSlice(app.arena, &.{ "--exclude", g });
         try argv.append(app.arena, name);
-        try argv.appendSlice(app.arena, paths.items);
+        try argv.appendSlice(app.arena, paths);
     } else {
         // find: -ipath matches the whole path, case-fold, across all roots.
         try argv.append(app.arena, "find");
-        try argv.appendSlice(app.arena, paths.items);
+        try argv.appendSlice(app.arena, paths);
         try argv.appendSlice(app.arena, &.{
             "-type", "d", "-ipath", try std.fmt.allocPrint(app.arena, "*{s}*", .{name}),
         });
@@ -218,10 +337,13 @@ pub fn excludedBy(arena: std.mem.Allocator, path: []const u8, excludes: []const 
     return null;
 }
 
-/// cmdPickerCheck replays the `o <name>` picker pipeline (es → exclusion filter
-/// → 500-result cap) and prints, per Everything hit, whether it would appear in
-/// the picker or which exclusion fragment dropped it. Diagnoses "why isn't my
-/// directory offered?".
+/// cmdPickerCheck replays the `o <name>` picker pipeline (whichever source
+/// pickerSource resolves → exclusion filter → 500-result cap) and prints, per
+/// candidate, whether it would appear in the picker or which exclusion fragment
+/// dropped it. Diagnoses "why isn't my directory offered?".
+///
+/// It goes through pickerSource itself, so it reports on the finder the picker
+/// would really use rather than on the one this command happens to know about.
 pub fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
     var name: ?[]const u8 = null;
     for (rest) |a| {
@@ -240,14 +362,32 @@ pub fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
         try app.err.writeAll("nix: --picker-check needs a name (usage: nix --picker-check <name>)\n");
         return 1;
     };
-    if (proc.findInPath(app.arena, app.io, app.env, "es") == null) {
-        try app.err.writeAll("nix: Everything 'es' CLI not found on PATH\n");
-        return 1;
-    }
     const cfg = try config.loadConfig(app.arena, app.io, app.home);
     const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
 
-    const raw = proc.captureOutput(app.arena, app.io, &.{ "es", q, "/ad", "-n", "5000" }, ".") catch "";
+    // Ask pickerSource, rather than re-issuing the es query it MIGHT have run.
+    // This command used to refuse outright without es on PATH, which made it
+    // useless on exactly the machines whose picker takes the fd/find path - the
+    // ones where a diagnostic is worth most. The module header has always
+    // promised this "replays the same pipeline"; now it does.
+    const raw = switch (try pickerSource(app, cfg, q)) {
+        .materialized => |out| blk: {
+            try app.out.writeAll("source: es (Everything index)\n\n");
+            break :blk out;
+        },
+        .stream => |argv| blk: {
+            try app.out.print("source: {s} (walking the search roots)\n\n", .{argv[0]});
+            try app.out.flush();
+            // Buffered, unlike the real picker's streaming render: a diagnostic
+            // reports totals, and it cannot count what it has not finished.
+            break :blk proc.captureOutput(app.arena, app.io, argv, ".") catch "";
+        },
+        .none => {
+            try app.err.writeAll("nix: no working finder - the picker cannot run\n");
+            try app.err.writeAll("  install fd (or Everything's es), and check `nix --doctor` for which one nix will use\n");
+            return 1;
+        },
+    };
 
     var total: usize = 0;
     var shown: usize = 0;
@@ -269,9 +409,9 @@ pub fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
             try app.out.print("cap      {s}  (beyond the 500-result cap)\n", .{l});
         }
     }
-    try app.out.print("\n{d} Everything hit(s) for \"{s}\": {d} shown, {d} excluded, {d} past the cap\n", .{ total, q, shown, excluded, capped });
+    try app.out.print("\n{d} candidate(s) for \"{s}\": {d} shown, {d} excluded, {d} past the cap\n", .{ total, q, shown, excluded, capped });
     if (total == 0) {
-        try app.out.print("(none - check \"{s}\" is a substring of the path, the drive is indexed, and Everything is running)\n", .{q});
+        try app.out.print("(none - check \"{s}\" is a substring of the path, and that the source above can see it: an indexed drive for es, a search root for fd/find - `nix --doctor` lists them)\n", .{q});
     }
     try app.out.flush();
     return 0;
@@ -287,4 +427,32 @@ test "excludedBy: first matching fragment, case-insensitive, or null" {
     try std.testing.expectEqualStrings("\\node_modules", (try excludedBy(a, "C:\\app\\node_modules\\x", &ex)).?);
     // No fragment matches → null (this path would be offered).
     try std.testing.expect((try excludedBy(a, "C:\\work\\acme", &ex)) == null);
+}
+
+test "isScriptShim: scripts vs real executables" {
+    // A shim shadowing fd.exe: it answers findInPath, takes none of fd's flags,
+    // and must never be probed (it may launch something interactive and hang).
+    try std.testing.expect(isScriptShim("C:\\tools\\fd.cmd"));
+    try std.testing.expect(isScriptShim("C:\\tools\\fd.BAT"));
+    try std.testing.expect(isScriptShim("/usr/local/bin/fd.sh"));
+    // Genuine executables (and the bare POSIX name) are fine.
+    try std.testing.expect(!isScriptShim("C:\\scoop\\shims\\fd.exe"));
+    try std.testing.expect(!isScriptShim("/usr/bin/fd"));
+}
+
+test "chooseFinder: es wins, then fd, then find, else none" {
+    // The fallback order, pinned as a pure function - this is the ranking both
+    // the picker and --doctor now read, and the thing that used to exist twice.
+    try std.testing.expectEqual(Finder.es, chooseFinder(.ok, .ok, .ok));
+    try std.testing.expectEqual(Finder.fd, chooseFinder(.broken, .ok, .ok));
+    try std.testing.expectEqual(Finder.find, chooseFinder(.missing, .missing, .ok));
+    try std.testing.expectEqual(Finder.none, chooseFinder(.missing, .missing, .missing));
+
+    // A dead es does not shadow a working finder: es.exe installs fine where
+    // the Everything service cannot, and returns nothing rather than failing.
+    try std.testing.expectEqual(Finder.fd, chooseFinder(.broken, .ok, .missing));
+    // Neither does a shim named fd - the state the picker used to accept for
+    // being on PATH, and would then have handed fd's argv to.
+    try std.testing.expectEqual(Finder.find, chooseFinder(.missing, .shim, .ok));
+    try std.testing.expectEqual(Finder.none, chooseFinder(.missing, .shim, .missing));
 }
