@@ -18,7 +18,9 @@
   Contract:
     in   arguments from the `run` line; $env:NIX_SEGMENT, NIX_SEGMENT_VALUE,
          NIX_ALIAS, NIX_ALIAS_PATH are also set
-    out  KEY=VALUE lines appended to the file named by $env:NIX_CONTEXT_OUT
+    out  KEY=VALUE lines appended to the file named by $env:NIX_CONTEXT_OUT,
+         optionally several blocks separated by a `---` line - one per
+         candidate, offered as a menu
     exit non-zero aborts resolution and nothing is cached
 
   Write-Host output is relayed to stderr for the user; it can never be mistaken
@@ -26,11 +28,37 @@
 #>
 
 param(
-    [Parameter(Mandatory = $true)]
     [string] $Task
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Add-Content with an explicit ASCII/UTF8NoBOM encoding throughout: Windows
+# PowerShell 5.1's `Out-File -Encoding utf8` emits a BOM, which would otherwise
+# ride along into the first key name. (nix strips a leading BOM defensively,
+# but being explicit here keeps the file readable in any editor.)
+function Emit([string] $line) {
+    Add-Content -Path $env:NIX_CONTEXT_OUT -Value $line -Encoding ascii
+}
+
+# No ticket named: answer with the candidates instead of failing. One block per
+# ticket, separated by `---`; `_display` is the row the user picks by and never
+# becomes a variable. Nix shows a picker only when more than one block comes
+# back, so a lookup that finds exactly one still navigates straight there - the
+# menu is a property of the answer, not a mode to declare.
+if ([string]::IsNullOrWhiteSpace($Task)) {
+    Write-Host 'Listing open tickets...'
+    # --- Replace with the real query, one block per result. -----------------
+    foreach ($t in @(
+            @{ id = '123'; client = 'acme'; title = 'Fix login flow' },
+            @{ id = '140'; client = 'initech'; title = 'Rate limiter' })) {
+        Emit "_display=PROJ-$($t.id)  $($t.title)"
+        Emit "task=$($t.id)"
+        Emit "client_name=$($t.client)"
+        Emit '---'
+    }
+    exit 0
+}
 
 Write-Host "Looking up ticket $Task..."
 
@@ -44,10 +72,6 @@ if ([string]::IsNullOrWhiteSpace($client)) {
     exit 1
 }
 
-# Add-Content with an explicit ASCII/UTF8NoBOM encoding: Windows PowerShell
-# 5.1's `Out-File -Encoding utf8` emits a BOM, which would otherwise ride along
-# into the first key name. (nix strips a leading BOM defensively, but being
-# explicit here keeps the file readable in any editor.)
-Add-Content -Path $env:NIX_CONTEXT_OUT -Value "client_name=$client" -Encoding ascii
+Emit "client_name=$client"
 
 exit 0

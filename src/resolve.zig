@@ -190,6 +190,86 @@ const SegLookup = struct {
     }
 };
 
+/// pickCandidate turns a source's answers into the one set of variables the
+/// rest of resolution uses (#19).
+///
+/// One candidate resolves exactly as it always did - which is every source
+/// written before menus existed. Several open an fzf picker over the display
+/// rows. Null means the caller should fail the resolution; a cancelled picker
+/// is such a case, because "no destination" is not a destination.
+///
+/// An INLINE VALUE never prompts: `o ticket:123@acme` says which one, and the
+/// script is expected to answer with that one. If it answers with several
+/// anyway, the first is used and the ambiguity is reported rather than hidden -
+/// prompting there would make the deterministic form nondeterministic, and it
+/// is the form agents and scripts are told to use.
+fn pickCandidate(
+    app: *App,
+    cd: *const segments.ContextDef,
+    ps: segments.ParsedSegment,
+    cands: []segments.Candidate,
+) !?[]segments.Var {
+    if (cands.len == 1) return cands[0].vars;
+    if (ps.has_value) {
+        try app.err.print("nix: segment \"{s}\": {d} candidates matched \"{s}\" - using the first ({s})\n", .{ cd.segment, cands.len, ps.value, cands[0].display });
+        return cands[0].vars;
+    }
+    // The show-and-refuse contract every other picker has: print what would
+    // have been offered, act on nothing. The rows go to stdout because they are
+    // the answer to the question that was asked; the exit code says no path was
+    // resolved.
+    if (app.no_prompt or !proc.interactive()) {
+        for (cands) |c| try app.out.print("{s}\n", .{c.display});
+        try app.out.flush();
+        try app.err.print("nix: segment \"{s}\" has {d} candidates and picking one is interactive; name it inline (`{s}:<value>@<alias>`)\n", .{ cd.segment, cands.len, cd.segment });
+        return null;
+    }
+    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+        try app.err.print("nix: install fzf to pick among {s}'s {d} candidates (or name one inline: `{s}:<value>@<alias>`)\n", .{ cd.segment, cands.len, cd.segment });
+        return null;
+    }
+    // A keyed first field, hidden from the display and from the search, so the
+    // pick maps back to its block without re-parsing a rendered row - the shape
+    // the action palette and the log browser already use.
+    var input: std.ArrayList(u8) = .empty;
+    for (cands, 0..) |c, i| try input.print(app.arena, "{d}\t{s}\n", .{ i, c.display });
+    const fzf_argv = [_][]const u8{
+        "fzf",         "--prompt", try std.fmt.allocPrint(app.arena, "{s}> ", .{cd.segment}),
+        "--delimiter", "\t",       "--with-nth",
+        "2..",
+    };
+    try app.out.flush();
+    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, app_zig.fzfEnv(app));
+    if (res.code != 0) return null; // cancelled
+    const idx = selectedIndex(res.output, cands.len) orelse return null;
+    return cands[idx].vars;
+}
+
+/// selectedIndex reads the hidden key back off the picked row. Null for a
+/// cancel (empty output), a row that lost its key, or an index outside the
+/// menu - all of which mean "no candidate", never "the first one": silently
+/// falling back to candidate 0 would send you somewhere you did not pick.
+fn selectedIndex(output: []const u8, n: usize) ?usize {
+    const line = std.mem.trim(u8, output, " \t\r\n");
+    if (line.len == 0) return null;
+    const tab = std.mem.indexOfScalar(u8, line, '\t') orelse return null;
+    const idx = std.fmt.parseInt(usize, line[0..tab], 10) catch return null;
+    return if (idx < n) idx else null;
+}
+
+test "selectedIndex maps a picked row back to its block, and refuses anything else" {
+    try std.testing.expectEqual(@as(usize, 0), selectedIndex("0\tPROJ-123  Fix login\n", 2).?);
+    try std.testing.expectEqual(@as(usize, 1), selectedIndex("1\tPROJ-140  Rate limiter\n", 2).?);
+    // A display containing tabs still splits on the FIRST one.
+    try std.testing.expectEqual(@as(usize, 1), selectedIndex("1\ta\tb\tc", 2).?);
+    try std.testing.expect(selectedIndex("", 2) == null); // cancelled
+    try std.testing.expect(selectedIndex("no key here", 2) == null);
+    try std.testing.expect(selectedIndex("x\trow", 2) == null);
+    // Out of range: the menu changed under us, or fzf echoed something else.
+    // Navigating to candidate 0 instead would be the wrong destination, silently.
+    try std.testing.expect(selectedIndex("5\trow", 2) == null);
+}
+
 /// evalSegment turns one segment into its path fragment. With a `run` line the
 /// source executes first (context.zig: trust-gated, cached) and its variables
 /// join the lookup for source-template AND accumulate on app.ctx_vars, which
@@ -232,9 +312,16 @@ fn evalSegment(
         // environment, [contexts.vars] falls below it. Deliberately excludes
         // another segment's output — chained-segment sharing stays in issue #3.
         var high: std.ArrayList(segments.Var) = .empty;
-        if (ps.has_value) try high.append(app.arena, .{ .key = param, .value = ps.value });
-        const produced = (try context.run(app, s, cd, alias, dir, ps, high.items, cd.vars.items, run_zig)) orelse
+        // The segment's own parameter resolves to EMPTY when the segment came
+        // without one, rather than being unresolved. Any other missing name is
+        // still an error: this one is known-optional by construction, and since
+        // candidate menus (#19) that absence is the question - `o ticket@acme`
+        // asks the source what the options are, and a `run = "tickets ${ticket}"`
+        // that refused to expand would make the menu unreachable.
+        try high.append(app.arena, .{ .key = param, .value = if (ps.has_value) ps.value else "" });
+        const cands = (try context.run(app, s, cd, alias, dir, ps, high.items, cd.vars.items, run_zig)) orelse
             return error.ContextSourceFailed;
+        const produced = (try pickCandidate(app, cd, ps, cands)) orelse return error.ContextSourceFailed;
         lk.produced = produced;
         var merged: std.ArrayList(segments.Var) = .empty;
         try merged.appendSlice(app.arena, app.ctx_vars);

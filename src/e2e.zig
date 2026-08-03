@@ -1975,6 +1975,100 @@ pub fn main(init: std.process.Init) !void {
         c.check(std.mem.indexOf(u8, r.out, "tok=s.abc123") != null, "a declared secret still reaches the command's environment", r);
     }
 
+    // --- candidate menus (issue #19) ---------------------------------------------------
+    // A source that returns several blocks turns the segment into a menu. The
+    // picker itself is interactive and cannot be driven here; what these check
+    // is everything around it - that one block still behaves exactly as before,
+    // that several are offered and refused unattended, that an inline value
+    // never prompts, and that the list survives a cache round-trip.
+    {
+        const pm = join(&c, &.{ root, "proj", "pm" });
+        _ = try c.run(&.{ "pm", pm });
+        const scripts = join(&c, &.{ pm, ".nix", "scripts" });
+        util.mkdirAll(io, scripts) catch {};
+        try writeFile(&c, join(&c, &.{ pm, ".nix", "segments.toml" }),
+            \\[[contexts]]
+            \\segment = "ticket"
+            \\run = "tickets ${ticket}"
+            \\source-template = "/${client_name}/${task}"
+            \\cache = "10m"
+            \\
+        );
+        // With a value: answer that one. Without: offer the open tickets.
+        try writeFile(&c, join(&c, &.{ scripts, "tickets.cmd" }),
+            \\@echo off
+            \\if "%NIX_SEGMENT_VALUE%"=="" goto menu
+            \\>>"%NIX_CONTEXT_OUT%" echo task=%NIX_SEGMENT_VALUE%
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=acme
+            \\goto done
+            \\:menu
+            \\>>"%NIX_CONTEXT_OUT%" echo _display=PROJ-123  Fix login flow
+            \\>>"%NIX_CONTEXT_OUT%" echo task=123
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=acme
+            \\>>"%NIX_CONTEXT_OUT%" echo ---
+            \\>>"%NIX_CONTEXT_OUT%" echo _display=PROJ-140  Rate limiter
+            \\>>"%NIX_CONTEXT_OUT%" echo task=140
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=initech
+            \\:done
+            \\
+        );
+        _ = try c.run(&.{ "--trust", "pm", "ticket" });
+
+        // An inline value never prompts - it is the deterministic form, and the
+        // one agents are told to use.
+        var r = try c.run(&.{ "ticket:123@pm", "--resolve" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, trim(r.out), "acme") != null and
+            std.mem.indexOf(u8, trim(r.out), "123") != null, "an inline value resolves without a menu", r);
+
+        // Several candidates, nothing to answer with: rows on stdout, refusal on
+        // stderr, no path. The same show-and-refuse contract every picker has.
+        r = try c.run(&.{ "--no-prompt", "ticket@pm", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "PROJ-123  Fix login flow") != null and
+            std.mem.indexOf(u8, r.out, "PROJ-140  Rate limiter") != null, "several candidates print their rows", r);
+        c.check(std.mem.indexOf(u8, r.err, "picking one is interactive") != null and
+            std.mem.indexOf(u8, r.err, "ticket:<value>@<alias>") != null, "…and name the inline form as the way through", r);
+
+        // The LIST round-trips through the cache: two sections, both displays,
+        // read back in the order the source produced them.
+        const cache_body = readFileOr(&c, join(&c, &.{ home, "contexts-cache.toml" }), "");
+        // The second block lands in its own `<key>~1` section, which is what
+        // lets one write replace a whole result however many blocks it has.
+        c.check(std.mem.indexOf(u8, cache_body, "PROJ-123") != null and
+            std.mem.indexOf(u8, cache_body, "PROJ-140") != null and
+            std.mem.indexOf(u8, cache_body, "~1]") != null, "a candidate list is cached as one section per block", null);
+        r = try c.run(&.{ "--no-prompt", "ticket@pm", "--resolve" });
+        c.check(std.mem.indexOf(u8, r.out, "PROJ-123  Fix login flow") != null and
+            std.mem.indexOf(u8, r.out, "PROJ-140  Rate limiter") != null, "the cached list replays in the source's order", r);
+
+        // One block is the old behaviour, unchanged - the format is a superset.
+        try writeFile(&c, join(&c, &.{ scripts, "tickets.cmd" }),
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo task=7
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=solo
+            \\
+        );
+        _ = try c.run(&.{ "--trust", "pm", "ticket" });
+        r = try c.run(&.{ "ticket@pm", "--resolve" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, trim(r.out), "solo") != null, "a single candidate resolves with no menu at all", r);
+
+        // A menu that declares a secret is not cached - the #19/#51 decision.
+        try writeFile(&c, join(&c, &.{ scripts, "tickets.cmd" }),
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo task=1
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=acme
+            \\>>"%NIX_CONTEXT_OUT%" echo secret:VAULT_TOKEN=s.menu
+            \\>>"%NIX_CONTEXT_OUT%" echo ---
+            \\>>"%NIX_CONTEXT_OUT%" echo task=2
+            \\>>"%NIX_CONTEXT_OUT%" echo client_name=initech
+            \\
+        );
+        _ = try c.run(&.{ "--trust", "pm", "ticket" });
+        r = try c.run(&.{ "--no-prompt", "ticket@pm", "--resolve" });
+        const after = readFileOr(&c, join(&c, &.{ home, "contexts-cache.toml" }), "");
+        c.check(std.mem.indexOf(u8, after, "s.menu") == null and
+            std.mem.indexOf(u8, after, "VAULT_TOKEN") == null, "a menu carrying a secret is not cached at all", r);
+    }
+
     // --- path dialects (--as, issue #24) -----------------------------------------------
     // The translation itself is a pure function with its own exhaustive unit
     // tests in dialects.zig; what these check is the WIRING - that the flag is

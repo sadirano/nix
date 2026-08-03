@@ -1013,10 +1013,19 @@ pub const specs = [_]Spec{
         \\child and the path template, but it is withheld from an elevated
         \\command line (world-readable in the process list) and the result is
         \\not cached, since the cache is a plaintext file.
+        \\
+        \\A source may answer with SEVERAL blocks, separated by a `---` line,
+        \\one per candidate ("which of my open tickets?"). One block resolves
+        \\silently, several open a picker, and `_display` names each row.
         ,
         .agent_use =
         \\`nix <seg>@<alias>` resolves and prints, like any alias. `nix
         \\--contexts` lists the global segments.
+        \\
+        \\A segment whose source offers several candidates cannot be resolved
+        \\without picking one, so it prints the rows and exits non-zero in your
+        \\shell rather than hanging. Do not retry it: read the rows, then use
+        \\the inline form (`nix <seg>:<value>@<alias>`), which never prompts.
         \\
         \\Do not run `--trust` on the user's behalf. It is an approval gesture,
         \\and approving a script you just wrote defeats the check entirely. The

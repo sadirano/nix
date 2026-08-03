@@ -27,9 +27,11 @@ const segments = @import("segments.zig");
 const actions = @import("actions.zig");
 const util = @import("util.zig");
 const provenance = @import("provenance.zig");
+const ctxcache = @import("ctxcache.zig");
 
 const App = app_zig.App;
 const Var = segments.Var;
+const Candidate = segments.Candidate;
 
 /// Default result lifetime when a context does not set `cache`. Ten minutes is
 /// short enough that a moved ticket corrects itself over a coffee break, long
@@ -79,6 +81,64 @@ pub fn parseKvLines(arena: std.mem.Allocator, data: []const u8) ![]Var {
         });
     }
     return out.items;
+}
+
+/// The row separating one candidate from the next in $NIX_CONTEXT_OUT.
+pub const block_separator = "---";
+
+/// The reserved key naming a candidate's menu row.
+pub const display_key = "_display";
+
+/// parseCandidates reads a source's whole answer: KEY=VALUE lines as before,
+/// now optionally in several blocks separated by a `---` line, one block per
+/// candidate (#19).
+///
+/// A source that writes no separator returns exactly one candidate, which is
+/// every source written before this existed - the format is a superset, and
+/// "how many answers are there" is read from the file rather than declared in
+/// config.
+///
+/// `_display` is the row a person picks by. It is stripped here rather than
+/// exported, so a menu's presentation never becomes a variable the path or the
+/// child environment can depend on. A block that names none falls back to its
+/// first value, which is usually the identifier the block is about.
+pub fn parseCandidates(arena: std.mem.Allocator, data: []const u8) ![]Candidate {
+    var out: std.ArrayList(Candidate) = .empty;
+    var it = std.mem.splitScalar(u8, data, '\n');
+    var block: std.ArrayList(u8) = .empty;
+    while (true) {
+        const raw = it.next();
+        const at_end = raw == null;
+        // An empty block - two separators in a row, or a trailing `---` -
+        // contributes nothing rather than an empty menu row.
+        if (at_end or std.mem.eql(u8, std.mem.trim(u8, raw.?, " \t\r"), block_separator)) {
+            if (try candidateOf(arena, block.items)) |c| try out.append(arena, c);
+            block.clearRetainingCapacity();
+            if (at_end) break;
+            continue;
+        }
+        try block.appendSlice(arena, raw.?);
+        try block.append(arena, '\n');
+    }
+    return out.items;
+}
+
+/// candidateOf parses one block, or null when it holds no variables.
+fn candidateOf(arena: std.mem.Allocator, body: []const u8) !?Candidate {
+    const vars = try parseKvLines(arena, body);
+    if (vars.len == 0) return null;
+    var kept: std.ArrayList(Var) = .empty;
+    var display: []const u8 = "";
+    for (vars) |kv| {
+        if (std.mem.eql(u8, kv.key, display_key)) {
+            if (display.len == 0) display = kv.value;
+            continue;
+        }
+        try kept.append(arena, kv);
+    }
+    if (kept.items.len == 0) return null; // a block that was only a label
+    if (display.len == 0) display = kept.items[0].value;
+    return .{ .display = display, .vars = kept.items };
 }
 
 /// Variable names a context source may not define. Two kinds: PATH, which
@@ -199,10 +259,6 @@ pub fn trustPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ home, "trusted.toml" });
 }
 
-fn cachePath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
-    return std.fs.path.join(arena, &.{ home, "contexts-cache.toml" });
-}
-
 /// underHome reports whether a path lives inside the nix home. Declarations and
 /// scripts that BOTH live there are implicitly trusted: the ledger exists to
 /// gate code that arrived with a clone, not to make you approve the file you
@@ -258,13 +314,7 @@ pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
     try util.writeFileAtomic(app.arena, app.io, path, buf.items);
 }
 
-// ---- result cache -----------------------------------------------------------
-
-/// Hard ceiling on stored entries, enforced newest-first on every write. The
-/// per-entry TTL already expires rows, but a long TTL (`cache = "30d"`) across
-/// many distinct lookups would otherwise let the file grow unbounded, and every
-/// write rewrites the whole thing.
-pub const max_cache_entries: usize = 512;
+// ---- what a source may return -----------------------------------------------
 
 /// What a context source may hand back (#15). A lookup returns one or two
 /// variables; these bound the accidents - a curl body, a stack trace, a loop
@@ -273,152 +323,10 @@ pub const max_output_bytes: usize = 64 * 1024;
 pub const max_vars: usize = 64;
 pub const max_value_bytes: usize = 4 * 1024;
 
-/// `at` is when the entry was stored; `ttl` is the lifetime it was stored
-/// under, kept so the reap can drop exactly the expired rows. Without it the
-/// janitor had to guess, and a fixed one-day guess silently capped every
-/// longer TTL.
-const CacheEntry = struct { key: []const u8, at: u64, ttl: u64, vars: []Var };
-
-/// escapeCacheValue makes a value safe to store as one `key = "value"` line.
-/// Values are arbitrary script output, so a newline in one would otherwise end
-/// the line and let the rest be re-read as further keys - or, with a leading
-/// '[', as a whole fake `[cache.…]` section that the reader would then trust.
-/// Backslash goes first so the escape is reversible.
-fn escapeCacheValue(arena: std.mem.Allocator, v: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (v) |c| switch (c) {
-        '\\' => try out.appendSlice(arena, "\\\\"),
-        '"' => try out.appendSlice(arena, "\\\""),
-        '\n' => try out.appendSlice(arena, "\\n"),
-        '\r' => try out.appendSlice(arena, "\\r"),
-        else => try out.append(arena, c),
-    };
-    return out.items;
-}
-
-/// unescapeCacheValue reverses escapeCacheValue. An unknown escape keeps the
-/// character that followed it (`\x` -> `x`) and a trailing lone backslash is
-/// dropped: the lenient posture again, since a hand-edited cache must degrade
-/// to a wrong-but-harmless string rather than an error on a navigation path.
-fn unescapeCacheValue(arena: std.mem.Allocator, v: []const u8) ![]const u8 {
-    if (std.mem.indexOfScalar(u8, v, '\\') == null) return v;
-    var out: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    while (i < v.len) : (i += 1) {
-        if (v[i] != '\\') {
-            try out.append(arena, v[i]);
-            continue;
-        }
-        i += 1;
-        if (i >= v.len) break;
-        try out.append(arena, switch (v[i]) {
-            'n' => '\n',
-            'r' => '\r',
-            else => v[i],
-        });
-    }
-    return out.items;
-}
-
-/// loadCache parses the `[cache.<key>]` sections. Same lenient posture as every
-/// other reader here: anything unparseable is simply absent, which costs a
-/// re-run and never a wrong answer.
-fn loadCache(app: *App) ![]CacheEntry {
-    const path = try cachePath(app.arena, app.home);
-    const data = app_zig.readFileMaybe(app, path) orelse return &.{};
-    var out: std.ArrayList(CacheEntry) = .empty;
-    var cur: ?usize = null;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
-            cur = null;
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            const name = line[1..end];
-            if (!std.mem.startsWith(u8, name, "cache.")) continue;
-            try out.append(app.arena, .{ .key = name["cache.".len..], .at = 0, .ttl = default_ttl_secs, .vars = &.{} });
-            cur = out.items.len - 1;
-            continue;
-        }
-        const idx = cur orelse continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        const val = util.stripQuotes(std.mem.trim(u8, line[eq + 1 ..], " \t"));
-        if (std.mem.eql(u8, key, "_at")) {
-            out.items[idx].at = std.fmt.parseInt(u64, val, 10) catch 0;
-            continue;
-        }
-        if (std.mem.eql(u8, key, "_ttl")) {
-            out.items[idx].ttl = std.fmt.parseInt(u64, val, 10) catch default_ttl_secs;
-            continue;
-        }
-        var vars: std.ArrayList(Var) = .empty;
-        try vars.appendSlice(app.arena, out.items[idx].vars);
-        try vars.append(app.arena, .{ .key = key, .value = try unescapeCacheValue(app.arena, val) });
-        out.items[idx].vars = vars.items;
-    }
-    return out.items;
-}
-
-fn nowSecs(app: *App) u64 {
-    const secs = @divTrunc(Io.Clock.real.now(app.io).nanoseconds, std.time.ns_per_s);
-    return if (secs > 0) @intCast(secs) else 0;
-}
-
-/// cacheGet returns a live entry's vars, or null on miss/expiry. ttl 0 disables
-/// reads entirely (`cache = "0"`).
-fn cacheGet(app: *App, key: []const u8, ttl: u64) ?[]Var {
-    if (ttl == 0) return null;
-    const entries = loadCache(app) catch return null;
-    const now = nowSecs(app);
-    for (entries) |e| {
-        if (!std.mem.eql(u8, e.key, key)) continue;
-        if (now < e.at) return e.vars; // clock moved backwards: prefer the entry
-        if (now - e.at > ttl) return null;
-        return e.vars;
-    }
-    return null;
-}
-
-/// reapable reports whether an entry has outlived the TTL it was stored under.
-/// Judged per entry, not against a fixed age: a `cache = "30d"` result must not
-/// be evicted by an unrelated lookup happening to write the file tomorrow.
-fn reapable(now: u64, e: CacheEntry) bool {
-    return now > e.at and now - e.at > e.ttl;
-}
-
-fn newerFirst(_: void, a: CacheEntry, b: CacheEntry) bool {
-    return a.at > b.at;
-}
-
-/// cachePut replaces the entry for `key`, drops expired entries, and caps the
-/// file at max_cache_entries (newest kept) so it cannot grow without bound
-/// across many distinct lookups even under long TTLs.
-fn cachePut(app: *App, key: []const u8, vars: []const Var, ttl: u64) !void {
-    const entries = try loadCache(app);
-    const now = nowSecs(app);
-    var keep: std.ArrayList(CacheEntry) = .empty;
-    try keep.append(app.arena, .{ .key = key, .at = now, .ttl = ttl, .vars = @constCast(vars) });
-    for (entries) |e| {
-        if (std.mem.eql(u8, e.key, key)) continue; // replaced by the fresh one above
-        if (reapable(now, e)) continue;
-        try keep.append(app.arena, e);
-    }
-    std.mem.sort(CacheEntry, keep.items, {}, newerFirst);
-    const rows = keep.items[0..@min(keep.items.len, max_cache_entries)];
-
-    var buf: std.ArrayList(u8) = .empty;
-    try buf.appendSlice(app.arena, "# nix context result cache. Safe to delete.\n");
-    for (rows) |e| {
-        try buf.print(app.arena, "\n[cache.{s}]\n_at = {d}\n_ttl = {d}\n", .{ e.key, e.at, e.ttl });
-        for (e.vars) |kv| try buf.print(app.arena, "{s} = \"{s}\"\n", .{
-            kv.key,
-            try escapeCacheValue(app.arena, kv.value),
-        });
-    }
-    try util.writeFileAtomic(app.arena, app.io, try cachePath(app.arena, app.home), buf.items);
-}
+/// The most candidates a menu may offer (#19). Well past any real "which of my
+/// open tickets" answer, and short of a source that dumped a directory listing
+/// into the file - which is a mistake to report, not a menu to render.
+pub const max_candidates: usize = 200;
 
 // ---- running a source -------------------------------------------------------
 
@@ -546,7 +454,7 @@ pub fn run(
     high: []const Var,
     low: []const Var,
     run_zig: anytype,
-) !?[]Var {
+) !?[]Candidate {
     const r = (try locate(app, src, dir, run_zig)) orelse return null;
 
     // Trust is checked BEFORE the cache, deliberately. A cached value is
@@ -568,7 +476,7 @@ pub fn run(
     const expanded = (try expandArgv(app, src, r.script, high, low)) orelse return null;
     const key = try cacheKey(app.arena, expanded, r.script_hash);
     const ttl = parseDuration(src.cache) orelse default_ttl_secs;
-    if (cacheGet(app, key, ttl)) |vars| return vars;
+    if (ctxcache.get(app, key, ttl)) |cached| return cached;
 
     // The script writes KEY=VALUE here. stdout stays free for its own logging
     // (forwarded to stderr below) so echo noise can never become a variable.
@@ -618,53 +526,71 @@ pub fn run(
         try app.err.writeAll("  a context source returns a few variables; this looks like a log or a dump written to the wrong file\n");
         return null;
     }
-    const parsed = try parseKvLines(app.arena, body);
-    if (parsed.len > max_vars) {
-        try app.err.print("nix: {s}: {s} returned {d} variables (limit {d})\n", .{ src.label, std.fs.path.basename(r.script), parsed.len, max_vars });
+    const parsed = try parseCandidates(app.arena, body);
+    if (parsed.len > max_candidates) {
+        try app.err.print("nix: {s}: {s} returned {d} candidates (limit {d})\n", .{ src.label, std.fs.path.basename(r.script), parsed.len, max_candidates });
+        try app.err.writeAll("  a menu this long is not a menu; narrow the lookup, or pass the value inline\n");
         return null;
     }
-    for (parsed) |kv| if (kv.value.len > max_value_bytes) {
-        try app.err.print("nix: {s}: variable \"{s}\" is {d} bytes (limit {d})\n", .{ src.label, kv.key, kv.value.len, max_value_bytes });
-        try app.err.writeAll("  every produced variable is exported into the child environment; this one would not fit a command line\n");
-        return null;
-    };
-    // Drop (loudly) anything that would overwrite an environment name nix owns.
-    // Refusing the whole run would be harsher than the mistake deserves: the
-    // other variables are still good, and the script is told exactly what was
-    // ignored rather than being left to wonder why its PATH had no effect.
-    var kept: std.ArrayList(Var) = .empty;
-    for (parsed) |kv| {
-        if (isReservedVar(kv.key)) {
-            try app.err.print("nix: {s}: ignoring reserved variable \"{s}\" (nix owns that name)\n", .{ src.label, kv.key });
-            continue;
+    // The #15 bounds are PER CANDIDATE: a menu legitimately holds more
+    // variables in total than one answer ever would, and it is a single block
+    // running away that means the script wrote the wrong thing.
+    var kept_all: std.ArrayList(Candidate) = .empty;
+    for (parsed) |cand| {
+        if (cand.vars.len > max_vars) {
+            try app.err.print("nix: {s}: {s} returned {d} variables in one block (limit {d})\n", .{ src.label, std.fs.path.basename(r.script), cand.vars.len, max_vars });
+            return null;
         }
-        try kept.append(app.arena, kv);
+        for (cand.vars) |kv| if (kv.value.len > max_value_bytes) {
+            try app.err.print("nix: {s}: variable \"{s}\" is {d} bytes (limit {d})\n", .{ src.label, kv.key, kv.value.len, max_value_bytes });
+            try app.err.writeAll("  every produced variable is exported into the child environment; this one would not fit a command line\n");
+            return null;
+        };
+        // Drop (loudly) anything that would overwrite an environment name nix
+        // owns. Refusing the whole run would be harsher than the mistake
+        // deserves: the other variables are still good, and the script is told
+        // exactly what was ignored rather than being left to wonder why its
+        // PATH had no effect.
+        var kept: std.ArrayList(Var) = .empty;
+        for (cand.vars) |kv| {
+            if (isReservedVar(kv.key)) {
+                try app.err.print("nix: {s}: ignoring reserved variable \"{s}\" (nix owns that name)\n", .{ src.label, kv.key });
+                continue;
+            }
+            try kept.append(app.arena, kv);
+        }
+        if (kept.items.len == 0) continue;
+        try kept_all.append(app.arena, .{ .display = cand.display, .vars = kept.items });
     }
-    const vars = kept.items;
-    if (vars.len == 0) {
+    const cands = kept_all.items;
+    if (cands.len == 0) {
         try app.err.print("nix: {s}: {s} returned no variables\n", .{ src.label, std.fs.path.basename(r.script) });
         try app.err.writeAll("  (write KEY=VALUE lines to the file named by NIX_CONTEXT_OUT)\n");
         return null;
     }
-    // A result carrying a declared secret is not cached AT ALL (#51).
+    // A result carrying a declared secret is not cached AT ALL (#51, and the
+    // #19 decision that this rule beats the candidate cache too).
     // contexts-cache.toml is a plaintext file under $home, so the credential
     // must not land in it - and caching only the other variables would be
     // worse than not caching: the next hit would hand back a result silently
-    // missing its token. The source re-runs instead, which is what fetching a
-    // credential should do anyway.
-    const has_secret = for (vars) |kv| {
-        if (kv.secret) break true;
-    } else false;
+    // missing its token. The source re-runs instead, every navigation,
+    // including the one that just drew the menu.
+    const has_secret = blk: {
+        for (cands) |c| {
+            for (c.vars) |kv| if (kv.secret) break :blk true;
+        }
+        break :blk false;
+    };
     if (has_secret) {
         // Said out loud only when the author asked for caching, so a source
         // that never set `cache` stays quiet about a default it did not choose.
         if (src.cache.len > 0) {
             try app.err.print("nix: {s}: not cached - {s} declared a secret variable, and the cache is plaintext\n", .{ src.label, std.fs.path.basename(r.script) });
         }
-        return vars;
+        return cands;
     }
-    if (ttl > 0) cachePut(app, key, vars, ttl) catch {}; // a cache we cannot write is not fatal
-    return vars;
+    if (ttl > 0) ctxcache.put(app, key, cands, ttl) catch {}; // a cache we cannot write is not fatal
+    return cands;
 }
 
 fn tmpDir(app: *App) ![]const u8 {
@@ -807,6 +733,67 @@ test "parseKvLines: a UTF-8 BOM does not become part of the first key" {
     try std.testing.expectEqualStrings("acme", findVar(vars, "client_name").?);
 }
 
+test "parseCandidates: no separator is one candidate, which is every old source" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cands = try parseCandidates(a, "client_name=acme\ntask=123\n");
+    try std.testing.expectEqual(@as(usize, 1), cands.len);
+    try std.testing.expectEqual(@as(usize, 2), cands[0].vars.len);
+    // No `_display`: the first value stands in, which is usually the thing the
+    // block is about.
+    try std.testing.expectEqualStrings("acme", cands[0].display);
+}
+
+test "parseCandidates: blocks split on ---, and _display is a label not a variable" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cands = try parseCandidates(a,
+        \\_display=PROJ-123  Fix login flow
+        \\task=123
+        \\client_name=acme
+        \\---
+        \\_display=PROJ-140  Rate limiter
+        \\task=140
+        \\---
+        \\
+    );
+    try std.testing.expectEqual(@as(usize, 2), cands.len);
+    try std.testing.expectEqualStrings("PROJ-123  Fix login flow", cands[0].display);
+    try std.testing.expectEqualStrings("PROJ-140  Rate limiter", cands[1].display);
+    // The label never becomes a variable: presentation must not be something a
+    // path or a child process can depend on.
+    try std.testing.expectEqual(@as(usize, 2), cands[0].vars.len);
+    try std.testing.expect(findVar(cands[0].vars, display_key) == null);
+    try std.testing.expectEqualStrings("123", findVar(cands[0].vars, "task").?);
+    try std.testing.expectEqualStrings("140", findVar(cands[1].vars, "task").?);
+}
+
+test "parseCandidates: empty and label-only blocks contribute nothing" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // A trailing separator, a doubled one, and a block that is only a label.
+    const cands = try parseCandidates(a, "task=1\n---\n---\n_display=nothing here\n---\ntask=2\n");
+    try std.testing.expectEqual(@as(usize, 2), cands.len);
+    try std.testing.expectEqualStrings("1", cands[0].display);
+    try std.testing.expectEqualStrings("2", cands[1].display);
+    // Nothing at all is no candidates, which run() reports against the script.
+    try std.testing.expectEqual(@as(usize, 0), (try parseCandidates(a, "\n---\n\n")).len);
+}
+
+test "parseCandidates: a secret survives into its own block" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cands = try parseCandidates(a, "task=1\n---\ntask=2\nsecret:TOKEN=s.x\n");
+    try std.testing.expectEqual(@as(usize, 2), cands.len);
+    for (cands[0].vars) |kv| try std.testing.expect(!kv.secret);
+    // Which is what makes the whole result uncacheable, menu included.
+    try std.testing.expect(cands[1].vars[1].secret);
+}
+
 test "isReservedVar: names nix owns, case-insensitively" {
     try std.testing.expect(isReservedVar("PATH"));
     // Windows env names fold case, so the lowercase spelling clobbers just as hard.
@@ -820,32 +807,6 @@ test "isReservedVar: names nix owns, case-insensitively" {
     try std.testing.expect(!isReservedVar("PATHS"));
     try std.testing.expect(!isReservedVar("NIX_SEGMENTS"));
     try std.testing.expect(!isReservedVar(""));
-}
-
-test "cache value escaping: round-trips, and a newline cannot forge a section" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const cases = [_][]const u8{
-        "plain",
-        "C:\\repo\\acme",
-        "has \"quotes\" inside",
-        "line1\nline2",
-        "\n[cache.forged]\n_at = 99\nstolen = \"yes\"",
-        "trailing\\",
-        "",
-    };
-    for (cases) |c| {
-        const esc = try escapeCacheValue(a, c);
-        // Whatever the input held, the stored form is a single line with no
-        // bare quote to end it early.
-        try std.testing.expect(std.mem.indexOfScalar(u8, esc, '\n') == null);
-        try std.testing.expect(std.mem.indexOfScalar(u8, esc, '\r') == null);
-        try std.testing.expectEqualStrings(c, try unescapeCacheValue(a, esc));
-    }
-    // A hand-written unknown escape degrades to the plain character.
-    try std.testing.expectEqualStrings("x", try unescapeCacheValue(a, "\\x"));
-    try std.testing.expectEqualStrings("ab", try unescapeCacheValue(a, "ab\\"));
 }
 
 test "parseDuration: units, bare seconds, disable forms, junk" {
@@ -864,20 +825,6 @@ test "parseDuration: units, bare seconds, disable forms, junk" {
     try std.testing.expectEqual(@as(?u64, null), parseDuration("999999999999999d"));
     try std.testing.expectEqual(@as(?u64, null), parseDuration("18446744073709551615h"));
     try std.testing.expectEqual(@as(?u64, 18446744073709551615), parseDuration("18446744073709551615"));
-}
-
-test "reapable: judged against the entry's OWN ttl, not a fixed age" {
-    const day: u64 = 86400;
-    const long = CacheEntry{ .key = "k", .at = 1000, .ttl = 30 * day, .vars = &.{} };
-    // Two days on, a 30-day entry is still live — an unrelated write must not
-    // evict it (the bug a hardcoded one-day reap caused).
-    try std.testing.expect(!reapable(1000 + 2 * day, long));
-    try std.testing.expect(reapable(1000 + 31 * day, long));
-    const short = CacheEntry{ .key = "k", .at = 1000, .ttl = 600, .vars = &.{} };
-    try std.testing.expect(!reapable(1500, short));
-    try std.testing.expect(reapable(2000, short));
-    // A clock that moved backwards never reaps.
-    try std.testing.expect(!reapable(0, short));
 }
 
 test "splitRunLine: whitespace, quoted spans, empty" {
