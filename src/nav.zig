@@ -10,6 +10,7 @@ const proc = @import("proc.zig");
 const config = @import("config.zig");
 const resolve = @import("resolve.zig");
 const run_zig = @import("run.zig");
+const timelog = @import("timelog.zig");
 
 const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
@@ -44,20 +45,28 @@ pub fn enterDir(app: *App, alias: []const u8, dir: []const u8) !u8 {
     // the shell itself - a session you cannot enter is not a safer session.
     const env = (try aliasRunEnv(app, alias, dir, .navigate)) orelse return 1;
     try app.out.flush();
+    // The session's two ends: this call blocks until the subshell exits, which
+    // is the whole duration the time ledger is after (timelog.zig). A shell that
+    // never spawns records nothing - the catch arms below return without it.
+    const span = timelog.Boundary.begin(app.io);
     // cmd.exe rejects a UNC path as its working directory ("UNC paths are not
     // supported. Defaulting to Windows directory."). `pushd` maps the share to a
     // temp drive and cd's there, so under cmd enter a UNC dir via `cmd /k pushd`
     // (started from a normal cwd) instead of handing CreateProcess the UNC cwd.
     if (proc.is_windows and isUncPath(dir) and isCmdShell(shell)) {
-        return proc.runInheritEnv(app.io, &.{ shell, "/k", "pushd", dir }, ".", env) catch |e| {
+        const code = proc.runInheritEnv(app.io, &.{ shell, "/k", "pushd", dir }, ".", env) catch |e| {
             try app.err.print("nix: open a shell ({s}) in \"{s}\": {s}\n", .{ shell, dir, @errorName(e) });
             return 1;
         };
+        span.finish(app, alias, .session);
+        return code;
     }
-    return proc.runInheritEnv(app.io, &.{shell}, dir, env) catch |e| {
+    const code = proc.runInheritEnv(app.io, &.{shell}, dir, env) catch |e| {
         try app.err.print("nix: open a shell ({s}) in \"{s}\": {s}\n", .{ shell, dir, @errorName(e) });
         return 1;
     };
+    span.finish(app, alias, .session);
+    return code;
 }
 
 /// isUncPath reports whether `path` is a Windows UNC path (`\\server\share`).

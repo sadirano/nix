@@ -54,55 +54,18 @@ pub fn fileName(arena: std.mem.Allocator, action: []const u8, ts: []const u8) ![
     return std.fmt.allocPrint(arena, "{s}-{s}.log", .{ stem(action), ts });
 }
 
-/// Broken-down local time, so the filename stamp and the human one in the
-/// header cannot disagree about when a run started.
-const Wall = struct { y: u16, mo: u8, d: u8, h: u8, mi: u8, s: u8 };
-
-fn wallNow(io: Io) Wall {
-    if (proc.is_windows) {
-        var st: SystemTime = undefined;
-        GetLocalTime(&st);
-        return .{ .y = st.wYear, .mo = @intCast(st.wMonth), .d = @intCast(st.wDay), .h = @intCast(st.wHour), .mi = @intCast(st.wMinute), .s = @intCast(st.wSecond) };
-    }
-    const secs: u64 = @intCast(@max(0, @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s)));
-    const es: std.time.epoch.EpochSeconds = .{ .secs = secs };
-    const yd = es.getEpochDay().calculateYearDay();
-    const md = yd.calculateMonthDay();
-    const ds = es.getDaySeconds();
-    return .{
-        .y = yd.year,
-        .mo = md.month.numeric(),
-        .d = @intCast(md.day_index + 1),
-        .h = @intCast(ds.getHoursIntoDay()),
-        .mi = @intCast(ds.getMinutesIntoHour()),
-        .s = @intCast(ds.getSecondsIntoMinute()),
-    };
-}
-
 /// timestamp formats local time as `YYYYMMDD-HHMMSS` - sortable, filename-safe,
 /// and the key pruning and listing both sort on.
 pub fn timestamp(arena: std.mem.Allocator, io: Io) ![]const u8 {
-    const w = wallNow(io);
+    const w = util.wallNow(io);
     return std.fmt.allocPrint(arena, "{d:0>4}{d:0>2}{d:0>2}-{d:0>2}{d:0>2}{d:0>2}", .{ w.y, w.mo, w.d, w.h, w.mi, w.s });
 }
 
 /// humanTime is the same instant, spelled for a person reading the header.
 pub fn humanTime(arena: std.mem.Allocator, io: Io) ![]const u8 {
-    const w = wallNow(io);
+    const w = util.wallNow(io);
     return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{ w.y, w.mo, w.d, w.h, w.mi, w.s });
 }
-
-const SystemTime = extern struct {
-    wYear: u16 = 0,
-    wMonth: u16 = 0,
-    wDayOfWeek: u16 = 0,
-    wDay: u16 = 0,
-    wHour: u16 = 0,
-    wMinute: u16 = 0,
-    wSecond: u16 = 0,
-    wMilliseconds: u16 = 0,
-};
-extern "kernel32" fn GetLocalTime(lpSystemTime: *SystemTime) callconv(.winapi) void;
 
 /// stampToHuman turns a filename stamp back into a readable local time, for the
 /// `--logs` table. Falls back to the raw stamp if it is not the expected shape.

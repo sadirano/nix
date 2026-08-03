@@ -3,7 +3,10 @@
 //! the single copy here means a fix lands everywhere at once.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
+
+const is_windows = builtin.os.tag == .windows;
 
 /// lowerDup returns an ASCII-lowercased copy of s.
 pub fn lowerDup(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
@@ -108,7 +111,92 @@ pub fn writeFileAtomic(arena: std.mem.Allocator, io: Io, path: []const u8, data:
     try Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), path, io);
 }
 
+// ---- local time --------------------------------------------------------------
+
+/// Broken-down LOCAL time. One source for it in the whole tool, so a filename
+/// stamp, a note's date and the time ledger's day boundaries cannot disagree
+/// about what day it is.
+pub const Wall = struct { y: u16, mo: u8, d: u8, h: u8, mi: u8, s: u8 };
+
+pub fn wallNow(io: Io) Wall {
+    if (is_windows) {
+        var st: SystemTime = undefined;
+        GetLocalTime(&st);
+        return .{ .y = st.wYear, .mo = @intCast(st.wMonth), .d = @intCast(st.wDay), .h = @intCast(st.wHour), .mi = @intCast(st.wMinute), .s = @intCast(st.wSecond) };
+    }
+    const secs: u64 = @intCast(@max(0, @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s)));
+    const es: std.time.epoch.EpochSeconds = .{ .secs = secs };
+    const yd = es.getEpochDay().calculateYearDay();
+    const md = yd.calculateMonthDay();
+    const ds = es.getDaySeconds();
+    return .{
+        .y = yd.year,
+        .mo = md.month.numeric(),
+        .d = @intCast(md.day_index + 1),
+        .h = @intCast(ds.getHoursIntoDay()),
+        .mi = @intCast(ds.getMinutesIntoHour()),
+        .s = @intCast(ds.getSecondsIntoMinute()),
+    };
+}
+
+const SystemTime = extern struct {
+    wYear: u16 = 0,
+    wMonth: u16 = 0,
+    wDayOfWeek: u16 = 0,
+    wDay: u16 = 0,
+    wHour: u16 = 0,
+    wMinute: u16 = 0,
+    wSecond: u16 = 0,
+    wMilliseconds: u16 = 0,
+};
+extern "kernel32" fn GetLocalTime(lpSystemTime: *SystemTime) callconv(.winapi) void;
+
+/// daysFromCivil is the epoch day a calendar date falls on (Howard Hinnant's
+/// algorithm, the inverse of what std.time.epoch offers).
+pub fn daysFromCivil(y: i64, m: i64, d: i64) i64 {
+    const yy = y - @as(i64, if (m <= 2) 1 else 0);
+    const era = @divFloor(yy, 400);
+    const yoe = yy - era * 400;
+    const doy = @divTrunc(153 * (m + (if (m > 2) @as(i64, -3) else 9)) + 2, 5) + d - 1;
+    const doe = yoe * 365 + @divTrunc(yoe, 4) - @divTrunc(yoe, 100) + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/// localOffsetSecs is how far local time runs ahead of UTC right now, taken as
+/// the difference between the two clocks rather than from a time-zone database.
+///
+/// Rounded to the minute because the two readings are a moment apart, so a raw
+/// difference lands on 3599 or 3601 as often as on 3600. The CURRENT offset is
+/// applied to older entries too, which puts an entry from the other side of a
+/// DST change one hour out - visible only for something recorded within an hour
+/// of local midnight, twice a year, and worth strictly less than shipping a
+/// zone database to fix.
+pub fn localOffsetSecs(io: Io) i64 {
+    const utc: i64 = @intCast(@divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s));
+    const w = wallNow(io);
+    const local = daysFromCivil(w.y, w.mo, w.d) * 86400 +
+        @as(i64, w.h) * 3600 + @as(i64, w.mi) * 60 + w.s;
+    return @divFloor(local - utc + 30, 60) * 60;
+}
+
 // ---- tests ------------------------------------------------------------------
+
+test daysFromCivil {
+    try std.testing.expectEqual(@as(i64, 0), daysFromCivil(1970, 1, 1));
+    try std.testing.expectEqual(@as(i64, 1), daysFromCivil(1970, 1, 2));
+    try std.testing.expectEqual(@as(i64, -1), daysFromCivil(1969, 12, 31));
+    // A leap day, and the day after a century that is not a leap year.
+    try std.testing.expectEqual(@as(i64, 11016), daysFromCivil(2000, 2, 29));
+    try std.testing.expectEqual(@as(i64, 20668), daysFromCivil(2026, 8, 3));
+}
+
+test "localOffsetSecs lands on a whole minute" {
+    const off = localOffsetSecs(std.testing.io);
+    try std.testing.expectEqual(@as(i64, 0), @mod(off, 60));
+    // Real zones run from -12h to +14h; anything outside that is a bug in the
+    // arithmetic rather than an unusual machine.
+    try std.testing.expect(off >= -12 * 3600 and off <= 14 * 3600);
+}
 
 test lowerDup {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
