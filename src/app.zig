@@ -7,6 +7,7 @@ const std = @import("std");
 const Io = std.Io;
 const proc = @import("proc.zig");
 const segments = @import("segments.zig");
+const dialects = @import("dialects.zig");
 const grammar = @import("grammar.zig");
 const editor = @import("editor.zig");
 
@@ -32,6 +33,12 @@ pub const App = struct {
     exe_path: ?[]const u8 = null,
     json: bool,
     no_prompt: bool,
+    /// `--as <dialect>`: the spelling paths are printed/copied in. null = the
+    /// host's own. Set once in run() and read by the resolve and yank paths;
+    /// the navigate path REFUSES it, because `o`'s stdout feeds the wrapper's
+    /// cd and a translated path there would break navigation rather than
+    /// produce a differently-spelled one.
+    dialect: ?dialects.Dialect = null,
     /// --force: proceed with a destructive act that would otherwise ask (today,
     /// repointing an existing alias). Deliberately NOT implied by --no-prompt:
     /// "don't block me" and "overwrite what I have" are different statements,

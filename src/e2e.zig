@@ -1724,6 +1724,73 @@ pub fn main(init: std.process.Init) !void {
         c.check(r2.code != 0 and std.mem.indexOf(u8, r2.err, "one destination") != null, "p +group refuses under --no-prompt", r2);
     }
 
+    // --- path dialects (--as, issue #24) -----------------------------------------------
+    // The translation itself is a pure function with its own exhaustive unit
+    // tests in dialects.zig; what these check is the WIRING - that the flag is
+    // lifted out of argv before a parser can mistake its value for a
+    // positional, that it reaches the two surfaces that take it, and that the
+    // one surface which must refuse it does.
+    {
+        var r = try c.run(&.{ "pa", "--as", "slash", "--resolve" });
+        const slashed = trim(r.out);
+        c.check(r.code == 0 and std.mem.indexOfScalar(u8, slashed, '\\') == null and
+            std.mem.indexOf(u8, slashed, "/proj/pa") != null, "--as slash respells the resolved path", r);
+
+        // The flag may lead, trail, or sit mid-line: it is lifted from argv
+        // before anything parses positions.
+        r = try c.run(&.{ "--as", "slash", "pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), slashed), "--as may lead the command", r);
+        r = try c.run(&.{ "pa", "--resolve", "--as", "slash" });
+        c.check(r.code == 0 and pathEql(trim(r.out), slashed), "--as may trail the command", r);
+
+        // The bare resolve form (no action flag at all) is the scripting one.
+        r = try c.run(&.{ "pa", "--as", "slash" });
+        c.check(r.code == 0 and pathEql(trim(r.out), slashed), "--as works on the bare resolve form", r);
+        // ...and its VALUE is never taken for a path to register, which is what
+        // the ordinary global-flag skip would have done.
+        r = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, trim(r.out), "slash") == null, "--as does not register its value as a path", r);
+
+        // Windows spellings only mean something with a drive letter.
+        if (proc.is_windows) {
+            r = try c.run(&.{ "pa", "--as", "wsl" });
+            c.check(r.code == 0 and std.mem.startsWith(u8, trim(r.out), "/mnt/"), "--as wsl produces a /mnt path", r);
+            r = try c.run(&.{ "pa", "--as", "gitbash" });
+            const gb = trim(r.out);
+            c.check(r.code == 0 and gb.len > 2 and gb[0] == '/' and gb[2] == '/', "--as gitbash produces a /c/ path", r);
+            r = try c.run(&.{ "pa", "--as", "uri" });
+            c.check(r.code == 0 and std.mem.startsWith(u8, trim(r.out), "file:///"), "--as uri produces a file URL", r);
+        } else {
+            c.skip("--as wsl produces a /mnt path", "Windows");
+            c.skip("--as gitbash produces a /c/ path", "Windows");
+            c.skip("--as uri produces a file URL", "Windows");
+        }
+
+        // A mistyped dialect must never fall through as if no translation had
+        // been asked for: the caller is usually a script about to paste the
+        // result into a shell that cannot read the host spelling.
+        r = try c.run(&.{ "pa", "--as", "psoix" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "unknown dialect") != null and
+            std.mem.indexOf(u8, r.out, "proj") == null, "an unknown dialect fails instead of falling back", r);
+        r = try c.run(&.{ "pa", "--as" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "needs a dialect") != null, "--as with no value is refused", r);
+
+        // `o` refuses: its stdout feeds the wrapper's cd, so a respelled path
+        // there breaks navigation rather than producing another spelling.
+        const canonical = c.exe;
+        const o_exe = join(&c, &.{ root, "o.exe" });
+        try writeFile(&c, o_exe, try Io.Dir.cwd().readFileAlloc(io, canonical, arena, .unlimited));
+        c.exe = o_exe;
+        r = try c.run(&.{ "pa", "--as", "wsl" });
+        c.exe = canonical;
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "makes no sense for navigation") != null, "`o` refuses --as", r);
+
+        // Everything after `--` belongs to the command, including a literal
+        // `--as` a user is passing through to something else.
+        r = try c.run(&.{ "pa", "--run", "--", "echo", "--as", "wsl" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "--as") != null, "`--` protects a literal --as from nix", r);
+    }
+
     // --- crossings (issue #38) ---------------------------------------------------------
     // The per-feature walk above proves each feature alone. The risk that grew
     // as actions, provenance, deps, env and [bin] landed within six weeks of
