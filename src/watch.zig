@@ -1,25 +1,14 @@
-//! `r <alias> --watch <cmd|:action>`: rerun a command when files under the
-//! alias dir change. The inner loop is save -> test -> see the result, and with
-//! `[notify] on_finish` the last step already toasts; this closes it, with no
-//! watchexec/nodemon to install - ReadDirectoryChangesW is a straight Win32
-//! call.
+//! `x <alias> --watch <cmd|:action>`: rerun a command when files under the
+//! alias dir change. ReadDirectoryChangesW, so there is nothing to install.
 //!
-//! Two halves, in this order:
+//! The pure part at the top - the ignore rule and the notification-buffer walk
+//! - is unit tested; the Watcher below is Windows-only, and POSIX gets a
+//! compile fence and an error at the door.
 //!
-//!   * the pure part at the top - the ignore rule and the notification-buffer
-//!     walk, both testable with no filesystem and no console (unit tested at the
-//!     bottom, which is the only way any of this is tested: an e2e check would
-//!     need a real FS event and a way to stop a command that never returns);
-//!   * the Watcher below it, which is Windows-only. POSIX gets the usual
-//!     compile-check fence and an error at the door, not a second
-//!     implementation.
-//!
-//! Restart policy is FINISH-THEN-RERUN-ONCE, and it falls out of the shape
-//! rather than being enforced: the run is synchronous, and the read that catches
-//! changes during it is left armed, so everything saved while a build was
-//! running coalesces into exactly one follow-up. An in-flight run is never
-//! killed - a compiler cut off mid-write leaves a corrupt cache or a half-written
-//! artifact, and the worst case here is waiting out one stale run.
+//! Restart policy is finish-then-rerun-once, and falls out of the shape: the
+//! run is synchronous and the read stays armed, so everything saved during a
+//! build coalesces into one follow-up. An in-flight run is never killed - a
+//! compiler cut off mid-write leaves a corrupt cache.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -33,18 +22,13 @@ const config = @import("config.zig");
 /// that starts 300ms late.
 pub const debounce_ms: u32 = 300;
 
-/// Paths a watcher ignores by default: version control, build output, and
+/// Paths a watcher ignores by default: version control, build output and
 /// dependency trees - the directories a run WRITES, which would otherwise make
-/// every run trigger the next one forever.
+/// every run trigger the next.
 ///
-/// Deliberately NOT the picker's exclusions. Those exist to find project roots
-/// and drop `\src\`, `\bin\`, `\test`, `\lib\` - the exact directories a watcher
-/// has to watch. Sharing them would have made watch mode ignore almost every
-/// file worth rerunning for.
-///
-/// `.nix` is here because the project's own metadata is written by the things
-/// being watched (an approval recorded, a usage line), never by an edit anyone
-/// wants a rerun for.
+/// Deliberately NOT the picker's exclusions, which drop `\src\`, `\bin\` and
+/// `\lib\` - the directories a watcher has to watch. `.nix` is here because
+/// the project's own metadata is written by the things being watched.
 pub fn excludeDefaults() []const []const u8 {
     return &.{ ".git", ".hg", ".svn", ".zig-cache", "zig-out", "node_modules", "dist", "target", ".nix" };
 }
@@ -84,14 +68,11 @@ fn containsPathFold(hay: []const u8, needle: []const u8) bool {
 /// ignored reports whether a change path (relative to the watched root) is
 /// filtered out.
 ///
-/// A bare entry matches a whole path COMPONENT, not a substring - `target`
-/// ignores `target\debug\x` and leaves `src\targeting.zig` alone. This is where
-/// the rule departs from picker.excludedBy, which is a plain substring test: a
-/// watcher that silently stops rerunning for one source file is a bug the user
-/// experiences as "watch mode is broken" with nothing to read, while a spurious
-/// rerun is merely noise. An entry that CONTAINS a separator (`docs\generated`)
-/// is matched as a path fragment instead, since naming two components can only
-/// have meant a path.
+/// A bare entry matches a whole path COMPONENT, not a substring, so `target`
+/// ignores `target\debug\x` and leaves `src\targeting.zig` alone - unlike
+/// picker.excludedBy, because a watcher that silently stops rerunning reads as
+/// broken while a spurious rerun is only noise. An entry containing a separator
+/// (`docs\generated`) is matched as a path fragment instead.
 pub fn ignored(rel: []const u8, exclude_set: []const []const u8) bool {
     for (exclude_set) |ex| {
         if (ex.len == 0) continue;

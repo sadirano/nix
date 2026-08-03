@@ -1,21 +1,15 @@
-//! Alias notes: freeform markdown per alias, in `~/.nix/notes/`.
+//! Alias notes: freeform markdown per alias, in `~/.nix/notes/`. `nix <alias>
+//! --note <text>` appends a dated bullet; `nix --notes [pat]` searches every
+//! project's notes at once.
 //!
-//! Re-entering a project costs more than finding the directory - the expensive
-//! part is remembering where you left off. `nix <alias> --note <text>` appends a
-//! dated bullet; `nix --notes [pat]` searches every project's notes at once.
+//! CENTRAL, not project-local: a `.nix/notes.md` in the repo either commits
+//! private notes or gets gitignored, and `git clean -fdx` deletes those. Under
+//! $home they survive repo operations, give groups a home, stay readable when
+//! a drive is unplugged, and cannot be shipped by a clone.
 //!
-//! CENTRAL, not project-local, and deliberately: a `.nix/notes.md` inside the
-//! repo either commits your private notes or gets gitignored - and an ignored
-//! file is exactly what `git clean -fdx` deletes. Files under $home survive
-//! every repo operation, give groups a home (a group has no directory), cannot
-//! diverge across clones of one remote, keep `--notes` complete when a project
-//! drive is unplugged, and close the untrusted-clone hole: a repo can never ship
-//! you notes.
-//!
-//! They are USER-AUTHORED throughout: created on first use, never trust-gated
-//! (everything here is under home and written by the user), and never deleted by
-//! nix. `--remove`ing an alias leaves its note; --doctor grows an orphan row
-//! instead, because the one thing worse than a stale note is a deleted one.
+//! User-authored throughout: created on first use, never trust-gated, never
+//! deleted by nix. Removing an alias leaves its note and --doctor reports the
+//! orphan.
 
 const std = @import("std");
 const Io = std.Io;
@@ -114,14 +108,10 @@ pub fn orphans(app: *App, known: []const []const u8) ![]const []const u8 {
 
 // ---- commands ----------------------------------------------------------------
 
-/// cmdNote appends a dated bullet to an alias's (or group's) note, or opens the
-/// note in the editor when given no text.
-///
-/// Tokens are joined with spaces so quoting is never needed:
-/// `nix acme --note blocked on the API key` is the whole point - a thought
-/// captured in the time it takes to type it. It deliberately does NOT resolve
-/// the alias: a note is keyed on the NAME, so notes for a project whose drive is
-/// unplugged (or whose directory is gone) stay readable and appendable.
+/// cmdNote appends a dated bullet to an alias's (or group's) note, or opens
+/// the note in the editor when given no text. Tokens are joined with spaces so
+/// quoting is never needed. It deliberately does not resolve the alias: a note
+/// is keyed on the NAME, so it stays readable when the directory is gone.
 pub fn cmdNote(app: *App, key: []const u8, rest: [][]const u8) !u8 {
     if (rest.len == 0) {
         // Bare form: open it. The directory and an empty file are created first,
@@ -177,24 +167,17 @@ pub fn cmdNotes(app: *App, rest: [][]const u8, grep: anytype) !u8 {
         if (app_zig.isGlobalFlag(a)) continue;
         try args.append(app.arena, a);
     }
-    // No pattern means every line. The corpus is small and hand-written, so
-    // "show me everything" is a sensible default here in a way it would not be
-    // over a source tree.
-    //
-    // `^` rather than an empty string: grepRg drops a zero-length query (and rg
-    // then refuses with "requires at least one pattern"), while `^` is a real
-    // regex that matches every line, blank ones included.
+    // No pattern means every line - the corpus is small and hand-written. `^`
+    // rather than an empty string: grepRg drops a zero-length query, and `^`
+    // matches every line including blank ones.
     if (args.items.len == 0) try args.append(app.arena, "^");
     return grep.grepIn(app, &.{.{ .name = "notes", .path = dir }}, args.items);
 }
 
-/// cmdAliasNotes is cmdNotes scoped to one key: what `n <alias>` shows, and the
-/// reading half of the same command whose writing half is `--note <text>`.
-///
-/// Same pipeline, narrowed with rg's own `--glob` rather than by pointing it at
-/// the file: rows then stay `<key>.md:<line>:<text>`, identical to the ones
-/// `nix --notes` produces, so the picker, the preview and the editor open all
-/// work without a second row shape to parse.
+/// cmdAliasNotes is cmdNotes scoped to one key - what `n <alias>` shows.
+/// Narrowed with rg's `--glob` rather than by pointing it at the file, so rows
+/// stay `<key>.md:<line>:<text>` and the picker, preview and editor open need
+/// no second row shape.
 pub fn cmdAliasNotes(app: *App, key: []const u8, rest: [][]const u8, grep: anytype) !u8 {
     const path = try filePath(app.arena, app.home, key);
     if (!proc.pathExists(app.io, path)) {

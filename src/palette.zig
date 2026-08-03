@@ -1,10 +1,8 @@
-//! `nix --actions [pat]`: every alias's actions in one view - a command palette
-//! for the whole machine. Actions are declared per alias but invoked from
-//! anywhere, so the thing you forget is not the command, it is WHICH alias owns
-//! it. Enter runs the pick in its own alias dir, exactly as `r <alias> :<name>`
-//! would (same merge, same runAction, so [notify] and usage recording apply).
-//! Tab marks more than one, and then each starts in a shell of its own -
-//! parallel, unwatched - because several actions cannot share one terminal.
+//! `nix --actions [pat]`: every alias's actions in one view. Actions are
+//! declared per alias but invoked from anywhere, so what you forget is which
+//! alias owns one. Enter runs the pick in its own alias dir exactly as `x
+//! <alias> :<name>` would; Tab marks several, and each then starts in a shell
+//! of its own.
 
 const std = @import("std");
 const app_zig = @import("app.zig");
@@ -94,24 +92,20 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
     return pickAndRun(app, entries, true, "nix: install fzf to pick from the palette (or run `nix --no-prompt --actions` to just list them)\n");
 }
 
-/// cmdAliasActions is the palette scoped to one alias: what `<cmd> <alias> :`
-/// opens. Same picker, same multi-select, narrowed to the actions that alias can
-/// actually run - the question is "what can THIS project do", and the ALIAS
-/// column would repeat one value down the page, so it is dropped.
+/// cmdAliasActions is the palette scoped to one alias - what `<cmd> <alias> :`
+/// opens. The ALIAS column is dropped, since it would repeat one value down
+/// the page.
 ///
-/// Unlike the global palette it FALLS BACK to printing when fzf is missing
-/// rather than failing: `r <alias> :` printed a table long before it opened a
-/// picker, and losing that on a machine without fzf would be a regression.
-/// Machine-wide `_default` actions are included, because they are genuinely
-/// runnable here - the global palette suppresses them only because listing them
-/// once per alias would bury everything else.
+/// Unlike the global palette it falls back to printing when fzf is missing,
+/// and includes machine-wide `_default` actions: they are runnable here, and
+/// the global palette suppresses them only to stop them burying everything
+/// else.
 ///
-/// `seed` is set only by the EDITOR form. With nothing to list, `e <alias> :`
-/// creates the project's actions.toml from a commented template and opens it,
-/// which is what `e <alias> :<name>` has always done for a name that does not
-/// exist yet. It cannot go in the shared branch below: `o <alias> :` and
-/// `r <alias> :` land here too, and writing into a repo as a side effect of
-/// ASKING what is runnable would be wrong.
+/// `seed` is set only by the EDITOR form: with nothing to list, `e <alias> :`
+/// creates the project's actions.toml from a template. It cannot go in the
+/// shared branch below, where `o <alias> :` and `x <alias> :` also land -
+/// writing into a repo as a side effect of asking what is runnable would be
+/// wrong.
 pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8, seed: bool) !u8 {
     var entries: std.ArrayList(Entry) = .empty;
     const installed = exports.load(app.arena, app.io, app.home) catch &.{};
@@ -134,20 +128,14 @@ pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8, seed: bool
     return pickAndRun(app, entries.items, false, "");
 }
 
-/// seedAndEdit writes the project actions template and opens it, for an
-/// `e <alias> :` that found nothing to list.
+/// seedAndEdit writes the project actions template and opens it, for an `e
+/// <alias> :` that found nothing to list.
 ///
-/// It writes only when the file is ABSENT. A file that exists but declares no
-/// actions is still the user's - it may hold a `[bin]` table, or a `[deps]`
-/// block, or an `[actions]` header they are halfway through - and discovering
-/// that nix rewrote it is not something an editor command should ever do. Then
-/// the outcome is the same either way: the file that defines this project's
-/// actions, open.
-///
-/// The write creates `.nix/` if it is missing (writeFileAtomic does), silently:
-/// the message names the file, and the directory it sits in is not a separate
-/// event. Nothing here consults the provenance gate - it guards RUNNING cloned
-/// code, and this file was written locally with no runnable line in it.
+/// It writes only when the file is ABSENT: one that exists but declares no
+/// actions may hold a `[bin]` or `[deps]` table, and an editor command must
+/// not rewrite it. The write creates `.nix/` if missing. Nothing here consults
+/// the provenance gate - that guards RUNNING cloned code, and this file was
+/// written locally.
 fn seedAndEdit(app: *App, dir: []const u8, path: []const u8) !u8 {
     if (!proc.fileExists(app.io, path)) {
         util.writeFileAtomic(app.arena, app.io, path, actions.project_template) catch |e| {

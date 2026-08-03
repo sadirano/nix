@@ -41,20 +41,17 @@ pub const Config = struct {
     /// Unix (no probing).
     nav_terminal: []const u8 = "",
     /// [confirm] trusted: action names that may elevate without nix's own
-    /// confirmation - UAC still asks, nix does not ask first.
+    /// confirmation. UAC still asks.
     ///
-    /// The prompt it waives exists because the UAC dialog names the SHELL, not
-    /// the command line it was handed, so for a stored action nix's prompt is
-    /// the only place that line is ever shown. That is worth keeping for an
-    /// action that runs whatever it is given (`sudo = "sudo {args}"`), and
-    /// worth nothing for a fixed line the user wrote once and reads every time
-    /// they type its name (`hosts`).
+    /// The waived prompt exists because the UAC dialog names the SHELL, not
+    /// the command line it was handed - worth keeping for an action that runs
+    /// whatever it is given (`sudo = "sudo {args}"`), worth nothing for a
+    /// fixed line the user reads every time they type its name.
     ///
-    /// It lives HERE, in config.toml, and not in an actions file, because
-    /// config.toml is the user's own and travels with no repo: a cloned
-    /// actions.toml can never grant itself the exemption. For the same reason
-    /// the exemption is refused when the invocation touches project bytes at
-    /// all - see provenance.decide.
+    /// It lives in config.toml, not an actions file, so a cloned actions.toml
+    /// cannot grant itself the exemption - and for the same reason the
+    /// exemption is refused whenever the invocation touches project bytes
+    /// (provenance.decide).
     confirm_trusted: []const []const u8 = &.{},
     /// [notify] on_finish: command template run after every foreground
     /// `r <alias> :action` finishes — the notification hook (e.g. hoot).
@@ -83,13 +80,11 @@ pub const Config = struct {
 
 /// builtinShortcuts is the default slot→name map (identity).
 ///
-/// The names ARE the slots: `[shortcuts]` keys are these strings, so renaming a
-/// slot renames the config key too. The run/search/find slots are `x`, `g` and
-/// `f` rather than `r`, `sg` and `ff`: `r` is a pwsh alias for Invoke-History
-/// and was the one command the shell silently shadowed, and once that one moves
-/// to a single free letter the two-letter names beside it have no reason to
-/// stay two letters. Anyone who wants the old spelling asks for it by name
-/// (`[shortcuts] x = ["x", "r"]`).
+/// The names ARE the slots: `[shortcuts]` keys are these strings, so renaming
+/// a slot renames the config key. The run/search/find slots are `x`, `g` and
+/// `f`; `r` was a pwsh alias for Invoke-History and the one command the shell
+/// silently shadowed. The old spelling is available by name (`[shortcuts] x =
+/// ["x", "r"]`).
 pub fn builtinShortcuts() []const Shortcut {
     return &.{
         .{ .builtin = "o", .custom = "o" }, .{ .builtin = "e", .custom = "e" },
@@ -147,19 +142,13 @@ pub fn isBuiltinSlot(name: []const u8) bool {
     return false;
 }
 
-/// unknownShortcutSlots returns the `[shortcuts]` keys that match no builtin
-/// slot, deduplicated, in the order they were written.
+/// unknownShortcutSlots returns the `[shortcuts]` keys matching no builtin
+/// slot, deduplicated, in written order - the entries with the mapping
+/// backwards. Nothing downstream reads them, so they install no wrapper and
+/// change nothing, which is why they need saying out loud.
 ///
-/// These are the entries with the mapping backwards — `g = "x"` where the user
-/// meant `x = "g"`. Nothing downstream reads them (shortcutFor and
-/// resolvedShortcutNames both iterate the BUILTINS and match keys against
-/// them), so they install no wrapper, delete nothing, and change nothing. That
-/// is why they need saying out loud somewhere: the config looks acted upon and
-/// is not.
-///
-/// An unusable VALUE is a different case and deliberately silent — loadConfig
-/// drops it, and the builtin keeps working under its own name, which is the
-/// right outcome for a real slot given a bad name.
+/// An unusable VALUE is a different case and deliberately silent: loadConfig
+/// drops it and the builtin keeps working under its own name.
 pub fn unknownShortcutSlots(arena: std.mem.Allocator, cfg: Config) ![][]const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (cfg.shortcuts) |sc| {
@@ -170,12 +159,9 @@ pub fn unknownShortcutSlots(arena: std.mem.Allocator, cfg: Config) ![][]const u8
 }
 
 /// shortcutSlotOverrides counts the builtin slots `[shortcuts]` actually
-/// changes — not the raw entries.
-///
-/// The two numbers disagree in both directions, which is why the raw one is
-/// never the one to report: `x = ["x", "r"]` is two entries renaming ONE slot,
-/// and a key naming no slot is an entry renaming NONE. A diagnostic quoting the
-/// raw count tells a user their mistake took effect.
+/// changes, not the raw entries. The two disagree in both directions: `x =
+/// ["x", "r"]` is two entries renaming one slot, and a key naming no slot
+/// renames none.
 pub fn shortcutSlotOverrides(cfg: Config) usize {
     var n: usize = 0;
     for (builtinShortcuts()) |b| {
@@ -254,14 +240,11 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const val_start = std.mem.trim(u8, line[eq + 1 ..], " \t");
         if (std.mem.eql(u8, section, "shortcuts")) {
-            // value is a (possibly quoted) command name, or an array of names —
-            // `x = ["x", "r"]` gives a slot several spellings (each becomes a
-            // wrapper; the FIRST listed is the primary shown in docs/help), so a
-            // name a shell shadows (pwsh's `r`) gets an alternate without losing
-            // the familiar one. key is the builtin slot. An unusable name is
-            // ignored: the value becomes a wrapper exe filename and a completer
-            // target, so it gets the alias charset rules — and never "nix",
-            // which would shadow the canonical binary in ~/.nix/bin.
+            // value is a (possibly quoted) command name, or an array of names
+            // - `x = ["x", "r"]` gives a slot several spellings, the first
+            // being the primary shown in docs. key is the builtin slot. An
+            // unusable name is ignored: the value becomes a wrapper exe
+            // filename, so it takes the alias charset rules, and never "nix".
             var customs: [][]const u8 = undefined;
             if (val_start.len > 0 and val_start[0] == '[') {
                 customs = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
@@ -423,14 +406,10 @@ pub fn pickerExcludes(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: C
     return out.items;
 }
 
-/// gatherArray collects an array value's text starting at `val_start`,
-/// following it across lines to the closing ']' and advancing `i` past the ones
-/// it consumed. Comment lines inside the array are skipped: their quoted text
-/// must not parse as elements, nor a ']' in one end the array early.
-///
-/// Every multi-line array in this file goes through here. Four hand-written
-/// copies of the same loop is how one of them ends up with a subtly different
-/// idea of where an array stops.
+/// gatherArray collects an array value's text from `val_start` across lines to
+/// the closing ']', advancing `i` past what it consumed. Comment lines inside
+/// are skipped so their quoted text cannot parse as elements. Every multi-line
+/// array in this file goes through here.
 fn gatherArray(arena: std.mem.Allocator, all: []const []const u8, i: *usize, val_start: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, val_start);
