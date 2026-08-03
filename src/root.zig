@@ -3,6 +3,7 @@
 
 pub const store = @import("store.zig");
 pub const dialects = @import("dialects.zig");
+pub const logs = @import("logs.zig");
 pub const groups = @import("groups.zig");
 pub const segments = @import("segments.zig");
 pub const context = @import("context.zig");
