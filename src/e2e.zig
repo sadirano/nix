@@ -1724,6 +1724,140 @@ pub fn main(init: std.process.Init) !void {
         c.check(r2.code != 0 and std.mem.indexOf(u8, r2.err, "one destination") != null, "p +group refuses under --no-prompt", r2);
     }
 
+    // --- crossings (issue #38) ---------------------------------------------------------
+    // The per-feature walk above proves each feature alone. The risk that grew
+    // as actions, provenance, deps, env and [bin] landed within six weeks of
+    // each other is in the places they MEET, where the machinery exists and
+    // nothing exercises it end to end. Own aliases, so nothing here depends on
+    // state an earlier section left behind.
+    {
+        const ka = join(&c, &.{ root, "proj", "ka" });
+        const kb = join(&c, &.{ root, "proj", "kb" });
+        _ = try c.run(&.{ "ka", ka });
+        _ = try c.run(&.{ "kb", kb });
+
+        const show = if (proc.is_windows)
+            "shown = \"echo who=[%WHO%] only=[%ONLY_KB%] amb=[%AMBIENT%]\""
+        else
+            "shown = \"echo who=[$WHO] only=[$ONLY_KB] amb=[$AMBIENT]\"";
+        try writeActions(&c, "ka", ka, try std.fmt.allocPrint(arena, "[deps]\nneeds = [\"kb\"]\n\n[actions]\n{s}\n", .{show}));
+        try writeActions(&c, "kb", kb, try std.fmt.allocPrint(arena, "[actions]\n{s}\n", .{show}));
+
+        // Central layers (no trust gate on ~/.nix), one key shared and one that
+        // exists for kb alone - the leak, if there is one, is ONLY_KB surviving
+        // into ka's link.
+        try writeFile(&c, join(&c, &.{ home, "env", "ka.toml" }), "[env]\nWHO = \"ka\"\n");
+        try writeFile(&c, join(&c, &.{ home, "env", "kb.toml" }), "[env]\nWHO = \"kb\"\nONLY_KB = \"leaked\"\n");
+
+        // A --deps chain is the uncovered case: the group fan-out's isolation is
+        // checked in the env section, but a dependency chain reaches
+        // aliasRunEnv through a different call path, and env_injected is what
+        // has to strip kb's variables before ka's link runs.
+        var r = try c.run(&.{ "ka", "--run", "--deps", ":shown" });
+        const kb_line = std.mem.indexOf(u8, r.out, "who=[kb]");
+        const ka_line = std.mem.indexOf(u8, r.out, "who=[ka]");
+        c.check(r.code == 0 and kb_line != null and ka_line != null and kb_line.? < ka_line.?, "a --deps chain runs the dependency, then the alias", r);
+        // ka's link must not see ONLY_KB at all. Checked on the substring AFTER
+        // ka's marker, so kb's own (correct) `only=[leaked]` cannot satisfy it.
+        // The assertion is the ABSENCE of the value rather than a specific empty
+        // rendering: an unset name comes back as `[]` from a POSIX shell and as
+        // the unexpanded `[%ONLY_KB%]` from cmd, and both mean the same thing.
+        const ka_tail = if (ka_line) |i| r.out[i..] else "";
+        const kb_span = if (kb_line) |i| r.out[i..(ka_line orelse r.out.len)] else "";
+        c.check(std.mem.indexOf(u8, ka_tail, "leaked") == null and
+            std.mem.indexOf(u8, kb_span, "leaked") != null, "a dependency's env doesn't leak into the next link", r);
+
+        // The ambient environment is the base a project's env.toml sits on:
+        // unrelated variables survive, and a name env.toml sets is overridden
+        // rather than merged.
+        try c.env.put("AMBIENT", "from-shell");
+        try c.env.put("WHO", "from-shell");
+        r = try c.run(&.{ "kb", "--run", ":shown" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "amb=[from-shell]") != null, "an ambient variable reaches the command untouched", r);
+        c.check(std.mem.indexOf(u8, r.out, "who=[kb]") != null, "env.toml overrides an ambient variable of the same name", r);
+
+        // A context source's answer outranks static configuration, which is the
+        // documented order in aliasRunEnv (env.toml, then ctx_vars) and the
+        // reason the two injections are separate.
+        const kb_scripts = join(&c, &.{ kb, ".nix", "scripts" });
+        util.mkdirAll(io, kb_scripts) catch {};
+        try writeFile(&c, join(&c, &.{ kb_scripts, "whois.cmd" }),
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo WHO=from-context
+            \\
+        );
+        try writeFile(&c, join(&c, &.{ kb, ".nix", "segments.toml" }),
+            \\[[contexts]]
+            \\segment = "at"
+            \\run = "whois ${at}"
+            \\source-template = "/"
+            \\
+        );
+        _ = try c.run(&.{ "--trust", "kb", "at" });
+        r = try c.run(&.{ "at:x@kb", "--run", ":shown" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "who=[from-context]") != null, "a context variable outranks env.toml for the same name", r);
+        // And it does not persist: the next run of the same alias, with no
+        // segment, is back to the configured value.
+        r = try c.run(&.{ "kb", "--run", ":shown" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "who=[kb]") != null and
+            std.mem.indexOf(u8, r.out, "from-context") == null, "a context variable does not outlive the run that produced it", r);
+        try c.env.put("AMBIENT", "");
+        try c.env.put("WHO", "");
+
+        // Provenance under composition. Reaching a project INDIRECTLY must gate
+        // exactly as reaching it directly does - the gate lives on the file, not
+        // on how the user happened to arrive at it. Editing kb's actions.toml
+        // re-arms it; ka is still approved, so only the dependency is untrusted.
+        // The edit has to CHANGE the bytes: approval is on content, so rewriting
+        // the same text re-arms nothing (a check that wrote identical bytes here
+        // passed for the wrong reason and proved only that trust is sticky).
+        try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\nextra = \"echo added-later\"\n", .{show}));
+        r = try c.run(&.{ "ka", "--run", "--deps", ":shown" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "kb") != null and
+            std.mem.indexOf(u8, r.err, "--trust") != null and
+            std.mem.indexOf(u8, r.out, "who=[ka]") == null, "an untrusted dependency refuses, and the chain runs nothing", r);
+        _ = try c.run(&.{ "--trust", "kb" });
+
+        // The same crossing through a [bin] export: the installed exe is a copy
+        // of nix that looks its action up at run time, so an edit to the
+        // project's actions.toml after install must re-arm the gate there too -
+        // otherwise `[bin]` would be a way to launder unapproved project code
+        // into a bare global command.
+        try writeActions(&c, "kb", kb, try std.fmt.allocPrint(arena, "[actions]\n{s}\n\n[bin]\nkbshow = \":shown\"\n", .{show}));
+        r = try c.run(&.{"--sync-bin"});
+        const kbshow = join(&c, &.{ home, "bin", if (proc.is_windows) "kbshow.exe" else "kbshow" });
+        if (r.code == 0 and proc.pathExists(io, kbshow)) {
+            const saved_exe = c.exe;
+            c.exe = kbshow;
+            r = try c.run(&.{});
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "who=[kb]") != null, "an exported action runs as a bare global command", r);
+            // Re-arm by editing the file the export resolves through.
+            c.exe = saved_exe;
+            try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\n\n[bin]\nkbshow = \":shown\"\n# edited\n", .{show}));
+            c.exe = kbshow;
+            r = try c.run(&.{});
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null and
+                std.mem.indexOf(u8, r.out, "who=[kb]") == null, "an edited project re-arms the gate behind its [bin] export", r);
+            c.exe = saved_exe;
+            _ = try c.run(&.{ "--trust", "kb" });
+        } else {
+            c.skip("an exported action runs as a bare global command", "a successful --sync-bin");
+            c.skip("an edited project re-arms the gate behind its [bin] export", "a successful --sync-bin");
+        }
+
+        // NOTE: the secret-vs-elevation crossing (#38's second bullet) is not
+        // here and cannot be. Every elevated path goes through ShellExecuteEx
+        // and raises a UAC prompt only a human can answer, so an automated
+        // check would either hang or need the harness to run elevated. The
+        // invariant is pinned where it is decidable instead - elevatedCommand is
+        // a pure function over the variables, unit tested in run.zig for exactly
+        // this ("env.toml travels, a resolved secret does not").
+
+        // Leave nothing behind: --doctor below reports on the whole store.
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "ka.toml" })) catch {};
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "kb.toml" })) catch {};
+    }
+
     // --- doctor: full, quiet, json -----------------------------------------------------
     {
         // The scratch home has no wrappers, so warnings (maybe failures)
