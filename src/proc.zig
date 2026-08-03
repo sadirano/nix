@@ -428,6 +428,145 @@ pub fn pathExists(io: Io, path: []const u8) bool {
 
 pub const FilterResult = struct { output: []const u8, code: u8, forwarded: usize = 0 };
 
+// ---- the three shared primitives ---------------------------------------------
+//
+// Eight functions below used to hand-roll the same spawn-read-reap sequence,
+// differing only in a small policy each (#29). The interesting rules - what a
+// wait failure means, when a child may be waited on and when it must be killed,
+// how a partial line at EOF is handled - now live in one place each, rather
+// than being re-decided per copy and drifting.
+
+/// Spawn is what a capture varies: what to run, where, and what happens to the
+/// streams this file does not read.
+const Spawn = struct {
+    argv: []const []const u8,
+    cwd: std.process.Child.Cwd = .inherit,
+    stdin: std.process.SpawnOptions.StdIo = .inherit,
+    stderr: std.process.SpawnOptions.StdIo = .inherit,
+    env: ?*const std.process.Environ.Map = null,
+    /// Written to the child's stdin, which is then closed. Implies a pipe.
+    input: ?[]const u8 = null,
+};
+
+/// exitCode reduces a termination to the number a caller can act on. A signal
+/// or a stop is reported as 1: nothing here can do anything useful with the
+/// distinction, and every caller was already collapsing it this way.
+fn exitCode(term: std.process.Child.Term) u8 {
+    return switch (term) {
+        .exited => |c| c,
+        else => 1,
+    };
+}
+
+/// capture spawns, optionally feeds stdin, reads stdout to EOF, and reaps.
+///
+/// A wait that fails yields code 1 with the output KEPT, rather than throwing
+/// away bytes already read: the callers that ignore the code (probes) and the
+/// ones that act on it both want the same thing from a child that ended in a
+/// way the OS could not describe.
+fn capture(arena: std.mem.Allocator, io: Io, s: Spawn) !FilterResult {
+    var child = try std.process.spawn(io, .{
+        .argv = s.argv,
+        .cwd = s.cwd,
+        .stdin = if (s.input != null) .pipe else s.stdin,
+        .stdout = .pipe,
+        .stderr = s.stderr,
+        .environ_map = s.env,
+    });
+    if (s.input) |data| {
+        if (child.stdin) |in| {
+            in.writeStreamingAll(io, data) catch {};
+            in.close(io);
+            child.stdin = null;
+        }
+    }
+    var buf: [4096]u8 = undefined;
+    var r = child.stdout.?.reader(io, &buf);
+    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
+    const term = child.wait(io) catch return .{ .output = out, .code = 1 };
+    return .{ .output = out, .code = exitCode(term) };
+}
+
+/// How a pump ended, which is exactly what decides how the child may be reaped.
+pub const PumpEnd = enum {
+    /// The child closed its stdout: it is finished, or about to be.
+    eof,
+    /// We stopped first - the consumer went away, a cap was hit, or a read
+    /// failed - so the child may still be writing.
+    stopped,
+};
+
+/// What a line handler wants next: `.stop` ends the pump early (the consumer
+/// closed, or a cap was reached).
+pub const LineAction = enum { proceed, stop };
+
+/// LineHandler consumes one line at a time. The slice is only valid during the
+/// call - dupe anything kept.
+pub const LineHandler = struct {
+    ctx: *anyopaque,
+    func: *const fn (ctx: *anyopaque, line: []const u8) anyerror!LineAction,
+};
+
+/// pumpLines reads `src` to EOF, calling `h` once per line with the newline
+/// removed and a trailing CR trimmed.
+///
+/// Memory stays bounded by the longest line: completed lines are handed over as
+/// they arrive and the remainder is compacted to the front. A child that ends
+/// without a trailing newline still gets its last line delivered - dropping it
+/// silently loses the one row a `find` that matched exactly once produced.
+fn pumpLines(arena: std.mem.Allocator, io: Io, src: Io.File, h: LineHandler) !PumpEnd {
+    var pending: std.ArrayList(u8) = .empty;
+    var chunk: [16 * 1024]u8 = undefined;
+    var end: PumpEnd = .eof;
+    while (true) {
+        var iov = [_][]u8{chunk[0..]};
+        // readStreaming, not a buffered Reader: it returns as soon as ANY bytes
+        // are available, which is what lets fzf render matches at the
+        // producer's pace instead of in one batch at EOF.
+        //
+        // A read error BREAKS rather than returning: a closed pipe is how the
+        // end of a child's output arrives on Windows (n == 0 is the POSIX
+        // shape), so returning here would discard a last line that has no
+        // newline after it. The child is still reaped as `.stopped`, since we
+        // cannot know it finished.
+        const n = src.readStreaming(io, &iov) catch {
+            end = .stopped;
+            break;
+        };
+        if (n == 0) break;
+        try pending.appendSlice(arena, chunk[0..n]);
+        var consumed: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, pending.items, consumed, '\n')) |nl| {
+            const line = std.mem.trimEnd(u8, pending.items[consumed..nl], "\r");
+            consumed = nl + 1;
+            if (try h.func(h.ctx, line) == .stop) return .stopped;
+        }
+        if (consumed > 0) {
+            const rest = pending.items[consumed..];
+            std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
+            pending.shrinkRetainingCapacity(rest.len);
+        }
+    }
+    if (pending.items.len > 0) {
+        if (try h.func(h.ctx, std.mem.trimEnd(u8, pending.items, "\r")) == .stop) return .stopped;
+    }
+    return end;
+}
+
+/// reap ends a child according to how the pump ended.
+///
+/// Load-bearing, and the reason this is one function: kill() also REAPS (it
+/// nulls child.id), so a wait() after it asserts and panics - dumping a stack
+/// trace over fzf's alt-screen and wrecking the terminal. Waiting on a child
+/// that is still writing into a pipe nobody drains deadlocks instead. Each
+/// case is right exactly once, and only for its own PumpEnd.
+fn reap(io: Io, child: *std.process.Child, end: PumpEnd) void {
+    switch (end) {
+        .eof => _ = child.wait(io) catch {},
+        .stopped => child.kill(io),
+    }
+}
+
 /// LineTransform is the picker's streaming filter: `func` is called per producer
 /// line and returns the line to forward to fzf (a trimmed subslice is fine), or
 /// null to drop it. The returned slice need only stay valid until the next call.
@@ -440,26 +579,8 @@ pub const LineTransform = struct {
 /// for its TUI, and returns the captured selection plus the filter's exit
 /// code. Used by prune/grep/find/picker.
 pub fn runFilter(arena: std.mem.Allocator, io: Io, argv: []const []const u8, input: []const u8, env: ?*const std.process.Environ.Map) !FilterResult {
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .pipe,
-        .stdout = .pipe,
-        .stderr = .inherit,
-        .environ_map = env,
-    });
-    if (child.stdin) |in| {
-        in.writeStreamingAll(io, input) catch {};
-        in.close(io);
-        child.stdin = null;
-    }
-    var buf: [4096]u8 = undefined;
-    var r = child.stdout.?.reader(io, &buf);
-    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
-    const term = try child.wait(io);
-    return .{ .output = out, .code = switch (term) {
-        .exited => |c| c,
-        else => 1,
-    } };
+    // stderr is inherited: fzf draws its TUI there.
+    return capture(arena, io, .{ .argv = argv, .env = env, .input = input });
 }
 
 /// captureOutput spawns argv in cwd and returns its full stdout. stdin is
@@ -478,18 +599,14 @@ pub fn captureOutputQuiet(arena: std.mem.Allocator, io: Io, argv: []const []cons
 }
 
 fn captureOutputImpl(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8, quiet: bool) ![]const u8 {
-    var child = try std.process.spawn(io, .{
+    // stdin is INHERITED: rg/es/fd check whether stdin is a tty and read it
+    // instead of walking the directory when it is a pipe.
+    const res = try capture(arena, io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
-        .stdin = .inherit,
-        .stdout = .pipe,
         .stderr = if (quiet) .ignore else .inherit,
     });
-    var buf: [4096]u8 = undefined;
-    var r = child.stdout.?.reader(io, &buf);
-    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
-    _ = child.wait(io) catch {};
-    return out;
+    return res.output;
 }
 
 /// runCaptured spawns argv in cwd with an explicit env and returns its stdout
@@ -500,22 +617,12 @@ fn captureOutputImpl(arena: std.mem.Allocator, io: Io, argv: []const []const u8,
 /// stdin is ignored so a script that tries to prompt gets EOF instead of
 /// hanging a navigation.
 pub fn runCaptured(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8, env: ?*const std.process.Environ.Map) !FilterResult {
-    var child = try std.process.spawn(io, .{
+    return capture(arena, io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .stdin = .ignore,
-        .stdout = .pipe,
-        .stderr = .inherit,
-        .environ_map = env,
+        .env = env,
     });
-    var buf: [4096]u8 = undefined;
-    var r = child.stdout.?.reader(io, &buf);
-    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
-    const term = try child.wait(io);
-    return .{ .output = out, .code = switch (term) {
-        .exited => |c| c,
-        else => 1,
-    } };
 }
 
 /// runShellTee is runShellInherit with the child's output relayed to both this
@@ -591,37 +698,18 @@ pub fn forEachLine(arena: std.mem.Allocator, io: Io, argv: []const []const u8, c
     // On a sink/alloc error, kill (which also reaps) so the child can't block
     // writing into a full pipe nobody drains.
     errdefer child.kill(io);
-    const src = child.stdout.?;
-    var pending: std.ArrayList(u8) = .empty;
-    var chunk: [16 * 1024]u8 = undefined;
-    var eof = false;
-    while (true) {
-        var iov = [_][]u8{chunk[0..]};
-        const n = src.readStreaming(io, &iov) catch break;
-        if (n == 0) {
-            eof = true;
-            break;
+    // This consumer never stops early: it aggregates everything the producer
+    // has to say.
+    var relay = struct {
+        sink: LineSink,
+        fn onLine(ctx: *anyopaque, line: []const u8) anyerror!LineAction {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            try self.sink.func(self.sink.ctx, line);
+            return .proceed;
         }
-        try pending.appendSlice(arena, chunk[0..n]);
-        var consumed: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, pending.items, consumed, '\n')) |nl| {
-            const line = std.mem.trimEnd(u8, pending.items[consumed..nl], "\r");
-            consumed = nl + 1;
-            try sink.func(sink.ctx, line);
-        }
-        if (consumed > 0) {
-            const rest = pending.items[consumed..];
-            std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
-            pending.shrinkRetainingCapacity(rest.len);
-        }
-    }
-    // Final line when the child ended without a trailing newline.
-    if (pending.items.len > 0) try sink.func(sink.ctx, std.mem.trimEnd(u8, pending.items, "\r"));
-    if (eof) {
-        _ = child.wait(io) catch {};
-    } else {
-        child.kill(io);
-    }
+    }{ .sink = sink };
+    const end = try pumpLines(arena, io, child.stdout.?, .{ .ctx = &relay, .func = @TypeOf(relay).onLine });
+    reap(io, &child, end);
 }
 
 /// probeOutput runs argv with stdin AND stderr discarded (only stdout captured)
@@ -632,18 +720,13 @@ pub fn forEachLine(arena: std.mem.Allocator, io: Io, argv: []const []const u8, c
 /// reads the console directly); detect such shims by path first, then probe only
 /// genuine executables.
 pub fn probeOutput(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8) ![]const u8 {
-    var child = try std.process.spawn(io, .{
+    const res = try capture(arena, io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .stdin = .ignore,
-        .stdout = .pipe,
         .stderr = .ignore,
     });
-    var buf: [4096]u8 = undefined;
-    var r = child.stdout.?.reader(io, &buf);
-    const out = r.interface.allocRemaining(arena, .unlimited) catch "";
-    _ = child.wait(io) catch {};
-    return out;
+    return res.output;
 }
 
 /// runPipeline streams a producer's stdout into fzf's stdin chunk-by-chunk so
@@ -681,15 +764,10 @@ pub fn runPipeline(
         .stderr = .inherit,
     });
 
-    // Relay producer.stdout → fzf.stdin. Use readStreaming (a single OS read
-    // that returns as soon as ANY bytes are available) rather than a buffered
-    // Reader: the latter blocks until its buffer fills or EOF, which would make
-    // fzf show nothing until the producer finished. writeStreamingAll forwards
-    // each chunk straight to the pipe, so fzf renders matches as they arrive —
-    // live, like onix's `rg | fzf`. Verified with a timing harness: lines reach
-    // the consumer at the producer's pace, not batched at EOF. If the user
-    // selects before the producer finishes, the write fails (fzf closed stdin)
-    // and we stop pumping and read the selection.
+    // Raw chunks, not lines: this pipeline has no per-line policy, so bytes go
+    // straight through (see pumpLines for the streaming rationale, which is the
+    // same one). A write that fails means fzf closed - the user selected
+    // mid-walk - so we stop pumping and go read the selection.
     var producer_eof = false;
     {
         const src = prod.stdout.?;
@@ -707,14 +785,7 @@ pub fn runPipeline(
         fin.close(io);
         fzf.stdin = null;
     }
-    // Reap the producer. If fzf closed early (user selected mid-walk) the
-    // producer may still be writing to a full pipe nobody drains — wait() would
-    // deadlock, so kill it instead (kill also reaps; see runPipelineFiltered).
-    if (producer_eof) {
-        _ = prod.wait(io) catch {};
-    } else {
-        prod.kill(io);
-    }
+    reap(io, &prod, if (producer_eof) .eof else .stopped);
 
     var obuf: [4096]u8 = undefined;
     var r = fzf.stdout.?.reader(io, &obuf);
@@ -769,46 +840,24 @@ pub fn runPipelinePrefixed(
             .stdout = .pipe,
             .stderr = .inherit,
         }) catch continue;
-        var eof = false;
-        var pending: std.ArrayList(u8) = .empty;
-        const src = prod.stdout.?;
-        var chunk: [16 * 1024]u8 = undefined;
-        pump: while (true) {
-            var iov = [_][]u8{chunk[0..]};
-            const n = src.readStreaming(io, &iov) catch break;
-            if (n == 0) {
-                eof = true;
-                break;
-            }
-            try pending.appendSlice(arena, chunk[0..n]);
-            var consumed: usize = 0;
-            while (std.mem.indexOfScalarPos(u8, pending.items, consumed, '\n')) |nl| {
-                const line = std.mem.trimEnd(u8, pending.items[consumed..nl], "\r");
-                consumed = nl + 1;
-                if (line.len == 0) continue;
-                writePrefixedLine(io, fin, p.prefix, line) catch {
-                    fzf_closed = true;
-                    break :pump;
+        var relay = struct {
+            io: Io,
+            fin: Io.File,
+            prefix: []const u8,
+            closed: bool = false,
+            fn onLine(ctx: *anyopaque, line: []const u8) anyerror!LineAction {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                if (line.len == 0) return .proceed;
+                writePrefixedLine(self.io, self.fin, self.prefix, line) catch {
+                    self.closed = true; // fzf went away: stop, and skip the rest
+                    return .stop;
                 };
+                return .proceed;
             }
-            if (consumed > 0) {
-                const rest = pending.items[consumed..];
-                std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
-                pending.shrinkRetainingCapacity(rest.len);
-            }
-        }
-        // Final line when the producer ended without a trailing newline.
-        if (!fzf_closed and pending.items.len > 0) {
-            const line = std.mem.trimEnd(u8, pending.items, "\r");
-            if (line.len > 0) writePrefixedLine(io, fin, p.prefix, line) catch {
-                fzf_closed = true;
-            };
-        }
-        if (eof) {
-            _ = prod.wait(io) catch {};
-        } else {
-            prod.kill(io);
-        }
+        }{ .io = io, .fin = fin, .prefix = p.prefix };
+        const end = try pumpLines(arena, io, prod.stdout.?, .{ .ctx = &relay, .func = @TypeOf(relay).onLine });
+        if (relay.closed) fzf_closed = true;
+        reap(io, &prod, end);
     }
     fin.close(io);
     fzf.stdin = null;
@@ -867,78 +916,54 @@ pub fn runPipelineFiltered(
         .stderr = if (quiet_producer) .ignore else .inherit,
     });
 
-    var forwarded: usize = 0;
-    var producer_eof = false;
-    {
-        const src = prod.stdout.?;
-        const fin = fzf.stdin.?;
-        // Carry partial lines across reads. We forward each kept line the moment
-        // it completes, so fzf renders as the producer walks (see runPipeline for
-        // the readStreaming/writeStreamingAll rationale).
-        var pending: std.ArrayList(u8) = .empty;
-        var chunk: [16 * 1024]u8 = undefined;
-        var done = false;
-        while (!done) {
-            var iov = [_][]u8{chunk[0..]};
-            const n = src.readStreaming(io, &iov) catch break;
-            if (n == 0) {
-                producer_eof = true;
-                break;
-            }
-            try pending.appendSlice(arena, chunk[0..n]);
-            var consumed: usize = 0;
-            while (std.mem.indexOfScalarPos(u8, pending.items, consumed, '\n')) |nl| {
-                const line = pending.items[consumed..nl];
-                consumed = nl + 1;
-                const keep = xf.func(xf.ctx, line) orelse continue;
-                fin.writeStreamingAll(io, keep) catch {
-                    done = true;
-                    break;
-                };
-                fin.writeStreamingAll(io, "\n") catch {
-                    done = true;
-                    break;
-                };
-                forwarded += 1;
-                if (max_lines != 0 and forwarded >= max_lines) {
-                    done = true;
-                    break;
-                }
-            }
-            if (consumed > 0) {
-                const rest = pending.items[consumed..];
-                std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
-                pending.shrinkRetainingCapacity(rest.len);
-            }
+    // Each kept line is forwarded the moment it completes, so fzf renders as
+    // the producer walks (see runPipeline for the streaming rationale).
+    var relay = struct {
+        io: Io,
+        fin: Io.File,
+        xf: LineTransform,
+        max_lines: usize,
+        forwarded: usize = 0,
+        fn onLine(ctx: *anyopaque, line: []const u8) anyerror!LineAction {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            const keep = self.xf.func(self.xf.ctx, line) orelse return .proceed;
+            self.fin.writeStreamingAll(self.io, keep) catch return .stop;
+            self.fin.writeStreamingAll(self.io, "\n") catch return .stop;
+            self.forwarded += 1;
+            if (self.max_lines != 0 and self.forwarded >= self.max_lines) return .stop;
+            return .proceed;
         }
-        // Final line when the producer ended without a trailing newline.
-        if (!done and pending.items.len > 0) {
-            if (xf.func(xf.ctx, pending.items)) |keep| {
-                fin.writeStreamingAll(io, keep) catch {};
-                fin.writeStreamingAll(io, "\n") catch {};
-                forwarded += 1;
-            }
-        }
-        fin.close(io);
-        fzf.stdin = null;
-    }
-    // Reap the producer. If it finished on its own, wait. If we stopped early
-    // (cap hit or fzf closed), kill it so it can't block writing to a full,
-    // undrained pipe — kill also reaps (it nulls child.id), so we must NOT also
-    // call wait afterwards or wait() asserts child.id != null and panics, which
-    // would dump a stack trace over fzf's alt-screen and wreck the terminal.
-    if (producer_eof) {
-        _ = prod.wait(io) catch {};
-    } else {
-        prod.kill(io);
-    }
+    }{ .io = io, .fin = fzf.stdin.?, .xf = xf, .max_lines = max_lines };
+    const end = try pumpLines(arena, io, prod.stdout.?, .{ .ctx = &relay, .func = @TypeOf(relay).onLine });
+    fzf.stdin.?.close(io);
+    fzf.stdin = null;
+    reap(io, &prod, end);
 
     var obuf: [4096]u8 = undefined;
     var r = fzf.stdout.?.reader(io, &obuf);
     const out = r.interface.allocRemaining(arena, .unlimited) catch "";
     const term = try fzf.wait(io);
-    return .{ .output = out, .forwarded = forwarded, .code = switch (term) {
+    return .{ .output = out, .forwarded = relay.forwarded, .code = switch (term) {
         .exited => |c| c,
         else => 1,
     } };
+}
+
+// ---- tests -------------------------------------------------------------------
+// The rest live in proc_test.zig: they spawn real children, and this file is at
+// its size ratchet.
+
+test "capture returns the child's output and its exit code" {
+    if (!is_windows) return error.SkipZigTest; // cmd fixture
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const res = try capture(a, std.testing.io, .{
+        .argv = &.{ "cmd", "/c", "echo hello& exit /b 3" },
+        .stdin = .ignore,
+        .stderr = .ignore,
+    });
+    try std.testing.expectEqual(@as(u8, 3), res.code);
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "hello") != null);
 }
