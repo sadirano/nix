@@ -33,6 +33,15 @@ pub const App = struct {
     exe_path: ?[]const u8 = null,
     json: bool,
     no_prompt: bool,
+    /// `--log` / `--no-log`: force recording on or off for this invocation,
+    /// overriding `[log] actions`. null = follow the config. Kept as a
+    /// tri-state rather than a bool because "not asked" and "asked for off"
+    /// differ: the config default only applies to the first.
+    log: ?bool = null,
+    /// Path of the recording the last foreground run wrote, for the {log}
+    /// notify placeholder. Empty when the run was not recorded, which is what
+    /// makes the placeholder safe to leave in a hook template unconditionally.
+    log_path: []const u8 = "",
     /// `--as <dialect>`: the spelling paths are printed/copied in. null = the
     /// host's own. Set once in run() and read by the resolve and yank paths;
     /// the navigate path REFUSES it, because `o`'s stdout feeds the wrapper's

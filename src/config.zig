@@ -66,6 +66,12 @@ pub const Config = struct {
     /// a re-check. Placeholders: {alias} {message} {status} {level}.
     notify_on_paste: []const u8 = "",
     notify_on_yank: []const u8 = "",
+    /// [log] actions: record every foreground `x <alias> :action` to
+    /// ~/.nix/logs (see logs.zig). Default OFF - teeing costs the child its
+    /// colour, so turning it on is a choice the user makes knowingly.
+    log_actions: bool = false,
+    /// [log] keep: recordings retained per (alias, action). 0 = the default.
+    log_keep: usize = 0,
     /// [bin] foreign: strictness for files in ~/.nix/bin that nix didn't
     /// install (see ForeignPolicy). Default warn.
     bin_foreign: ForeignPolicy = .warn,
@@ -276,6 +282,11 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         }
         if (std.mem.eql(u8, section, "grep")) {
             if (std.mem.eql(u8, key, "all")) cfg.grep_all = parseBool(stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "log")) {
+            if (std.mem.eql(u8, key, "actions")) cfg.log_actions = parseBool(stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "keep")) cfg.log_keep = std.fmt.parseInt(usize, stripQuotes(val_start), 10) catch 0;
             continue;
         }
         if (std.mem.eql(u8, section, "bin")) {

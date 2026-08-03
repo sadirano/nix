@@ -520,6 +520,47 @@ pub const specs = [_]Spec{
         .see_also = &.{ "--list", "o" },
     },
     .{
+        .topic = "--logs",
+        .args = "[alias]",
+        .summary = "read what a recorded action actually printed",
+        .safety = .blocks,
+        .safe_form = "nix --no-prompt --logs [alias]",
+        .detail =
+        \\When a recorded action finishes, its merged stdout+stderr is kept at
+        \\`~/.nix/logs/<alias>/<action>-<timestamp>.log`, with a header naming
+        \\the command and a footer giving the exit code and duration.
+        \\
+        \\Recording is off by default. `[log] actions = true` in config.toml
+        \\records every `:action`; `--log` and `--no-log` override that for one
+        \\invocation. NAMED ACTIONS ONLY in this version - a literal command is
+        \\spawned as an argv, and the recorder's stream merge needs a shell, so
+        \\`--log` on one says so rather than silently doing nothing.
+        \\Retention is per (alias, action), newest N kept
+        \\(`[log] keep`, default 10), so a chatty `:test` cannot evict
+        \\`:deploy` history.
+        \\
+        \\`nix --logs` lists every alias's recordings, newest first; with an
+        \\alias it narrows to one. The header line is the raw command, never
+        \\the secret-expanded one.
+        ,
+        .agent_use =
+        \\THIS IS WHY YOU DO NOT RERUN THE BUILD. Asked why something failed,
+        \\read the last recording instead of re-executing an action whose side
+        \\effects you would be repeating - it is faster, cheaper, and safe.
+        \\
+        \\`nix --no-prompt --logs [alias]` prints the table and opens nothing:
+        \\alias, action, when, exit. Take the newest failing row and read the
+        \\file it names. An exit column showing `?` means the run never
+        \\finished - killed, or the machine went down - not that it passed.
+        ,
+        .examples = &.{
+            "`nix --no-prompt --logs` - every recording, newest first",
+            "`nix --no-prompt --logs acme` - just this project's",
+            "`${cmd:x} acme --log :build` - record one run whatever the config says",
+        },
+        .see_also = &.{ "x", "--actions" },
+    },
+    .{
         .topic = "--as",
         .args = "<dialect>",
         .summary = "print/copy the path spelled for another tool",

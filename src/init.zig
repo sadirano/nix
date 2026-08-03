@@ -73,7 +73,7 @@ const starter_config =
     \\#
     \\# [notify] on_finish runs a notifier after every foreground `x <alias>
     \\# :action` finishes, with {alias} {action} {exit} {status} {duration}
-    \\# {level} {message} expanded - so long builds report completion (and
+    \\# {level} {message} {log} expanded - so long builds report completion (and
     \\# especially failure) without per-action boilerplate. With a notifier
     \\# like hoot, success logs quietly and failure toasts. on_paste / on_yank
     \\# record what `p` / `y` actually did ({alias} {message} {status} {level}),
@@ -83,6 +83,18 @@ const starter_config =
     \\#   on_finish = 'hoot send "{message}" --tag {alias} --level {level}'
     \\#   on_paste  = 'hoot send "{message}" --tag {alias}'
     \\#   on_yank   = 'hoot send "{message}" --tag {alias}'
+    \\#
+    \\# [log] records what an action PRINTED, to ~/.nix/logs/<alias>/, so a
+    \\# failure you walked away from can be read instead of reproduced. Off by
+    \\# default: recording pipes the child's output, and a tty-detecting tool
+    \\# drops its colour while being recorded. `--log` / `--no-log` override it
+    \\# for one run, and `keep` is per (alias, action), so a chatty :test can
+    \\# never evict :deploy history. Browse with `nix --logs [alias]`, and put
+    \\# {log} in on_finish to have the failure toast carry the path to the why:
+    \\#
+    \\#   [log]
+    \\#   actions = true
+    \\#   keep    = 10
     \\
 ;
 

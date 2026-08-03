@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const store = @import("store.zig");
 const dialects = @import("dialects.zig");
+const logs = @import("logs.zig");
 const usage = @import("usage.zig");
 const proc = @import("proc.zig");
 const clipboard = @import("clipboard.zig");
@@ -274,6 +275,8 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
         if (eql(a, "--json") or eql(a, "-j")) app.json = true;
         if (eql(a, "--no-prompt")) app.no_prompt = true;
         if (eql(a, "--force")) app.force = true;
+        if (eql(a, "--log")) app.log = true;
+        if (eql(a, "--no-log")) app.log = false;
     }
 }
 
@@ -333,6 +336,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .contexts => cmdContexts(app),
         .actions => palette.cmdActions(app, rest),
         .notes => notes.cmdNotes(app, rest, grep),
+        .log_list => logs.cmdLogs(app, rest),
         .sweep => sweep.cmdSweep(app, rest),
         .sync => init_zig.cmdSync(app),
         .sync_bin => bin_exports.cmdSyncBin(app),

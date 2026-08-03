@@ -10,6 +10,7 @@ const store = @import("store.zig");
 const actions = @import("actions.zig");
 const resolve = @import("resolve.zig");
 const config = @import("config.zig");
+const logs = @import("logs.zig");
 const notify = @import("notify.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
@@ -128,6 +129,15 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
             return 1;
         };
         return 0;
+    }
+    // A literal command is spawned as an argv, not as a shell string, and the
+    // recorder's stream merge is done BY the shell (`2>&1`) because std's
+    // StdIo cannot point stderr at stdout's pipe. Recording this path needs a
+    // hand-built pipe passed to both handles - real work, and not worth
+    // inventing quietly. Say so rather than accepting --log and ignoring it.
+    if (app.log == true) {
+        try app.err.writeAll("nix: --log records named actions; a literal command is not recorded yet\n");
+        try app.err.writeAll("  wrap it in an action (`x <alias> :` to see them) and --log will record it\n");
     }
     return proc.runInheritEnv(app.io, resolved, target, env) catch |e| {
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
@@ -694,10 +704,69 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     if (outside or stripSudo(cmd) != null) return startWindowed(app, cmd, alias, dir, name);
     const env = (try aliasRunEnv(app, alias, dir, .run)) orelse return 1;
     try app.out.flush();
+    if (try openRecording(app, alias, name, command)) |rec| {
+        var file = rec.file;
+        // The footer is written HERE, while the handle is still open: reopening
+        // to append would need a seek-to-end this Io.File does not expose, and
+        // rewriting a whole transcript to add three words is absurd for a file
+        // that may be a 22-minute build.
+        const t0 = Io.Clock.awake.now(app.io).nanoseconds;
+        const code = proc.runShellTee(app.arena, app.io, cmd, dir, env, app.out, &file) catch |e| {
+            file.close(app.io);
+            try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
+            return 1;
+        };
+        const ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
+        const ms: u64 = if (ns > 0) @intCast(@divTrunc(ns, std.time.ns_per_ms)) else 0;
+        const foot = try logs.footer(app.arena, code, try notify.fmtDuration(app.arena, ms));
+        file.writeStreamingAll(app.io, foot) catch {};
+        file.close(app.io);
+        app.log_path = rec.path;
+        return code;
+    }
     return proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
         try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
         return 1;
     };
+}
+
+/// recording is whether THIS run is recorded: the per-invocation flag when one
+/// was given, else `[log] actions` - which applies to named actions only.
+///
+/// A literal command follows the flag and nothing else, matching watch mode's
+/// any-command decision: `x acme --log zig build test` records, a bare
+/// `x acme zig build test` never does. The config default is about the actions
+/// you run repeatedly, and a config that silently recorded every ad-hoc command
+/// would fill the directory with transcripts nobody asked for.
+fn recording(app: *App, cfg: config.Config, name: []const u8) bool {
+    if (app.log) |want| return want;
+    return cfg.log_actions and name.len > 0;
+}
+
+const Recording = struct { file: Io.File, path: []const u8 };
+
+/// openRecording creates the transcript file and writes its header, or returns
+/// null when this run is not recorded (or when the log cannot be opened - a
+/// recording is a courtesy and must never stop the command).
+fn openRecording(app: *App, alias: []const u8, name: []const u8, raw_command: []const u8) !?Recording {
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    if (!recording(app, cfg, name)) return null;
+    const dir_path = try logs.dirFor(app.arena, app.home, alias);
+    store.mkdirAll(app.io, dir_path) catch {};
+    const ts = try logs.timestamp(app.arena, app.io);
+    const path = try std.fs.path.join(app.arena, &.{ dir_path, try logs.fileName(app.arena, name, ts) });
+    const file = Io.Dir.cwd().createFile(app.io, path, .{}) catch |e| {
+        try app.err.print("nix: could not record to {s} ({s}) - running unrecorded\n", .{ path, @errorName(e) });
+        return null;
+    };
+    // The RAW command, never the secret-expanded one: the same rule that keeps
+    // ${secret:NAME} out of every listing.
+    const head = try logs.header(app.arena, alias, name, raw_command, try logs.humanTime(app.arena, app.io));
+    var f = file;
+    f.writeStreamingAll(app.io, head) catch {};
+    const keep = if (cfg.log_keep > 0) cfg.log_keep else logs.default_keep;
+    logs.prune(app.arena, app.io, dir_path, name, keep) catch {};
+    return .{ .file = f, .path = path };
 }
 
 /// startWindowed launches a command in a shell of its OWN - a new console
@@ -882,11 +951,17 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
         .{ .k = "{duration}", .v = duration },
         .{ .k = "{level}", .v = if (ok) "info" else "warn" },
         .{ .k = "{message}", .v = message },
+        // Empty when this run was not recorded, which is what makes {log} safe
+        // to leave in a hook template unconditionally - the failure toast
+        // carries the path to the why when there is one, and says nothing extra
+        // when there is not.
+        .{ .k = "{log}", .v = app.log_path },
     };
     const env_extra = [_]notify.Pair{
         .{ .k = "NIX_ACTION", .v = name },
         .{ .k = "NIX_ACTION_EXIT", .v = exit_str },
         .{ .k = "NIX_ACTION_DURATION_MS", .v = ms_str },
+        .{ .k = "NIX_ACTION_LOG", .v = app.log_path },
     };
     notify.fire(app, cfg.notify_on_finish, dir, &pairs, &env_extra) catch |e| {
         try app.err.print("nix: notify hook: {s}\n", .{@errorName(e)});

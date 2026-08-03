@@ -124,6 +124,16 @@ You can hand-edit the file (`nix --list` and resolve pick up changes immediately
 
 One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed, pruned, or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does, including as a `+group` member. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
 
+### Recorded runs
+
+`[log] actions = true` records what each `x <alias> :action` printed, to `~/.nix/logs/<alias>/<action>-<timestamp>.log` - merged stdout and stderr, a header naming the raw command, and a footer with the exit code and duration. `nix --logs [alias]` browses them (newest first, with an exit column); `--log` and `--no-log` override the config for one run.
+
+Off by default, and deliberately: recording pipes the child's output, so a tty-detecting tool prints uncoloured while it is being recorded. That trade is worth making knowingly rather than having it start happening to everyone.
+
+Retention is per (alias, action) - `[log] keep`, default 10 - so a chatty `:test` can never evict `:deploy` history, and "this build vs the last one" always has both sides. Put `{log}` in `[notify] on_finish` and the failure toast carries the path to the why. Named actions only for now: a literal `x acme <cmd>` is spawned as an argv, and merging its streams for the transcript needs the shell.
+
+The header records the command **as written**, never the secret-expanded form - the same rule that keeps `${secret:NAME}` out of every listing. What a tool echoes into its own output is the tool's business.
+
 ### Path dialects
 
 `--as <dialect>` changes the *spelling* of the path a command prints or copies - the same directory, written the way whichever tool is about to read it expects:
