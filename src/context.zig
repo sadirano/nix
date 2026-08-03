@@ -38,12 +38,17 @@ pub const default_ttl_secs: u64 = 600;
 
 // ---- pure helpers -----------------------------------------------------------
 
+/// The key prefix a source uses to declare a produced variable secret.
+pub const secret_prefix = "secret:";
+
 /// parseKvLines reads `KEY=VALUE` lines from the script's output file. Blank
 /// lines and `#` comments are skipped; a line without `=` is skipped rather
 /// than failing, so a script that logs into the file by accident degrades to
 /// "that line contributed nothing" instead of aborting navigation. The value
 /// keeps its exact bytes (no quote stripping) — a path with spaces is common
 /// and quoting rules would be one more thing to get wrong in a .cmd.
+///
+/// A `secret:NAME=value` line produces the variable NAME, marked secret (#51).
 pub fn parseKvLines(arena: std.mem.Allocator, data: []const u8) ![]Var {
     var out: std.ArrayList(Var) = .empty;
     // Windows PowerShell 5.1 writes a UTF-8 BOM for `Out-File -Encoding utf8`,
@@ -55,11 +60,22 @@ pub fn parseKvLines(arena: std.mem.Allocator, data: []const u8) ![]Var {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
+        var key = std.mem.trim(u8, line[0..eq], " \t");
+        // `secret:TOKEN=…` declares a credential (#51), reusing the vocabulary
+        // `${secret:NAME}` already established in env.toml. Matched
+        // case-insensitively on purpose: the cost of missing the marker is a
+        // token on an elevated command line, and `SECRET:TOKEN` would
+        // otherwise become a variable of that literal name.
+        var secret = false;
+        if (key.len >= secret_prefix.len and std.ascii.eqlIgnoreCase(key[0..secret_prefix.len], secret_prefix)) {
+            secret = true;
+            key = std.mem.trim(u8, key[secret_prefix.len..], " \t");
+        }
         if (key.len == 0) continue;
         try out.append(arena, .{
             .key = try arena.dupe(u8, key),
             .value = try arena.dupe(u8, std.mem.trim(u8, line[eq + 1 ..], " \t")),
+            .secret = secret,
         });
     }
     return out.items;
@@ -630,6 +646,23 @@ pub fn run(
         try app.err.writeAll("  (write KEY=VALUE lines to the file named by NIX_CONTEXT_OUT)\n");
         return null;
     }
+    // A result carrying a declared secret is not cached AT ALL (#51).
+    // contexts-cache.toml is a plaintext file under $home, so the credential
+    // must not land in it - and caching only the other variables would be
+    // worse than not caching: the next hit would hand back a result silently
+    // missing its token. The source re-runs instead, which is what fetching a
+    // credential should do anyway.
+    const has_secret = for (vars) |kv| {
+        if (kv.secret) break true;
+    } else false;
+    if (has_secret) {
+        // Said out loud only when the author asked for caching, so a source
+        // that never set `cache` stays quiet about a default it did not choose.
+        if (src.cache.len > 0) {
+            try app.err.print("nix: {s}: not cached - {s} declared a secret variable, and the cache is plaintext\n", .{ src.label, std.fs.path.basename(r.script) });
+        }
+        return vars;
+    }
     if (ttl > 0) cachePut(app, key, vars, ttl) catch {}; // a cache we cannot write is not fatal
     return vars;
 }
@@ -747,6 +780,22 @@ test "parseKvLines: pairs, comments, junk lines, spaces in values" {
     try std.testing.expectEqualStrings("C:\\Program Files\\thing", findVar(vars, "path").?);
     // A stray log line has no '=', a line with an empty key is dropped.
     try std.testing.expect(findVar(vars, "") == null);
+}
+
+test "parseKvLines: a secret: prefix declares the variable, and is not part of its name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // Case folds and the space after the marker is not part of the name:
+    // missing a marker costs a token on an elevated command line. `secretive`
+    // merely starts with the letters; `secret:=x` has no name left at all.
+    const vars = try parseKvLines(a, "client_name=acme\nsecret:VAULT_TOKEN=s.abc123\nSECRET: OTHER = x\nsecret:=nameless\nsecretive=not-a-marker\n");
+    try std.testing.expectEqual(@as(usize, 4), vars.len);
+    for (vars) |v| {
+        const want = std.mem.eql(u8, v.key, "VAULT_TOKEN") or std.mem.eql(u8, v.key, "OTHER");
+        try std.testing.expectEqual(want, v.secret);
+    }
+    try std.testing.expectEqualStrings("s.abc123", findVar(vars, "VAULT_TOKEN").?);
 }
 
 test "parseKvLines: a UTF-8 BOM does not become part of the first key" {

@@ -6,7 +6,15 @@ const std = @import("std");
 const Io = std.Io;
 const eqlFold = @import("util.zig").eqlFoldAscii;
 
-pub const Var = struct { key: []const u8, value: []const u8 };
+/// One variable, from a `[contexts.vars]` default or produced by a source.
+///
+/// `secret` is the source's own declaration that this value is a credential
+/// (a `secret:NAME=` line in $NIX_CONTEXT_OUT). nix cannot tell a looked-up
+/// client name from a looked-up token by inspection - they are the same bytes
+/// - so the author says which is which, and the marked ones are kept off an
+/// elevated command line and out of the result cache. Static `[contexts.vars]`
+/// defaults are never secret: they sit in a config file in plaintext already.
+pub const Var = struct { key: []const u8, value: []const u8, secret: bool = false };
 
 pub const ContextDef = struct {
     segment: []const u8 = "",

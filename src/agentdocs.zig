@@ -1007,6 +1007,12 @@ pub const specs = [_]Spec{
         \\Because executing a script is a real side effect, a context source's
         \\bytes must be approved with `nix --trust <alias> [segment]` before its
         \\run will execute, and any edit to the script re-arms that prompt.
+        \\
+        \\A source writes `KEY=VALUE` lines to $NIX_CONTEXT_OUT. A key written
+        \\`secret:NAME=` declares that value a credential: it still reaches the
+        \\child and the path template, but it is withheld from an elevated
+        \\command line (world-readable in the process list) and the result is
+        \\not cached, since the cache is a plaintext file.
         ,
         .agent_use =
         \\`nix <seg>@<alias>` resolves and prints, like any alias. `nix

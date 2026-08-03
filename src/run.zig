@@ -748,18 +748,24 @@ fn startWindowed(app: *App, command: []const u8, alias: []const u8, dir: []const
         for (app.env_vars) |kv| if (kv.from_secret) {
             try app.err.print("nix: {s} is secret-derived and is NOT passed to an elevated window (it would sit in that process's command line)\n", .{kv.key});
         };
-        // Context variables DO travel, because nix cannot tell a looked-up
-        // name from a looked-up credential - unlike env.toml, which knows
-        // because the value was written as ${secret:NAME}. Name them so the
-        // author can see where they end up.
-        if (app.ctx_vars.len > 0) {
-            var b: std.ArrayList(u8) = .empty;
-            for (app.ctx_vars, 0..) |kv, i| {
-                if (i > 0) try b.appendSlice(app.arena, ", ");
-                try b.appendSlice(app.arena, kv.key);
+        // A context variable its source declared secret is withheld on the same
+        // terms; the rest travel, because nix cannot tell a looked-up name from
+        // a looked-up credential on its own. Name both sets - what is missing
+        // from the window, and what is about to be readable in the process list.
+        {
+            var travelling: std.ArrayList(u8) = .empty;
+            for (app.ctx_vars) |kv| {
+                if (kv.secret) {
+                    try app.err.print("nix: {s} was declared secret by its context source and is NOT passed to an elevated window\n", .{kv.key});
+                    continue;
+                }
+                if (travelling.items.len > 0) try travelling.appendSlice(app.arena, ", ");
+                try travelling.appendSlice(app.arena, kv.key);
             }
-            try app.err.print("nix: context variables travel on the elevated command line, readable in the process list: {s}\n", .{b.items});
-            try app.err.writeAll("  nix cannot tell a looked-up name from a looked-up credential - don't return one from a context source used with sudo\n");
+            if (travelling.items.len > 0) {
+                try app.err.print("nix: context variables travel on the elevated command line, readable in the process list: {s}\n", .{travelling.items});
+                try app.err.writeAll("  nix cannot tell a looked-up name from a looked-up credential - mark one as `secret:NAME=` in the source's output to withhold it\n");
+            }
         }
         const line = try elevatedCommand(app.arena, app.home, app.env_vars, app.ctx_vars, bare, alias, dir);
         proc.spawnElevated(app.arena, line, dir, comspec) catch |e| {
@@ -802,15 +808,12 @@ fn started(app: *App, alias: []const u8, name: []const u8, elevated: bool) !u8 {
 /// credential that only ever lived in a child's environment must not be
 /// promoted to that. startWindowed says which variables it withheld.
 ///
-/// Context variables (ctx_vars) are NOT filtered the same way, and the
-/// asymmetry is a limit rather than an oversight: an env.toml value is known to
-/// be secret because it was WRITTEN as `${secret:NAME}`, whereas a context
-/// variable is whatever a script printed to $NIX_CONTEXT_OUT - nix has no way
-/// to tell a looked-up client name from a looked-up token. Dropping them all
-/// would break the ordinary case these exist for. startWindowed names them
-/// instead, so an author who is fetching a credential can see where it goes.
-/// Letting a source DECLARE a variable secret is the real fix and needs a
-/// design decision about the output-file contract.
+/// A context variable is withheld on the same terms once its source DECLARES
+/// it secret (a `secret:NAME=` line in $NIX_CONTEXT_OUT, #51). Undeclared ones
+/// still travel, because nix cannot tell a looked-up client name from a
+/// looked-up token by inspection and dropping them all would break the
+/// ordinary case these exist for. startWindowed names both sets: what was
+/// withheld, and what is about to be readable in the process list.
 fn elevatedCommand(
     arena: std.mem.Allocator,
     home: []const u8,
@@ -832,7 +835,10 @@ fn elevatedCommand(
         if (kv.from_secret) continue;
         try setVar(arena, &buf, kv.key, kv.value);
     }
-    for (ctx_vars) |kv| try setVar(arena, &buf, kv.key, kv.value);
+    for (ctx_vars) |kv| {
+        if (kv.secret) continue;
+        try setVar(arena, &buf, kv.key, kv.value);
+    }
     try buf.appendSlice(arena, command);
     return buf.items;
 }
@@ -981,6 +987,23 @@ test "elevatedCommand: env.toml travels, a resolved secret does not" {
     // only lived in a child's environment must not be promoted to one.
     try std.testing.expect(std.mem.indexOf(u8, line, "hunter2") == null);
     try std.testing.expect(std.mem.indexOf(u8, line, "ACME_TOKEN") == null);
+}
+
+test "elevatedCommand: a context variable travels unless its source declared it secret" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const ctx = [_]segments.Var{
+        .{ .key = "CLIENT", .value = "northwind" },
+        // The asymmetry #51 closed: a vault-fetched token looks exactly like a
+        // looked-up name until the source says which it is.
+        .{ .key = "VAULT_TOKEN", .value = "s.abc123", .secret = true },
+    };
+    const line = try elevatedCommand(a, "H", &.{}, &ctx, "deploy.ps1", "acme", "D");
+    try std.testing.expect(std.mem.indexOf(u8, line, "set \"CLIENT=northwind\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "s.abc123") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "VAULT_TOKEN") == null);
 }
 
 test "applyArgs: appended by default, substituted where the command asks" {
