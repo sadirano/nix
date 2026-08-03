@@ -24,6 +24,12 @@ jobs:
         with:
           version: 0.16.0
 
+      # The harness shells out to rg and fd. Without them those checks skip,
+      # which is how a green pre-push run and a red CI run stopped contradicting
+      # each other out loud - the runner was covering 7 fewer checks than the
+      # hook. The harness now treats a skip as a failure, so this is required.
+      - uses: ./.github/actions/search-tools
+
       # One step, defined in build.zig, so the same gate runs here and on a dev
       # machine (`r nix :ci`, and .githooks/pre-push). Splitting it back into
       # per-check steps here would recreate the drift this replaced: the format
