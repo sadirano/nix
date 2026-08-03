@@ -91,6 +91,24 @@ pub fn build(b: *std.Build) void {
     const e2e_step = b.step("e2e", "Run the end-to-end harness against the built exe");
     e2e_step.dependOn(&e2e_cmd.step);
 
+    // `zig build limits` enforces the source-size ratchet (src/limits.zig). A
+    // binary rather than a unit test because a test has no Io to list a
+    // directory with, and a comptime list of filenames would miss the case the
+    // ratchet exists for: a new file nobody registered.
+    const limits = b.addExecutable(.{
+        .name = "limits",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/limits.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const limits_cmd = b.addRunArtifact(limits);
+    limits_cmd.setCwd(b.path("."));
+    limits_cmd.has_side_effects = true;
+    const limits_step = b.step("limits", "Check no source file has grown past its line limit");
+    limits_step.dependOn(&limits_cmd.step);
+
     // `zig build test` runs both modules' test blocks (a test executable only
     // covers one module at a time, hence two).
     const mod_tests = b.addTest(.{ .root_module = mod });
@@ -144,8 +162,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const ci_step = b.step("ci", "Everything CI runs: fmt check, tests, e2e, portable + linux builds");
+    const ci_step = b.step("ci", "Everything CI runs: fmt check, size ratchet, tests, e2e, portable + linux builds");
     ci_step.dependOn(&fmt_check.step);
+    // The size ratchet runs beside fmt: both are about the shape of the tree
+    // rather than its behaviour, both are cheap, and both should fail before a
+    // multi-minute test run rather than after it.
+    ci_step.dependOn(limits_step);
 
     // build.zig's own test blocks - the version-quad parser feeding the Windows
     // VERSIONINFO resource. `zig build test` covers src/ only, and this file is
