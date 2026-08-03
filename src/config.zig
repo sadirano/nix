@@ -58,6 +58,24 @@ pub const Config = struct {
     /// Placeholders: {alias} {action} {exit} {status} {duration} {level}
     /// {message}. Empty → no hook.
     notify_on_finish: []const u8 = "",
+    /// [notify] on_finish_min_ms: actions that SUCCEED faster than this stay
+    /// quiet. 0 (the default) notifies everything, as before.
+    ///
+    /// The hook's own documentation always said "so long builds report
+    /// completion"; without a threshold a 40ms window-close is announced as
+    /// eagerly as a 22-minute build, and a channel that cries wolf stops being
+    /// read - which costs the failure reports the feature exists for. A
+    /// FAILURE always notifies however fast it was: `:build` dying in 300ms is
+    /// the most useful toast there is.
+    notify_on_finish_min_ms: u64 = 0,
+    /// [notify] on_finish_skip: actions never worth reporting, however long
+    /// they take or however they end. A bare name (`"q"`) matches that action
+    /// in every alias; `"alias:action"` matches only there, for a project
+    /// whose `:q` means something slow and important.
+    ///
+    /// Absolute, failures included - unlike the threshold above. The list says
+    /// "irrelevant", and an irrelevant action's exit code is irrelevant too.
+    notify_on_finish_skip: []const []const u8 = &.{},
     /// [notify] on_paste / on_yank: result-record hooks run after a successful
     /// `p` / `y`, so "what exactly did that do?" has an inbox answer instead of
     /// a re-check. Placeholders: {alias} {message} {status} {level}.
@@ -290,6 +308,12 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             // values are command templates with {placeholders}; may contain '='
             // and spaces, so only the first '=' (found above) splits key/value.
             if (std.mem.eql(u8, key, "on_finish")) cfg.notify_on_finish = try arena.dupe(u8, stripQuotes(val_start));
+            // A threshold that failed to parse stays 0, which notifies as it
+            // always did: a typo must not silence the hook.
+            if (std.mem.eql(u8, key, "on_finish_min_ms")) cfg.notify_on_finish_min_ms = std.fmt.parseInt(u64, stripQuotes(val_start), 10) catch 0;
+            if (std.mem.eql(u8, key, "on_finish_skip")) {
+                cfg.notify_on_finish_skip = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+            }
             if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, stripQuotes(val_start));
             if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, stripQuotes(val_start));
             continue;

@@ -84,6 +84,16 @@ const starter_config =
     \\#   on_paste  = 'hoot send "{message}" --tag {alias}'
     \\#   on_yank   = 'hoot send "{message}" --tag {alias}'
     \\#
+    \\# Two keys keep it to the things worth hearing about. on_finish_min_ms
+    \\# stays quiet when an action SUCCEEDS faster than that (a failure always
+    \\# reports, however fast). on_finish_skip names actions never worth
+    \\# reporting at all - a bare name matches in every alias, 'alias:action'
+    \\# only there - and is absolute, failures included:
+    \\#
+    \\#   [notify]
+    \\#   on_finish_min_ms = 2000
+    \\#   on_finish_skip   = ["q", "acme:test"]
+    \\#
     \\# [log] records what an action PRINTED, to ~/.nix/logs/<alias>/, so a
     \\# failure you walked away from can be read instead of reproduced. Off by
     \\# default: recording pipes the child's output, and a tty-detecting tool
