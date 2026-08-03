@@ -1855,12 +1855,10 @@ pub fn main(init: std.process.Init) !void {
         try writeActions(&c, "pt", pt, if (proc.is_windows)
             \\[actions]
             \\wait = "ping -n 3 127.0.0.1 > NUL"
-            \\quick = "echo done"
             \\
         else
             \\[actions]
             \\wait = "sleep 2"
-            \\quick = "echo done"
             \\
         );
         r = try c.run(&.{ "pt", "--run", ":wait" });
@@ -1873,9 +1871,15 @@ pub fn main(init: std.process.Init) !void {
             std.mem.indexOf(u8, r.out, "action") != null, "--time reports the alias and splits it by kind", r);
 
         // Detached runs are inherently untimeable - nix returns as soon as the
-        // window is up, so there is no finish to observe.
+        // child is started, so there is no finish to observe. Checked on the
+        // LITERAL form deliberately: a detached ACTION gets a console window of
+        // its own, and a test suite must not leave one open on the desktop of
+        // whoever ran it.
         const before = readFileOr(&c, ledger, "").len;
-        _ = try c.run(&.{ "pt", "--run", "--outside", ":quick" });
+        _ = if (proc.is_windows)
+            try c.run(&.{ "pt", "--run", "--outside", "cmd", "/c", "echo detached" })
+        else
+            try c.run(&.{ "pt", "--run", "--outside", "sh", "-c", "echo detached" });
         c.check(readFileOr(&c, ledger, "").len == before, "an --outside run records no time", null);
 
         // The ledger is churny machine-local state, like `usage`: a backup that
@@ -1933,6 +1937,42 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "big:1@pg", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "variables") != null and
             std.mem.indexOf(u8, r.err, "limit") != null, "too many context variables is refused", r);
+
+        // A declared secret (#51). It is an ordinary variable everywhere except
+        // the two places a credential must not reach.
+        try writeFile(&c, join(&c, &.{ pg, ".nix", "segments.toml" }),
+            \\[[contexts]]
+            \\segment = "vault"
+            \\run = "fetch ${vault}"
+            \\source-template = "/${who}"
+            \\cache = "1h"
+            \\
+        );
+        try writeFile(&c, join(&c, &.{ scripts, "fetch.cmd" }),
+            \\@echo off
+            \\>>"%NIX_CONTEXT_OUT%" echo who=fine
+            \\>>"%NIX_CONTEXT_OUT%" echo secret:VAULT_TOKEN=s.abc123
+            \\
+        );
+        _ = try c.run(&.{ "--trust", "pg", "vault" });
+        r = try c.run(&.{ "vault:1@pg", "--resolve" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "fine") != null, "a secret variable does not disturb the path it helped resolve", r);
+
+        // The cache is plaintext, so a result carrying one is not written at
+        // all - caching the rest would hand back a result missing its token.
+        const cache_body = readFileOr(&c, join(&c, &.{ home, "contexts-cache.toml" }), "");
+        c.check(std.mem.indexOf(u8, cache_body, "s.abc123") == null and
+            std.mem.indexOf(u8, cache_body, "VAULT_TOKEN") == null, "a declared secret never reaches contexts-cache.toml", null);
+        // …and the refusal is stated, because the source asked for caching.
+        c.check(std.mem.indexOf(u8, r.err, "not cached") != null, "a source that asked for caching is told why it did not get it", r);
+
+        // It still reaches the child environment: withholding it there would
+        // break the case the marker exists to make safe.
+        r = if (proc.is_windows)
+            try c.run(&.{ "vault:1@pg", "--run", "cmd", "/c", "echo tok=%VAULT_TOKEN%" })
+        else
+            try c.run(&.{ "vault:1@pg", "--run", "sh", "-c", "echo tok=$VAULT_TOKEN" });
+        c.check(std.mem.indexOf(u8, r.out, "tok=s.abc123") != null, "a declared secret still reaches the command's environment", r);
     }
 
     // --- path dialects (--as, issue #24) -----------------------------------------------
