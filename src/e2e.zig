@@ -1028,6 +1028,36 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pa", "--yank" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "yank-hook=pa,ok,info:yanked path ") != null, "on_yank records the copied path", r);
 
+        // Quiet keys (#50). A threshold high enough that `echo` can never beat
+        // it silences the success, and the failure still gets through - the
+        // whole point of making the threshold cost-based rather than absolute.
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), try std.fmt.allocPrint(arena, "[notify]\non_finish = \"{s}\"\non_finish_min_ms = 600000\n", .{hook}));
+        r = try c.run(&.{ "pa", "--run", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null and
+            std.mem.indexOf(u8, r.out, "notified=") == null, "on_finish_min_ms silences a fast success", r);
+        r = try c.run(&.{ "pa", "--run", ":bad" });
+        c.check(r.code == 3 and std.mem.indexOf(u8, r.out, "notified=pa,bad,fail,3") != null, "a fast FAILURE reports whatever the threshold says", r);
+
+        // The skip list is absolute: named, `:bad` goes quiet too.
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), try std.fmt.allocPrint(arena, "[notify]\non_finish = \"{s}\"\non_finish_skip = [\"bad\"]\n", .{hook}));
+        r = try c.run(&.{ "pa", "--run", ":bad" });
+        c.check(r.code == 3 and std.mem.indexOf(u8, r.out, "notified=") == null, "on_finish_skip silences even a failure", r);
+        r = try c.run(&.{ "pa", "--run", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "notified=pa,hello,ok,0") != null, "an action not on the list still reports", r);
+
+        // `alias:action` is scoped to that alias - pb's `:bad` keeps notifying.
+        try writeActions(&c, "pb", pb, "[actions]\nbad = \"exit 3\"\n");
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), try std.fmt.allocPrint(arena, "[notify]\non_finish = \"{s}\"\non_finish_skip = [\"pa:bad\"]\n", .{hook}));
+        r = try c.run(&.{ "pa", "--run", ":bad" });
+        c.check(std.mem.indexOf(u8, r.out, "notified=") == null, "an alias:action entry silences that pair", r);
+        r = try c.run(&.{ "pb", "--run", ":bad" });
+        c.check(std.mem.indexOf(u8, r.out, "notified=pb,bad,fail,3") != null, "…and leaves another alias's action of the same name alone", r);
+
+        // Informational, so it belongs to the full report rather than `-q`,
+        // which is problems only.
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "on_finish_skip") != null, "--doctor names what is being silenced", r);
+
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
         try writeActions(&c, "pa", pa, if (proc.is_windows)
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=%NIX_ALIAS% path=%NIX_ALIAS_PATH%\"\n"

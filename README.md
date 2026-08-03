@@ -603,6 +603,16 @@ on_finish = 'hoot send "{message}" --tag {alias} --level {level}'
 
 The template runs in the alias dir after the action exits, with placeholders expanded: `{alias}`, `{action}`, `{exit}`, `{status}` (`ok`/`fail`), `{duration}` (`850ms`, `12s`, `1m23s`), `{level}` (`info` on success, `warn` on failure — so a level-aware notifier keeps success quiet and toasts failure), and `{message}` (a composed one-liner, e.g. `:build failed (exit 2) after 1m23s`). Like `[nav] terminal`, it's tokenized and spawned directly rather than through a shell, and expansion happens per token — so a bare `{message}` stays a single argument, quoted or not; prefix `cmd /c` (or `sh -c '…'`) if you really want shell operators. The hook also sees `NIX_ALIAS`, `NIX_ACTION`, `NIX_ACTION_EXIT`, and `NIX_ACTION_DURATION_MS` in its environment, so it can just as well be a bare script name from `.nix/scripts`. It's an observer only: its own exit code is ignored and the action's is passed through untouched. Detached runs (`x <alias> -o :serve`) and literal commands (`x <alias> <cmd>`) don't notify — the hook is for the named, repeatable things.
 
+**Not everything deserves a toast.** A hook that fires for a 40ms window-close as eagerly as for a 22-minute build turns the notification channel into noise, and a channel nobody reads costs you the failure reports the feature exists to deliver. Two keys keep it to the things worth hearing about:
+
+```toml
+[notify]
+on_finish_min_ms = 2000              # succeeded faster than this? stay quiet
+on_finish_skip   = ["q", "acme:test"]  # never report these at all
+```
+
+They cover different things. `on_finish_min_ms` is about *cost* — below the threshold, silence — but a **failure always reports however fast it was**, because `:build` dying in 300ms is the most useful notification of the day. `on_finish_skip` is about *identity*: an action on the list is never reported, however long it ran and however it ended, since an irrelevant action's exit code is irrelevant too. A bare name matches that action in every alias (one line silences a `[bin]`-exported action used from everywhere); `alias:action` matches only there, for the project whose own `:q` means something slow and important. `nix --doctor` prints both, so a hook that is firing less than you expected doesn't look like a broken notifier.
+
 Two sibling keys record what the clipboard commands actually did, for the "wait, what exactly did that copy?" moments — no more re-checking:
 
 ```toml

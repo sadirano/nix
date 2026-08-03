@@ -10,6 +10,7 @@ const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
+const util = @import("util.zig");
 
 const App = app_zig.App;
 
@@ -89,6 +90,39 @@ pub fn expandTemplate(arena: std.mem.Allocator, template: []const u8, pairs: []c
     return out.items;
 }
 
+/// silenced decides whether `on_finish` stays quiet for a finished action -
+/// the gate that turns the hook from "every action" into "the ones worth
+/// hearing about" (issue #50).
+///
+/// Two rules, and they are not redundant. The SKIP LIST is identity-based and
+/// absolute: an action on it is never reported, however long it ran and
+/// however it ended, because an irrelevant action's exit code is irrelevant
+/// too. The THRESHOLD is cost-based and exempts failures: something that
+/// succeeded in 40ms is noise, while something that failed in 40ms is often
+/// the most useful toast of the day.
+///
+/// A skip entry containing ':' is an `alias:action` pair matched whole; a bare
+/// entry matches that action name in any alias, which is what silences an
+/// exported action used from everywhere in one line. Both halves fold case,
+/// like every other alias and action lookup.
+pub fn silenced(
+    skip: []const []const u8,
+    min_ms: u64,
+    alias: []const u8,
+    action: []const u8,
+    ms: u64,
+    ok: bool,
+) bool {
+    for (skip) |entry| {
+        const e = std.mem.trim(u8, entry, " \t");
+        if (e.len == 0) continue;
+        if (std.mem.indexOfScalar(u8, e, ':')) |c| {
+            if (util.eqlFoldAscii(e[0..c], alias) and util.eqlFoldAscii(e[c + 1 ..], action)) return true;
+        } else if (util.eqlFoldAscii(e, action)) return true;
+    }
+    return ok and min_ms > 0 and ms < min_ms;
+}
+
 /// fmtDuration renders a millisecond count for humans: 850ms, 12s, 1m23s, 1h02m.
 pub fn fmtDuration(arena: std.mem.Allocator, ms: u64) ![]const u8 {
     if (ms < 1000) return std.fmt.allocPrint(arena, "{d}ms", .{ms});
@@ -154,6 +188,34 @@ test "expandTemplate: substitution, unknown tokens survive" {
     );
     // Unknown {tokens} and stray braces pass through untouched.
     try std.testing.expectEqualStrings("x {nope} {} {", try expandTemplate(a, "x {nope} {} {", &pairs));
+}
+
+test "silenced: the threshold is cost-based and lets failures through" {
+    const none: []const []const u8 = &.{};
+    // Nothing configured is the old behaviour: everything notifies.
+    try std.testing.expect(!silenced(none, 0, "acme", "q", 40, true));
+    try std.testing.expect(!silenced(none, 2000, "acme", "build", 5000, true));
+    try std.testing.expect(silenced(none, 2000, "acme", "build", 40, true));
+    // The case the threshold must never swallow: a fast failure.
+    try std.testing.expect(!silenced(none, 2000, "acme", "build", 40, false));
+}
+
+test "silenced: the skip list is identity-based and absolute" {
+    const skip: []const []const u8 = &.{ "q", "acme:test", "  " };
+    // A bare name matches in every alias, which is how an exported action used
+    // from everywhere gets silenced in one line.
+    try std.testing.expect(silenced(skip, 0, "acme", "q", 40, true));
+    try std.testing.expect(silenced(skip, 0, "other", "Q", 40, true));
+    // Absolute: a skipped action stays quiet even when it fails, and even when
+    // it took an hour.
+    try std.testing.expect(silenced(skip, 0, "acme", "q", 3_600_000, false));
+    // A pair is scoped to its alias, so another project's `:test` still reports.
+    try std.testing.expect(silenced(skip, 0, "acme", "test", 9000, false));
+    try std.testing.expect(!silenced(skip, 0, "other", "test", 9000, false));
+    // A pair entry must not match on the action name alone.
+    try std.testing.expect(!silenced(&.{"acme:test"}, 0, "other", "test", 10, true));
+    // An empty entry matches nothing - a stray comma cannot silence everything.
+    try std.testing.expect(!silenced(skip, 0, "acme", "build", 9000, true));
 }
 
 test "fmtDuration: unit boundaries" {

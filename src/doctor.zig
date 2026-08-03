@@ -394,6 +394,15 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
                 }
             }
             if (!any) try d.row(.note, "notify hook", "unset - set [notify] on_finish/on_paste/on_yank to record outcomes (e.g. hoot)");
+            // What is NOT being reported, and why. A hook that is firing less
+            // than the user expects looks identical to a broken notifier from
+            // the outside, and this is the only place that can tell them apart.
+            if (cfg.notify_on_finish_min_ms > 0) {
+                try d.row(.ok, "notify quiet", try std.fmt.allocPrint(app.arena, "on_finish_min_ms = {d} - actions that succeed faster stay quiet (failures always report)", .{cfg.notify_on_finish_min_ms}));
+            }
+            if (cfg.notify_on_finish_skip.len > 0) {
+                try d.row(.ok, "notify quiet", try std.fmt.allocPrint(app.arena, "on_finish_skip = {s} - never reported, failures included", .{try std.mem.join(app.arena, ", ", cfg.notify_on_finish_skip)}));
+            }
         }
 
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);

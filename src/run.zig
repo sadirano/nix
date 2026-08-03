@@ -885,6 +885,10 @@ pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: [
 ///
 /// An elevated (`sudo`) action is exempt for the same reason: it runs in its own
 /// window under a token we do not own, so there is no finish here to time.
+///
+/// `[notify] on_finish_skip` and `on_finish_min_ms` decide whether the hook
+/// actually fires (notify.silenced): the action still runs, is still timed and
+/// still recorded, it just goes unannounced.
 pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool) !u8 {
     if (outside or stripSudo(command) != null) return runShellString(app, command, alias, dir, name, true);
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
@@ -894,6 +898,9 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
     const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
     const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
     const ok = code == 0;
+    // Silence is decided AFTER the run, from what it cost and what it was
+    // called - the only two things the user has to reason about (#50).
+    if (notify.silenced(cfg.notify_on_finish_skip, cfg.notify_on_finish_min_ms, alias, name, ms, ok)) return code;
     const duration = try notify.fmtDuration(app.arena, ms);
     const message = if (ok)
         try std.fmt.allocPrint(app.arena, ":{s} finished in {s}", .{ name, duration })
