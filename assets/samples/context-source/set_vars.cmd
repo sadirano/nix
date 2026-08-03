@@ -11,12 +11,15 @@ REM   run = "set_vars ${task}"
 REM   source-template = "/${client_name}/${task}"
 REM   cache = "1h"
 REM
-REM Then `o task:123@project` lands in <project>\acme\123.
+REM Then `o task:123@project` lands in <project>\acme\123, and a bare
+REM `o task@project` offers a menu of the open tickets (see below).
 REM
 REM Contract:
 REM   in   arguments from the `run` line; NIX_SEGMENT, NIX_SEGMENT_VALUE,
 REM        NIX_ALIAS, NIX_ALIAS_PATH are also set
-REM   out  KEY=VALUE lines appended to the file named by %NIX_CONTEXT_OUT%
+REM   out  KEY=VALUE lines appended to the file named by %NIX_CONTEXT_OUT%,
+REM        optionally several blocks separated by a `---` line - one per
+REM        candidate, offered as a menu
 REM   exit non-zero aborts resolution and nothing is cached
 REM
 REM stdout is relayed to stderr, so `echo` here is for humans, never for
@@ -26,9 +29,24 @@ REM ---------------------------------------------------------------------------
 setlocal
 
 set "TASK=%~1"
+
+REM No ticket named: answer with the candidates instead of failing. One block
+REM per ticket, separated by `---`; `_display` is the row the user picks by and
+REM never becomes a variable. Nix shows a picker only when more than one block
+REM comes back, so a lookup that finds exactly one still navigates straight
+REM there - the menu is a property of the answer, not a mode to declare.
 if "%TASK%"=="" (
-  echo set_vars: no task id given ^(use `o task:123@%NIX_ALIAS%`^) 1>&2
-  exit /b 1
+  echo Listing open tickets...
+  REM --- Replace with the real query, one block per result. ------------------
+  >>"%NIX_CONTEXT_OUT%" echo _display=PROJ-123  Fix login flow
+  >>"%NIX_CONTEXT_OUT%" echo task=123
+  >>"%NIX_CONTEXT_OUT%" echo client_name=acme
+  >>"%NIX_CONTEXT_OUT%" echo ---
+  >>"%NIX_CONTEXT_OUT%" echo _display=PROJ-140  Rate limiter
+  >>"%NIX_CONTEXT_OUT%" echo task=140
+  >>"%NIX_CONTEXT_OUT%" echo client_name=initech
+  REM ------------------------------------------------------------------------
+  exit /b 0
 )
 
 echo Looking up ticket %TASK%...

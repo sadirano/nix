@@ -16,6 +16,17 @@ const eqlFold = @import("util.zig").eqlFoldAscii;
 /// defaults are never secret: they sit in a config file in plaintext already.
 pub const Var = struct { key: []const u8, value: []const u8, secret: bool = false };
 
+/// One answer a context source returned (#19). A source that knows the answer
+/// returns exactly one and the segment resolves as it always has; a source
+/// answering a question with several valid answers ("which of my open
+/// tickets?") returns one per candidate and the segment becomes a menu.
+///
+/// `display` is the row a person picks by - the source's `_display` key, or the
+/// first value it returned when it named none. It is never a template variable:
+/// it exists to be read, and a menu whose rows were also environment variables
+/// would make presentation load-bearing.
+pub const Candidate = struct { display: []const u8, vars: []Var };
+
 pub const ContextDef = struct {
     segment: []const u8 = "",
     scope: []const u8 = "",

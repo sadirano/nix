@@ -290,9 +290,31 @@ x task:123@project agent     # runs set_vars 123 -> client_name=acme
 
 Never having to remember which client ticket 123 belonged to is the point.
 
+**A source can answer with a menu.** Some questions have several right answers — *which* of my open tickets, *which* PR worktree, *which* sprint directory. Write more than one block, separated by a `---` line, and the segment becomes a picker:
+
+```
+_display=PROJ-123  Fix login flow
+task=123
+client_name=acme
+---
+_display=PROJ-140  Rate limiter
+task=140
+client_name=initech
+```
+
+```powershell
+o ticket@acme     # fzf offers your open tickets; the pick becomes the path
+```
+
+`_display` is the row you pick by and is never exported as a variable — a block that names none falls back to its first value. **Activation is by count, not by config**: one block navigates silently (which is every source written before this existed), several open the picker, none is an error naming the script. The winning block's variables then behave exactly as a single answer's do — they feed `source-template` and reach the child environment.
+
+An **inline value never prompts**: `o ticket:123@acme` passes 123 as `$NIX_SEGMENT_VALUE` and the script is expected to answer with that one; if it answers with several anyway, the first is used and the ambiguity is reported rather than hidden. Under `--no-prompt` (or any shell without a console) several candidates print their rows and exit non-zero — the standard show-and-refuse contract, with the inline form named as the way through. Menus are **stateless**: nix never preselects your last pick, because repeating a destination is what the inline form is for.
+
+The candidate list is cached like any other result — a repeated `o ticket@acme` gets an instant menu — **unless a block declares a secret**, in which case nothing is cached and the source re-runs every time. See the next paragraph for why.
+
 **The script's contract.** nix creates a temp file and puts its path in `$NIX_CONTEXT_OUT`; the script appends `KEY=VALUE` lines to it. Its **stdout is relayed to stderr** for you to read, never parsed, so a `.cmd` missing `@echo off` or a chatty tool it calls can't corrupt a variable. A non-zero exit aborts resolution and caches nothing. `NIX_SEGMENT`, `NIX_SEGMENT_VALUE`, `NIX_ALIAS`, and `NIX_ALIAS_PATH` are also set. Working samples for both shells: [`assets/samples/context-source/`](assets/samples/context-source/).
 
-**A source can declare a variable secret.** Prefix the key and the value is treated as a credential: `secret:VAULT_TOKEN=s.abc123`. It reaches the child environment and `source-template` exactly like any other produced variable — the path is not the leak — but it is **withheld from an elevated (`sudo`) command line**, where everything becomes world-readable in the process list, and the result is **not cached at all**, since `contexts-cache.toml` is plaintext (caching only the rest would silently hand back a result missing its token). Without the marker nix cannot tell a looked-up client name from a looked-up credential — they are the same bytes — so it says which variables are about to travel and lets you decide.
+**A source can declare a variable secret.** Prefix the key and the value is treated as a credential: `secret:VAULT_TOKEN=s.abc123`. It reaches the child environment and `source-template` exactly like any other produced variable — the path is not the leak — but it is **withheld from an elevated (`sudo`) command line**, where everything becomes world-readable in the process list, and the result is **not cached at all**, since `contexts-cache.toml` is plaintext (caching only the rest would silently hand back a result missing its token). That rule wins over the menu cache too: a candidate list with a credential in it re-runs the lookup on every navigation, including the one that just drew the menu. Without the marker nix cannot tell a looked-up client name from a looked-up credential — they are the same bytes — so it says which variables are about to travel and lets you decide.
 
 **`run` is a bare script name**, resolved like any project script — `<alias>/.nix/scripts/` first, then `~/.nix/scripts/`, extension-probed (`.cmd`/`.bat`/`.exe`/`.ps1`; `.ps1` is invoked through pwsh automatically). A name containing a path separator is taken relative to the alias dir. Tokens split *before* `${}` expands, so a value containing spaces stays one argument.
 

@@ -10,6 +10,12 @@
 #   4. cd <project>/acme/123
 #   5. export task and client_name into the shell it opens
 #
+# `o task@project` - no value - runs the same script with an empty ${task}.
+# The sample answers that with several blocks separated by `---`, so nix offers
+# them in a picker and the chosen block resolves the path. One block would
+# navigate straight there instead: the menu is a property of the answer, never
+# a mode declared here.
+#
 # Because this file lives in the project (and so arrives with a git clone), the
 # first run refuses and prints what to review. Approve with:
 #
