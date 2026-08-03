@@ -1,0 +1,16 @@
+name: Search tools
+description: >
+  Install the external tools the e2e harness shells out to (ripgrep, fd), so a
+  CI runner covers the same checks a dev machine does.
+
+# Defined once and used by every workflow that runs the harness. Without these
+# the grep/find/notes checks SKIP, and a skip is how "green locally" and "green
+# on CI" stopped meaning the same thing - the runner quietly ran 7 fewer checks
+# than the pre-push hook did. The harness now fails on a skip, so this step is
+# what keeps that failure from being the normal state on CI.
+runs:
+  using: composite
+  steps:
+    - name: Install ripgrep and fd
+      shell: pwsh
+      run: choco install ripgrep fd -y --no-progress

@@ -4,6 +4,10 @@
 # Enable once per clone:  git config core.hooksPath .githooks
 # Skip a single push:     NIX_SKIP_PREPUSH=1 git push
 #
+# The gate needs rg and fd on PATH (`scoop install ripgrep fd`). Without them
+# the e2e harness fails rather than skipping, on purpose: a hook that covers
+# less than CI does is a hook that reports green on what CI is about to reject.
+#
 # The skip exists on purpose. A hook you cannot get past is a hook people
 # disable permanently the first time it is wrong.
 

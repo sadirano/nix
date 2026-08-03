@@ -1386,13 +1386,21 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pa", "wrapper", "captured", "this" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "noted in") != null and
             std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "notes", "pa.md" }), ""), "wrapper captured this") != null, "`n <alias> <words>` captures a note", r);
-        r = try c.run(&.{ "--no-prompt", "pa" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
-            std.mem.indexOf(u8, r.out, "wrapper captured this") != null, "`n <alias>` with no words reads that alias's notes", r);
-        // The global flag sits BEFORE the alias here, which is where an agent
-        // puts it - and where a desugaring that appended it would lose it.
-        r = try c.run(&.{"--no-prompt"});
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`n` with no alias reads every note", r);
+        // The READ direction is the sg pipeline pointed at the notes dir, so it
+        // needs ripgrep - same gate as the --notes checks above. Ungated, these
+        // exit 1 on "rg not found" and read as a broken `n`.
+        if (c.has("rg")) {
+            r = try c.run(&.{ "--no-prompt", "pa" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
+                std.mem.indexOf(u8, r.out, "wrapper captured this") != null, "`n <alias>` with no words reads that alias's notes", r);
+            // The global flag sits BEFORE the alias here, which is where an agent
+            // puts it - and where a desugaring that appended it would lose it.
+            r = try c.run(&.{"--no-prompt"});
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`n` with no alias reads every note", r);
+        } else {
+            c.skip("`n <alias>` with no words reads that alias's notes", "rg");
+            c.skip("`n` with no alias reads every note", "rg");
+        }
         r = try c.run(&.{ "--no-prompt", "nosuchalias" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no notes for") != null, "`n` on an alias with no notes says so", r);
         c.exe = real_exe;
@@ -1401,8 +1409,12 @@ pub fn main(init: std.process.Init) !void {
         // The flag goes BEFORE the action here, the same rule every other
         // alias action follows (`nix <alias> --no-prompt --find <pat>`):
         // everything after an action flag belongs to that action.
-        r = try c.run(&.{ "pa", "--no-prompt", "--notes" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`nix <alias> --notes` is the canonical read form", r);
+        if (c.has("rg")) {
+            r = try c.run(&.{ "pa", "--no-prompt", "--notes" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`nix <alias> --notes` is the canonical read form", r);
+        } else {
+            c.skip("`nix <alias> --notes` is the canonical read form", "rg");
+        }
 
         // A [shortcuts] rename: a wrapper installed under the custom name must
         // desugar to the builtin slot's action, not fall through to `nix <alias>`.
@@ -1730,6 +1742,22 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("\ne2e: {d} checks, {d} failure(s), {d} skipped\n", .{ c.checks, c.fails, c.skips });
     if (c.fails > 0) {
+        std.debug.print("scratch kept for inspection: {s}\n", .{root});
+        std.process.exit(1);
+    }
+    // A skip fails the gate. Skips are how "green here" and "green on CI"
+    // stopped meaning the same thing: this machine has rg and fd, the runner
+    // had neither, so 7 checks quietly evaporated there and the pre-push hook
+    // could not have caught what CI was about to fail on. Whoever runs the
+    // gate has to run all of it, or say out loud that they are not.
+    if (c.skips > 0 and c.env.get("NIX_E2E_ALLOW_SKIPS") == null) {
+        std.debug.print(
+            \\
+            \\e2e: {d} check(s) skipped for missing tools, which the gate treats as failure.
+            \\     Install them so this run covers what CI covers:  scoop install ripgrep fd
+            \\     To accept reduced coverage for one run:          NIX_E2E_ALLOW_SKIPS=1
+            \\
+        , .{c.skips});
         std.debug.print("scratch kept for inspection: {s}\n", .{root});
         std.process.exit(1);
     }

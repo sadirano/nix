@@ -47,6 +47,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/release-checklist.sh verify "$GITHUB_REF_NAME" "$GITHUB_SHA"
 
+      # rg and fd: the e2e harness shells out to them, and treats a skip as
+      # a failure so a runner cannot cover less than the pre-push hook did.
+      - uses: ./.github/actions/search-tools
+
       - name: Test
         run: zig build test
 
