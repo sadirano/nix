@@ -38,24 +38,13 @@ const PickerSource = union(enum) {
 
 // ---- the picker's decisions, as data (issue #30) -----------------------------
 //
-// --doctor and --picker-check exist so a user can trust what nix WILL do
-// without running it, and both used to answer by re-implementing this file's
-// logic a second time. doctor.zig said so in its own comments ("mirroring
-// pickerSource so the report matches reality"), which is the shape of a bug
-// waiting for someone to change one copy.
-//
-// They had already drifted in three places, one of them the wrong way round:
-// doctor rejected an fd that resolved to a .cmd shim, while the picker took any
-// fd on PATH and would have run a shim's argv; doctor read only HOME for the
-// default root where the picker reads USERPROFILE first; and doctor could
-// report "=> uses fd" for a configuration where the picker returns .none
-// because no root exists. The decisions below are now made once, here, and
-// merely RENDERED there.
+// --doctor and --picker-check report what the picker WILL do, so they call the
+// functions below rather than re-deriving the rules. Anything they print is a
+// rendering of a decision made here.
 
-/// ToolState is what a finder is, as opposed to whether its name is on PATH.
-/// `shim` is the trap doctor already caught and the picker did not: a .cmd or
-/// .bat ahead of the real fd.exe answers findInPath and then cannot take fd's
-/// arguments.
+/// ToolState is what a finder is, not merely whether its name is on PATH.
+/// `shim` is a .cmd/.bat ahead of the real fd.exe: it answers findInPath and
+/// then cannot take fd's arguments.
 pub const ToolState = enum { ok, missing, shim, broken };
 
 /// Tool is one finder's resolved state, with what a diagnostic needs to render
@@ -80,9 +69,9 @@ pub fn isScriptShim(path: []const u8) bool {
     return false;
 }
 
-/// esTool probes Everything's CLI. es.exe installs fine from GitHub but is dead
-/// unless the Everything *service* is running, and a dead es returns nothing
-/// rather than failing - so presence on PATH is not the question.
+/// esTool probes Everything's CLI: es.exe installs fine but is dead unless the
+/// Everything *service* runs, and a dead es returns nothing rather than
+/// failing.
 pub fn esTool(app: *App) Tool {
     const p = proc.findInPath(app.arena, app.io, app.env, "es") orelse return .{};
     // The same switch shape the real query uses, so a "working" verdict here
@@ -93,7 +82,7 @@ pub fn esTool(app: *App) Tool {
 }
 
 /// fdTool resolves fd, rejecting a script shim before probing and requiring the
-/// binary to identify itself. The picker used to accept anything named fd.
+/// binary to identify itself.
 pub fn fdTool(app: *App) Tool {
     const p = proc.findInPath(app.arena, app.io, app.env, "fd") orelse return .{};
     if (isScriptShim(p)) return .{ .state = .shim, .path = p };

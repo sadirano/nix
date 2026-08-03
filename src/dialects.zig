@@ -1,16 +1,10 @@
 //! Path dialects: one host path, spelled the way whichever tool is about to
-//! read it expects.
+//! read it expects - the Windows, forward-slash, Git Bash, WSL and file-URI
+//! forms of the same directory.
 //!
-//! The daily Windows tax is that `C:\x`, `/c/x`, `/mnt/c/x` and `file:///C:/x`
-//! all name the same directory, and handing the wrong one to a tool fails in
-//! ways that read as the tool being broken rather than the path being spelled
-//! for someone else. nix already owns "hand me the path"; this makes it able to
-//! hand over the right spelling.
-//!
-//! Pure string transforms, deliberately: no filesystem access, no existence
-//! check, no canonicalisation. A path that does not exist yet translates
-//! exactly like one that does, which is what makes this exhaustively testable
-//! and safe to call from anywhere.
+//! Pure string transforms: no filesystem access, no existence check, no
+//! canonicalisation, so a path that does not exist yet translates like one
+//! that does.
 
 const std = @import("std");
 
@@ -134,14 +128,9 @@ pub fn translate(arena: std.mem.Allocator, d: Dialect, path: []const u8) Error![
     };
 }
 
-/// appendEncoded percent-encodes everything outside the RFC 3986 unreserved set
-/// plus `/` (a real separator here) and, when `lead_slash`, emits the separator
-/// that follows a drive letter.
-///
-/// Encoding is what makes a URI safe to paste into a browser or a markdown
-/// link: an unencoded space silently truncates the target in both. Other
-/// dialects keep bytes verbatim - a shell path is not a URI, and encoding one
-/// would break it.
+/// appendEncoded percent-encodes everything outside RFC 3986's unreserved set
+/// plus `/` and `:`, and emits the drive letter's separator when `lead_slash`.
+/// An unencoded space truncates the target in a browser and in markdown.
 fn appendEncoded(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []const u8, lead_slash: bool) !void {
     if (lead_slash and (s.len == 0 or s[0] != '/')) try b.append(arena, '/');
     for (s) |c| {
@@ -159,18 +148,18 @@ test "drive paths in every dialect" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    const p = "C:\\Sadirano\\repo\\owl\\nix";
-    try std.testing.expectEqualStrings("C:\\Sadirano\\repo\\owl\\nix", try translate(a, .win, p));
-    try std.testing.expectEqualStrings("C:/Sadirano/repo/owl/nix", try translate(a, .slash, p));
-    try std.testing.expectEqualStrings("/c/Sadirano/repo/owl/nix", try translate(a, .gitbash, p));
-    try std.testing.expectEqualStrings("/mnt/c/Sadirano/repo/owl/nix", try translate(a, .wsl, p));
-    try std.testing.expectEqualStrings("file:///C:/Sadirano/repo/owl/nix", try translate(a, .uri, p));
+    const p = "C:\\proj\\acme\\src";
+    try std.testing.expectEqualStrings("C:\\proj\\acme\\src", try translate(a, .win, p));
+    try std.testing.expectEqualStrings("C:/proj/acme/src", try translate(a, .slash, p));
+    try std.testing.expectEqualStrings("/c/proj/acme/src", try translate(a, .gitbash, p));
+    try std.testing.expectEqualStrings("/mnt/c/proj/acme/src", try translate(a, .wsl, p));
+    try std.testing.expectEqualStrings("file:///C:/proj/acme/src", try translate(a, .uri, p));
 
     // Already forward-slashed input is the same path and must translate the
     // same way - nix stores paths slashed, and resolves them host-native.
-    const q = "C:/Sadirano/repo/owl/nix";
-    try std.testing.expectEqualStrings("/c/Sadirano/repo/owl/nix", try translate(a, .gitbash, q));
-    try std.testing.expectEqualStrings("C:\\Sadirano\\repo\\owl\\nix", try translate(a, .win, q));
+    const q = "C:/proj/acme/src";
+    try std.testing.expectEqualStrings("/c/proj/acme/src", try translate(a, .gitbash, q));
+    try std.testing.expectEqualStrings("C:\\proj\\acme\\src", try translate(a, .win, q));
 }
 
 test "a drive root keeps its slash in every dialect" {
@@ -202,17 +191,17 @@ test "UNC: mapped where the dialect defines it, refused where it doesn't" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    const unc = "\\\\leroy\\shared\\docs";
+    const unc = "\\\\fileserver\\shared\\docs";
     // uri is the one dialect with an authority form.
-    try std.testing.expectEqualStrings("file://leroy/shared/docs", try translate(a, .uri, unc));
-    try std.testing.expectEqualStrings("\\\\leroy\\shared\\docs", try translate(a, .win, unc));
-    try std.testing.expectEqualStrings("//leroy/shared/docs", try translate(a, .slash, unc));
+    try std.testing.expectEqualStrings("file://fileserver/shared/docs", try translate(a, .uri, unc));
+    try std.testing.expectEqualStrings("\\\\fileserver\\shared\\docs", try translate(a, .win, unc));
+    try std.testing.expectEqualStrings("//fileserver/shared/docs", try translate(a, .slash, unc));
     // wsl and gitbash reach a share through a mount nix cannot know about, so
     // they refuse rather than emit a path that looks right and is not.
     try std.testing.expectError(Error.NoSuchForm, translate(a, .wsl, unc));
     try std.testing.expectError(Error.NoSuchForm, translate(a, .gitbash, unc));
     // The forward-slashed spelling of the same share is the same shape.
-    try std.testing.expectError(Error.NoSuchForm, translate(a, .wsl, "//leroy/shared"));
+    try std.testing.expectError(Error.NoSuchForm, translate(a, .wsl, "//fileserver/shared"));
 }
 
 test "uri percent-encodes what a browser would otherwise truncate" {

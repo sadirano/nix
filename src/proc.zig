@@ -518,19 +518,13 @@ pub fn runCaptured(arena: std.mem.Allocator, io: Io, argv: []const []const u8, c
     } };
 }
 
-/// runShellTee runs a shell command like runShellInherit, but pipes the child's
-/// output and relays every chunk to BOTH this console and `sink` — the flight
-/// recorder's spawn (logs.zig).
+/// runShellTee is runShellInherit with the child's output relayed to both this
+/// console and `sink` — the flight recorder's spawn (logs.zig).
 ///
-/// stdout and stderr share one pipe on purpose: a transcript is worth reading
-/// only if the error lands where it happened relative to the output around it,
-/// and two pipes reassembled afterwards cannot reproduce that ordering.
-///
-/// The accepted cost, stated in the design: the child is writing to a pipe
-/// rather than a console, so tty-detecting tools drop their colour for the
-/// duration of a recorded run. That is why recording is a configuration choice
-/// and not the default behaviour of every action. ConPTY is the colour-
-/// preserving fix and is not v1.
+/// stdout and stderr share one pipe, merged by the shell: reassembling two
+/// pipes afterwards cannot reproduce the order the child wrote in. The cost is
+/// that the child sees a pipe, so tty-detecting tools drop their colour; that
+/// is why recording is opt-in.
 pub fn runShellTee(
     arena: std.mem.Allocator,
     io: Io,
@@ -540,11 +534,8 @@ pub fn runShellTee(
     out: *Io.Writer,
     sink: *Io.File,
 ) !u8 {
-    // The merge is done by the SHELL (`2>&1`), not by the spawn: std's StdIo has
-    // no "send stderr to the same pipe as stdout", and two pipes reassembled
-    // afterwards cannot reproduce the order the child actually wrote in - which
-    // is the whole value of a transcript. Redirecting inside the shell puts both
-    // streams on one handle before the command starts.
+    // `2>&1` rather than the spawn options: std's StdIo cannot point stderr at
+    // stdout's pipe.
     const merged = try std.fmt.allocPrint(arena, "{s} 2>&1", .{command});
     const argv: []const []const u8 = if (is_windows)
         &.{ if (env) |m| m.get("COMSPEC") orelse "cmd.exe" else "cmd.exe", "/c", merged }
@@ -563,12 +554,10 @@ pub fn runShellTee(
     while (true) {
         const n = r.interface.readSliceShort(&buf) catch break;
         if (n == 0) break;
-        // Console first: a recording that swallowed the live output would trade
-        // the problem it solves for a worse one.
+        // Console first: the live output must not wait on the log write.
         out.writeAll(buf[0..n]) catch {};
         out.flush() catch {};
-        // A failing log write must never take the run down with it - the
-        // command is the point, the recording is the courtesy.
+        // A failing log write never takes the run down with it.
         sink.writeStreamingAll(io, buf[0..n]) catch {};
     }
     const term = try child.wait(io);

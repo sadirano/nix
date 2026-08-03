@@ -130,11 +130,8 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
         };
         return 0;
     }
-    // A literal command is spawned as an argv, not as a shell string, and the
-    // recorder's stream merge is done BY the shell (`2>&1`) because std's
-    // StdIo cannot point stderr at stdout's pipe. Recording this path needs a
-    // hand-built pipe passed to both handles - real work, and not worth
-    // inventing quietly. Say so rather than accepting --log and ignoring it.
+    // Not recorded: a literal command is an argv with no shell to merge its
+    // streams (see runShellTee). Say so rather than ignoring the flag.
     if (app.log == true) {
         try app.err.writeAll("nix: --log records named actions; a literal command is not recorded yet\n");
         try app.err.writeAll("  wrap it in an action (`x <alias> :` to see them) and --log will record it\n");
@@ -706,10 +703,8 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     try app.out.flush();
     if (try openRecording(app, alias, name, command)) |rec| {
         var file = rec.file;
-        // The footer is written HERE, while the handle is still open: reopening
-        // to append would need a seek-to-end this Io.File does not expose, and
-        // rewriting a whole transcript to add three words is absurd for a file
-        // that may be a 22-minute build.
+        // Footer written while the handle is open: Io.File exposes no
+        // seek-to-end to append with later.
         const t0 = Io.Clock.awake.now(app.io).nanoseconds;
         const code = proc.runShellTee(app.arena, app.io, cmd, dir, env, app.out, &file) catch |e| {
             file.close(app.io);
@@ -730,14 +725,8 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     };
 }
 
-/// recording is whether THIS run is recorded: the per-invocation flag when one
-/// was given, else `[log] actions` - which applies to named actions only.
-///
-/// A literal command follows the flag and nothing else, matching watch mode's
-/// any-command decision: `x acme --log zig build test` records, a bare
-/// `x acme zig build test` never does. The config default is about the actions
-/// you run repeatedly, and a config that silently recorded every ad-hoc command
-/// would fill the directory with transcripts nobody asked for.
+/// recording is whether this run is recorded: the per-invocation flag if given,
+/// else `[log] actions`, which applies to named actions only.
 fn recording(app: *App, cfg: config.Config, name: []const u8) bool {
     if (app.log) |want| return want;
     return cfg.log_actions and name.len > 0;
@@ -745,9 +734,8 @@ fn recording(app: *App, cfg: config.Config, name: []const u8) bool {
 
 const Recording = struct { file: Io.File, path: []const u8 };
 
-/// openRecording creates the transcript file and writes its header, or returns
-/// null when this run is not recorded (or when the log cannot be opened - a
-/// recording is a courtesy and must never stop the command).
+/// openRecording creates the transcript and writes its header. null when the
+/// run is not recorded, or the log could not be opened - never a hard failure.
 fn openRecording(app: *App, alias: []const u8, name: []const u8, raw_command: []const u8) !?Recording {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     if (!recording(app, cfg, name)) return null;
@@ -786,14 +774,10 @@ fn startWindowed(app: *App, command: []const u8, alias: []const u8, dir: []const
         for (app.env_vars) |kv| if (kv.from_secret) {
             try app.err.print("nix: {s} is secret-derived and is NOT passed to an elevated window (it would sit in that process's command line)\n", .{kv.key});
         };
-        // The other half of that sentence, said out loud. A context source's
-        // variables DO travel onto the command line, because nix cannot tell
-        // whether one is a credential: an env.toml value is known to be secret
-        // because it was written as ${secret:NAME}, while a context variable is
-        // whatever a script printed. Withholding them all would break the
-        // common case (a looked-up name feeding the command); passing them
-        // silently would hide from a script author that their vault lookup just
-        // became world-readable in the process list. So: name them.
+        // Context variables DO travel, because nix cannot tell a looked-up
+        // name from a looked-up credential - unlike env.toml, which knows
+        // because the value was written as ${secret:NAME}. Name them so the
+        // author can see where they end up.
         if (app.ctx_vars.len > 0) {
             var b: std.ArrayList(u8) = .empty;
             for (app.ctx_vars, 0..) |kv, i| {
