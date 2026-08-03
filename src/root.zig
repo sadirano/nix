@@ -28,4 +28,7 @@ test {
     // Compile-check the whole library surface in the module test binary (the
     // exe test binary references the same files through main.zig).
     @import("std").testing.refAllDecls(@This());
+    // A test-only file, so nothing imports it in the exe: pull it in here, or
+    // its tests exist and never run.
+    _ = @import("proc_test.zig");
 }
