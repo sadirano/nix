@@ -1724,6 +1724,23 @@ pub fn main(init: std.process.Init) !void {
         c.check(r2.code != 0 and std.mem.indexOf(u8, r2.err, "one destination") != null, "p +group refuses under --no-prompt", r2);
     }
 
+    // --- $NIX_HOME never touches the machine's persistent PATH --------------------------
+    // This harness runs --sync and --init against a scratch home, and both used
+    // to append <scratch>/bin to the user's REAL registry PATH - one dead entry
+    // per run, 49 of them before anyone looked at the variable. The guard is
+    // store.isRelocatedHome; this is the check that keeps it.
+    {
+        // The absent string is the POSITIVE report, not the substring "added" -
+        // the note itself says "NOT added", so a naive check passes for the
+        // wrong reason on the very message it is meant to be reading.
+        var r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "NOT added to your user PATH") != null and
+            std.mem.indexOf(u8, r.err, "to your user PATH (new shells") == null, "--sync under $NIX_HOME refuses to touch the user PATH", r);
+        r = try c.run(&.{"--init"});
+        c.check(std.mem.indexOf(u8, r.err, "NOT added to your user PATH") != null and
+            std.mem.indexOf(u8, r.err, "to your user PATH (new shells") == null, "--init under $NIX_HOME refuses to touch the user PATH", r);
+    }
+
     // --- flight recorder (--log / --logs, issue #26) ------------------------------------
     {
         const pr = join(&c, &.{ root, "proj", "pr" });

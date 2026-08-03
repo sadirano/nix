@@ -125,7 +125,13 @@ pub fn cmdSync(app: *App) !u8 {
     // Keep the persistent user PATH honest too — the doctor's fix-it advice for
     // a missing ~/.nix/bin is "run `nix --sync`", so sync must actually fix it.
     if (proc.is_windows) {
-        if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
+        // A relocated home ($NIX_HOME) never touches the machine's persistent
+        // PATH. `bin` comes from app.home, so without this guard every run
+        // against a scratch home - the e2e harness does this dozens of times -
+        // appends a throwaway directory to the user's registry PATH forever.
+        if (store.isRelocatedHome(app.arena, app.env, app.home)) {
+            try app.err.print("note: $NIX_HOME is set, so {s} was NOT added to your user PATH\n", .{bin});
+        } else if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
             .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),
             .already => {},
         } else |e| {
@@ -474,7 +480,13 @@ pub fn cmdInit(app: *App) !u8 {
     // install leaves users editing PATH by hand.
     if (proc.is_windows) {
         const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
-        if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
+        // A relocated home ($NIX_HOME) stays out of the machine's persistent
+        // PATH - see store.isRelocatedHome. `bin` is derived from app.home, so
+        // without this every scratch-home run writes a throwaway directory into
+        // the user's registry PATH and leaves it there.
+        if (store.isRelocatedHome(app.arena, app.env, app.home)) {
+            try app.err.print("note: $NIX_HOME is set, so {s} was NOT added to your user PATH\n", .{bin});
+        } else if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
             .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),
             .already => {},
         } else |e| {

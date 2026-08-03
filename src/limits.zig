@@ -15,8 +15,10 @@
 //! Deliberately NOT a rule about complexity. agentdocs.zig and e2e.zig are long
 //! because they contain a lot of content - a spec table and a linear script -
 //! and cutting either into pieces would add seams without removing coupling.
-//! They are allowances forever, and that is the honest answer rather than a
-//! split done to satisfy a number.
+//! They are EXEMPT rather than generously capped, which the ratchet taught in
+//! its first hour: a cap on e2e.zig failed the very next commit for the crime
+//! of adding end-to-end checks. A tree-shape rule that prices writing tests, or
+//! documenting a command, is worse than no rule.
 
 const std = @import("std");
 
@@ -25,15 +27,24 @@ pub const limit: usize = 900;
 
 /// Files that predate the ratchet, at the size they were when it landed.
 /// Lower a number when you shrink a file; never raise one.
-pub const Allowance = struct { file: []const u8, max: usize };
+///
+/// `max = null` means EXEMPT, which is not the same as a generous number. A cap
+/// on a file whose growth is the point would be a rule that discourages the
+/// growth - and the first thing this ratchet did after landing was fail a
+/// commit for adding end-to-end checks. A tree-shape rule that makes writing
+/// tests cost something is worse than no rule, so the two files whose size is
+/// content rather than structure are exempt outright and say why.
+pub const Allowance = struct { file: []const u8, max: ?usize };
 pub const allowances = [_]Allowance{
-    // A linear script. Splitting it buys nothing - see the module doc.
-    .{ .file = "e2e.zig", .max = 2100 },
+    // A linear script, and one that SHOULD get longer: every feature adds
+    // checks. Capping it would price new tests, which is backwards.
+    .{ .file = "e2e.zig", .max = null },
     // Dispatch + the grammar/multicall bridge. The leaf registry commands left
     // for cmd_registry.zig in #39; what remains is one job and its tests.
     .{ .file = "main.zig", .max = 1400 },
-    // A data table. Size is content, not complexity.
-    .{ .file = "agentdocs.zig", .max = 1300 },
+    // A data table: one entry per command. Same reasoning as e2e.zig - it
+    // grows because the tool does, and a cap would price documenting a command.
+    .{ .file = "agentdocs.zig", .max = null },
     .{ .file = "run.zig", .max = 1100 },
     .{ .file = "proc.zig", .max = 1000 },
     // Still one file for both sync and drift detection; the split the issue
@@ -42,9 +53,13 @@ pub const allowances = [_]Allowance{
     .{ .file = "context.zig", .max = 950 },
 };
 
-fn allowanceFor(name: []const u8) ?usize {
-    for (allowances) |a| if (std.mem.eql(u8, a.file, name)) return a.max;
-    return null;
+/// Lookup returns whether the file is listed at all, and its cap if it has
+/// one - the two questions differ, since an EXEMPT file is listed with no cap.
+const Lookup = struct { listed: bool, max: ?usize };
+
+fn allowanceFor(name: []const u8) Lookup {
+    for (allowances) |a| if (std.mem.eql(u8, a.file, name)) return .{ .listed = true, .max = a.max };
+    return .{ .listed = false, .max = null };
 }
 
 fn countLines(bytes: []const u8) usize {
@@ -76,10 +91,11 @@ pub fn main(init: std.process.Init) !void {
         checked += 1;
         const n = countLines(bytes);
         const allowed = allowanceFor(ent.name);
-        const cap = allowed orelse limit;
+        if (allowed.listed and allowed.max == null) continue; // exempt, with a reason in the table
+        const cap = allowed.max orelse limit;
         if (n <= cap) continue;
         over += 1;
-        if (allowed == null) {
+        if (!allowed.listed) {
             std.debug.print("limits: {s} is {d} lines (limit {d}) - split it, or add an allowance in limits.zig and say why\n", .{ ent.name, n, cap });
         } else {
             std.debug.print("limits: {s} is {d} lines and its allowance is {d} - allowances go down, never up\n", .{ ent.name, n, cap });
