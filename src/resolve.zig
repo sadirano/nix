@@ -38,6 +38,7 @@ pub fn nameErrorText(e: anyerror) ?[]const u8 {
         error.ControlInName => "names can't contain control characters",
         error.TomlMetaInName => "names can't contain [ ] = # or quotes",
         error.ReservedName => "\"_default\" is reserved (machine-wide default actions)",
+        error.ReservedSelfName => "\".nix\" is reserved - it always names nix's own home",
         else => null,
     };
 }
@@ -138,6 +139,14 @@ pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
         const parsed = try segments.parseSegmentedAlias(app.arena, name);
         usage.record(app.arena, app.io, app.home, parsed.alias) catch {};
         return path;
+    }
+    // The built-in `.nix` is answered before the file is read, so it works on
+    // an install whose aliases.toml does not exist yet. No mkdirAll: ~/.nix is
+    // nix's own home and something is very wrong if it is missing - creating it
+    // here would paper over that.
+    if (store.isSelfAlias(name)) {
+        usage.record(app.arena, app.io, app.home, name) catch {};
+        return try app.arena.dupe(u8, app.home);
     }
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     if (try store.scanForAlias(app.arena, data, name)) |path| {
@@ -468,7 +477,11 @@ pub fn cmdWhich(app: *App, args: [][]const u8) !u8 {
     const abs = try absPath(app, expanded);
 
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
-    const aliases = try store.loadAliases(app.arena, data);
+    // Includes the built-in: once `.nix` names a directory, a path inside it IS
+    // contained by an alias, and answering "none" would be --which withholding
+    // an answer it has. The deepest-wins rule settles any overlap, so a project
+    // registered under ~/.nix still reports itself.
+    const aliases = try store.loadAliasesWithSelf(app.arena, data, app.home);
     const hit = (try whichAlias(app.arena, aliases.items, abs)) orelse {
         try app.err.print("nix: no alias contains \"{s}\"\n", .{abs});
         return 1;
@@ -543,7 +556,7 @@ pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]
     const adata = try store.readAliasesFile(app.arena, app.io, app.home);
     var out: std.ArrayList(GroupTarget) = .empty;
     for (names) |n| {
-        if (try store.scanForAlias(app.arena, adata, n)) |p| {
+        if (try store.lookupAlias(app.arena, adata, n, app.home)) |p| {
             if (create_dirs) store.mkdirAll(app.io, p) catch {};
             try out.append(app.arena, .{ .name = n, .path = p });
         } else {

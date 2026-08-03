@@ -473,6 +473,14 @@ pub const specs = [_]Spec{
         .detail =
         \\`nix --list` prints every alias and its resolved path.
         \\`nix --list-names` prints bare names, one per line - the form to parse.
+        \\
+        \\`.nix` appears in both and is BUILT IN, marked "(built-in)" in --list:
+        \\it always names nix's own home (~/.nix) and is not a line in
+        \\aliases.toml. It cannot be registered, repointed or pruned. Use it to
+        \\reach nix's own files without an absolute path - `e .nix config.toml`,
+        \\`g .nix TODO`, or `nix .nix --run <cmd>` to run something at that
+        \\directory (which is how a [notify] hook reaches a script in
+        \\~/.nix/scripts portably).
         ,
         .agent_use =
         \\Run this BEFORE suggesting any alias, so you use the names the user

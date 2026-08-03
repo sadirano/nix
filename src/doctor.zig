@@ -436,6 +436,16 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);
         const aliases = try store.loadAliases(app.arena, adata);
         try d.row(.ok, "aliases", try std.fmt.allocPrint(app.arena, "{d} registered  ({s})", .{ aliases.items.len, try store.aliasesPath(app.arena, app.home) }));
+        // A stored `.nix` predates the built-in - the only way to give a hook a
+        // portable path before nix answered for its own home. It is now dead
+        // weight the built-in shadows, and worse than dead if it points
+        // somewhere else, so say so rather than let it sit there looking live.
+        for (aliases.items) |a| if (store.isSelfAlias(a.name)) {
+            const host = store.fromSlash(app.arena, a.path) catch a.path;
+            try d.row(.warn, "aliases", try std.fmt.allocPrint(app.arena, "\"{s}\" is registered but shadowed - it is built in now", .{store.self_alias}));
+            try d.cont(try std.fmt.allocPrint(app.arena, "the entry points at {s}; drop it with `nix {s} --remove`", .{ host, store.self_alias }));
+            break;
+        };
 
         // Duplicate [sections] (hand-edits) silently shadow each other: resolve
         // reads the first, the add form updates only the first. Surface them.
