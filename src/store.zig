@@ -25,6 +25,42 @@ pub fn resolveHome(arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]c
     return std.fs.path.join(arena, &.{ home, ".nix" });
 }
 
+/// isRelocatedHome reports whether $NIX_HOME moved nix's home away from the
+/// default `<userhome>/.nix`.
+///
+/// It exists to keep a relocated install out of the MACHINE's persistent state.
+/// `--init`/`--sync` add `<home>/bin` to the user's PATH in the registry, and
+/// that is right for the real home and wrong for every other one: the e2e
+/// harness runs both against a scratch NIX_HOME, and each run appended a
+/// throwaway temp directory to the user's permanent PATH - 49 dead entries
+/// before anyone looked. Same reasoning the harness already applies to
+/// `--secret` (it edits the real Credential Manager); PATH simply had no guard.
+pub fn isRelocatedHome(arena: std.mem.Allocator, env: *std.process.Environ.Map, home: []const u8) bool {
+    const user = env.get("USERPROFILE") orelse env.get("HOME") orelse return true;
+    const def = std.fs.path.join(arena, &.{ user, ".nix" }) catch return true;
+    return !eqlPathFold(def, home);
+}
+
+/// eqlPathFold compares two paths ignoring separator flavour, a trailing
+/// separator, and (on Windows) case.
+fn eqlPathFold(a: []const u8, b: []const u8) bool {
+    const na = trimTrailingSep(a);
+    const nb = trimTrailingSep(b);
+    if (na.len != nb.len) return false;
+    for (na, nb) |ca, cb| {
+        const xa = if (ca == '\\') '/' else if (is_windows) std.ascii.toLower(ca) else ca;
+        const xb = if (cb == '\\') '/' else if (is_windows) std.ascii.toLower(cb) else cb;
+        if (xa != xb) return false;
+    }
+    return true;
+}
+
+fn trimTrailingSep(p: []const u8) []const u8 {
+    var end = p.len;
+    while (end > 0 and (p[end - 1] == '/' or p[end - 1] == '\\')) end -= 1;
+    return p[0..end];
+}
+
 /// expandTilde expands a leading ~/ or bare ~ to the user home directory.
 pub fn expandTilde(arena: std.mem.Allocator, env: *std.process.Environ.Map, p: []const u8) ![]const u8 {
     const home = env.get("USERPROFILE") orelse env.get("HOME") orelse return p;
@@ -664,4 +700,33 @@ test "expandTilde: bare, prefixed, and passthrough" {
     try std.testing.expectEqualStrings("C:/home/dev", try expandTilde(a, &env, "~"));
     try std.testing.expectEqualStrings("C:/home/dev/proj", try expandTilde(a, &env, "~/proj"));
     try std.testing.expectEqualStrings("plain/path", try expandTilde(a, &env, "plain/path"));
+}
+
+test "isRelocatedHome: only the default home may touch the machine's PATH" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var env: std.process.Environ.Map = .init(a);
+    try env.put("USERPROFILE", "C:/Users/dev");
+
+    // The real home: PATH writes are its business.
+    try std.testing.expect(!isRelocatedHome(a, &env, "C:/Users/dev/.nix"));
+    // Separator flavour, case and a trailing separator are all the same path -
+    // USERPROFILE arrives host-native and the home may have been spelled either
+    // way, so a mismatch here would silently stop the real install writing PATH.
+    try std.testing.expect(!isRelocatedHome(a, &env, "C:\\Users\\dev\\.nix"));
+    if (is_windows) try std.testing.expect(!isRelocatedHome(a, &env, "C:/Users/Dev/.NIX"));
+    try std.testing.expect(!isRelocatedHome(a, &env, "C:/Users/dev/.nix/"));
+
+    // Anything else is relocated. The scratch home the e2e harness uses is the
+    // case that put 49 dead temp directories in a real user's registry PATH.
+    try std.testing.expect(isRelocatedHome(a, &env, "C:/Temp/nix-e2e-1785773171603/home"));
+    try std.testing.expect(isRelocatedHome(a, &env, "C:/Users/dev/.nix-other"));
+    try std.testing.expect(isRelocatedHome(a, &env, "D:/portable/.nix"));
+
+    // No user home at all: treat it as relocated rather than guessing. Refusing
+    // to write is the safe direction when we cannot tell where we are.
+    var bare: std.process.Environ.Map = .init(a);
+    try std.testing.expect(isRelocatedHome(a, &bare, "C:/Users/dev/.nix"));
 }
