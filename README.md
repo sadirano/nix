@@ -124,6 +124,22 @@ You can hand-edit the file (`nix --list` and resolve pick up changes immediately
 
 One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed, pruned, or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does, including as a `+group` member. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
 
+### Path dialects
+
+`--as <dialect>` changes the *spelling* of the path a command prints or copies - the same directory, written the way whichever tool is about to read it expects:
+
+| dialect | example |
+|---|---|
+| `win` | `C:cme\src` |
+| `slash` | `C:/acme/src` |
+| `gitbash` | `/c/acme/src` |
+| `wsl` | `/mnt/c/acme/src` |
+| `uri` | `file:///C:/acme/src` |
+
+Accepted by the resolve form (`nix acme --as wsl`) and by `y` (`y acme --as gitbash` copies the translation). `o` refuses it - it enters the directory rather than printing one, so a respelled path there would break navigation instead of respelling it. A patterned `y` with `--as` copies text rather than a file drop, since Explorer has no use for `/mnt/c/...`.
+
+Pure string translation, no filesystem check, so a path that does not exist yet translates exactly like one that does. A UNC share has a `uri` form and no wsl/gitbash form; those refuse rather than guess a mount point.
+
 Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$NIX_HOME`.
 
 `~/.nix/config.toml` holds the optional sections.

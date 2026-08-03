@@ -71,7 +71,7 @@ pub const ActionVerb = enum {
 };
 
 /// Process-wide flags any sub-parser silently accepts.
-pub const GlobalFlag = enum { no_prompt, force, json };
+pub const GlobalFlag = enum { no_prompt, force, json, as };
 
 /// internal commands are real and dispatched, but are nix re-invoking itself
 /// (fzf preview panes) rather than anything a user or agent types. They are
@@ -176,6 +176,22 @@ pub const globals = [_]Global{
         .spec = "",
     },
     .{ .flags = &.{ "--json", "-j" }, .verb = .json, .help = "machine-readable output where a command has it", .spec = "" },
+    .{
+        // The only global that takes a VALUE. run() lifts the pair out of argv
+        // before any sub-parser sees it, precisely because the shared
+        // "skip global flags" idiom would skip the flag and then read `wsl` as
+        // a positional. Listed here so --help and --agent document it.
+        .flags = &.{"--as"},
+        .verb = .as,
+        .args = "<dialect>",
+        .help =
+        \\spell the path for another tool: win, slash,
+        \\gitbash, wsl, uri. Applies to the resolve form
+        \\(`nix <alias> --as wsl`) and to `y`; `o` refuses
+        \\it, since it navigates rather than printing
+        ,
+        .spec = "--as",
+    },
 };
 
 // ---- lookup -----------------------------------------------------------------

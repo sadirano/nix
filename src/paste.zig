@@ -11,6 +11,7 @@ const store = @import("store.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
 const notify = @import("notify.zig");
+const dialects = @import("dialects.zig");
 
 const App = app_zig.App;
 
@@ -162,14 +163,30 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
 /// yankPathText is the bare `y <alias>`: print the target path and copy it to
 /// the clipboard as text.
 pub fn yankPathText(app: *App, alias: []const u8, target: []const u8) !u8 {
-    try app.out.print("{s}\n", .{target});
+    const text = (try spell(app, target)) orelse return 1;
+    try app.out.print("{s}\n", .{text});
     try app.out.flush();
-    clipboard.writeText(app.arena, app.io, target) catch |e| {
+    clipboard.writeText(app.arena, app.io, text) catch |e| {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
         return 0; // path was still printed; nothing landed on the clipboard to record
     };
-    notifyEvent(app, .yank, alias, target, try std.fmt.allocPrint(app.arena, "yanked path {s}", .{target}));
+    notifyEvent(app, .yank, alias, target, try std.fmt.allocPrint(app.arena, "yanked path {s}", .{text}));
     return 0;
+}
+
+/// spell renders a path in the `--as` dialect, or unchanged when none was asked
+/// for. Shared by both yank paths, so what lands on the clipboard and what is
+/// printed can never be different spellings of the same place.
+fn spell(app: *App, path: []const u8) !?[]const u8 {
+    const d = app.dialect orelse return path;
+    return dialects.translate(app.arena, d, path) catch |e| switch (e) {
+        error.NoSuchForm => {
+            try app.err.print("nix: --as {s} has no spelling for \"{s}\"\n", .{ @tagName(d), path });
+            try app.err.writeAll("  a UNC share reaches WSL/Git Bash through a mount only you can define - try --as uri or --as win\n");
+            return null;
+        },
+        else => return e,
+    };
 }
 
 pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, selection: []const u8) !u8 {
@@ -184,6 +201,25 @@ pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, sele
         try paths.append(app.arena, try store.fromSlash(app.arena, abs));
     }
     if (paths.items.len == 0) return 0;
+
+    // `--as` on a patterned yank means TEXT mode: the point is the spelling,
+    // and a CF_HDROP file drop carries real paths for Explorer, which has no
+    // use for `/mnt/c/...`. Copy the translated list instead of a drop that
+    // cannot represent what was asked for.
+    if (app.dialect != null) {
+        var buf: std.ArrayList(u8) = .empty;
+        for (paths.items, 0..) |p, i| {
+            if (i > 0) try buf.append(app.arena, '\n');
+            try buf.appendSlice(app.arena, (try spell(app, p)) orelse return 1);
+        }
+        clipboard.writeText(app.arena, app.io, buf.items) catch |e| {
+            try app.err.print("nix: clipboard copy failed: {s}\n", .{@errorName(e)});
+            return 1;
+        };
+        try app.out.print("{s}\n", .{buf.items});
+        notifyEvent(app, .yank, alias, target, try std.fmt.allocPrint(app.arena, "yanked {d} path(s)", .{paths.items.len}));
+        return 0;
+    }
 
     clipboard.writeFiles(app.arena, app.io, paths.items) catch |e| {
         if (e == error.Unsupported) {
