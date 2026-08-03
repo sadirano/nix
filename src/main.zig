@@ -39,6 +39,7 @@ const palette = @import("palette.zig");
 const secret = @import("secret.zig");
 const context = @import("context.zig");
 const notes = @import("notes.zig");
+const timelog = @import("timelog.zig");
 const env_zig = @import("env.zig");
 const grammar = @import("grammar.zig");
 
@@ -338,6 +339,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .actions => palette.cmdActions(app, rest),
         .notes => notes.cmdNotes(app, rest, grep),
         .log_list => logs.cmdLogs(app, rest),
+        .time => timelog.cmdTime(app, rest),
         .sweep => sweep.cmdSweep(app, rest),
         .sync => init_zig.cmdSync(app),
         .sync_bin => bin_exports.cmdSyncBin(app),

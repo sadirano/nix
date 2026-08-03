@@ -1810,6 +1810,50 @@ pub fn main(init: std.process.Init) !void {
         Io.Dir.cwd().deleteFile(io, cfgp) catch {};
     }
 
+    // --- time ledger (--time, issue #20) -----------------------------------------------
+    {
+        const pt = join(&c, &.{ root, "proj", "pt" });
+        _ = try c.run(&.{ "pt", pt });
+        const ledger = join(&c, &.{ home, "time" });
+
+        // An empty ledger says so rather than printing a table of nothing.
+        var r = try c.run(&.{"--time"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nothing recorded") != null, "--time on an empty ledger says so", r);
+
+        // The action waits deliberately: a boundary under a second rounds to
+        // zero and is dropped, so an instant `echo` would prove nothing.
+        try writeActions(&c, "pt", pt, if (proc.is_windows)
+            \\[actions]
+            \\wait = "ping -n 3 127.0.0.1 > NUL"
+            \\quick = "echo done"
+            \\
+        else
+            \\[actions]
+            \\wait = "sleep 2"
+            \\quick = "echo done"
+            \\
+        );
+        r = try c.run(&.{ "pt", "--run", ":wait" });
+        const line = trim(readFileOr(&c, ledger, ""));
+        c.check(r.code == 0 and std.mem.startsWith(u8, line, "pt ") and
+            std.mem.endsWith(u8, line, " action"), "a finished action writes one ledger line, tagged action", r);
+
+        r = try c.run(&.{ "--time", "pt" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ALIAS") != null and
+            std.mem.indexOf(u8, r.out, "action") != null, "--time reports the alias and splits it by kind", r);
+
+        // Detached runs are inherently untimeable - nix returns as soon as the
+        // window is up, so there is no finish to observe.
+        const before = readFileOr(&c, ledger, "").len;
+        _ = try c.run(&.{ "pt", "--run", "--outside", ":quick" });
+        c.check(readFileOr(&c, ledger, "").len == before, "an --outside run records no time", null);
+
+        // The ledger is churny machine-local state, like `usage`: a backup that
+        // carried it would restore one machine's hours onto another.
+        r = try c.run(&.{"--export"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[time]") == null, "--export leaves the time ledger behind", r);
+    }
+
     // --- context source bounds (issue #15) ---------------------------------------------
     // Everything a source returns is kept: it lands in the arena, is written to
     // contexts-cache.toml (rewritten whole on every put), and is exported into

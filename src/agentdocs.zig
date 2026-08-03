@@ -561,6 +561,46 @@ pub const specs = [_]Spec{
         .see_also = &.{ "x", "--actions" },
     },
     .{
+        .topic = "--time",
+        .args = "[alias] [--day|--all]",
+        .summary = "time per alias this week, from sessions and runs",
+        .safety = .safe,
+        .detail =
+        \\A passive ledger of where the time went, by project. nix already waits
+        \\for the things worth measuring - an `o` session until its subshell
+        \\exits, a foreground `x` until the command returns - so each one writes
+        \\a line to `~/.nix/time`: alias, start, duration, and which of the
+        \\three it was (session, run, action). Detached (`--outside`) and
+        \\elevated runs record nothing; there is no finish to observe.
+        \\
+        \\`nix --time` prints this week by alias, busiest first, with today's
+        \\total beside it. `--day` narrows to today, `--all` adds the ledger's
+        \\lifetime (a year; older lines are dropped as new ones are written).
+        \\Naming an alias narrows to it and adds the split by kind, which is
+        \\how dwell time and build time come apart.
+        \\
+        \\MEASUREMENT, NOT INFERENCE. A shell left open overnight is logged at
+        \\its real fourteen hours and marked `*`, and the footer gives the
+        \\total with and without it. Nothing is capped, because a cap would
+        \\record a session that did not happen.
+        ,
+        .agent_use =
+        \\Read it when the user asks where their time went, or when picking up
+        \\work and you want to know what they have actually been in this week -
+        \\it answers faster than reading git history and covers projects that
+        \\produced no commits.
+        \\
+        \\Machine-local and never exported. A `*` row is a shell nobody closed,
+        \\so quote the without-it total when summarizing, not the raw one.
+        ,
+        .examples = &.{
+            "`nix --time` - this week, by alias",
+            "`nix --time --day` - just today",
+            "`nix --time acme --all` - one project's whole ledger, split by kind",
+        },
+        .see_also = &.{ "--logs", "--list" },
+    },
+    .{
         .topic = "--as",
         .args = "<dialect>",
         .summary = "print/copy the path spelled for another tool",
