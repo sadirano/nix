@@ -158,7 +158,7 @@ pub fn expandAliasRowPath(app: *App, file: []const u8) []const u8 {
     const r = splitRow(file, false);
     if (r.alias.len == 0) return file;
     const data = store.readAliasesFile(app.arena, app.io, app.home) catch return file;
-    const root = (store.scanForAlias(app.arena, data, r.alias) catch null) orelse return file;
+    const root = (store.lookupAlias(app.arena, data, r.alias, app.home) catch null) orelse return file;
     return std.fs.path.join(app.arena, &.{ root, r.path }) catch file;
 }
 

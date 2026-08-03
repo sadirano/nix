@@ -493,7 +493,7 @@ fn cmdResolve(app: *App, name: []const u8) !u8 {
         return 0;
     }
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
-    const path = (try store.scanForAlias(app.arena, data, name)) orelse {
+    const path = (try store.lookupAlias(app.arena, data, name, app.home)) orelse {
         try app.err.print("nix: unknown alias \"{s}\"\n", .{name});
         return 1;
     };
@@ -586,7 +586,7 @@ fn cascadeStripFromGroups(app: *App, alias_lower: []const u8) !void {
 
 fn cmdList(app: *App) !u8 {
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
-    const aliases = try store.loadAliases(app.arena, data);
+    const aliases = try store.loadAliasesWithSelf(app.arena, data, app.home);
     std.mem.sort(store.Alias, aliases.items, {}, struct {
         fn lt(_: void, a: store.Alias, b: store.Alias) bool {
             return std.mem.lessThan(u8, a.name, b.name);
@@ -604,14 +604,20 @@ fn cmdList(app: *App) !u8 {
     try app.out.writeAll("PATH\n");
     for (aliases.items) |a| {
         try padPrint(app.out, a.name, width + 2);
-        try app.out.print("{s}\n", .{a.path});
+        // The built-in is marked so the list stays readable as a record of what
+        // was registered: everything unmarked is a line in aliases.toml.
+        if (store.isSelfAlias(a.name)) {
+            try app.out.print("{s}  (built-in)\n", .{a.path});
+        } else {
+            try app.out.print("{s}\n", .{a.path});
+        }
     }
     return 0;
 }
 
 fn cmdListNames(app: *App) !u8 {
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
-    const names = try store.listNames(app.arena, data);
+    const names = try store.listNamesWithSelf(app.arena, data);
     for (names.items) |n| try app.out.print("{s}\n", .{n});
     return 0;
 }

@@ -242,6 +242,55 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pa"), "a leading global flag keeps the verb's own args", r);
     }
 
+    // --- the built-in .nix self-alias ----------------------------------------
+    {
+        // Resolves to nix's own home without ever being registered - the whole
+        // point: config that must reach into ~/.nix needs a name, not a path.
+        var r = try c.run(&.{ ".nix", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), home), ".nix resolves to nix's own home", r);
+
+        // Discoverable where a user (and an agent) would look.
+        r = try c.run(&.{"--list"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ".nix") != null and std.mem.indexOf(u8, r.out, "(built-in)") != null, "--list shows .nix, marked built-in", r);
+        r = try c.run(&.{"--list-names"});
+        c.check(r.code == 0 and hasLine(r.out, ".nix"), "--list-names includes .nix", r);
+
+        // Reserved: registering it would let the name be repointed away from
+        // the directory it exists to name.
+        r = try c.run(&.{ ".nix", join(&c, &.{ root, "elsewhere" }) });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "reserved") != null, ".nix cannot be registered", r);
+        r = try c.run(&.{ ".nix", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), home), "the refused registration did not move .nix", r);
+
+        // A leading dot is not itself reserved - only the exact name.
+        r = try c.run(&.{ ".nixrc", join(&c, &.{ root, "dotted" }) });
+        c.check(r.code == 0, "a dotted name that isn't .nix still registers", r);
+        _ = try c.run(&.{ ".nixrc", "--remove" });
+
+        // --which answers for it, and the deepest-wins rule still lets a
+        // project registered under ~/.nix report itself.
+        r = try c.run(&.{ "--no-prompt", "--which", home });
+        c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), ".nix"), "--which reports .nix inside nix's home", r);
+        const under = join(&c, &.{ home, "scripts" });
+        try util.mkdirAll(io, under);
+        r = try c.run(&.{ "--no-prompt", "--which", under });
+        c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), ".nix"), "--which reports .nix from a subdirectory", r);
+        _ = try c.run(&.{ "inner", under });
+        r = try c.run(&.{ "--no-prompt", "--which", under });
+        c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "inner"), "a deeper registered alias still wins over .nix", r);
+        _ = try c.run(&.{ "inner", "--remove" });
+
+        // It is allowed in a group and resolves like any member - a reference,
+        // not a registration, so the reserved name is fine here.
+        r = try c.run(&.{".nix+cfg"});
+        c.check(r.code == 0, ".nix can be added to a group", r);
+        r = try c.run(&.{ "+cfg", "--list" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ".nix") != null and std.mem.indexOf(u8, r.out, "(unregistered)") == null, ".nix is a usable group member", r);
+        r = try c.run(&.{ "+cfg", "--resolve" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, home) != null, "a group fans out to .nix's real path", r);
+        _ = try c.run(&.{ "+cfg", "--remove" });
+    }
+
     // --- which (reverse lookup) ----------------------------------------------
     {
         var r = try c.run(&.{ "--which", pa });

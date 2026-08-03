@@ -48,9 +48,45 @@ pub fn readAliasesFile(arena: std.mem.Allocator, io: Io, home: []const u8) ![]co
     };
 }
 
+/// self_alias is the built-in name for nix's own home (~/.nix).
+///
+/// It exists because a config value that must point INTO ~/.nix had no short
+/// spelling, in the one tool whose purpose is that you never type absolute
+/// paths: hooks are spawned directly rather than through a shell, so
+/// `%USERPROFILE%` arrives as a literal and `pwsh -f ~/...` fails outright,
+/// and a relative path is resolved against whichever alias dir just ran.
+///
+/// `.nix` rather than `nix`: this machine, like any contributor's, already uses
+/// `nix` for the nix REPO, so an auto-reserved `nix` would collide on exactly
+/// the machines that matter. No project is plausibly named `.nix`.
+pub const self_alias = ".nix";
+
+/// isSelfAlias reports whether a name means nix's own home. Case- and
+/// whitespace-insensitive, matching how alias names are compared everywhere.
+pub fn isSelfAlias(name: []const u8) bool {
+    return eqlFoldAscii(std.mem.trim(u8, name, " \t\r\n"), self_alias);
+}
+
+/// lookupAlias resolves a name to a host path, answering for the built-in
+/// `.nix` before aliases.toml is consulted.
+///
+/// The built-in wins over a stored entry of the same name on purpose. Users
+/// registered `.nix` by hand before it was built in (it was the only way to
+/// give a hook a portable path), and those entries point at the same place;
+/// letting a stale one win would mean an upgrade silently kept resolving to
+/// wherever ~/.nix used to be.
+pub fn lookupAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8, home: []const u8) !?[]const u8 {
+    if (isSelfAlias(name)) return try arena.dupe(u8, home);
+    return scanForAlias(arena, data, name);
+}
+
 /// scanForAlias mirrors resolver.ScanForAlias: find [target] (case-insensitive)
 /// then its first `path = "..."` before the next section header. Returns a
 /// host-native path (forward slashes converted to the platform separator).
+///
+/// Knows nothing about the built-in `.nix` — callers that resolve a name a USER
+/// typed want lookupAlias; this one is the raw aliases.toml question, which is
+/// what the file-management commands (--prune, --remove) need to keep asking.
 pub fn scanForAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8) !?[]const u8 {
     var lines = std.mem.splitScalar(u8, data, '\n');
     var in_section = false;
@@ -169,6 +205,45 @@ pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]co
     return names;
 }
 
+/// loadAliasesWithSelf is loadAliases plus the built-in `.nix`, for the commands
+/// that show the user what they can NAME (--list, --which).
+///
+/// The commands that manage aliases.toml as a file (--prune, --remove) keep
+/// using loadAliases: a built-in must never become a prune candidate or a
+/// removal target, and the discriminator is exactly "is this question about the
+/// file, or about the names that work".
+///
+/// A stored entry of the same name is dropped rather than shown beside the
+/// built-in - one name, one row.
+pub fn loadAliasesWithSelf(arena: std.mem.Allocator, data: []const u8, home: []const u8) !std.ArrayList(Alias) {
+    var out = try loadAliases(arena, data);
+    var i: usize = 0;
+    while (i < out.items.len) {
+        if (isSelfAlias(out.items[i].name)) {
+            _ = out.orderedRemove(i);
+            continue;
+        }
+        i += 1;
+    }
+    try out.append(arena, .{ .name = self_alias, .path = try toSlash(arena, home) });
+    return out;
+}
+
+/// listNamesWithSelf is listNames plus the built-in `.nix`, kept sorted.
+/// `nix --list-names` is what completion and agents read, so a name that works
+/// has to appear there or it does not exist as far as either is concerned.
+pub fn listNamesWithSelf(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]const u8) {
+    var names = try listNames(arena, data);
+    for (names.items) |n| if (isSelfAlias(n)) return names;
+    try names.append(arena, self_alias);
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+    return names;
+}
+
 // ---- path/string helpers ----------------------------------------------------
 
 /// fromSlash converts forward slashes to the host separator (\ on Windows).
@@ -203,13 +278,32 @@ pub fn trimLine(line: []const u8) []const u8 {
     return s;
 }
 
-/// validateAliasName mirrors store.validateName for aliases.
+/// validateAliasRef validates a name that REFERS to an existing alias, as
+/// opposed to one about to be registered.
+///
+/// The difference is exactly the reserved self alias: `.nix` can never be
+/// written into aliases.toml, but it is a perfectly good thing to name in a
+/// group (`+cfg` containing `.nix`) or a `[deps] needs` list. Registration
+/// paths want validateAliasName; membership and dependency paths want this.
+pub fn validateAliasRef(name: []const u8) !void {
+    if (isSelfAlias(name)) return;
+    return validateAliasName(name);
+}
+
+/// validateAliasName mirrors store.validateName for aliases. Refuses the names
+/// nix owns, so it is the REGISTRATION check - see validateAliasRef for the
+/// weaker one that referring to an alias needs.
 pub fn validateAliasName(name: []const u8) !void {
     const t = std.mem.trim(u8, name, " \t\r\n");
     if (t.len == 0) return error.EmptyName;
     // `_default` names the machine-wide actions file (~/.nix/actions/_default.toml);
     // an alias by that name would share its central actions file. See actions.zig.
     if (eqlFoldAscii(t, "_default")) return error.ReservedName;
+    // `.nix` always names nix's own home, resolved internally (see self_alias).
+    // Refused for the same reason as _default: registering it would shadow a
+    // name the tool answers for itself, and the entry could then be repointed
+    // at a directory that is not ~/.nix.
+    if (eqlFoldAscii(t, self_alias)) return error.ReservedSelfName;
     for (name) |c| {
         if (c == '/' or c == '\\') return error.PathSeparatorInName;
         if (c == '@') return error.AtInName;
@@ -443,6 +537,78 @@ test "validateAliasName: rejects separators, @, spaces, control chars, empty" {
     try std.testing.expectError(error.TomlMetaInName, validateAliasName("#work"));
     try std.testing.expectError(error.TomlMetaInName, validateAliasName("a\"b"));
     try std.testing.expectError(error.TomlMetaInName, validateAliasName("a'b"));
+}
+
+test "the self alias is reserved, but a leading dot still isn't" {
+    try std.testing.expectError(error.ReservedSelfName, validateAliasName(".nix"));
+    try std.testing.expectError(error.ReservedSelfName, validateAliasName(".NIX"));
+    try std.testing.expectError(error.ReservedSelfName, validateAliasName("  .nix  "));
+    // Only the exact name is taken - the leading dot is not itself a rule, so
+    // dotted project names keep working.
+    try validateAliasName(".nixrc");
+    try validateAliasName(".config");
+    try validateAliasName("nix");
+
+    try std.testing.expect(isSelfAlias(".nix"));
+    try std.testing.expect(isSelfAlias(".NiX"));
+    try std.testing.expect(!isSelfAlias("nix"));
+    try std.testing.expect(!isSelfAlias(".nixrc"));
+}
+
+test "lookupAlias answers for the self alias before aliases.toml, and over it" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const home = "C:/Users/x/.nix";
+
+    // Answered with no file at all: it must work on an install whose
+    // aliases.toml has not been created yet.
+    try std.testing.expectEqualStrings(home, (try lookupAlias(a, "", ".nix", home)).?);
+
+    // A hand-registered entry from before the name was built in does NOT win -
+    // otherwise an upgrade keeps resolving to wherever ~/.nix used to be.
+    const stale = "[.nix]\npath = 'D:/old/nix-home'\n";
+    try std.testing.expectEqualStrings(home, (try lookupAlias(a, stale, ".nix", home)).?);
+    // The raw file question still reports what is actually on disk, which is
+    // what --prune and --remove need to keep seeing.
+    try std.testing.expect((try scanForAlias(a, stale, ".nix")) != null);
+
+    // Everything else routes to the file unchanged.
+    const toml = "[acme]\npath = 'C:/proj/acme'\n";
+    try std.testing.expect((try lookupAlias(a, toml, "acme", home)) != null);
+    try std.testing.expect((try lookupAlias(a, toml, "nope", home)) == null);
+}
+
+test "the self alias is listed once, whether or not it is also stored" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const home = "C:/Users/x/.nix";
+
+    const toml = "[acme]\npath = 'C:/proj/acme'\n";
+    const got = try loadAliasesWithSelf(a, toml, home);
+    try std.testing.expectEqual(@as(usize, 2), got.items.len);
+    var seen: usize = 0;
+    for (got.items) |al| if (isSelfAlias(al.name)) {
+        seen += 1;
+        try std.testing.expectEqualStrings("C:/Users/x/.nix", al.path);
+    };
+    try std.testing.expectEqual(@as(usize, 1), seen);
+
+    // A stored entry collapses into the built-in rather than showing twice,
+    // and the built-in's path is the one reported.
+    const dup = "[.nix]\npath = 'D:/old/nix-home'\n[acme]\npath = 'C:/proj/acme'\n";
+    const got2 = try loadAliasesWithSelf(a, dup, home);
+    try std.testing.expectEqual(@as(usize, 2), got2.items.len);
+    for (got2.items) |al| if (isSelfAlias(al.name)) {
+        try std.testing.expectEqualStrings("C:/Users/x/.nix", al.path);
+    };
+
+    // --list-names is what completion and agents read: sorted, and never twice.
+    const names = try listNamesWithSelf(a, toml);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ ".nix", "acme" }), names.items);
+    const names2 = try listNamesWithSelf(a, dup);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ ".nix", "acme" }), names2.items);
 }
 
 test "listNames: sorted, skips non-section lines and empty brackets" {

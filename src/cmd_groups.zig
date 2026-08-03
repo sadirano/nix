@@ -53,8 +53,11 @@ fn eql(a: []const u8, b: []const u8) bool {
 /// validateGroupMember validates a member token: a `+sub` member references
 /// another group (validate the subgroup name), otherwise it is an alias name.
 fn validateGroupMember(member: []const u8) !void {
+    // A member REFERS to an alias rather than creating one, so the built-in
+    // `.nix` is a legal member even though it can never be registered. A
+    // subgroup name is a group, which has no such built-in.
     if (member.len > 0 and member[0] == '+') return store.validateAliasName(member[1..]);
-    return store.validateAliasName(member);
+    return store.validateAliasRef(member);
 }
 
 /// cmdGroups lists every group and its members (`nix --groups`).
@@ -197,7 +200,7 @@ fn cmdGroupList(app: *App, group: []const u8) !u8 {
         try padPrint(app.out, m, width + 2);
         if (m.len > 0 and m[0] == '+') {
             try app.out.writeAll("(group)\n");
-        } else if (try store.scanForAlias(app.arena, adata, m)) |p| {
+        } else if (try store.lookupAlias(app.arena, adata, m, app.home)) |p| {
             try app.out.print("{s}\n", .{p});
         } else {
             try app.out.writeAll("(unregistered)\n");
@@ -256,7 +259,7 @@ pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: 
         // Adding an unregistered alias: picker-route (register, then add) —
         // a `+sub` member is instead checked lazily by the dead-subgroup policy.
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);
-        if ((try store.scanForAlias(app.arena, adata, member)) == null) {
+        if ((try store.lookupAlias(app.arena, adata, member, app.home)) == null) {
             if (app.no_prompt) {
                 try app.err.print("nix: unknown alias \"{s}\" - not added to +{s} (register it: nix {s} <path>)\n", .{ member, group, member });
                 return 1;

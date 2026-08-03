@@ -90,7 +90,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   a path (default: cwd) - and inside a `{[x]s}`/`{[o]s}` session `$NIX_ALIAS` /
         \\   `$NIX_ALIAS_PATH` are already set. Use the alias that maps to the directory
         \\   you worked in - don't invent names. If none covers it, suggest registering
-        \\   one: `nix <name> <path>`.
+        \\   one: `nix <name> <path>`. One name is always there: `.nix` is built in
+        \\   and names nix's own home, so nix's config and scripts are reachable
+        \\   without an absolute path (`{[e]s} .nix config.toml`). It cannot be
+        \\   registered or repointed.
         \\3. **Prefer saved actions for repeatable commands.** `nix --no-prompt --actions`
         \\   lists every action already wired up on this machine (alias, name,
         \\   command, description) - check there before writing a command line
