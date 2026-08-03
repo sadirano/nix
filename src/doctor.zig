@@ -385,9 +385,23 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         const cfg_path = try std.fs.path.join(app.arena, &.{ app.home, "config.toml" });
         if (proc.pathExists(app.io, cfg_path)) {
             try d.row(.ok, "config.toml", cfg_path);
-            try d.cont(try std.fmt.allocPrint(app.arena, "grep_all={}, shortcut overrides={d}, search_roots={d}", .{ cfg.grep_all, cfg.shortcuts.len, cfg.picker_search_roots.len }));
+            // Overrides counted by RESOLVED slot, not by raw entry: an entry
+            // whose key names no slot changes nothing, and reporting it as an
+            // override is how this diagnostic used to confirm the mistake it
+            // should have caught.
+            try d.cont(try std.fmt.allocPrint(app.arena, "grep_all={}, shortcut overrides={d}, search_roots={d}", .{ cfg.grep_all, config.shortcutSlotOverrides(cfg), cfg.picker_search_roots.len }));
         } else {
             try d.row(.note, "config.toml", "none - using built-in defaults");
+        }
+        {
+            const unknown = try config.unknownShortcutSlots(app.arena, cfg);
+            if (unknown.len > 0) {
+                try d.row(.warn, "shortcuts", try std.fmt.allocPrint(app.arena, "{s} name{s} no builtin - ignored, no wrapper installed", .{
+                    try std.mem.join(app.arena, ", ", unknown),
+                    if (unknown.len == 1) "s" else "",
+                }));
+                try d.cont(try std.fmt.allocPrint(app.arena, "the KEY is the builtin slot, the VALUE the new name: {s}", .{try config.slotList(app.arena)}));
+            }
         }
         if (cfg.nav_terminal.len > 0) {
             try d.row(.ok, "nav terminal", cfg.nav_terminal);
