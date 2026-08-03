@@ -33,44 +33,33 @@ pub const App = struct {
     exe_path: ?[]const u8 = null,
     json: bool,
     no_prompt: bool,
-    /// `--log` / `--no-log`: force recording on or off for this invocation,
-    /// overriding `[log] actions`. null = follow the config. Kept as a
-    /// tri-state rather than a bool because "not asked" and "asked for off"
-    /// differ: the config default only applies to the first.
+    /// `--log` / `--no-log`. null = follow `[log] actions`; "not asked" and
+    /// "asked for off" differ, hence the tri-state.
     log: ?bool = null,
     /// Path of the recording the last foreground run wrote, for the {log}
     /// notify placeholder. Empty when the run was not recorded, which is what
     /// makes the placeholder safe to leave in a hook template unconditionally.
     log_path: []const u8 = "",
-    /// `--as <dialect>`: the spelling paths are printed/copied in. null = the
-    /// host's own. Set once in run() and read by the resolve and yank paths;
-    /// the navigate path REFUSES it, because `o`'s stdout feeds the wrapper's
-    /// cd and a translated path there would break navigation rather than
-    /// produce a differently-spelled one.
+    /// `--as <dialect>`: how paths are spelled when printed or copied. Read by
+    /// the resolve and yank paths; navigate refuses it, since `o`'s stdout
+    /// feeds the wrapper's cd.
     dialect: ?dialects.Dialect = null,
-    /// --force: proceed with a destructive act that would otherwise ask (today,
-    /// repointing an existing alias). Deliberately NOT implied by --no-prompt:
-    /// "don't block me" and "overwrite what I have" are different statements,
-    /// and conflating them is how an unattended run destroys a path.
+    /// --force: go through with an act that would otherwise ask. NOT implied
+    /// by --no-prompt - "don't block me" and "overwrite what I have" differ.
     force: bool = false,
     /// PATH as the process started, captured *lazily* on first aliasRunEnv use
     /// (the run/navigate paths only) so the resolve hot path does zero extra work.
     /// aliasRunEnv rebuilds from this each call, so scripts dirs never accumulate.
     orig_path: ?[]const u8 = null,
-    /// Variables a context source returned during segment resolution, exported
-    /// into the child environment by aliasRunEnv. Set by resolve.evalSegment;
-    /// empty for every non-segmented target, so nothing pays for this feature
-    /// unless a `run` context was actually used.
+    /// Variables a context source returned, exported to the child by
+    /// aliasRunEnv. Empty for every non-segmented target.
     ctx_vars: []const segments.Var = &.{},
     /// Names aliasRunEnv injected from ctx_vars last call, removed before the
     /// next injection so a group fan-out never leaks one member's context into
     /// the next (the same discipline PATH gets via orig_path).
     ctx_injected: []const []const u8 = &.{},
-    /// What the per-project environment (env.zig) contributed to the child
-    /// environment on the last aliasRunEnv call, and the names to remove before
-    /// the next one - the same leak discipline as ctx_vars/ctx_injected. Empty
-    /// for every alias with no env.toml, so nothing pays for the feature unless
-    /// it is used.
+    /// What env.zig contributed last call, and the names to remove before the
+    /// next - the same leak discipline as ctx_vars/ctx_injected.
     env_vars: []const EnvVar = &.{},
     env_injected: []const []const u8 = &.{},
     /// Whether this process has already reported an env.toml problem (an
@@ -80,19 +69,14 @@ pub const App = struct {
 };
 
 /// One variable the per-project environment set. `from_secret` travels with it
-/// because the elevated path writes variables onto a command line, and a
-/// resolved credential must never go there - see run.elevatedCommand.
-///
-/// Declared here rather than in env.zig so App can name it without the two
-/// modules depending on each other's types.
+/// because the elevated path writes variables onto a command line, where a
+/// credential must not go (run.elevatedCommand). Declared here so App can name
+/// it without depending on env.zig.
 pub const EnvVar = struct { key: []const u8, value: []const u8, from_secret: bool };
 
-/// exePath returns the real on-disk image path, computed lazily and cached. The
-/// find/picker preview indirection re-invokes the binary as `<exe> --preview
-/// <path>`, so this must be the actual image — ask the OS (GetModuleFileNameW)
-/// rather than argv[0]+cwd (under a wrapper like `o`, argv[0] is the bare
-/// relative "o" and cwd is unrelated, yielding a bogus path cmd.exe can't run).
-/// Only preview/picker/init/sync need it, so resolve never pays the syscall.
+/// exePath returns the real on-disk image path, lazily and cached. Asks the OS
+/// rather than deriving it from argv[0]+cwd, which under a wrapper yields a
+/// path cmd.exe cannot run. Only preview/picker/init/sync need it.
 pub fn exePath(app: *App) []const u8 {
     if (app.exe_path) |p| return p;
     const p = std.process.executablePathAlloc(app.io, app.arena) catch app.argv0;
@@ -100,11 +84,9 @@ pub fn exePath(app: *App) []const u8 {
     return p;
 }
 
-/// isGlobalFlag reports the process-wide flags any sub-parser silently accepts
-/// (parsed up front into app.json / app.no_prompt) so they don't read as an
-/// unexpected argument to a group command. Re-exported here because every
-/// command module already imports app.zig as its shared seam; the flags
-/// themselves live in the grammar table with the rest of them.
+/// isGlobalFlag reports the process-wide flags any sub-parser silently
+/// accepts, so they never read as an unexpected argument. Declared in the
+/// grammar table.
 pub const isGlobalFlag = grammar.isGlobal;
 
 pub fn startsWithDash(s: []const u8) bool {
@@ -127,14 +109,10 @@ pub fn absPath(app: *App, p: []const u8) ![]const u8 {
     return std.fs.path.resolve(app.arena, &.{ buf[0..n], p });
 }
 
-/// resolveEditor mirrors commands.resolveEditor: $EDITOR, $VISUAL, then the
-/// first of nvim/vim/code/nano/notepad found on PATH. Returns the full resolved
-/// path (e.g. the actual `code.cmd`) rather than a bare name: this confirms the
-/// editor exists before we spawn, and hands std.process.spawn an explicit path
-/// it can recognize as a .bat/.cmd. Zig itself does the cmd.exe wrapping and
-/// argument escaping for batch scripts (CVE-2024-24576 mitigation) — we must
-/// NOT wrap with `cmd.exe /c` ourselves, as that double-escapes and breaks any
-/// path containing spaces (e.g. `...\Microsoft VS Code\bin\code.cmd`).
+/// resolveEditor: $EDITOR, $VISUAL, then the first of
+/// nvim/vim/code/nano/notepad on PATH. Returns the full resolved path so spawn
+/// can recognise a .bat/.cmd. Do NOT wrap it in `cmd.exe /c` - Zig already
+/// does that escaping, and doubling it breaks any path with spaces.
 pub fn resolveEditor(app: *App) ?[]const u8 {
     if (app.env.get("EDITOR")) |e| {
         const t = std.mem.trim(u8, e, " \t");
@@ -150,19 +128,9 @@ pub fn resolveEditor(app: *App) ?[]const u8 {
     return null;
 }
 
-/// openFileInEditor spawns the resolved editor on ONE file and returns its exit
-/// code, reporting the two ways that can fail (no editor anywhere, editor would
-/// not start) in the words every other caller already used.
-///
-/// The `e :<name>` stub seeder and the `e <alias> :` template seeder both end
-/// the same way - write the file, then open it - and the launch half is what
-/// they share. `cwd` is where the editor is started, which only matters for the
-/// editors that read a project config from it.
-///
-/// `line` is "" for the top of the file, or a 1-based line rendered in the
-/// editor's own dialect (`+N`, `--goto file:N`) - the same translation the grep
-/// and find pickers use to land on a match, so `e :deploy` opens ON the
-/// declaration rather than at the top of a file holding thirty of them.
+/// openFileInEditor spawns the resolved editor on one file. `cwd` is where the
+/// editor starts; `line` is "" for the top of the file, else a 1-based line in
+/// the editor's own dialect (`+N`, `--goto file:N`).
 pub fn openFileInEditor(app: *App, path: []const u8, line: []const u8, cwd: []const u8) !u8 {
     const ed = resolveEditor(app) orelse {
         try app.err.writeAll("nix: no $EDITOR set and none of nvim/vim/code/nano/notepad found on PATH\n");
@@ -179,10 +147,8 @@ pub fn openFileInEditor(app: *App, path: []const u8, line: []const u8, cwd: []co
     };
 }
 
-/// padPrint writes `s` padded out to `width`. A value too long for its column
-/// still gets the two-space gap the padding would have provided: columns are
-/// capped in places (see max_command_cols), and an overflowing one must not run
-/// straight into the text of the next.
+/// padPrint writes `s` padded to `width`. An over-long value still gets the
+/// two-space gap, so it cannot run into the next column.
 pub fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
     try w.writeAll(s);
     var i: usize = s.len;
@@ -195,11 +161,8 @@ pub fn padPrint(w: *Io.Writer, s: []const u8, width: usize) !void {
 /// the COMMAND column off the screen for every row.
 pub const max_description_cols: usize = 52;
 
-/// How far a COMMAND column is padded out when a DESCRIPTION follows it. This
-/// caps PADDING only - a longer command is never cut, it just pushes its own
-/// description right. Truncating a command would hide the one thing on the row
-/// that says what will actually run, while one 200-column outlier indenting
-/// every other description is a table nobody can read.
+/// How far a command column is padded when a description follows. Caps padding
+/// only: a longer command pushes its own description right, never truncates.
 pub const max_command_cols: usize = 44;
 
 /// ellipsize shortens prose to max_description_cols, marking the cut with "..."
@@ -242,14 +205,10 @@ pub fn dispWidth(s: []const u8) usize {
 /// grammar table for the same reason as isGlobalFlag.
 pub const aliasAction = grammar.aliasAction;
 
-/// fzfEnv hands nix's OWN fzf children the Tokyo Night theme unless the user
-/// already themes fzf. It works on a fresh COPY of the process environment —
-/// mutating app.env would leak FZF_DEFAULT_OPTS into every later child (the
-/// `o` subshell, editors, `r` commands), overriding the user's own fzf look in
-/// shells nix spawned. A fresh copy per call (not cached) so vars put into
-/// app.env between pickers (e.g. NIX_RGA_QUERY) are always carried along; fzf
-/// runs are interactive, the clone cost is noise. Any failure falls back to
-/// the shared env: worse theme, never a broken picker.
+/// fzfEnv themes nix's own fzf children unless the user already themes fzf.
+/// Works on a fresh copy per call: mutating app.env would leak
+/// FZF_DEFAULT_OPTS into every later child. Failure falls back to the shared
+/// env - worse theme, never a broken picker.
 pub fn fzfEnv(app: *App) *std.process.Environ.Map {
     if (app.env.get("FZF_DEFAULT_OPTS") != null) return app.env;
     const copy = app.arena.create(std.process.Environ.Map) catch return app.env;

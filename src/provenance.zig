@@ -1,18 +1,12 @@
 //! The provenance gate: project-local `.nix/actions.toml` and `.nix/scripts`
-//! arrive with a `git clone`, and `r <alias> :build` would run whatever they
-//! say, sight unseen. Choosing a NAME is not consent to a COMMAND, so the first
-//! run of an unapproved file shows the command and asks.
+//! arrive with a `git clone`, so the first run of an unapproved file shows the
+//! command and asks. Choosing a NAME is not consent to a COMMAND.
 //!
-//! What is gated is exactly what travelled: the project layer. Central per-alias
-//! files, `_default.toml`, `~/.nix/scripts` and literal typed commands are not -
-//! they live under $home or were written by the user at the moment of use, and
-//! there the user IS the provenance. A project dir that itself lives under $home
-//! is trusted for the same reason, the rule the context-source gate already uses.
+//! Only the project layer is gated. Central per-alias files, `_default.toml`,
+//! `~/.nix/scripts`, literal typed commands and any project dir under $home
+//! are not: there the user is the provenance.
 //!
-//! An ELEVATED command (the `sudo` marker) is a separate case that ignores the
-//! ledger entirely: approving bytes once is the right shape for a build, and the
-//! wrong shape for a command line that runs as administrator and that UAC will
-//! never display. See `decide`, which is where that ordering is pinned.
+//! An ELEVATED command (`sudo`) ignores the ledger entirely - see `decide`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -43,35 +37,22 @@ pub const Decision = enum {
     refuse_unapproved,
 };
 
-/// decide is the whole policy, as a pure function - the IO around it only prints
-/// and records what this returns.
+/// decide is the whole policy, as a pure function; the IO around it only
+/// prints and records what this returns.
 ///
-/// The elevated case is answered FIRST, before `approved` is even looked at, and
-/// that order is the rule rather than an implementation detail: a remembered
-/// approval must not be able to suppress the one prompt that ever shows an
-/// administrator command line. Elevation goes through ShellExecuteEx and the UAC
-/// dialog names the shell, not the command it was handed, so a persisted `y`
-/// would mean nobody has read that line since the day it was approved.
+/// The elevated case is answered FIRST, before `approved` is looked at: UAC
+/// names the shell rather than the command line it was handed, so a persisted
+/// `y` would mean nobody has read that line since the day it was approved.
+///
 /// `has_cloned` is whether this invocation touches any bytes that arrived with
-/// the repo at all - the project actions file, or a project file the command
-/// runs. It is not the same question as "did the name come from the project
-/// layer": a central, user-written action calling `python tools/deploy.py` still
-/// executes cloned code, and gating on who named it would have missed that.
-/// `trusted` is the caller's answer to "is this name in config.toml's
-/// [confirm] trusted list" - the user declaring, in a file no clone can reach,
-/// that this particular action is a vetted line rather than an open door. It
-/// waives the confirmation and nothing else: UAC still asks, which is the check
-/// that actually stops an unwanted elevation.
+/// the repo - not the same question as who NAMED the action, since a central
+/// action calling `python tools/deploy.py` still runs cloned code.
 ///
-/// It is deliberately ANDed with `!has_cloned`. A trusted name must not carry
-/// its exemption onto project bytes - `deploy` in the list must never silence
-/// the prompt for a cloned repo's own elevated `deploy`, nor for a central
-/// action whose command runs a project script. The exemption is for lines the
-/// user wrote and can re-read at any time, and cloned code is neither.
-///
-/// A non-interactive run still REFUSES rather than elevating unattended, listed
-/// or not: UAC cannot be answered where nobody is watching, so waiving nix's
-/// prompt there would only raise a dialog onto an empty desk.
+/// `trusted` is the name appearing in config.toml's `[confirm] trusted`, which
+/// no clone can reach. It waives nix's confirmation only - UAC still asks -
+/// and is ANDed with `!has_cloned` so the exemption never carries onto project
+/// bytes. A non-interactive run refuses either way: UAC cannot be answered
+/// where nobody is watching.
 pub fn decide(elevated: bool, has_cloned: bool, implicit: bool, approved: bool, can_prompt: bool, trusted: bool) Decision {
     if (elevated) {
         if (!can_prompt) return .refuse_elevated;
@@ -88,16 +69,12 @@ pub fn decide(elevated: bool, has_cloned: bool, implicit: bool, approved: bool, 
 pub const max_refs: usize = 8;
 
 /// Extensions worth reviewing: interpreted source, where the file IS the
-/// instructions and reading it is the only way to know what runs.
+/// instructions.
 ///
-/// An allowlist rather than a blocklist, because the failure it prevents is
-/// specific and bad. A project's own build OUTPUT is a project file too - this
-/// repo's `sync` action runs `zig-out\bin\nix.exe` - and hashing that would
-/// re-arm the approval on every single rebuild. Being asked to re-approve
-/// something a dozen times a day is how people learn to answer `y` without
-/// looking, which costs more than the check ever bought. A compiled binary also
-/// cannot be reviewed by opening it, so including one would add churn and no
-/// information at once.
+/// An allowlist, not a blocklist. A project's build OUTPUT is a project file
+/// too, and hashing it would re-arm approval on every rebuild - which is how
+/// people learn to answer `y` without looking. A binary cannot be reviewed by
+/// opening it either.
 const script_exts = [_][]const u8{
     ".py", ".sh",  ".bash", ".zsh", ".ps1",  ".psm1", ".cmd", ".bat",
     ".js", ".mjs", ".cjs",  ".ts",  ".rb",   ".pl",   ".lua", ".php",
@@ -112,21 +89,14 @@ fn reviewable(path: []const u8) bool {
 }
 
 /// referencedFiles returns the project files a command actually runs: every
-/// whitespace-separated token that resolves to an existing file INSIDE the
-/// project directory. It is what turns `python tools/deploy.py` from an opaque
-/// line into something reviewable, and what lets an edit to deploy.py re-arm the
-/// gate.
+/// whitespace-separated token resolving to an existing file inside the project
+/// dir. It is what lets an edit to deploy.py re-arm the gate.
 ///
-/// Deliberately a heuristic, and deliberately a shallow one:
-///   * It sees what the command line names, not what those files then call. A
-///     script that invokes a second script is one level past this, and the docs
-///     say so rather than implying otherwise.
-///   * Only inside the project. An absolute path or any `..` escape is skipped -
-///     hashing `C:\Windows\System32\cmd.exe` would re-arm every approval on the
-///     next Windows update, and the question here is about cloned bytes.
-///
+/// A shallow heuristic on purpose: it sees what the command line names, not
+/// what those files then call, and skips absolute paths and `..` escapes -
+/// hashing a system binary would re-arm every approval on the next OS update.
 /// Order follows the command line and duplicates collapse, so the same command
-/// always produces the same list - the record depends on it.
+/// always produces the same list.
 pub fn referencedFiles(app: *App, dir: []const u8, command: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     var it = std.mem.tokenizeAny(u8, command, " \t\r\n");
@@ -178,14 +148,11 @@ fn escapes(rel: []const u8) bool {
     return false;
 }
 
-/// recordForCommand is THE approval token for one action: the project actions
-/// file plus every reviewable project file that command runs.
-///
-/// Both the gate and `nix --trust` go through this one function, and that is not
-/// tidiness - it is the only thing keeping them in agreement. If --trust hashed
-/// the declaration alone while the gate hashed declaration-plus-scripts, --trust
-/// would report success and the gate would keep refusing, with nothing in the
-/// output to explain why. Returns null when there is nothing cloned to approve.
+/// recordForCommand is the approval token for one action: the project actions
+/// file plus every reviewable project file that command runs. Both the gate
+/// and `nix --trust` go through it, which is what keeps them in agreement -
+/// hashing different sets would make --trust report success while the gate
+/// kept refusing. Null when there is nothing cloned to approve.
 pub fn recordForCommand(app: *App, dir: []const u8, from_project: bool, command: []const u8) !?[]const u8 {
     const decl: ?[]const u8 = if (from_project) try actions.projectPath(app.arena, dir) else null;
     return combinedRecord(app, decl, try referencedFiles(app, dir, command));
@@ -318,12 +285,10 @@ fn listRefs(app: *App, refs: []const []const u8) !void {
     for (refs) |p| try app.err.print("  runs         {s}\n", .{p});
 }
 
-/// gateScript is the same gate for a bare-name run of a project script
-/// (`r acme build` finding `<dir>/.nix/scripts/build.cmd`). Gating the actions
-/// file but not the scripts beside it would just move the unreviewed code one
-/// filename over. Approval is per script, on its own bytes; a script carries no
-/// `sudo` marker (only an action's command string does), so there is no elevated
-/// case here.
+/// gateScript is the same gate for a bare-name run of a project script. Gating
+/// the actions file but not the scripts beside it would move the unreviewed
+/// code one filename over. Approval is per script; a script carries no `sudo`
+/// marker, so there is no elevated case here.
 pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) !bool {
     if (context.underHome(app.home, script)) return true; // ~/.nix/scripts, or a project under $home
     const body = app_zig.readFileMaybe(app, script) orelse return true;
@@ -352,12 +317,9 @@ pub fn scriptRecord(arena: std.mem.Allocator, body: []const u8) ![]const u8 {
 }
 
 /// approveProject records the current bytes of an alias's project action file
-/// and every script beside it - the batch form behind `nix --trust <alias>`, for
-/// approving a fresh clone in one go instead of one prompt per action. Returns
-/// how many new records it wrote.
-///
-/// It cannot pre-approve an elevated action, and does not try: that prompt is
-/// not a provenance question, so there is nothing here to store for it.
+/// and every script beside it - the batch form behind `nix --trust <alias>`.
+/// Returns how many new records it wrote. It cannot pre-approve an elevated
+/// action: that prompt is not a provenance question.
 pub fn approveProject(app: *App, alias: []const u8, dir: []const u8) !usize {
     var approved: usize = 0;
     const path = try actions.projectPath(app.arena, dir);
@@ -433,22 +395,16 @@ pub fn unapproved(app: *App, dir: []const u8) bool {
 /// Lives in proc with the other console predicates.
 const interactive = proc.interactive;
 
-/// confirm asks on stderr and reads the answer from stdin. The default is NO:
-/// anything that is not an explicit yes declines, EOF included. Both question
-/// and command go to stderr, so `r acme :build > log.txt` still shows the user
-/// what they are approving instead of writing it into the log.
+/// confirm asks on stderr and reads from stdin. The default is NO - anything
+/// that is not an explicit yes declines, EOF included. Both question and
+/// command go to stderr, so a redirected run still shows what is being
+/// approved.
 ///
-/// `e` opens `files` in the editor, then asks again - `e` because that is the
-/// key this machine already means "open it" with (`e <alias>`), and because it is
-/// what the hand reaches for when the thought is "let me look at that". Reading a one-line command
-/// is not the same as reading the python file it runs, and a prompt that can only
-/// be answered from the summary trains people to say yes to summaries.
-///
-/// A GUI editor (code, cursor) returns to us immediately rather than when the
-/// window closes, so the question comes back while the file is still open. That
-/// is the honest behaviour and the prompt says which editor it opened: nix cannot
-/// know when you have finished reading, and pretending to wait would be worse
-/// than being clear that it is not.
+/// `e` opens `files` in the editor and asks again: reading a one-line command
+/// is not the same as reading the script it runs. A GUI editor returns
+/// immediately rather than when the window closes, so the question comes back
+/// while the file is still open; the prompt names the editor it opened rather
+/// than pretending to wait.
 fn confirm(app: *App, question: []const u8, files: []const []const u8) !bool {
     const viewable = files.len > 0;
     while (true) {

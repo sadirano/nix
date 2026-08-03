@@ -143,15 +143,9 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
 }
 
 /// watchLoop is `--watch`: run, then rerun whenever something under the alias
-/// dir changes, until Ctrl-C. A held-open foreground command, never a daemon -
-/// the watch lives exactly as long as this invocation, so there is no state to
-/// clean up and nothing to forget is running.
-///
-/// The status line goes to STDERR, so a `--watch` transcript still pipes: the
-/// command's own output stays on stdout, unmixed with nix's bookkeeping.
-///
-/// Every rerun goes through runOnce, which means an action's [notify] on_finish
-/// fires each time - the save/build/toast loop this exists to close.
+/// dir changes, until Ctrl-C. A held-open foreground command, never a daemon.
+/// The status line goes to stderr so a transcript still pipes. Every rerun
+/// goes through runOnce, so `[notify] on_finish` fires each time.
 fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8, with_deps: bool) !u8 {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     const exclude_set = try watch.excludes(app.arena, cfg);
@@ -201,32 +195,24 @@ fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8, 
 pub const depth_var = "NIX_EXPORT_DEPTH";
 const max_depth = 2;
 
-/// The name the export was invoked under, published to the action it runs.
-///
-/// An export is a COPY of nix installed under the user's chosen name, so at
-/// runtime the process is `q.exe`, not `nix.exe`, and nothing else in the
-/// environment says which name that was. An action that has to recognise its own
-/// process - walking the ancestry to find where nix sits, say - would otherwise
-/// have to repeat the name as a literal in its command line, which goes stale
-/// silently the moment the `[bin]` key is renamed.
-///
-/// Without the extension, matching what the user typed and what a process name
-/// reads as (`q`, not `q.exe`).
+/// The name the export was invoked under, published to the action it runs. An
+/// export is a COPY of nix under the user's chosen name, so nothing else in
+/// the environment says which name that was, and an action needing it would
+/// otherwise repeat it as a literal that goes stale when the `[bin]` key is
+/// renamed. Without the extension, matching what a process name reads as.
 pub const export_var = "NIX_EXPORT";
 
 /// cmdExport runs a `[bin]` action export: the global command `ship`, resolved
 /// from the manifest to an alias and an action.
 ///
-/// The caller's words are OPAQUE - they go to the action and are never parsed as
-/// nix's own flags. `ship --no-prompt` hands `--no-prompt` to the command, which
-/// is the whole point of putting it on PATH: at the call site it is a program,
-/// not a nix invocation wearing a program's name. (The cost, accepted: `ship
-/// --help` is the action's help, and `nix --actions` is where you ask nix.)
+/// The caller's words are OPAQUE - they go to the action, never parsed as
+/// nix's own flags, because at the call site it is a program rather than a nix
+/// invocation wearing a program's name. The cost: `ship --help` is the
+/// action's help.
 ///
 /// `alias` is actions.default_owner for a machine-wide export, which has no
-/// alias directory and therefore runs in the CURRENT one - the case a loose
-/// .cmd on PATH usually serves. NIX_ALIAS is still filled in when the cwd
-/// happens to sit inside an alias, so the action can tell where it landed.
+/// alias directory and runs in the CURRENT one. NIX_ALIAS is still filled in
+/// when the cwd sits inside an alias.
 pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const u8, args: [][]const u8) !u8 {
     var depth: u8 = 0;
     if (app.env.get(depth_var)) |d| depth = std.fmt.parseInt(u8, d, 10) catch 0;
@@ -260,18 +246,13 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
     return runAction(app, cmd, ctx_alias, dir, action, false);
 }
 
-/// cmdHere runs `r :<name>` - a machine-wide action, in the directory the user
-/// is standing in. It is `[bin]`'s machine-wide export without the export: the
-/// same lookup, the same gate, the same run, reached by typing the action's
-/// name instead of installing a command for it.
+/// cmdHere runs `x :<name>` - a machine-wide action in the current directory.
+/// `[bin]`'s machine-wide export without the export.
 ///
-/// MACHINE-WIDE ONLY (`~/.nix/actions/_default.toml`), never the cwd project's
-/// own actions. `:<name>` has to mean one command wherever it is typed - if it
-/// also read the project underfoot, the same words would run different things
-/// in different directories, and picking the "nearest" one is exactly the guess
-/// nix does not make. To run a project's action, name its alias: `r acme :build`.
-/// The alias containing the cwd is still resolved, but only for context (env,
-/// scripts on PATH, $NIX_ALIAS), the same way a machine-wide export gets it.
+/// MACHINE-WIDE ONLY, never the cwd project's own actions: `:<name>` has to
+/// mean one command wherever it is typed, and picking the nearest project is
+/// the guess nix does not make. Name the alias to run a project's action. The
+/// containing alias is still resolved for context (env, scripts, NIX_ALIAS).
 pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
     // Same parser as `r <alias> :name`, so the colon grammar - chains, the
     // optional `--`, and "arguments go to a single action, not a chain" - is
@@ -319,14 +300,10 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
     return 0;
 }
 
-/// resolveExportAction looks up the action a `[bin]` export names. ONE lookup
-/// for both sides of the feature - bin_exports calls it to validate and
-/// fingerprint a declaration, cmdExport calls it to run one - so the command a
-/// sync consented to can never be a different command than the one that runs.
-///
-/// An empty `dir` marks a machine-wide (`_default`) export: its "directory" is
-/// wherever the user happens to be standing, so it reads the machine-wide file
-/// alone and must never pull in that directory's project actions.
+/// resolveExportAction looks up the action a `[bin]` export names - one lookup
+/// for both sides, so the command a sync consented to cannot differ from the
+/// one that runs. An empty `dir` marks a machine-wide export: it reads the
+/// machine-wide file alone and never the current directory's project actions.
 pub fn resolveExportAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
     if (dir.len == 0) {
         const list = try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home));
@@ -409,16 +386,13 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
 }
 
 /// runWithDeps runs an action across an alias's `[deps]` graph: every
-/// dependency's OWN action of that name, in dependency order, then the alias's.
+/// dependency's own action of that name, in order, then the alias's.
 ///
-/// STRICT, and strict up front. A `needs` naming an unregistered alias, or a
-/// dependency that does not define the action, aborts before anything runs -
-/// checked in a pre-flight pass over the whole order. The lenient
-/// skip-with-a-note policy is right for a group (`r +work git pull` over a set
-/// where one member is offline) and wrong here: a build chain IS its
-/// completeness, and half a world built is worse than none, because it looks
-/// like success. For the same reason it stops at the first failure rather than
-/// carrying on.
+/// Strict, and strict up front - a `needs` naming an unregistered alias, or a
+/// dependency missing the action, aborts before anything runs. The lenient
+/// skip-with-a-note policy is right for a group and wrong here: half a world
+/// built looks like success. It stops at the first failure for the same
+/// reason.
 fn runWithDeps(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outside: bool) !u8 {
     if (call.names.len != 1) {
         try app.err.writeAll("nix: --deps takes one action (a chain has no single name to look for in each dependency)\n");
@@ -487,13 +461,9 @@ fn resolveDirQuiet(app: *App, alias: []const u8) anyerror!?[]const u8 {
 }
 
 /// applyArgs splices a call's arguments into a command string: into every
-/// `{args}` placeholder if the command has one, else onto the end. Appending is
-/// the default because that is what a command line does anyway; the placeholder
-/// exists for the actions whose arguments belong in the middle.
-///
-/// The arguments arrive already split by the user's shell, so one containing a
-/// space is re-quoted - it was a single word when they typed it, and must stay
-/// one word for the shell this string is handed to.
+/// `{args}` placeholder if there is one, else onto the end. Arguments arrive
+/// already split by the user's shell, so one containing a space is re-quoted
+/// to stay a single word for the shell this string is handed to.
 pub fn applyArgs(arena: std.mem.Allocator, command: []const u8, args: []const []const u8) ![]const u8 {
     const joined = try joinArgs(arena, args);
     if (std.mem.indexOf(u8, command, "{args}") != null)
@@ -518,13 +488,9 @@ fn joinArgs(arena: std.mem.Allocator, args: []const []const u8) ![]const u8 {
 }
 
 /// stripSudo returns a command with its `sudo` marker removed, or null when it
-/// carries none. A leading `sudo` is how an action declares that it needs
-/// administrator rights: no syntax to learn, and listings show the word, so
-/// what the file says and what happens are the same thing.
-///
-/// The marker must be the FIRST token - it elevates the command, not one link
-/// of a `&&` chain. Off Windows it is not a marker at all: there `sudo` is a
-/// real program, and the honest thing is to run the line exactly as written.
+/// carries none. The marker must be the FIRST token - it elevates the command,
+/// not one link of a `&&` chain. Off Windows it is not a marker at all: there
+/// `sudo` is a real program.
 pub fn stripSudo(command: []const u8) ?[]const u8 {
     if (!proc.is_windows) return null;
     const t = std.mem.trimStart(u8, command, " \t");
@@ -534,19 +500,15 @@ pub fn stripSudo(command: []const u8) ?[]const u8 {
     return if (rest.len == 0) null else rest;
 }
 
-/// aliasRunEnv returns the environment for running in an alias context — the
-/// process env with the alias's project scripts dir `<dir>/.nix/scripts` and the
-/// central `~/.nix/scripts` prepended to PATH (so `r <alias> build` and the
-/// `o <alias>` subshell both resolve the project's own `build`, shadowing globals,
-/// and scripts can call siblings by bare name), plus NIX_ALIAS/NIX_ALIAS_PATH so
-/// children (prompts, status lines, scripts) know their alias context without a
-/// reverse lookup, plus the project's own environment (env.zig). `alias` is the
-/// token that selected the dir (a group member's name, possibly a `seg@alias`
-/// form). Rebuilt from orig_path each call and put overwrites, so repeated runs
-/// (a group) never stack dirs or leak a previous member's alias. Returns app.env
-/// (mutated in place), or null when `mode` is `.run` and a `${secret:NAME}` in
-/// the environment could not be resolved — the caller must then abort without
-/// spawning, and the reason has already been printed.
+/// aliasRunEnv returns the environment for running in an alias context: the
+/// process env with `<dir>/.nix/scripts` and `~/.nix/scripts` prepended to
+/// PATH, NIX_ALIAS/NIX_ALIAS_PATH so children know their context, and the
+/// project's own environment (env.zig).
+///
+/// Rebuilt from orig_path each call, so repeated runs never stack dirs or leak
+/// a previous group member's alias. Returns app.env, or null when `mode` is
+/// `.run` and a `${secret:NAME}` could not be resolved - the caller must then
+/// abort without spawning, the reason having been printed.
 pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.Mode) !?*std.process.Environ.Map {
     // Capture the original PATH lazily (and dupe it — the env.put below may free
     // the map's value). This runs only here, on the run/navigate paths, so the
@@ -585,14 +547,11 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.
     return app.env;
 }
 
-/// resolveScript resolves a bare command to a project script in the alias's
-/// `<dir>/.nix/scripts` (checked first, so local wins) or the central
-/// `~/.nix/scripts`, returning its absolute path. Needed for a *direct* run:
-/// spawn looks argv[0] up against the real PATH, not aliasRunEnv's injected one,
-/// so the script dir must be searched explicitly here. (The `o` subshell still
-/// resolves scripts via the injected PATH, since the shell does its own lookup.)
-/// Extension-probed (.cmd/.bat/.exe/.ps1 on Windows, bare/.sh else); a command
-/// with a path separator is left as-is.
+/// resolveScript resolves a bare command to a project script in
+/// `<dir>/.nix/scripts` (local wins) or `~/.nix/scripts`, returning its
+/// absolute path. Needed for a direct run: spawn looks argv[0] up against the
+/// real PATH, not aliasRunEnv's injected one. Extension-probed; a command with
+/// a path separator is left as-is.
 pub fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
     if (cmd.len == 0 or std.mem.indexOfAny(u8, cmd, "/\\") != null) return null;
     const dirs = [_][]const u8{
@@ -662,15 +621,14 @@ fn actionPaths(app: *App, alias: []const u8, dir: []const u8) ![]const []const u
     return paths;
 }
 
-/// mergedActions flattens an alias's action layers into what `r <alias> :name`
-/// would actually resolve: project-local, then central, then machine-wide, with
-/// the earliest layer winning per name. `include_default` drops that last layer,
-/// which the palette (`nix --actions`) does - a machine-wide default is not
-/// per-project wiring, and listing it once per alias would bury the real rows.
+/// mergedActions flattens an alias's action layers into what `x <alias> :name`
+/// resolves: project-local, then central, then machine-wide, earliest winning
+/// per name. `include_default` drops the last layer, which the palette does -
+/// listing a machine-wide default once per alias would bury the real rows.
 ///
-/// A layer that cannot be read contributes nothing instead of failing the whole
-/// listing: an alias pointing at an unplugged drive should cost you its project
-/// layer, not the other aliases' actions.
+/// A layer that cannot be read contributes nothing rather than failing the
+/// whole listing: an alias on an unplugged drive costs its own project layer,
+/// not the other aliases' actions.
 pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_default: bool) ![]actions.Action {
     const paths = try actionPaths(app, alias, dir);
     var merged: std.ArrayList(actions.Action) = .empty;
