@@ -250,6 +250,19 @@ pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
 /// write rewrites the whole thing.
 pub const max_cache_entries: usize = 512;
 
+/// What a context source is allowed to hand back (issue #15). A well-behaved
+/// lookup returns one or two variables; these bound the accidents - a `curl`
+/// body, a stack trace, a loop appending to the wrong file - which otherwise
+/// degrade silently into "navigation got slow and my environment is full of
+/// junk" rather than an error anyone can act on.
+///
+/// Over any of them the source is REFUSED, not truncated: a partially read
+/// answer can produce a path that looks right, and every one of these values
+/// is about to be cached and exported into a child environment.
+pub const max_output_bytes: usize = 64 * 1024;
+pub const max_vars: usize = 64;
+pub const max_value_bytes: usize = 4 * 1024;
+
 /// `at` is when the entry was stored; `ttl` is the lifetime it was stored
 /// under, kept so the reap can drop exactly the expired rows. Without it the
 /// janitor had to guess, and a fixed one-day guess silently capped every
@@ -588,7 +601,28 @@ pub fn run(
         return null;
     }
     const body = app_zig.readFileMaybe(app, out_file) orelse "";
+    // Bounded, and REFUSED rather than truncated (issue #15). A half-read
+    // result could yield a wrong path, and a wrong path is the one outcome
+    // this whole feature exists to avoid - so an oversized answer stops the
+    // resolve instead of contributing part of itself. Everything downstream
+    // keeps the output forever: it lands in the arena, gets written to
+    // contexts-cache.toml (rewritten whole on every put), and is exported into
+    // the environment of whatever `o`/`x` starts next.
+    if (body.len > max_output_bytes) {
+        try app.err.print("nix: {s}: {s} wrote {d} bytes to $NIX_CONTEXT_OUT (limit {d})\n", .{ src.label, std.fs.path.basename(r.script), body.len, max_output_bytes });
+        try app.err.writeAll("  a context source returns a few variables; this looks like a log or a dump written to the wrong file\n");
+        return null;
+    }
     const parsed = try parseKvLines(app.arena, body);
+    if (parsed.len > max_vars) {
+        try app.err.print("nix: {s}: {s} returned {d} variables (limit {d})\n", .{ src.label, std.fs.path.basename(r.script), parsed.len, max_vars });
+        return null;
+    }
+    for (parsed) |kv| if (kv.value.len > max_value_bytes) {
+        try app.err.print("nix: {s}: variable \"{s}\" is {d} bytes (limit {d})\n", .{ src.label, kv.key, kv.value.len, max_value_bytes });
+        try app.err.writeAll("  every produced variable is exported into the child environment; this one would not fit a command line\n");
+        return null;
+    };
     // Drop (loudly) anything that would overwrite an environment name nix owns.
     // Refusing the whole run would be harsher than the mistake deserves: the
     // other variables are still good, and the script is told exactly what was

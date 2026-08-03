@@ -717,6 +717,23 @@ fn startWindowed(app: *App, command: []const u8, alias: []const u8, dir: []const
         for (app.env_vars) |kv| if (kv.from_secret) {
             try app.err.print("nix: {s} is secret-derived and is NOT passed to an elevated window (it would sit in that process's command line)\n", .{kv.key});
         };
+        // The other half of that sentence, said out loud. A context source's
+        // variables DO travel onto the command line, because nix cannot tell
+        // whether one is a credential: an env.toml value is known to be secret
+        // because it was written as ${secret:NAME}, while a context variable is
+        // whatever a script printed. Withholding them all would break the
+        // common case (a looked-up name feeding the command); passing them
+        // silently would hide from a script author that their vault lookup just
+        // became world-readable in the process list. So: name them.
+        if (app.ctx_vars.len > 0) {
+            var b: std.ArrayList(u8) = .empty;
+            for (app.ctx_vars, 0..) |kv, i| {
+                if (i > 0) try b.appendSlice(app.arena, ", ");
+                try b.appendSlice(app.arena, kv.key);
+            }
+            try app.err.print("nix: context variables travel on the elevated command line, readable in the process list: {s}\n", .{b.items});
+            try app.err.writeAll("  nix cannot tell a looked-up name from a looked-up credential - don't return one from a context source used with sudo\n");
+        }
         const line = try elevatedCommand(app.arena, app.home, app.env_vars, app.ctx_vars, bare, alias, dir);
         proc.spawnElevated(app.arena, line, dir, comspec) catch |e| {
             switch (e) {
@@ -757,6 +774,16 @@ fn started(app: *App, alias: []const u8, name: []const u8, elevated: bool) !u8 {
 /// command line is readable in the process list by anyone on the machine; a
 /// credential that only ever lived in a child's environment must not be
 /// promoted to that. startWindowed says which variables it withheld.
+///
+/// Context variables (ctx_vars) are NOT filtered the same way, and the
+/// asymmetry is a limit rather than an oversight: an env.toml value is known to
+/// be secret because it was WRITTEN as `${secret:NAME}`, whereas a context
+/// variable is whatever a script printed to $NIX_CONTEXT_OUT - nix has no way
+/// to tell a looked-up client name from a looked-up token. Dropping them all
+/// would break the ordinary case these exist for. startWindowed names them
+/// instead, so an author who is fetching a credential can see where it goes.
+/// Letting a source DECLARE a variable secret is the real fix and needs a
+/// design decision about the output-file contract.
 fn elevatedCommand(
     arena: std.mem.Allocator,
     home: []const u8,
