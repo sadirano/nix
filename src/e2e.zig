@@ -1375,6 +1375,24 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pa", ":hello" });
         c.exe = real_exe;
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a multi-name slot's extra wrapper desugars via argv0", r);
+
+        // The mapping written backwards: `r = "x"` names no builtin slot, so it
+        // installs nothing and renames nothing. The bug was that it looked like
+        // it had - doctor counted the dead entry as an active override, which
+        // is the one command you would run to check the belief.
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nr = \"x\"\n");
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "shortcut overrides=0") != null, "a [shortcuts] key naming no builtin is not counted as an override", r);
+        c.check(std.mem.indexOf(u8, r.out, "names no builtin") != null, "--doctor names the dead [shortcuts] key", r);
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "[shortcuts] \"r\" names no builtin") != null, "--sync warns about the dead key without failing", r);
+
+        // A REAL slot given an unusable value stays silent on purpose: the
+        // builtin survives under its own name, which is the right outcome, and
+        // it must not start tripping the new warning.
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nx = \"nix\"\n");
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "names no builtin") == null, "an unusable VALUE on a real slot stays silent", r);
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
     }
 

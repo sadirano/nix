@@ -100,6 +100,7 @@ pub fn cmdSync(app: *App) !u8 {
         try app.err.print("regenerated {s} and {s}\n", .{ sh, guide });
     }
     try warnStaleWrappers(app, stale);
+    try warnUnknownShortcuts(app);
     // [bin] exports are generated files too — a bare `--sync` must refresh them
     // or "run `nix --sync`" stops being the universal fix. Implicit mode:
     // refresh only manifest-owned exports (a NEW export needs an explicit
@@ -124,6 +125,27 @@ pub fn cmdSync(app: *App) !u8 {
         try app.err.writeAll("restart your shell (or re-source the snippet) to pick up changes\n");
     }
     return 0;
+}
+
+/// warnUnknownShortcuts reports `[shortcuts]` keys that name no builtin slot.
+///
+/// It belongs to `--sync` rather than loadConfig: the entry is inert, so the
+/// message is not urgent, and loadConfig runs on essentially every command -
+/// warning there would put it in front of every `o` and `x` until fixed. Sync
+/// and doctor are where a user is asking about configuration, and both already
+/// print a report.
+///
+/// Sync's exit stays 0. The wrappers really were regenerated, and a config
+/// line that does nothing is not a failure to do the thing that was asked.
+fn warnUnknownShortcuts(app: *App) !void {
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return;
+    const unknown = try config.unknownShortcutSlots(app.arena, cfg);
+    if (unknown.len == 0) return;
+    for (unknown) |k| {
+        try app.err.print("nix: [shortcuts] \"{s}\" names no builtin command - ignored\n", .{k});
+    }
+    try app.err.writeAll("  the KEY is the builtin slot, the VALUE the new name (x = \"r\", not r = \"x\")\n");
+    try app.err.print("  slots: {s}\n", .{try config.slotList(app.arena)});
 }
 
 /// removeLegacyPwshSnippet deletes the retired ~/.nix/shell/nix.ps1 (older

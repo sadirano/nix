@@ -133,6 +133,63 @@ fn appendUniqueFold(arena: std.mem.Allocator, names: *std.ArrayList([]const u8),
     try names.append(arena, name);
 }
 
+/// isBuiltinSlot reports whether `name` is a `[shortcuts]` key that means
+/// anything. The keys ARE the slot names, so a key that is not one of them
+/// names nothing and its entry can never be consulted.
+pub fn isBuiltinSlot(name: []const u8) bool {
+    for (builtinShortcuts()) |b| if (std.mem.eql(u8, b.builtin, name)) return true;
+    return false;
+}
+
+/// unknownShortcutSlots returns the `[shortcuts]` keys that match no builtin
+/// slot, deduplicated, in the order they were written.
+///
+/// These are the entries with the mapping backwards — `g = "x"` where the user
+/// meant `x = "g"`. Nothing downstream reads them (shortcutFor and
+/// resolvedShortcutNames both iterate the BUILTINS and match keys against
+/// them), so they install no wrapper, delete nothing, and change nothing. That
+/// is why they need saying out loud somewhere: the config looks acted upon and
+/// is not.
+///
+/// An unusable VALUE is a different case and deliberately silent — loadConfig
+/// drops it, and the builtin keeps working under its own name, which is the
+/// right outcome for a real slot given a bad name.
+pub fn unknownShortcutSlots(arena: std.mem.Allocator, cfg: Config) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (cfg.shortcuts) |sc| {
+        if (isBuiltinSlot(sc.builtin)) continue;
+        try appendUniqueFold(arena, &out, sc.builtin);
+    }
+    return out.items;
+}
+
+/// shortcutSlotOverrides counts the builtin slots `[shortcuts]` actually
+/// changes — not the raw entries.
+///
+/// The two numbers disagree in both directions, which is why the raw one is
+/// never the one to report: `x = ["x", "r"]` is two entries renaming ONE slot,
+/// and a key naming no slot is an entry renaming NONE. A diagnostic quoting the
+/// raw count tells a user their mistake took effect.
+pub fn shortcutSlotOverrides(cfg: Config) usize {
+    var n: usize = 0;
+    for (builtinShortcuts()) |b| {
+        for (cfg.shortcuts) |sc| {
+            if (!std.mem.eql(u8, sc.builtin, b.builtin)) continue;
+            n += 1;
+            break;
+        }
+    }
+    return n;
+}
+
+/// slotList renders the valid `[shortcuts]` keys for a diagnostic, in the
+/// declaration order of builtinShortcuts so the message reads like the docs.
+pub fn slotList(arena: std.mem.Allocator) ![]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    for (builtinShortcuts()) |b| try parts.append(arena, b.builtin);
+    return std.mem.join(arena, ", ", parts.items);
+}
+
 /// pickerExcludeDefaults returns the default exclusion fragments (dependency/
 /// build/cache trees, hidden-by-convention prefixes, Windows system trees).
 /// Ported verbatim from config.PickerExcludeDefaults.
@@ -464,4 +521,59 @@ test "multi-name slot: every listed name resolves; first stays primary" {
     };
     const got2 = try resolvedShortcutNames(a, .{ .shortcuts = &dup });
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "n", "o", "p", "q", "r", "s", "y" }), got2);
+}
+
+test "a [shortcuts] key naming no slot is inert, reported, and not counted" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // The mapping written backwards: the user meant `x = "r"`. `r` names no
+    // builtin slot (the run slot has been `x` since the x/g/f rename), so the
+    // entry is consulted by nothing.
+    const backwards = [_]Shortcut{.{ .builtin = "r", .custom = "x" }};
+    const cfg: Config = .{ .shortcuts = &backwards };
+
+    // Inert: the default names come back untouched, so --sync installs the
+    // stock wrappers and no `x.exe` rename happens.
+    const got = try resolvedShortcutNames(a, cfg);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "n", "o", "p", "q", "s", "x", "y" }), got);
+    try std.testing.expectEqualStrings("x", shortcutFor(cfg, "x"));
+
+    // Reported, and NOT counted as an override - the raw entry count is 1 here
+    // and would tell the user their line took effect.
+    try std.testing.expectEqual(@as(usize, 0), shortcutSlotOverrides(cfg));
+    const unknown = try unknownShortcutSlots(a, cfg);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"r"}), unknown);
+}
+
+test "shortcutSlotOverrides counts slots, not entries" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    try std.testing.expectEqual(@as(usize, 0), shortcutSlotOverrides(.{}));
+
+    // Two entries, one slot: the array form must not read as two renames.
+    const multi = [_]Shortcut{
+        .{ .builtin = "x", .custom = "x" },
+        .{ .builtin = "x", .custom = "r" },
+    };
+    try std.testing.expectEqual(@as(usize, 1), shortcutSlotOverrides(.{ .shortcuts = &multi }));
+    try std.testing.expectEqual(@as(usize, 0), (try unknownShortcutSlots(a, .{ .shortcuts = &multi })).len);
+
+    // Two slots, one good and one that names nothing: only the good one counts,
+    // and only the bad one is reported.
+    const mixed = [_]Shortcut{
+        .{ .builtin = "s", .custom = "show" },
+        .{ .builtin = "sg", .custom = "g" },
+    };
+    const cfg: Config = .{ .shortcuts = &mixed };
+    try std.testing.expectEqual(@as(usize, 1), shortcutSlotOverrides(cfg));
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"sg"}), try unknownShortcutSlots(a, cfg));
+
+    // The retired two-letter names are the likeliest wrong keys, so make sure
+    // none of them silently passes as a slot.
+    for ([_][]const u8{ "r", "sg", "ff" }) |retired| try std.testing.expect(!isBuiltinSlot(retired));
+    for ([_][]const u8{ "o", "e", "s", "y", "p", "x", "g", "f", "q", "n" }) |slot| try std.testing.expect(isBuiltinSlot(slot));
 }
