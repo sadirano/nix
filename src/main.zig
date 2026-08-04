@@ -318,7 +318,10 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
 // error, which is what keeps the parser and `nix --help` describing one binary.
 fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     const verb = systemVerb(flag) orelse {
-        try app.err.print("nix: unknown flag \"{s}\" (run `nix --help` for usage)\n", .{flag});
+        try app.err.print("nix: unknown flag \"{s}\"\n", .{flag});
+        if (!try grammar.writeMisplacedHint(app.err, flag)) {
+            try app.err.writeAll("  (run `nix --help` for usage)\n");
+        }
         return 1;
     };
     return switch (verb) {
@@ -452,7 +455,11 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     for (rest) |a| {
         if (isGlobalFlag(a)) continue;
         if (startsWithDash(a)) {
-            try app.err.print("nix: unknown flag \"{s}\" on add form\n", .{a});
+            // `o <alias> <word>` is the ADD form, so a dashed token here was
+            // read as a path. When nix knows the flag from another scope, say
+            // which - "unknown flag" is true and useless when the flag exists.
+            try app.err.print("nix: unknown flag \"{s}\" on add form (a second word there is a PATH to register)\n", .{a});
+            _ = try grammar.writeMisplacedHint(app.err, a);
             return 1;
         }
         if (path != null) {
