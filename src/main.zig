@@ -379,10 +379,21 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     // Find first action flag.
     var action: ?grammar.ActionVerb = null;
     var action_idx: usize = 0;
+    var implied = false;
     for (rest, 0..) |a, i| {
         if (aliasAction(a)) |v| {
             action = v;
             action_idx = i;
+            break;
+        }
+        // A sub-command flag with no action named in front of it: it can only
+        // have meant its owner, so run that instead of explaining the spelling
+        // back. The flag itself stays in the arguments, since the owner's own
+        // parser is what reads it.
+        if (grammar.impliedAction(a)) |v| {
+            action = v;
+            action_idx = i;
+            implied = true;
             break;
         }
     }
@@ -390,7 +401,7 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
 
     const act = action.?;
     const pre = rest[0..action_idx];
-    const action_args = rest[action_idx + 1 ..];
+    const action_args = if (implied) rest[action_idx..] else rest[action_idx + 1 ..];
     // Global flags are legal before the action (`nix a --no-prompt --run cmd`); anything
     // else there is a mistake. After the action, tokens belong to the action.
     for (pre) |a| if (!isGlobalFlag(a)) {
