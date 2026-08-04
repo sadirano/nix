@@ -41,6 +41,10 @@ pub const App = struct {
     /// notify placeholder. Empty when the run was not recorded, which is what
     /// makes the placeholder safe to leave in a hook template unconditionally.
     log_path: []const u8 = "",
+    /// The last foreground named action, for the success hold at nix's single
+    /// exit point. Empty when nothing named ran.
+    last_alias: []const u8 = "",
+    last_action: []const u8 = "",
     /// `--as <dialect>`: how paths are spelled when printed or copied. Read by
     /// the resolve and yank paths; navigate refuses it, since `o`'s stdout
     /// feeds the wrapper's cd.

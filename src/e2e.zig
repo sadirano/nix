@@ -240,6 +240,22 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{ "--no-prompt", "--which", pa });
         c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pa"), "a leading global flag keeps the verb's own args", r);
+
+        // A flag nix knows, typed in a scope that doesn't parse it, says WHERE
+        // it belongs. "unknown flag" alone is true and useless when the flag
+        // exists - which is how `o <alias> --watch` read before.
+        r = try c.run(&.{ "pa", "--watch", "echo", "hi" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--watch <cmd>") != null, "a run-scoped flag on the add form names the command that owns it", r);
+
+        r = try c.run(&.{ "pa", "--list" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "takes no alias") != null, "a system flag after an alias says it takes no alias", r);
+
+        r = try c.run(&.{ "--grep", "pattern" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "after an alias") != null, "an action flag with no alias says it needs one", r);
+
+        // A flag nix has never heard of gets no invented advice.
+        r = try c.run(&.{"--wtach"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--help") != null and std.mem.indexOf(u8, r.err, "belongs") == null, "a genuine typo still just points at --help", r);
     }
 
     // --- the built-in .nix self-alias ----------------------------------------
@@ -849,76 +865,6 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--doctor"});
         c.check(std.mem.indexOf(u8, r.out, "no alias or group") != null and
             std.mem.indexOf(u8, r.out, "pnote") != null, "--doctor reports an orphaned note", r);
-    }
-
-    // --- [deps] dependency-ordered fan-out (r --deps :action) ------------------
-    {
-        // app needs left and right; both need core. A diamond, so the order has
-        // something to prove beyond "walked the list".
-        const da = join(&c, &.{ root, "proj", "dapp" });
-        const dl = join(&c, &.{ root, "proj", "dleft" });
-        const dr = join(&c, &.{ root, "proj", "dright" });
-        const dc = join(&c, &.{ root, "proj", "dcore" });
-        for ([_][]const u8{ "dapp", "dleft", "dright", "dcore" }, [_][]const u8{ da, dl, dr, dc }) |n, p| {
-            _ = try c.run(&.{ n, p });
-        }
-        try writeActions(&c, "dapp", da, "[deps]\nneeds = [\"dleft\", \"dright\"]\n\n[actions]\nbuild = \"echo built-app\"\n");
-        try writeActions(&c, "dleft", dl, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"echo built-left\"\n");
-        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"echo built-right\"\n");
-        try writeActions(&c, "dcore", dc, "[actions]\nbuild = \"echo built-core\"\n");
-
-        var r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
-        const i_core = std.mem.indexOf(u8, r.out, "built-core");
-        const i_left = std.mem.indexOf(u8, r.out, "built-left");
-        const i_right = std.mem.indexOf(u8, r.out, "built-right");
-        const i_app = std.mem.indexOf(u8, r.out, "built-app");
-        c.check(r.code == 0 and i_core != null and i_left != null and i_right != null and i_app != null, "--deps runs every alias in the graph", r);
-        c.check(i_core != null and i_left != null and i_right != null and i_app != null and
-            i_core.? < i_left.? and i_core.? < i_right.? and
-            i_left.? < i_app.? and i_right.? < i_app.?, "a dependency runs before what needs it, the invoked alias last", r);
-        // The diamond's shared dependency is built once, not once per dependent.
-        c.check(std.mem.count(u8, r.out, "built-core") == 1, "a diamond builds the shared dependency once", r);
-        c.check(std.mem.indexOf(u8, r.err, "==> dcore :build") != null, "each dependency's run is announced", r);
-
-        // Plain `r <alias> :build` is untouched - deps run only when asked.
-        r = try c.run(&.{ "dapp", "--run", ":build" });
-        c.check(r.code == 0 and hasLineFold(r.out, "built-app") and
-            std.mem.indexOf(u8, r.out, "built-core") == null, "without --deps only the alias's own action runs", r);
-
-        // Strict, and strict UP FRONT: a dep that does not define the action
-        // aborts before anything runs, rather than three builds in.
-        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nother = \"echo nope\"\n");
-        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "dright") != null and
-            std.mem.indexOf(u8, r.err, "nothing was run") != null and
-            std.mem.indexOf(u8, r.out, "built-core") == null, "a dep missing the action aborts before anything runs", r);
-
-        // Same for a needs entry naming an alias that is not registered.
-        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"ghost-repo\"]\n\n[actions]\nbuild = \"echo built-right\"\n");
-        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "ghost-repo") != null and
-            std.mem.indexOf(u8, r.out, "built-core") == null, "an unregistered dependency aborts before anything runs", r);
-
-        // A failing link stops the chain and keeps its exit code - build
-        // semantics, not the run-everything policy a group has.
-        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"exit 3\"\n");
-        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
-        c.check(r.code == 3 and std.mem.indexOf(u8, r.err, "stopping") != null and
-            std.mem.indexOf(u8, r.out, "built-app") == null, "a failing dependency stops the chain and keeps its code", r);
-
-        // A cycle is refused rather than walked forever.
-        try writeActions(&c, "dcore", dc, "[deps]\nneeds = [\"dapp\"]\n\n[actions]\nbuild = \"echo built-core\"\n");
-        try writeActions(&c, "dright", dr, "[deps]\nneeds = [\"dcore\"]\n\n[actions]\nbuild = \"echo built-right\"\n");
-        r = try c.run(&.{ "dapp", "--run", "--deps", ":build" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "cycle") != null and
-            std.mem.indexOf(u8, r.out, "built-core") == null, "a [deps] cycle is refused", r);
-
-        // The flag needs an action: there is no name to look for in a dependency
-        // when the command is literal, and a chain has no single one.
-        r = try c.run(&.{ "dapp", "--run", "--deps", "echo", "hi" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "named action") != null, "--deps refuses a literal command", r);
-        r = try c.run(&.{ "dapp", "--run", "--deps", ":build", ":other" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "one action") != null, "--deps refuses a chain", r);
     }
 
     // --- action palette (nix --actions) ----------------------------------------
@@ -2138,7 +2084,7 @@ pub fn main(init: std.process.Init) !void {
 
     // --- crossings (issue #38) ---------------------------------------------------------
     // The per-feature walk above proves each feature alone. The risk that grew
-    // as actions, provenance, deps, env and [bin] landed within six weeks of
+    // as actions, provenance, env and [bin] landed within six weeks of
     // each other is in the places they MEET, where the machinery exists and
     // nothing exercises it end to end. Own aliases, so nothing here depends on
     // state an earlier section left behind.
@@ -2152,7 +2098,7 @@ pub fn main(init: std.process.Init) !void {
             "shown = \"echo who=[%WHO%] only=[%ONLY_KB%] amb=[%AMBIENT%]\""
         else
             "shown = \"echo who=[$WHO] only=[$ONLY_KB] amb=[$AMBIENT]\"";
-        try writeActions(&c, "ka", ka, try std.fmt.allocPrint(arena, "[deps]\nneeds = [\"kb\"]\n\n[actions]\n{s}\n", .{show}));
+        try writeActions(&c, "ka", ka, try std.fmt.allocPrint(arena, "[actions]\n{s}\n", .{show}));
         try writeActions(&c, "kb", kb, try std.fmt.allocPrint(arena, "[actions]\n{s}\n", .{show}));
 
         // Central layers (no trust gate on ~/.nix), one key shared and one that
@@ -2161,30 +2107,12 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, join(&c, &.{ home, "env", "ka.toml" }), "[env]\nWHO = \"ka\"\n");
         try writeFile(&c, join(&c, &.{ home, "env", "kb.toml" }), "[env]\nWHO = \"kb\"\nONLY_KB = \"leaked\"\n");
 
-        // A --deps chain is the uncovered case: the group fan-out's isolation is
-        // checked in the env section, but a dependency chain reaches
-        // aliasRunEnv through a different call path, and env_injected is what
-        // has to strip kb's variables before ka's link runs.
-        var r = try c.run(&.{ "ka", "--run", "--deps", ":shown" });
-        const kb_line = std.mem.indexOf(u8, r.out, "who=[kb]");
-        const ka_line = std.mem.indexOf(u8, r.out, "who=[ka]");
-        c.check(r.code == 0 and kb_line != null and ka_line != null and kb_line.? < ka_line.?, "a --deps chain runs the dependency, then the alias", r);
-        // ka's link must not see ONLY_KB at all. Checked on the substring AFTER
-        // ka's marker, so kb's own (correct) `only=[leaked]` cannot satisfy it.
-        // The assertion is the ABSENCE of the value rather than a specific empty
-        // rendering: an unset name comes back as `[]` from a POSIX shell and as
-        // the unexpanded `[%ONLY_KB%]` from cmd, and both mean the same thing.
-        const ka_tail = if (ka_line) |i| r.out[i..] else "";
-        const kb_span = if (kb_line) |i| r.out[i..(ka_line orelse r.out.len)] else "";
-        c.check(std.mem.indexOf(u8, ka_tail, "leaked") == null and
-            std.mem.indexOf(u8, kb_span, "leaked") != null, "a dependency's env doesn't leak into the next link", r);
-
         // The ambient environment is the base a project's env.toml sits on:
         // unrelated variables survive, and a name env.toml sets is overridden
         // rather than merged.
         try c.env.put("AMBIENT", "from-shell");
         try c.env.put("WHO", "from-shell");
-        r = try c.run(&.{ "kb", "--run", ":shown" });
+        var r = try c.run(&.{ "kb", "--run", ":shown" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "amb=[from-shell]") != null, "an ambient variable reaches the command untouched", r);
         c.check(std.mem.indexOf(u8, r.out, "who=[kb]") != null, "env.toml overrides an ambient variable of the same name", r);
 
@@ -2224,10 +2152,9 @@ pub fn main(init: std.process.Init) !void {
         // the same text re-arms nothing (a check that wrote identical bytes here
         // passed for the wrong reason and proved only that trust is sticky).
         try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\nextra = \"echo added-later\"\n", .{show}));
-        r = try c.run(&.{ "ka", "--run", "--deps", ":shown" });
+        r = try c.run(&.{ "kb", "--run", ":shown" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "kb") != null and
-            std.mem.indexOf(u8, r.err, "--trust") != null and
-            std.mem.indexOf(u8, r.out, "who=[ka]") == null, "an untrusted dependency refuses, and the chain runs nothing", r);
+            std.mem.indexOf(u8, r.err, "--trust") != null, "an edited project re-arms its own gate", r);
         _ = try c.run(&.{ "--trust", "kb" });
 
         // The same crossing through a [bin] export: the installed exe is a copy

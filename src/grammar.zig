@@ -27,8 +27,6 @@ pub const SystemVerb = enum {
     which,
     edit,
     prune,
-    sweep,
-    picker_check,
     doctor,
     groups,
     contexts,
@@ -114,8 +112,6 @@ pub const system = [_]System{
     .{ .flags = &.{ "--which", "-w" }, .verb = .which, .args = "[path]", .help = "print the alias containing a path (default: cwd)", .spec = "--which" },
     .{ .flags = &.{ "--edit", "-e" }, .verb = .edit, .help = "open ~/.nix in your editor", .spec = "" },
     .{ .flags = &.{"--prune"}, .verb = .prune, .help = "interactively remove stale aliases", .spec = "" },
-    .{ .flags = &.{"--sweep"}, .verb = .sweep, .args = "[--min N]", .help = "find noisy dir trees to exclude from the picker", .spec = "" },
-    .{ .flags = &.{"--picker-check"}, .verb = .picker_check, .args = "<name>", .help = "show why dirs are shown/hidden in the `o` picker", .spec = "" },
     .{ .flags = &.{ "--doctor", "-D" }, .verb = .doctor, .help = "check tools/config and what the picker will use", .spec = "--doctor" },
     .{ .flags = &.{ "--groups", "-G" }, .verb = .groups, .help = "list alias groups  (+<group> --list shows members)", .spec = "groups" },
     .{ .flags = &.{ "--actions", "-A" }, .verb = .actions, .args = "[pat]", .help = "every alias's actions in one picker; Enter runs the pick", .spec = "--actions" },
@@ -208,6 +204,18 @@ pub const globals = [_]Global{
     },
 };
 
+/// Flags a sub-command parses for itself, and the form that would work. They
+/// are deliberately NOT rows above - the owning module still parses them, and
+/// promoting them would mean a verb the dispatcher has no arm for. They are
+/// listed only so a flag typed in the WRONG SCOPE can be answered with where it
+/// belongs instead of "unknown flag", which is true and useless.
+pub const Scoped = struct { flag: []const u8, form: []const u8 };
+pub const scoped = [_]Scoped{
+    .{ .flag = "--watch", .form = "x <alias> --watch <cmd>" },
+    .{ .flag = "--outside", .form = "x <alias> --outside <cmd>" },
+    .{ .flag = "--all", .form = "g <alias> <pat> --all" },
+};
+
 // ---- lookup -----------------------------------------------------------------
 
 fn lookup(comptime Verb: type, rows: []const Row(Verb), flag: []const u8) ?Verb {
@@ -248,6 +256,33 @@ pub fn knows(flag: []const u8) bool {
 }
 
 // ---- rendering --------------------------------------------------------------
+
+/// writeMisplacedHint writes the "you meant it here" line for a flag nix DOES
+/// know, typed somewhere it does not parse. Returns false for a flag nix has
+/// never heard of - a plain typo, which has no better answer than the one the
+/// caller already printed.
+///
+/// The three scopes are the three tables: a system flag takes no alias, an
+/// action flag comes after one, and a scoped flag belongs to the command that
+/// parses it. Written here rather than at the call sites so both of them say
+/// the same thing.
+pub fn writeMisplacedHint(w: *std.Io.Writer, flag: []const u8) !bool {
+    if (systemVerb(flag)) |_| {
+        try w.print("  {s} is a system command and takes no alias: nix {s}\n", .{ flag, flag });
+        return true;
+    }
+    if (aliasAction(flag)) |_| {
+        try w.print("  {s} belongs after an alias: nix <alias> {s}\n", .{ flag, flag });
+        return true;
+    }
+    for (scoped) |s| {
+        if (std.mem.eql(u8, s.flag, flag)) {
+            try w.print("  {s} belongs to another command: {s}\n", .{ flag, s.form });
+            return true;
+        }
+    }
+    return false;
+}
 
 /// spellings writes the flags column ("--list, -l") into buf and returns it.
 /// Callers size buf themselves; every row fits comfortably in 32 bytes.
@@ -320,6 +355,35 @@ test "public rows carry help text, internal ones are excluded from it" {
         }
     }
     for (actions) |r| try std.testing.expect(r.help.len > 0);
+}
+
+test "a scoped flag is never also a row, or the hint would contradict the parser" {
+    for (scoped) |s| {
+        try std.testing.expect(systemVerb(s.flag) == null);
+        try std.testing.expect(aliasAction(s.flag) == null);
+        try std.testing.expect(!isGlobal(s.flag));
+    }
+}
+
+test "writeMisplacedHint names the scope, and declines an unknown flag" {
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try std.testing.expect(try writeMisplacedHint(&w, "--watch"));
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "x <alias> --watch <cmd>") != null);
+
+    w = .fixed(&buf);
+    try std.testing.expect(try writeMisplacedHint(&w, "--list"));
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "takes no alias") != null);
+
+    w = .fixed(&buf);
+    try std.testing.expect(try writeMisplacedHint(&w, "--grep"));
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "after an alias") != null);
+
+    // A real typo gets no invented advice.
+    w = .fixed(&buf);
+    try std.testing.expect(!try writeMisplacedHint(&w, "--wtach"));
+    try std.testing.expectEqual(@as(usize, 0), w.buffered().len);
 }
 
 test "spellings joins the accepted forms" {

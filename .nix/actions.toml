@@ -1,19 +1,8 @@
 # nix project actions - run with `x <alias> :<name>` (list with `x <alias> :`).
 
 [actions]
-# Portable build: -Dcpu=baseline avoids baking the dev machine's CPU
-# extensions into the binary. A native build (the default) crashes with an
-# illegal instruction on any machine whose CPU lacks those extensions -
-# this is what broke the Scoop-bucket install on a fresh machine.
-build = "zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline"
-# Deploy the freshly built exe into ~/.nix/bin (nix + every wrapper copy,
-# plus the regenerated agent guide). Run :build first.
-sync = 'zig-out\bin\nix.exe --sync'
-# Everything CI runs, in CI's order: fmt check, unit tests, e2e, the portable
-# release build, the linux compile canary. What .githooks/pre-push calls.
+deploy = "zig build deploy -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline"
 ci = "zig build ci"
-# What is still unticked on the release checklist issue for the version in
-# flight (the checklist lives in a GitHub issue, not in the tree).
 checklist = "bash .github/scripts/release-checklist.sh status"
 
 # quiz - free-recall quiz over 100 situations (--count N, --only weighed, --score, --debrief)

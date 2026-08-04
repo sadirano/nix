@@ -11,6 +11,7 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
 const util = @import("util.zig");
+const actions = @import("actions.zig");
 
 const App = app_zig.App;
 
@@ -113,13 +114,7 @@ pub fn silenced(
     ms: u64,
     ok: bool,
 ) bool {
-    for (skip) |entry| {
-        const e = std.mem.trim(u8, entry, " \t");
-        if (e.len == 0) continue;
-        if (std.mem.indexOfScalar(u8, e, ':')) |c| {
-            if (util.eqlFoldAscii(e[0..c], alias) and util.eqlFoldAscii(e[c + 1 ..], action)) return true;
-        } else if (util.eqlFoldAscii(e, action)) return true;
-    }
+    if (actions.namesAction(skip, alias, action)) return true;
     return ok and min_ms > 0 and ms < min_ms;
 }
 

@@ -11,7 +11,6 @@ pub const context = @import("context.zig");
 pub const actions = @import("actions.zig");
 pub const watch = @import("watch.zig");
 pub const provenance = @import("provenance.zig");
-pub const deps = @import("deps.zig");
 pub const notes = @import("notes.zig");
 pub const config = @import("config.zig");
 pub const usage = @import("usage.zig");
@@ -21,6 +20,7 @@ pub const snippet = @import("snippet.zig");
 pub const agents = @import("agents.zig");
 pub const portable = @import("portable.zig");
 pub const proc = @import("proc.zig");
+pub const hold = @import("hold.zig");
 pub const png = @import("png.zig");
 pub const winpath = @import("winpath.zig");
 

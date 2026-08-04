@@ -17,7 +17,6 @@ const telemetry = @import("telemetry.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
-const deps = @import("deps.zig");
 const exports = @import("exports.zig");
 const env_zig = @import("env.zig");
 const watch = @import("watch.zig");
@@ -34,15 +33,12 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     var argv = action_args;
     var outside = false;
-    var with_deps = false;
     var watching = false;
     // All three flags sit before the action, and any order reads naturally, so
     // accept them in any.
     while (argv.len > 0) {
         if (eql(argv[0], "-o") or eql(argv[0], "--outside")) {
             outside = true;
-        } else if (eql(argv[0], "--deps")) {
-            with_deps = true;
         } else if (eql(argv[0], "--watch")) {
             watching = true;
         } else break;
@@ -69,14 +65,14 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `r <alias> :`)\n");
         return 1;
     }
-    if (watching) return watchLoop(app, alias, target, argv, with_deps);
-    return runOnce(app, alias, target, argv, outside, with_deps);
+    if (watching) return watchLoop(app, alias, target, argv);
+    return runOnce(app, alias, target, argv, outside);
 }
 
 /// runOnce is one pass of `r`: a named action (or chain), a project script, or a
 /// literal command. Split out from cmdRun so watch mode has a body to call
 /// again - everything before it is flag parsing that must happen exactly once.
-fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8, outside: bool, with_deps: bool) !u8 {
+fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8, outside: bool) !u8 {
     // Named action(s): a leading ':' on the first token (`r <alias> :test`). A
     // bare ':' lists the alias's actions. Runs as a shell string in the alias dir.
     if (argv[0].len > 0 and argv[0][0] == ':') {
@@ -92,15 +88,7 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
             },
             .call => |c| c,
         };
-        if (with_deps) return runWithDeps(app, call, alias, target, outside);
         return runCall(app, call, alias, target, outside);
-    }
-    // `--deps` orders the aliases that define an action; a literal command has
-    // no action name to look for in each dependency, so there is nothing to
-    // order and the flag would be a silent no-op.
-    if (with_deps) {
-        try app.err.writeAll("nix: --deps needs a named action (e.g. r <alias> --deps :build)\n");
-        return 1;
     }
     // Resolve the command: a project script in `.nix/scripts` (then central
     // `~/.nix/scripts`) wins, so `r <alias> build` runs the project's build;
@@ -166,7 +154,7 @@ fn telChild(app: *App, t0: i128, code: u8) void {
 /// dir changes, until Ctrl-C. A held-open foreground command, never a daemon.
 /// The status line goes to stderr so a transcript still pipes. Every rerun
 /// goes through runOnce, so `[notify] on_finish` fires each time.
-fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8, with_deps: bool) !u8 {
+fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8) !u8 {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     const exclude_set = try watch.excludes(app.arena, cfg);
     var w = watch.Watcher.init(app.arena, app.io, dir) catch |e| {
@@ -182,7 +170,7 @@ fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8, 
         runs += 1;
         const t0 = Io.Clock.awake.now(app.io).nanoseconds;
         telemetry.stepFmt(app.tel, "watch.run", "{d}", .{runs});
-        code = try runOnce(app, alias, dir, argv, false, with_deps);
+        code = try runOnce(app, alias, dir, argv, false);
         const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
         const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
 
@@ -400,70 +388,6 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
         const code = try runAction(app, cmd, alias, dir, name, outside);
         if (code != 0) {
             if (i + 1 < call.names.len) try app.err.print("nix: :{s} failed (exit {d}) - stopping\n", .{ name, code });
-            return code;
-        }
-    }
-    return 0;
-}
-
-/// runWithDeps runs an action across an alias's `[deps]` graph: every
-/// dependency's own action of that name, in order, then the alias's.
-///
-/// Strict, and strict up front - a `needs` naming an unregistered alias, or a
-/// dependency missing the action, aborts before anything runs. The lenient
-/// skip-with-a-note policy is right for a group and wrong here: half a world
-/// built looks like success. It stops at the first failure for the same
-/// reason.
-fn runWithDeps(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outside: bool) !u8 {
-    if (call.names.len != 1) {
-        try app.err.writeAll("nix: --deps takes one action (a chain has no single name to look for in each dependency)\n");
-        return 1;
-    }
-    const name = call.names[0];
-    var lookup = deps.AliasLookup{ .app = app, .resolve_dir = resolveDirQuiet };
-    try lookup.dirs.append(app.arena, .{ .alias = alias, .dir = dir }); // already resolved, and already counted
-    var unknown: std.ArrayList([]const u8) = .empty;
-    const ordered = deps.order(app.arena, alias, lookup.lookup(), &unknown) catch |e| switch (e) {
-        deps.Error.DepsCycle => {
-            try app.err.print("nix: [deps] cycle reaching {s} - a repo cannot need itself, however indirectly\n", .{alias});
-            return 1;
-        },
-        deps.Error.DepsTooDeep => {
-            try app.err.print("nix: [deps] nested deeper than {d} - check for a cycle\n", .{deps.max_depth});
-            return 1;
-        },
-        else => return e,
-    };
-    if (unknown.items.len > 0) {
-        try app.err.print("nix: [deps] names {d} unregistered alias(es): {s}\n", .{ unknown.items.len, try std.mem.join(app.arena, ", ", unknown.items) });
-        try app.err.writeAll("  register them (`nix <name> <path>`) or drop them from needs - nothing was run\n");
-        return 1;
-    }
-    // Pre-flight: resolve every action before running any. Reporting all the
-    // gaps at once beats stopping three builds in with the fourth undefined.
-    var missing: std.ArrayList([]const u8) = .empty;
-    for (ordered) |a| {
-        const d = lookup.dirOf(a) orelse continue;
-        if ((try resolveAction(app, a, d, name)) == null) try missing.append(app.arena, a);
-    }
-    if (missing.items.len > 0) {
-        try app.err.print("nix: :{s} is not defined by: {s}\n", .{ name, try std.mem.join(app.arena, ", ", missing.items) });
-        try app.err.writeAll("  every alias in a --deps chain must define the action - nothing was run\n");
-        return 1;
-    }
-    for (ordered) |a| {
-        const d = lookup.dirOf(a).?;
-        const r = (try resolveAction(app, a, d, name)).?; // pre-flight proved it
-        const cmd = try applyArgs(app.arena, r.command, call.args);
-        try app.out.flush();
-        try app.err.print("==> {s} :{s}\n", .{ a, name });
-        try app.err.flush();
-        // Gated per dependency: a chain of fresh clones asks for each, which is
-        // exactly when reading the commands matters most.
-        if (!try provenance.gateAction(app, a, d, name, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
-        const code = try runAction(app, cmd, a, d, name, outside);
-        if (code != 0) {
-            try app.err.print("nix: {s} :{s} failed (exit {d}) - stopping\n", .{ a, name, code });
             return code;
         }
     }
@@ -689,6 +613,10 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     telemetry.setAction(app.tel, name, command);
     telemetry.step(app.tel, "child.spawn", name);
     const tel_t0 = Io.Clock.awake.now(app.io).nanoseconds;
+    if (name.len > 0) {
+        app.last_alias = alias;
+        app.last_action = name;
+    }
     if (try openRecording(app, alias, name, command)) |rec| {
         var file = rec.file;
         // Footer written while the handle is open: Io.File exposes no

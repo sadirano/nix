@@ -286,8 +286,7 @@ pub const specs = [_]Spec{
         \\
         \\`-o` / `--outside` starts the action in a new window and returns at
         \\once, with no exit code to report - never use it for work whose result
-        \\you need. `--deps :<name>` runs the [deps] graph first (see
-        \\`--agent actions`).
+        \\you need.
         \\
         \\`--watch` reruns the command every time a file under the alias dir
         \\changes, and does not return until Ctrl-C. NEVER use it: it is refused
@@ -814,16 +813,6 @@ pub const specs = [_]Spec{
         \\runs in an administrator console of its own. Write it when the command
         \\genuinely needs admin, and never to "make sure" something works.
         \\
-        \\`[deps]` declares the aliases a project builds on, and
-        \\`nix <alias> --run --deps :build` runs each dependency's OWN action of
-        \\that name first, in dependency order, then the alias's:
-        \\
-        \\    [deps]
-        \\    needs = ["hoot", "libx"]
-        \\
-        \\Strict before it starts: an unregistered name in `needs`, or a
-        \\dependency that does not define the action, aborts with nothing run. A
-        \\failure mid-chain stops the rest. Plain `--run :build` is unaffected.
         \\
         \\PROVENANCE: a project's actions.toml and .nix/scripts arrive with a
         \\clone, so the first run of an unapproved file shows the command and
@@ -1046,8 +1035,8 @@ pub const specs = [_]Spec{
         .detail =
         \\~/.nix holds aliases.toml (name -> path), groups.toml, config.toml
         \\([shortcuts], [picker], [grep], [nav], [notify], [bin]), usage
-        \\(frecency, feeding --prune), segments.toml, picker.swept (picker
-        \\exclusions), trusted.toml + contexts-cache.toml (context approvals and
+        \\(frecency, feeding --prune), segments.toml,
+        \\trusted.toml + contexts-cache.toml (context approvals and
         \\their cached results), exports.toml (what --sync-bin installed), env/
         \\(private per-alias environment layers), bin/ (the command wrappers plus
         \\[bin] exports, on PATH), and AGENTS.md - this guide's short form,
