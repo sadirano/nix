@@ -330,7 +330,6 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         },
         .edit => cmdEdit(app, "", rest),
         .prune => cmd_registry.cmdPrune(app),
-        .picker_check => picker.cmdPickerCheck(app, rest),
         .doctor => doctor.cmdDoctor(app, rest),
         .groups => cmdGroups(app),
         .contexts => cmdContexts(app),

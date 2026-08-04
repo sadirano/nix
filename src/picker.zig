@@ -1,8 +1,7 @@
 //! The unknown-alias directory picker: when `o <name>` hits no alias, offer
 //! matching directories (Everything's es, else a streamed fd/find walk) in
 //! fzf, filtered by the [picker] exclusions. Picking returns the directory;
-//! the caller registers it. `--picker-check` replays the same pipeline as a
-//! diagnostic so it can never disagree with the real picker.
+//! the caller registers it.
 
 const std = @import("std");
 const app_zig = @import("app.zig");
@@ -38,7 +37,7 @@ const PickerSource = union(enum) {
 
 // ---- the picker's decisions, as data (issue #30) -----------------------------
 //
-// --doctor and --picker-check report what the picker WILL do, so they call the
+// --doctor reports what the picker WILL do, so it calls the
 // functions below rather than re-deriving the rules. Anything they print is a
 // rendering of a decision made here.
 
@@ -315,7 +314,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
 
 /// excludedBy returns the first exclusion fragment that matches `path`
 /// (case-insensitive substring), or null if none. This is the picker's exact
-/// filter rule, shared by pickDirectory and the --picker-check diagnostic so
+/// filter rule, shared by pickDirectory and --doctor so
 /// the diagnostic can never disagree with the real picker.
 pub fn excludedBy(arena: std.mem.Allocator, path: []const u8, excludes: []const []const u8) !?[]const u8 {
     const lp = try lowerDup(arena, path);
@@ -324,86 +323,6 @@ pub fn excludedBy(arena: std.mem.Allocator, path: []const u8, excludes: []const 
         if (std.mem.indexOf(u8, lp, lf) != null) return frag;
     }
     return null;
-}
-
-/// cmdPickerCheck replays the `o <name>` picker pipeline (whichever source
-/// pickerSource resolves → exclusion filter → 500-result cap) and prints, per
-/// candidate, whether it would appear in the picker or which exclusion fragment
-/// dropped it. Diagnoses "why isn't my directory offered?".
-///
-/// It goes through pickerSource itself, so it reports on the finder the picker
-/// would really use rather than on the one this command happens to know about.
-pub fn cmdPickerCheck(app: *App, rest: [][]const u8) !u8 {
-    var name: ?[]const u8 = null;
-    for (rest) |a| {
-        if (isGlobalFlag(a)) continue;
-        if (startsWithDash(a)) {
-            try app.err.print("nix: unknown flag for --picker-check: \"{s}\"\n", .{a});
-            return 1;
-        }
-        if (name != null) {
-            try app.err.print("nix: --picker-check takes one name; got extra \"{s}\"\n", .{a});
-            return 1;
-        }
-        name = a;
-    }
-    const q = name orelse {
-        try app.err.writeAll("nix: --picker-check needs a name (usage: nix --picker-check <name>)\n");
-        return 1;
-    };
-    const cfg = try config.loadConfig(app.arena, app.io, app.home);
-    const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
-
-    // Ask pickerSource, rather than re-issuing the es query it MIGHT have run.
-    // This command used to refuse outright without es on PATH, which made it
-    // useless on exactly the machines whose picker takes the fd/find path - the
-    // ones where a diagnostic is worth most. The module header has always
-    // promised this "replays the same pipeline"; now it does.
-    const raw = switch (try pickerSource(app, cfg, q)) {
-        .materialized => |out| blk: {
-            try app.out.writeAll("source: es (Everything index)\n\n");
-            break :blk out;
-        },
-        .stream => |argv| blk: {
-            try app.out.print("source: {s} (walking the search roots)\n\n", .{argv[0]});
-            try app.out.flush();
-            // Buffered, unlike the real picker's streaming render: a diagnostic
-            // reports totals, and it cannot count what it has not finished.
-            break :blk proc.captureOutput(app.arena, app.io, argv, ".") catch "";
-        },
-        .none => {
-            try app.err.writeAll("nix: no working finder - the picker cannot run\n");
-            try app.err.writeAll("  install fd (or Everything's es), and check `nix --doctor` for which one nix will use\n");
-            return 1;
-        },
-    };
-
-    var total: usize = 0;
-    var shown: usize = 0;
-    var excluded: usize = 0;
-    var capped: usize = 0;
-    var lines = std.mem.splitScalar(u8, raw, '\n');
-    while (lines.next()) |l0| {
-        const l = std.mem.trim(u8, l0, " \t\r");
-        if (l.len == 0) continue;
-        total += 1;
-        if (try excludedBy(app.arena, l, excludes)) |frag| {
-            excluded += 1;
-            try app.out.print("exclude  {s}  ({s})\n", .{ l, frag });
-        } else if (shown < 500) {
-            shown += 1;
-            try app.out.print("ok       {s}\n", .{l});
-        } else {
-            capped += 1;
-            try app.out.print("cap      {s}  (beyond the 500-result cap)\n", .{l});
-        }
-    }
-    try app.out.print("\n{d} candidate(s) for \"{s}\": {d} shown, {d} excluded, {d} past the cap\n", .{ total, q, shown, excluded, capped });
-    if (total == 0) {
-        try app.out.print("(none - check \"{s}\" is a substring of the path, and that the source above can see it: an indexed drive for es, a search root for fd/find - `nix --doctor` lists them)\n", .{q});
-    }
-    try app.out.flush();
-    return 0;
 }
 
 test "excludedBy: first matching fragment, case-insensitive, or null" {
