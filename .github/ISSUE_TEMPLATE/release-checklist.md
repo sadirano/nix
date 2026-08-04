@@ -36,8 +36,8 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 - [ ] Download the candidate zip from its GitHub release; `nix.exe --version`
       prints the candidate tag (baked from the tag, not `0.0.0`).
-- [ ] ⚠️ Deploy over the daily install (`x nix :build` + `x nix :sync`, or
-      drop-in + `nix --sync`); existing aliases, groups, actions, `[shortcuts]`,
+- [ ] ⚠️ Deploy over the daily install (`x nix :deploy`, or drop-in +
+      `nix --sync`); existing aliases, groups, actions, `[shortcuts]`,
       notes and `[bin]` exports all still resolve.
 - [ ] Any upgrade step this release needs from an older version is written
       down for the release notes (section 12).
