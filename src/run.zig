@@ -13,6 +13,7 @@ const config = @import("config.zig");
 const logs = @import("logs.zig");
 const notify = @import("notify.zig");
 const timelog = @import("timelog.zig");
+const telemetry = @import("telemetry.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
@@ -141,12 +142,24 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
     // is spawned as an argv here rather than through runShellString, so the
     // named-action site there would never see it.
     const span = timelog.Boundary.begin(app.io);
+    telemetry.setAction(app.tel, "", try std.mem.join(app.arena, " ", argv));
+    telemetry.step(app.tel, "child.spawn", "literal");
+    const tel_t0 = Io.Clock.awake.now(app.io).nanoseconds;
     const code = proc.runInheritEnv(app.io, resolved, target, env) catch |e| {
+        telemetry.step(app.tel, "child.error", @errorName(e));
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
         return 1;
     };
     span.finish(app, alias, .run);
+    telChild(app, tel_t0, code);
     return code;
+}
+
+/// telChild files a finished child against the telemetry line: how long the
+/// thing nix was asked to run actually took, apart from nix's own microseconds.
+fn telChild(app: *App, t0: i128, code: u8) void {
+    const ns: i128 = @as(i128, Io.Clock.awake.now(app.io).nanoseconds) - t0;
+    telemetry.setChild(app.tel, @intCast(@divTrunc(ns, std.time.ns_per_ms)), code);
 }
 
 /// watchLoop is `--watch`: run, then rerun whenever something under the alias
@@ -168,6 +181,7 @@ fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8, 
     while (true) {
         runs += 1;
         const t0 = Io.Clock.awake.now(app.io).nanoseconds;
+        telemetry.stepFmt(app.tel, "watch.run", "{d}", .{runs});
         code = try runOnce(app, alias, dir, argv, false, with_deps);
         const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
         const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
@@ -672,6 +686,9 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     // above are exempt - there is no finish here to time.
     const span = timelog.Boundary.begin(app.io);
     const kind: timelog.Kind = if (name.len > 0) .action else .run;
+    telemetry.setAction(app.tel, name, command);
+    telemetry.step(app.tel, "child.spawn", name);
+    const tel_t0 = Io.Clock.awake.now(app.io).nanoseconds;
     if (try openRecording(app, alias, name, command)) |rec| {
         var file = rec.file;
         // Footer written while the handle is open: Io.File exposes no
@@ -689,13 +706,16 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
         file.close(app.io);
         app.log_path = rec.path;
         span.finish(app, alias, kind);
+        telChild(app, tel_t0, code);
         return code;
     }
     const code = proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
+        telemetry.step(app.tel, "child.error", @errorName(e));
         try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
         return 1;
     };
     span.finish(app, alias, kind);
+    telChild(app, tel_t0, code);
     return code;
 }
 

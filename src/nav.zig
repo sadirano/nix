@@ -11,6 +11,7 @@ const config = @import("config.zig");
 const resolve = @import("resolve.zig");
 const run_zig = @import("run.zig");
 const timelog = @import("timelog.zig");
+const telemetry = @import("telemetry.zig");
 
 const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
@@ -44,6 +45,12 @@ pub fn enterDir(app: *App, alias: []const u8, dir: []const u8) !u8 {
     // `.navigate`: a missing secret costs that one variable and a warning, never
     // the shell itself - a session you cannot enter is not a safer session.
     const env = (try aliasRunEnv(app, alias, dir, .navigate)) orelse return 1;
+    // Everything typed inside this subshell reports under the same session id,
+    // which is what makes a chain (`o nix` -> `x nix :build` -> `g nix TODO`)
+    // reconstructable as one piece of work rather than three unrelated lines.
+    const sid = telemetry.newSessionId(app.arena, app.io);
+    env.put("NIX_SID", sid) catch {};
+    telemetry.step(app.tel, "session.enter", sid);
     try app.out.flush();
     // The session's two ends: this call blocks until the subshell exits, which
     // is the whole duration the time ledger is after (timelog.zig). A shell that
@@ -59,6 +66,7 @@ pub fn enterDir(app: *App, alias: []const u8, dir: []const u8) !u8 {
             return 1;
         };
         span.finish(app, alias, .session);
+        telemetry.stepFmt(app.tel, "session.exit", "{d}", .{code});
         return code;
     }
     const code = proc.runInheritEnv(app.io, &.{shell}, dir, env) catch |e| {
@@ -66,6 +74,7 @@ pub fn enterDir(app: *App, alias: []const u8, dir: []const u8) !u8 {
         return 1;
     };
     span.finish(app, alias, .session);
+    telemetry.stepFmt(app.tel, "session.exit", "{d}", .{code});
     return code;
 }
 

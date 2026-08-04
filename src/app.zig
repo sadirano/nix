@@ -10,6 +10,7 @@ const segments = @import("segments.zig");
 const dialects = @import("dialects.zig");
 const grammar = @import("grammar.zig");
 const editor = @import("editor.zig");
+const telemetry = @import("telemetry.zig");
 
 pub const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -66,7 +67,15 @@ pub const App = struct {
     /// unapproved project layer, a refused name). A chain injects once per link,
     /// and the same note three times reads as three separate problems.
     env_noted: bool = false,
+    /// This invocation's telemetry line, or null when recording is off. Every
+    /// telemetry helper accepts null, so call sites never guard (telemetry.zig).
+    tel: ?*telemetry.Rec = null,
 };
+
+/// tel* re-exports so a command module instruments itself with one call and no
+/// extra import - the same reason isGlobalFlag and aliasAction live here.
+pub const step = telemetry.step;
+pub const stepFmt = telemetry.stepFmt;
 
 /// One variable the per-project environment set. `from_secret` travels with it
 /// because the elevated path writes variables onto a command line, where a

@@ -8,6 +8,7 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
+const telemetry = @import("telemetry.zig");
 const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
 
@@ -138,6 +139,7 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
 
     try app.out.flush();
     const cwd = targets[0].path;
+    telemetry.step(app.tel, "search.query", query);
     const res = if (multi)
         try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, rg.items), &fzf, cwd, fzfEnv(app))
     else
@@ -145,9 +147,34 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     // The preview subprocess was the only reader. Drop it before the editor
     // spawn below, so the user's editor doesn't inherit a stray search pattern.
     _ = app.env.orderedRemove("NIX_RGA_QUERY");
-    if (res.code != 0) return 0; // cancelled / nothing selected
+    if (res.code != 0) {
+        // A search abandoned at the picker is the friction signal: the pattern
+        // was worth typing and nothing it found was worth opening.
+        telemetry.step(app.tel, "search.cancel", query);
+        return 0; // cancelled / nothing selected
+    }
+    telPicked(app, res.output);
     const sel = if (multi) try expandPrefixedSelection(app.arena, targets, res.output) else res.output;
     return openSelectionsInEditor(app, cwd, sel, true);
+}
+
+/// telPicked files what a picker actually returned: how many rows were chosen
+/// and the first of them. "Searched and opened something" and "searched and
+/// walked away" are the two halves of whether the search earned its keystrokes.
+fn telPicked(app: *App, selection: []const u8) void {
+    var n: i64 = 0;
+    var first: []const u8 = "";
+    var it = std.mem.splitScalar(u8, selection, '\n');
+    while (it.next()) |ln| {
+        const row = std.mem.trim(u8, ln, " \t\r");
+        if (row.len == 0) continue;
+        if (n == 0) first = row;
+        n += 1;
+    }
+    if (app.tel) |t| {
+        t.hits = n;
+        t.picked = app.arena.dupe(u8, first) catch "";
+    }
 }
 
 /// grepRga is `g --all`: like grepRg but with ripgrep-all, so each fzf row is

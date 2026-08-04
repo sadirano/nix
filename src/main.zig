@@ -6,6 +6,7 @@ const dialects = @import("dialects.zig");
 const logs = @import("logs.zig");
 const cmd_registry = @import("cmd_registry.zig");
 const usage = @import("usage.zig");
+const telemetry = @import("telemetry.zig");
 const proc = @import("proc.zig");
 const clipboard = @import("clipboard.zig");
 const editor = @import("editor.zig");
@@ -92,13 +93,17 @@ pub fn main(init: std.process.Init) !void {
         .json = false,
         .no_prompt = false,
     };
+    app.tel = telemetry.begin(arena, io, home, raw_args, init.environ_map);
 
     const code = run(&app, raw_args) catch |e| blk: {
+        telemetry.step(app.tel, "error", @errorName(e));
         err.print("nix: {s}\n", .{@errorName(e)}) catch {};
         break :blk 1;
     };
     out.flush() catch {};
     err.flush() catch {};
+    telemetry.setFlags(app.tel, app.json, app.no_prompt, app.force, if (app.dialect) |d| @tagName(d) else "");
+    telemetry.finish(app.tel, code);
     if (code != 0) {
         holdOnFailure(&app);
         std.process.exit(@intCast(code));
@@ -307,8 +312,14 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
         return 1;
     }) {
         .none => {},
-        .reference => |g| return dispatchGroupRef(app, g, rest[1..]),
-        .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]),
+        .reference => |g| {
+            telemetry.setGroup(app.tel, g, "group-ref");
+            return dispatchGroupRef(app, g, rest[1..]);
+        },
+        .add => |ad| {
+            telemetry.setGroup(app.tel, ad.group, "group-add");
+            return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]);
+        },
     }
     return dispatchAlias(app, first, rest[1..]);
 }
@@ -318,9 +329,12 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
 // error, which is what keeps the parser and `nix --help` describing one binary.
 fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     const verb = systemVerb(flag) orelse {
+        telemetry.setVerb(app.tel, "unknown-flag");
+        telemetry.step(app.tel, "grammar.reject", flag);
         try app.err.print("nix: unknown flag \"{s}\" (run `nix --help` for usage)\n", .{flag});
         return 1;
     };
+    telemetry.setVerb(app.tel, @tagName(verb));
     return switch (verb) {
         .list => cmd_registry.cmdList(app),
         .list_names => cmd_registry.cmdListNames(app),
@@ -364,6 +378,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
 }
 
 fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
+    telemetry.setAlias(app.tel, alias, "");
     // A trailing bare `:` asks what this alias can run - from ANY command, so
     // `o i :` and `e i :` answer the same as `r i :`. It reads as the alias-
     // scoped form of the leading bare `:` that already opens the whole palette,
@@ -391,9 +406,13 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
             break;
         }
     }
-    if (action == null) return aliasAddOrResolve(app, alias, rest);
+    if (action == null) {
+        telemetry.setVerb(app.tel, "resolve-or-add");
+        return aliasAddOrResolve(app, alias, rest);
+    }
 
     const act = action.?;
+    telemetry.setVerb(app.tel, @tagName(act));
     const pre = rest[0..action_idx];
     const action_args = rest[action_idx + 1 ..];
     // Global flags are legal before the action (`nix a --no-prompt --run cmd`); anything
@@ -461,7 +480,11 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
         }
         path = a;
     }
-    if (path) |p| return cmd_registry.cmdAdd(app, alias, p);
+    if (path) |p| {
+        telemetry.setVerb(app.tel, "add");
+        telemetry.setResolved(app.tel, "registered");
+        return cmd_registry.cmdAdd(app, alias, p);
+    }
     return cmdResolve(app, alias);
 }
 
@@ -508,9 +531,11 @@ fn cmdResolve(app: *App, name: []const u8) !u8 {
     }
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     const path = (try store.lookupAlias(app.arena, data, name, app.home)) orelse {
+        telemetry.setResolved(app.tel, "unknown");
         try app.err.print("nix: unknown alias \"{s}\"\n", .{name});
         return 1;
     };
+    telemetry.setResolved(app.tel, "hit");
     const shown = (try spell(app, path)) orelse return 1;
     try app.out.print("{s}\n", .{shown});
     try app.out.flush();
@@ -676,6 +701,8 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
 /// A `+group` token routes to navigateGroup; `member+group` adds then navigates.
 fn navigate(app: *App, alias: []const u8) !u8 {
+    telemetry.setVerb(app.tel, "navigate");
+    telemetry.setAlias(app.tel, alias, "");
     // `o` is the one path that refuses --as. Its output is consumed by the
     // wrapper to cd, so a translated path would not be a differently-spelled
     // answer, it would be a broken one. Say what to use instead rather than

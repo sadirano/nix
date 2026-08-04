@@ -7,6 +7,7 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const store = @import("store.zig");
 const usage = @import("usage.zig");
+const telemetry = @import("telemetry.zig");
 const segments = @import("segments.zig");
 const context = @import("context.zig");
 const run_zig = @import("run.zig");
@@ -134,9 +135,16 @@ fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs
 /// error for now (onix offers an es+fzf picker here; that is a later port).
 pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     if (std.mem.indexOfScalar(u8, name, '@') != null) {
-        const path = (try resolveSegmented(app, name)) orelse return null;
+        const path = (try resolveSegmented(app, name)) orelse {
+            telemetry.setResolved(app.tel, "segment-fail");
+            return null;
+        };
         store.mkdirAll(app.io, path) catch {};
         const parsed = try segments.parseSegmentedAlias(app.arena, name);
+        if (app.tel) |t| {
+            if (parsed.segs.len > 0) t.seg = parsed.segs[0].name;
+        }
+        telemetry.setResolved(app.tel, "segment");
         usage.record(app.arena, app.io, app.home, parsed.alias) catch {};
         return path;
     }
@@ -145,21 +153,31 @@ pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     // nix's own home and something is very wrong if it is missing - creating it
     // here would paper over that.
     if (store.isSelfAlias(name)) {
+        telemetry.setResolved(app.tel, "builtin");
         usage.record(app.arena, app.io, app.home, name) catch {};
         return try app.arena.dupe(u8, app.home);
     }
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     if (try store.scanForAlias(app.arena, data, name)) |path| {
         store.mkdirAll(app.io, path) catch {};
+        telemetry.setResolved(app.tel, "hit");
         usage.record(app.arena, app.io, app.home, name) catch {};
         return path;
     }
     // Unknown plain alias: offer the directory picker (register-on-the-fly).
     if (app.no_prompt) {
+        telemetry.setResolved(app.tel, "unknown");
         try app.err.print("nix: unknown alias \"{s}\"\n", .{name});
         return null;
     }
-    const pick = (try picker.pickDirectory(app, name)) orelse return null;
+    // The miss is the interesting half of the story: how often a name nix does
+    // not know is one the picker then finds (nix helping) versus one abandoned
+    // at the picker (nix in the way).
+    const pick = (try picker.pickDirectory(app, name)) orelse {
+        telemetry.setResolved(app.tel, "picker-cancel");
+        return null;
+    };
+    telemetry.setResolved(app.tel, "picker-register");
     return try addAlias(app, name, pick);
 }
 

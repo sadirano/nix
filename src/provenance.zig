@@ -13,6 +13,7 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const actions = @import("actions.zig");
 const context = @import("context.zig");
+const telemetry = @import("telemetry.zig");
 const proc = @import("proc.zig");
 const store = @import("store.zig");
 const config = @import("config.zig");
@@ -231,7 +232,9 @@ pub fn gateAction(
     // the scripts it points at.
     const viewable = try withDecl(app, decl, refs);
     const trusted = elevated and isConfirmTrusted(app, name);
-    switch (decide(elevated, has_cloned, implicit, approved, canPrompt(app, mode), trusted)) {
+    const decision = decide(elevated, has_cloned, implicit, approved, canPrompt(app, mode), trusted);
+    telemetry.step(app.tel, "trust.decide", @tagName(decision));
+    switch (decision) {
         .allow => return true,
         .refuse_elevated => {
             try app.err.print("nix: :{s} runs as administrator, which needs a confirmation:\n", .{name});
@@ -256,7 +259,11 @@ pub fn gateAction(
             try app.err.print("nix: {s}'s :{s} wants to run:\n", .{ alias, name });
             try app.err.print("  {s}\n", .{command});
             try describeCovered(app, decl, refs);
-            if (!try confirm(app, "Approve these files as they stand, and run?", viewable)) return false;
+            if (!try confirm(app, "Approve these files as they stand, and run?", viewable)) {
+                telemetry.step(app.tel, "trust.refused", alias);
+                return false;
+            }
+            telemetry.step(app.tel, "trust.approved", alias);
             try context.recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|actions", .{alias}));
             return true;
         },
