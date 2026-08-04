@@ -4,3 +4,9 @@
 deploy = "zig build deploy -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline"
 ci = "zig build ci"
 checklist = "bash .github/scripts/release-checklist.sh status"
+
+# quiz - free-recall quiz over 100 situations (--count N, --only weighed, --score, --debrief)
+quiz = "python tools/quiz.py {args}"
+
+# telemetry - build the HTML report from ~/.nix/telemetry.jsonl
+telemetry = "python tools/telemetry-report.py {args}"
