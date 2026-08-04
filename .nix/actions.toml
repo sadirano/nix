@@ -9,6 +9,12 @@ build = "zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
 # Deploy the freshly built exe into ~/.nix/bin (nix + every wrapper copy,
 # plus the regenerated agent guide). Run :build first.
 sync = 'zig-out\bin\nix.exe --sync'
+# :build and :sync in one, then hold the window open. `zig build deploy`
+# already depends on the install step, so the build-first rule lives in
+# build.zig rather than being restated here; the -D flags match :build.
+# The pause is for the shortcut/double-click case, where the window would
+# otherwise close over whatever --sync had to say.
+deploy = "zig build deploy -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline && pause"
 # Everything CI runs, in CI's order: fmt check, unit tests, e2e, the portable
 # release build, the linux compile canary. What .githooks/pre-push calls.
 ci = "zig build ci"
