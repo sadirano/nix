@@ -257,7 +257,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
         return null;
     }
     const cfg = try config.loadConfig(app.arena, app.io, app.home);
-    const excludes = try config.pickerExcludes(app.arena, app.io, app.home, cfg);
+    const excludes = try config.pickerExcludes(app.arena, cfg);
 
     const preview = if (proc.is_windows)
         try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})

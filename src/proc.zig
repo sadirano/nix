@@ -684,7 +684,7 @@ pub const LineSink = struct {
 
 /// forEachLine spawns argv in cwd and feeds every stdout line to `sink` as it
 /// arrives — the streaming replacement for captureOutput when the caller only
-/// aggregates (e.g. --sweep over the whole Everything index) and must not hold
+/// aggregates (e.g. the picker over the whole Everything index) and must not hold
 /// the full dump in memory. Memory stays bounded by the longest line. stdin and
 /// stderr are inherited, like captureOutput.
 pub fn forEachLine(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8, sink: LineSink) !void {
