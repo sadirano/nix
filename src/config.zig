@@ -90,6 +90,13 @@ pub const Config = struct {
     /// [bin] foreign: strictness for files in ~/.nix/bin that nix didn't
     /// install (see ForeignPolicy). Default warn.
     bin_foreign: ForeignPolicy = .warn,
+    /// [hold] on_success: actions whose output is worth reading before the
+    /// window goes. Same `alias:action` / bare-name matching as
+    /// [notify] on_finish_skip. Failures already hold, always.
+    hold_on_success: []const []const u8 = &.{},
+    /// [hold] seconds: how long a held window waits before closing itself. Any
+    /// key ends it early. 0 waits for a key with no timeout.
+    hold_seconds: u32 = 5,
     /// [watch] exclude: extra paths `r --watch` ignores, ADDED to watch's own
     /// defaults (never replacing them - the defaults are what stops a run's own
     /// output from triggering the next run). See watch.excludeDefaults.
@@ -316,6 +323,13 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             }
             if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, stripQuotes(val_start));
             if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "hold")) {
+            if (std.mem.eql(u8, key, "on_success")) {
+                cfg.hold_on_success = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+            }
+            if (std.mem.eql(u8, key, "seconds")) cfg.hold_seconds = std.fmt.parseInt(u32, stripQuotes(val_start), 10) catch 5;
             continue;
         }
         if (std.mem.eql(u8, section, "confirm")) {

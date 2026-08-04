@@ -11,6 +11,24 @@ const Io = std.Io;
 const store = @import("store.zig");
 const stripQuotes = @import("util.zig").stripQuotes;
 
+/// namesAction reports whether a config list picks out this alias's action.
+/// An entry with ':' is an `alias:action` pair matched whole; a bare entry
+/// matches that action name under any alias. Case-folded, like every other
+/// alias and action lookup.
+///
+/// Shared so [notify] on_finish_skip and [hold] on_success cannot drift into
+/// meaning different things by the same spelling.
+pub fn namesAction(list: []const []const u8, alias: []const u8, action: []const u8) bool {
+    for (list) |entry| {
+        const e = std.mem.trim(u8, entry, " \t");
+        if (e.len == 0) continue;
+        if (std.mem.indexOfScalar(u8, e, ':')) |c| {
+            if (store.eqlFoldAscii(e[0..c], alias) and store.eqlFoldAscii(e[c + 1 ..], action)) return true;
+        } else if (store.eqlFoldAscii(e, action)) return true;
+    }
+    return false;
+}
+
 /// One named action. `description` is prose explaining WHY the action exists -
 /// the command already says what it does. It carries no syntax of its own: the
 /// comment block written immediately above the action is its description, which
@@ -406,4 +424,14 @@ test "centralPath / projectPath shape" {
     const pp = try projectPath(a, "D");
     try std.testing.expect(std.mem.endsWith(u8, pp, "actions.toml"));
     try std.testing.expect(std.mem.indexOf(u8, pp, ".nix") != null);
+}
+
+test "namesAction: bare name matches any alias, alias:action matches one" {
+    const list: []const []const u8 = &.{ "deploy", "acme:digest", "  " };
+    try std.testing.expect(namesAction(list, "nix", "deploy"));
+    try std.testing.expect(namesAction(list, "other", "DEPLOY"));
+    try std.testing.expect(namesAction(list, "acme", "digest"));
+    try std.testing.expect(!namesAction(list, "other", "digest"));
+    try std.testing.expect(!namesAction(list, "nix", "ci"));
+    try std.testing.expect(!namesAction(&.{}, "nix", "deploy"));
 }
