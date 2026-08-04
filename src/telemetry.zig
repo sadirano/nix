@@ -45,6 +45,12 @@ pub const Rec = struct {
     how: []const u8,
     argv: []const []const u8,
     cwd: []const u8 = "",
+    /// Where the words were typed: "session" inside an `o` subshell (or
+    /// anything descended from one), "fresh" otherwise. The distinction is the
+    /// whole reason repetition costs what it costs - in a fresh shell history
+    /// is cold and a repeated command is RETYPED, while inside a session the
+    /// same command is one arrow key away.
+    typed_in: []const u8 = "",
 
     verb: []const u8 = "",
     alias: []const u8 = "",
@@ -94,6 +100,9 @@ pub fn begin(arena: std.mem.Allocator, io: Io, home: []const u8, argv: []const [
         .how = util.lowerDup(arena, base(if (argv.len > 0) argv[0] else "nix")) catch "",
         .argv = words.items,
         .cwd = cwd(arena, io),
+        // NIX_SID is exported by nav.enterDir and by nothing else, so its
+        // presence IS "inside a stacked session", inherited down every child.
+        .typed_in = if (env.get("NIX_SID") != null) "session" else "fresh",
     };
     return rec;
 }
@@ -221,6 +230,8 @@ fn render(r: *Rec, exit_code: u8) ![]const u8 {
     try w.print(a, ",\"pid\":{d}", .{r.pid});
     try w.appendSlice(a, ",\"how\":");
     try jsonStr(a, w, r.how);
+    try w.appendSlice(a, ",\"typed_in\":");
+    try jsonStr(a, w, r.typed_in);
 
     try w.appendSlice(a, ",\"argv\":[");
     for (r.argv, 0..) |x, i| {
@@ -362,6 +373,19 @@ test "jsonStr escapes what a shell can put in an argument" {
     b.clearRetainingCapacity();
     try jsonStr(a, &b, &.{ 'a', 0x01, 'b' });
     try std.testing.expectEqualStrings("\"a\\u0001b\"", b.items);
+}
+
+test "typed_in reads NIX_SID, which only a stacked session exports" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var inside = std.process.Environ.Map.init(a);
+    try inside.put("NIX_SID", "s1234");
+    try std.testing.expectEqualStrings("s1234", sessionId(a, &inside));
+    // A session's id is what the whole chain reports under, so it must come
+    // back verbatim rather than being re-minted per invocation.
+    try std.testing.expect(inside.get("NIX_SID") != null);
 }
 
 test "base strips a directory and a .exe suffix, case-insensitively" {

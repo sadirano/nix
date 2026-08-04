@@ -131,6 +131,7 @@ def analyze(rows, amap):
 
     a["verbs"] = Counter(r.get("verb", "") or "(none)" for r in rows)
     a["hows"] = Counter(r.get("how", "") for r in rows)
+    a["typed_in"] = Counter(r.get("typed_in", "") or "(unknown)" for r in rows)
     a["aliases"] = Counter(r["alias"] for r in rows if r.get("alias"))
     a["actions"] = Counter(f'{r.get("alias","?")}:{r["action"]}' for r in rows if r.get("action"))
     a["segments"] = Counter(r["seg"] for r in rows if r.get("seg"))
@@ -252,6 +253,36 @@ def analyze(rows, amap):
     a["child_total"] = sum(a["child_ms"])
 
     a["unused"] = [v for v in KNOWN_VERBS if v not in a["verbs"]]
+
+    # ---- retyping cost ----
+    # An exact-repeat command line, counted separately for the shell it was
+    # typed in. In a FRESH shell history is cold and every repetition is
+    # retyped in full, so frequency x characters is the real keystroke bill.
+    # Inside an `o` session the same line is an arrow key away, so it is
+    # tallied but never billed.
+    typed = defaultdict(lambda: {"fresh": 0, "session": 0, "chars": 0})
+    for r in rows:
+        words = r.get("argv", [])[1:]
+        if not words:
+            continue
+        line = f'{r.get("how","nix")} {" ".join(words)}'
+        e = typed[line]
+        e["chars"] = len(line)
+        if r.get("typed_in") == "session":
+            e["session"] += 1
+        else:
+            e["fresh"] += 1
+    billed = []
+    for line, e in typed.items():
+        total = e["fresh"] + e["session"]
+        if total < 3:
+            continue
+        billed.append({
+            "line": line, "fresh": e["fresh"], "session": e["session"],
+            "chars": e["chars"], "cost": e["fresh"] * e["chars"],
+        })
+    billed.sort(key=lambda b: -b["cost"])
+    a["retyped"] = billed
     return a
 
 
@@ -340,6 +371,36 @@ def session_block(sessions, limit=25):
             "<details class='sess'><summary>" + esc(head) + "</summary>"
             "<table class='sesstbl'>" + "".join(rows) + "</table></details>")
     return "".join(out)
+
+
+def retyped_table(billed):
+    """Exact repeats, billed only for the fresh-shell half.
+
+    A `[bin]` export is the fix nix already has: `xc = ":claude"` under [bin]
+    in ~/.nix/actions/<alias>.toml makes `xc` a global command.
+    """
+    if not billed:
+        return "<p class='empty'>nothing typed three or more times yet</p>"
+    rows = []
+    for b in billed[:20]:
+        note = ""
+        if b["session"] and not b["fresh"]:
+            note = "<span class='sub'>only inside sessions - history covers it</span>"
+        elif b["session"]:
+            note = f"<span class='sub'>{b['session']} of them inside a session (not billed)</span>"
+        rows.append(
+            f"<tr><td class='n'>{b['cost']}</td>"
+            f"<td><code>{esc(b['line'][:90])}</code><br>{note}</td>"
+            f"<td class='n'>{b['fresh']}</td>"
+            f"<td class='n'>{b['chars']}</td></tr>")
+    return ("<p class='sub'>Ranked by keystrokes actually spent: "
+            "<strong>fresh-shell repeats &times; characters</strong>. Repeats inside an "
+            "<code>o</code> session are counted but not billed - history reaches them. "
+            "The fix for a top row is a <code>[bin]</code> export "
+            "(<code>xc = \":claude\"</code>).</p>"
+            "<table class='ftable'><thead><tr><th>keystrokes</th><th>command</th>"
+            "<th>fresh</th><th>chars</th></tr></thead><tbody>"
+            + "".join(rows) + "</tbody></table>")
 
 
 def friction_table(fr):
@@ -488,10 +549,14 @@ footer {{ margin-top:40px; color:var(--muted); font-size:12px; }}
   <div class="card"><p class="sub">Commands, by verb</p>{bar_rows(a['verbs'])}</div>
   <div class="card"><p class="sub">Projects, by how often named</p>{bar_rows(a['aliases'])}</div>
   <div class="card"><p class="sub">How it was typed (wrapper vs `nix`)</p>{bar_rows(a['hows'])}</div>
+  <div class="card"><p class="sub">Which shell it was typed in</p>{bar_rows(a['typed_in'])}</div>
   <div class="card"><p class="sub">Named actions run</p>{bar_rows(a['actions'])}</div>
   <div class="card"><p class="sub">Where you were standing (cwd)</p>{bar_rows(a['from'])}</div>
   <div class="card"><p class="sub">How the alias resolved</p>{bar_rows(a['resolved'])}</div>
 </div>
+
+<h2>Retyped - what a shortcut would save</h2>
+<div class="card">{retyped_table(a['retyped'])}</div>
 
 <h2>Friction - where nix was in the way</h2>
 <div class="card">{friction_table(a['friction'])}</div>
