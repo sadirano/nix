@@ -53,7 +53,7 @@ zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
 zig-out\bin\nix.exe --sync                 # deploy into ~/.nix/bin
 ```
 
-(Both are saved as project actions in `.nix/actions.toml` — once the repo is registered as an alias, `x <alias> :build` and `x <alias> :sync` run them from anywhere.)
+(Both steps are one project action in `.nix/actions.toml` — once the repo is registered as an alias, `x <alias> :deploy` runs them from anywhere.)
 
 `nix --init` creates `~/.nix/`, installs the `.exe` command wrappers into `~/.nix/bin`, and adds that dir to your user PATH — restart your shell once and the short commands below are live in every shell (PowerShell, cmd, anything). It never touches your shell profile; the wrappers on PATH are the whole integration on Windows. (On Unix-likes a snippet written to `~/.nix/shell/` *is* the integration — shell functions that cd in place — so there you add the printed line to `.bashrc`/`.zshrc` yourself.)
 
@@ -515,7 +515,7 @@ Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.t
 
 ### Failures don't vanish from a shortcut
 
-Pin `x nix :build :sync` to the Start menu and Windows makes a console for it, then destroys that console the moment nix exits — so a failure prints its message and disappears in the same instant. When nix is the **only** process attached to its console, it knows the window is about to go with it, and waits:
+Pin `x acme :build :test` to the Start menu and Windows makes a console for it, then destroys that console the moment nix exits — so a failure prints its message and disappears in the same instant. When nix is the **only** process attached to its console, it knows the window is about to go with it, and waits:
 
 ```
 nix: :build failed (exit 1) - stopping

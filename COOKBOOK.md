@@ -116,7 +116,7 @@ pause = "pause"
 ```
 
 Meant as the last link of a chain launched from a shortcut, where the console is
-destroyed the moment the command exits: `x nix :build :sync :pause`. A chain
+destroyed the moment the command exits: `x acme :build :test :pause`. A chain
 stops at the first failure, so this runs only when everything before it
 succeeded — to read an *error*, launch via `cmd /k`, which holds either way.
 
