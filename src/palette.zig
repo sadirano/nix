@@ -132,7 +132,7 @@ pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8, seed: bool
 /// <alias> :` that found nothing to list.
 ///
 /// It writes only when the file is ABSENT: one that exists but declares no
-/// actions may hold a `[bin]` or `[deps]` table, and an editor command must
+/// actions may hold a `[bin]` table, and an editor command must
 /// not rewrite it. The write creates `.nix/` if missing. Nothing here consults
 /// the provenance gate - that guards RUNNING cloned code, and this file was
 /// written locally.

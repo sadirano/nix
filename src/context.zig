@@ -269,7 +269,7 @@ pub fn trustPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 /// differently depending on which resolver produced it - `aliases.toml` stores
 /// forward slashes, a joined path carries the OS separator, and `$NIX_HOME` is
 /// whatever the user typed. While this compared separators literally, the
-/// exemption held or failed based on that spelling alone, so a `--deps` chain
+/// exemption held or failed based on that spelling alone, so a chain
 /// gated the dependency that a direct run of the same action did not.
 pub fn underHome(home: []const u8, path: []const u8) bool {
     if (path.len < home.len) return false;
