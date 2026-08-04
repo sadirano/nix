@@ -209,12 +209,32 @@ pub const globals = [_]Global{
 /// promoting them would mean a verb the dispatcher has no arm for. They are
 /// listed only so a flag typed in the WRONG SCOPE can be answered with where it
 /// belongs instead of "unknown flag", which is true and useless.
-pub const Scoped = struct { flag: []const u8, form: []const u8 };
-pub const scoped = [_]Scoped{
-    .{ .flag = "--watch", .form = "x <alias> --watch <cmd>" },
-    .{ .flag = "--outside", .form = "x <alias> --outside <cmd>" },
-    .{ .flag = "--all", .form = "g <alias> <pat> --all" },
+pub const Scoped = struct {
+    flag: []const u8,
+    form: []const u8,
+    /// The verb this flag can only have meant. A scoped flag naming no alias
+    /// action would be ambiguous; every one of these names exactly one, which
+    /// is what lets the parser act on it instead of refusing.
+    implies: ActionVerb,
 };
+pub const scoped = [_]Scoped{
+    .{ .flag = "--watch", .form = "x <alias> --watch <cmd>", .implies = .run },
+    .{ .flag = "--outside", .form = "x <alias> --outside <cmd>", .implies = .run },
+    .{ .flag = "--all", .form = "g <alias> <pat> --all", .implies = .grep },
+};
+
+/// impliedAction resolves a sub-command flag typed where no action was named.
+/// `nix acme --watch <cmd>` has one possible reading, so it gets it rather
+/// than an error naming the spelling it should have used.
+///
+/// NOT fuzzy matching: nothing is being guessed. The token is in the table or
+/// it is not, and a flag that is not stays an error.
+pub fn impliedAction(flag: []const u8) ?ActionVerb {
+    for (scoped) |sc| {
+        if (std.mem.eql(u8, sc.flag, flag)) return sc.implies;
+    }
+    return null;
+}
 
 // ---- lookup -----------------------------------------------------------------
 
@@ -355,6 +375,16 @@ test "public rows carry help text, internal ones are excluded from it" {
         }
     }
     for (actions) |r| try std.testing.expect(r.help.len > 0);
+}
+
+test "impliedAction resolves a scoped flag to its owner, and nothing else" {
+    try std.testing.expectEqual(ActionVerb.run, impliedAction("--watch").?);
+    try std.testing.expectEqual(ActionVerb.run, impliedAction("--outside").?);
+    try std.testing.expectEqual(ActionVerb.grep, impliedAction("--all").?);
+    try std.testing.expect(impliedAction("--wtach") == null);
+    // An action flag is not "implied" - it names its verb outright, and the
+    // caller finds it first.
+    try std.testing.expect(impliedAction("--grep") == null);
 }
 
 test "a scoped flag is never also a row, or the hint would contradict the parser" {
