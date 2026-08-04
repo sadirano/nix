@@ -6,6 +6,7 @@
 const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
+const telemetry = @import("telemetry.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
 const groups = @import("groups.zig");
@@ -123,6 +124,7 @@ fn groupAction(f: []const u8) ?GroupVerb {
 /// --paste (member picker → paste there). Per-alias-only actions (--edit)
 /// error.
 pub fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
+    telemetry.setGroup(app.tel, group, "group-ref");
     var action: ?GroupVerb = null;
     var idx: usize = 0;
     for (rest, 0..) |a, i| {
@@ -230,6 +232,7 @@ fn cmdGroupDelete(app: *App, group: []const u8) !u8 {
 /// than recording a dead member; `--remove` still accepts dead members —
 /// that's how they're cleaned up.
 pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: []const []const u8) !u8 {
+    telemetry.setGroup(app.tel, group, "group-add");
     var remove = false;
     for (rest) |a| {
         if (isGlobalFlag(a)) continue;

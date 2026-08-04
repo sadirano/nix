@@ -102,8 +102,7 @@ pub fn main(init: std.process.Init) !void {
     };
     out.flush() catch {};
     err.flush() catch {};
-    telemetry.setFlags(app.tel, app.json, app.no_prompt, app.force, if (app.dialect) |d| @tagName(d) else "");
-    telemetry.finish(app.tel, code);
+    telemetry.finish(app.tel, code, .{ .json = app.json, .no_prompt = app.no_prompt, .force = app.force, .dialect = if (app.dialect) |d| @tagName(d) else "" });
     if (code != 0) {
         hold.onFailure(&app);
         std.process.exit(@intCast(code));
@@ -306,14 +305,8 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
         return 1;
     }) {
         .none => {},
-        .reference => |g| {
-            telemetry.setGroup(app.tel, g, "group-ref");
-            return dispatchGroupRef(app, g, rest[1..]);
-        },
-        .add => |ad| {
-            telemetry.setGroup(app.tel, ad.group, "group-add");
-            return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]);
-        },
+        .reference => |g| return dispatchGroupRef(app, g, rest[1..]),
+        .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]),
     }
     return dispatchAlias(app, first, rest[1..]);
 }
@@ -323,8 +316,7 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
 // error, which is what keeps the parser and `nix --help` describing one binary.
 fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
     const verb = systemVerb(flag) orelse {
-        telemetry.setVerb(app.tel, "unknown-flag");
-        telemetry.step(app.tel, "grammar.reject", flag);
+        telemetry.reject(app.tel, flag);
         try app.err.print("nix: unknown flag \"{s}\"\n", .{flag});
         if (!try grammar.writeMisplacedHint(app.err, flag)) {
             try app.err.writeAll("  (run `nix --help` for usage)\n");
@@ -412,10 +404,7 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
             break;
         }
     }
-    if (action == null) {
-        telemetry.setVerb(app.tel, "resolve-or-add");
-        return aliasAddOrResolve(app, alias, rest);
-    }
+    if (action == null) return aliasAddOrResolve(app, alias, rest);
 
     const act = action.?;
     telemetry.setVerb(app.tel, @tagName(act));
@@ -473,6 +462,7 @@ fn bareAliasColon(rest: [][]const u8) bool {
 }
 
 fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
+    telemetry.setVerb(app.tel, "resolve-or-add");
     var path: ?[]const u8 = null;
     for (rest) |a| {
         if (isGlobalFlag(a)) continue;
@@ -491,8 +481,7 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
         path = a;
     }
     if (path) |p| {
-        telemetry.setVerb(app.tel, "add");
-        telemetry.setResolved(app.tel, "registered");
+        telemetry.setVerbResolved(app.tel, "add", "registered");
         return cmd_registry.cmdAdd(app, alias, p);
     }
     return cmdResolve(app, alias);
@@ -711,8 +700,7 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
 /// A `+group` token routes to navigateGroup; `member+group` adds then navigates.
 fn navigate(app: *App, alias: []const u8) !u8 {
-    telemetry.setVerb(app.tel, "navigate");
-    telemetry.setAlias(app.tel, alias, "");
+    telemetry.setVerbAlias(app.tel, "navigate", alias);
     // `o` is the one path that refuses --as. Its output is consumed by the
     // wrapper to cd, so a translated path would not be a differently-spelled
     // answer, it would be a broken one. Say what to use instead rather than

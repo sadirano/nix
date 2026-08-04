@@ -182,15 +182,22 @@ pub fn setGroup(rec: ?*Rec, group: []const u8, verb: []const u8) void {
     setVerb(rec, verb);
 }
 
-/// setFlags copies the process-wide switches at the one point they are all
-/// known. Taken as values rather than an *App so telemetry.zig keeps importing
-/// nothing but std and util (app.zig imports THIS file).
-pub fn setFlags(rec: ?*Rec, json: bool, no_prompt: bool, force: bool, dialect: []const u8) void {
-    const r = rec orelse return;
-    r.json = json;
-    r.no_prompt = no_prompt;
-    r.force = force;
-    r.dialect = dialect;
+/// reject records a flag the grammar has no row for.
+pub fn reject(rec: ?*Rec, flag: []const u8) void {
+    setVerb(rec, "unknown-flag");
+    step(rec, "grammar.reject", flag);
+}
+
+/// setVerbAlias and setVerbResolved are the two-at-once forms the dispatcher
+/// needs; a decision point should cost one line of instrumentation, not two.
+pub fn setVerbAlias(rec: ?*Rec, verb: []const u8, alias: []const u8) void {
+    setVerb(rec, verb);
+    setAlias(rec, alias, "");
+}
+
+pub fn setVerbResolved(rec: ?*Rec, verb: []const u8, resolved: []const u8) void {
+    setVerb(rec, verb);
+    setResolved(rec, resolved);
 }
 
 pub fn setResolved(rec: ?*Rec, resolved: []const u8) void {
@@ -210,9 +217,17 @@ pub fn setChild(rec: ?*Rec, ms: i64, exit_code: i64) void {
     r.child_exit = exit_code;
 }
 
+/// Flags is the process-wide switch state, taken as values so telemetry.zig
+/// keeps importing nothing but std and util (app.zig imports THIS file).
+pub const Flags = struct { json: bool, no_prompt: bool, force: bool, dialect: []const u8 };
+
 /// finish appends the line. Called once, at the single exit point in main.
-pub fn finish(rec: ?*Rec, exit_code: u8) void {
+pub fn finish(rec: ?*Rec, exit_code: u8, flags: Flags) void {
     const r = rec orelse return;
+    r.json = flags.json;
+    r.no_prompt = flags.no_prompt;
+    r.force = flags.force;
+    r.dialect = flags.dialect;
     const line = render(r, exit_code) catch return;
     append(r, line) catch {};
 }
