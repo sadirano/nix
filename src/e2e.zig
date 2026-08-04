@@ -244,8 +244,15 @@ pub fn main(init: std.process.Init) !void {
         // A flag nix knows, typed in a scope that doesn't parse it, says WHERE
         // it belongs. "unknown flag" alone is true and useless when the flag
         // exists - which is how `o <alias> --watch` read before.
-        r = try c.run(&.{ "pa", "--watch", "echo", "hi" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--watch <cmd>") != null, "a run-scoped flag on the add form names the command that owns it", r);
+        // A sub-command flag with an alias in front of it can only have meant
+        // its owner, so it runs rather than being explained back.
+        r = try c.run(&.{ "pa", "--outside", "cmd", "/c", "exit", "0" });
+        c.check(r.code == 0, "a run-scoped flag with an alias implies --run", r);
+
+        // With no alias there is nothing to imply it onto: still an error, and
+        // still told where it belongs.
+        r = try c.run(&.{ "--watch", "echo", "hi" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--watch <cmd>") != null, "a run-scoped flag with no alias names the command that owns it", r);
 
         r = try c.run(&.{ "pa", "--list" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "takes no alias") != null, "a system flag after an alias says it takes no alias", r);
