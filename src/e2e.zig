@@ -240,6 +240,22 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{ "--no-prompt", "--which", pa });
         c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pa"), "a leading global flag keeps the verb's own args", r);
+
+        // A flag nix knows, typed in a scope that doesn't parse it, says WHERE
+        // it belongs. "unknown flag" alone is true and useless when the flag
+        // exists - which is how `o <alias> --watch` read before.
+        r = try c.run(&.{ "pa", "--watch", "echo", "hi" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--watch <cmd>") != null, "a run-scoped flag on the add form names the command that owns it", r);
+
+        r = try c.run(&.{ "pa", "--list" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "takes no alias") != null, "a system flag after an alias says it takes no alias", r);
+
+        r = try c.run(&.{ "--grep", "pattern" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "after an alias") != null, "an action flag with no alias says it needs one", r);
+
+        // A flag nix has never heard of gets no invented advice.
+        r = try c.run(&.{"--wtach"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--help") != null and std.mem.indexOf(u8, r.err, "belongs") == null, "a genuine typo still just points at --help", r);
     }
 
     // --- the built-in .nix self-alias ----------------------------------------
