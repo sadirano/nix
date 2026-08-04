@@ -53,7 +53,7 @@ pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 
 ///
 /// It teaches the two things the format does not announce about itself: that the
 /// comment above an entry is the description nix shows, and that the neighbours
-/// (`[bin]`, `[deps]`, `.nix/scripts/`, `.nix/env.toml`) exist at all. Command
+/// (`[bin]`, `.nix/scripts/`, `.nix/env.toml`) exist at all. Command
 /// names are spelled canonically (`r`), not with the local [shortcuts] rename:
 /// the reader may be a colleague who cloned the repo.
 pub const project_template =
@@ -80,12 +80,6 @@ pub const project_template =
     \\#
     \\#   [bin]
     \\#   ship = ":deploy"
-    \\
-    \\# [deps] names the other aliases this project builds on.
-    \\# `r <alias> --deps :build` then runs each dependency's own :build first:
-    \\#
-    \\#   [deps]
-    \\#   needs = ["other-alias"]
     \\
     \\# Configuration these commands NEED goes in .nix/env.toml under [env], not
     \\# here. Credentials go there as ${secret:NAME} references - never as literal

@@ -214,7 +214,6 @@ pub const globals = [_]Global{
 pub const Scoped = struct { flag: []const u8, form: []const u8 };
 pub const scoped = [_]Scoped{
     .{ .flag = "--watch", .form = "x <alias> --watch <cmd>" },
-    .{ .flag = "--deps", .form = "x <alias> --deps :<action>" },
     .{ .flag = "--outside", .form = "x <alias> --outside <cmd>" },
     .{ .flag = "--all", .form = "g <alias> <pat> --all" },
 };

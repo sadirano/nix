@@ -44,10 +44,9 @@ extern "kernel32" fn FlushConsoleInputBuffer(hConsoleInput: *anyopaque) callconv
 
 /// onFailure waits for Enter after a failed run.
 ///
-/// At nix's ONE exit point rather than per action, so a failing chain, a
-/// --deps abort, an unapproved action and a plain "unknown alias" all hold
-/// alike: from a shortcut, every one of those is a window that blinks and is
-/// gone.
+/// At nix's ONE exit point rather than per action, so a failing chain, an
+/// unapproved action and a plain "unknown alias" all hold alike: from a
+/// shortcut, every one of those is a window that blinks and is gone.
 ///
 /// Three things switch it off, each a case where holding would be wrong rather
 /// than merely unwanted: --no-prompt (the caller declared nothing may block), a

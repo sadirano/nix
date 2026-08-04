@@ -297,7 +297,7 @@ pub fn trimLine(line: []const u8) []const u8 {
 ///
 /// The difference is exactly the reserved self alias: `.nix` can never be
 /// written into aliases.toml, but it is a perfectly good thing to name in a
-/// group (`+cfg` containing `.nix`) or a `[deps] needs` list. Registration
+/// group (`+cfg` containing `.nix`). Registration
 /// paths want validateAliasName; membership and dependency paths want this.
 pub fn validateAliasRef(name: []const u8) !void {
     if (isSelfAlias(name)) return;

@@ -135,9 +135,6 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   you just wrote will NOT run for you until the user approves it with
         \\   `nix --trust <alias>` - that is the check working, not a bug, and
         \\   `--trust` is never yours to run. Files under `~/.nix` are not gated.
-        \\   A project can declare `[deps] needs = ["other-alias"]`, and
-        \\   `{[x]s} <alias> --deps :build` then runs each dependency's own
-        \\   `:build` first, in order, aborting up front if any of them lacks it.
         \\   Configuration the commands NEED goes in `.nix/env.toml` under
         \\   `[env]`, and is set for every `{[x]s} <alias> ...` and every
         \\   `{[o]s} <alias>` session (`~/.nix/env/<alias>.toml` is the private

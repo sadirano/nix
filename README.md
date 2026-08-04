@@ -416,7 +416,7 @@ serve  = "npm run dev"
 deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
 ```
 
-You don't have to write either file from scratch: **`e acme :` opens the project's, creating it from a commented template** when the alias has no actions yet, and **`e :` opens the machine-wide `~/.nix/actions/_default.toml`** the same way — the template is inert (every sample is commented out), and it points at the neighbours a project file grows into, `[bin]`, `[deps]` and `.nix/env.toml`. `e acme :deploy` does the same one action at a time, seeding an empty stub for a name that doesn't exist yet and opening the file **on that declaration's line** — in your editor's own dialect (`+42`, `--goto file:42`), the same jump the search picker makes onto a match. Only the editor writes: `o acme :` and `x acme :` are the read-only forms of the same question.
+You don't have to write either file from scratch: **`e acme :` opens the project's, creating it from a commented template** when the alias has no actions yet, and **`e :` opens the machine-wide `~/.nix/actions/_default.toml`** the same way — the template is inert (every sample is commented out), and it points at the neighbours a project file grows into, `[bin]` and `.nix/env.toml`. `e acme :deploy` does the same one action at a time, seeding an empty stub for a name that doesn't exist yet and opening the file **on that declaration's line** — in your editor's own dialect (`+42`, `--goto file:42`), the same jump the search picker makes onto a match. Only the editor writes: `o acme :` and `x acme :` are the read-only forms of the same question.
 
 **Descriptions come from the comment above an action.** The command says what runs; the comment says *why*, and listings show it in a DESCRIPTION column:
 
@@ -525,35 +525,9 @@ nix: :build failed (exit 1) - stopping
 
 Launched from a shell you already had open, nothing happens: the shell is attached too, the window outlives nix, the error is still on screen, and stopping would just be in the way. That distinction — `GetConsoleProcessList` reporting exactly one process — is what lets this be the default instead of a flag you'd have to remember on the one run that fails.
 
-It's at nix's single exit point rather than per action, so a failing chain, a `--deps` abort, an unapproved action and a plain `unknown alias` all hold alike; from a shortcut each one is a window that blinks and is gone. Success never holds — there's nothing to read.
+It's at nix's single exit point rather than per action, so a failing chain, an unapproved action and a plain `unknown alias` all hold alike; from a shortcut each one is a window that blinks and is gone. Success never holds — there's nothing to read.
 
 Three things switch it off, each a case where holding would be wrong rather than merely unwanted: `--no-prompt` (the caller has declared that nothing may block), a stdin that isn't a console (a pipe answers instantly, so the hold would be a no-op that printed a confusing line), and a shared console. If you want to hold on *success* too — to read a build log you're about to overwrite — end the chain with a `:pause` action from `~/.nix/actions/_default.toml`, or launch through `cmd /k`.
-
-### Building on other repos (`[deps]`)
-
-A group fans out over a *set*; a multi-repo build needs an *order*. Declare what a project builds on, and one command builds the world under it — with every repo keeping its own build definition:
-
-```toml
-# acme/.nix/actions.toml
-[deps]
-needs = ["hoot", "libx"]
-```
-
-```powershell
-x acme --deps :build      # hoot's :build, then libx's, then acme's
-```
-
-Each dependency runs **its own** action of that name, so nothing here says how to build anything — the graph only says what comes first. Members are alias names, not paths, so the graph follows a repo when it moves. The walk is depth-first, and a diamond (two dependencies sharing a third) builds the shared one once, early enough for both.
-
-It is **strict, and strict before it starts.** A `needs` naming an unregistered alias, or a dependency that doesn't define the action, aborts the whole chain with nothing run — reported all at once, so you fix the graph in one pass rather than discovering the fourth gap after three builds. A failure mid-chain stops the rest and keeps its exit code:
-
-```
-==> hoot :build
-...
-nix: hoot :build failed (exit 3) - stopping
-```
-
-That strictness is the difference from a group, deliberately. `x +work git pull` should keep going when one member is offline; a build chain *is* its completeness, and half a world built is worse than none because it looks like success. Plain `x acme :build` is untouched — dependencies run only when asked.
 
 ### The palette (`nix --actions`)
 
