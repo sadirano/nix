@@ -24,6 +24,7 @@ const sweep = @import("sweep.zig");
 const init_zig = @import("init.zig");
 const picker = @import("picker.zig");
 const quit = @import("quit.zig");
+const hold = @import("hold.zig");
 const doctor = @import("doctor.zig");
 const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
@@ -100,34 +101,28 @@ pub fn main(init: std.process.Init) !void {
     out.flush() catch {};
     err.flush() catch {};
     if (code != 0) {
-        holdOnFailure(&app);
+        hold.onFailure(&app);
         std.process.exit(@intCast(code));
     }
+    hold.onSuccess(&app);
 }
 
-/// holdOnFailure waits for Enter after a failed run, but only when this console
-/// belongs to nix and would be destroyed on exit - a shortcut, a double-click, a
-/// pinned taskbar entry. There, the error message and the window disappear
-/// together and the failure is invisible; everywhere else the text stays on
-/// screen and stopping would just be in the way.
-///
-/// Deliberately at the ONE exit point rather than per action, so it covers a
-/// failing chain, a --deps abort, an unapproved action, and "unknown alias"
-/// alike: from a shortcut, every one of those is a window that blinks and is
-/// gone. Success never holds - there is nothing to read.
-///
-/// Three things switch it off, and each is a case where holding would be wrong
-/// rather than merely unwanted: --no-prompt (the caller declared nothing may
-/// block), a non-console stdin (a pipe answers EOF instantly, so the "hold"
-/// would be a no-op that only prints a confusing line), and a shared console
-/// (the shell that launched us is still there, and so is the output).
-fn holdOnFailure(app: *App) void {
+/// holdOnSuccess is the opt-in half: an action whose OUTPUT is the point, named
+/// in `[hold] on_success`, gets the window held after it worked. Same gate as
+/// the failure hold, so a shell you already had open is never touched; unlike
+/// it, this one times out, because nothing here has gone wrong.
+fn holdOnSuccess(app: *App) void {
+    if (app.last_action.len == 0) return;
     if (app.no_prompt or !proc.interactive() or !proc.ownsConsole()) return;
-    app.err.writeAll("\n(this window was opened for nix and would close now - press Enter)\n") catch {};
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return;
+    if (!actions.namesAction(cfg.hold_on_success, app.last_alias, app.last_action)) return;
+    if (cfg.hold_seconds == 0) {
+        app.err.writeAll("\n(press a key to close)\n") catch {};
+    } else {
+        app.err.print("\n(closing in {d}s - press a key to close now)\n", .{cfg.hold_seconds}) catch {};
+    }
     app.err.flush() catch {};
-    var buf: [8]u8 = undefined;
-    var iov = [_][]u8{buf[0..]};
-    _ = Io.File.stdin().readStreaming(app.io, &iov) catch {};
+    proc.waitForKey(app.io, cfg.hold_seconds *| 1000);
 }
 
 /// run dispatches argv and returns a process exit code.

@@ -672,6 +672,10 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     // above are exempt - there is no finish here to time.
     const span = timelog.Boundary.begin(app.io);
     const kind: timelog.Kind = if (name.len > 0) .action else .run;
+    if (name.len > 0) {
+        app.last_alias = alias;
+        app.last_action = name;
+    }
     if (try openRecording(app, alias, name, command)) |rec| {
         var file = rec.file;
         // Footer written while the handle is open: Io.File exposes no
