@@ -1035,8 +1035,8 @@ pub const specs = [_]Spec{
         .detail =
         \\~/.nix holds aliases.toml (name -> path), groups.toml, config.toml
         \\([shortcuts], [picker], [grep], [nav], [notify], [bin]), usage
-        \\(frecency, feeding --prune), segments.toml, picker.swept (picker
-        \\exclusions), trusted.toml + contexts-cache.toml (context approvals and
+        \\(frecency, feeding --prune), segments.toml,
+        \\trusted.toml + contexts-cache.toml (context approvals and
         \\their cached results), exports.toml (what --sync-bin installed), env/
         \\(private per-alias environment layers), bin/ (the command wrappers plus
         \\[bin] exports, on PATH), and AGENTS.md - this guide's short form,

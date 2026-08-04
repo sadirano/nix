@@ -1,7 +1,6 @@
 //! Config + picker-exclusion handling, mirroring internal/config. Provides the
 //! default exclusion fragments, a focused reader for config.toml's [picker]
-//! arrays, the picker.swept file, and the composed exclusion list the picker
-//! and sweep apply.
+//! arrays, and the composed exclusion list the picker applies.
 
 const std = @import("std");
 const Io = std.Io;
@@ -232,10 +231,6 @@ fn configPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
     return std.fs.path.join(arena, &.{ home, "config.toml" });
 }
 
-pub fn sweptPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
-    return std.fs.path.join(arena, &.{ home, "picker.swept" });
-}
-
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
 /// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted, [bin] foreign,
 /// and [watch] exclude. Unknown sections are ignored. A missing file yields the
@@ -363,61 +358,9 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     return cfg;
 }
 
-/// loadSwept reads picker.swept (one fragment per line; blanks and #-comments
-/// ignored). Missing file → empty.
-pub fn loadSwept(arena: std.mem.Allocator, io: Io, home: []const u8) ![][]const u8 {
-    const p = try sweptPath(arena, home);
-    const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => return &.{},
-        else => return e,
-    };
-    var out: std.ArrayList([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |l| {
-        const frag = std.mem.trim(u8, l, " \t\r");
-        if (frag.len == 0 or frag[0] == '#') continue;
-        try out.append(arena, try arena.dupe(u8, frag));
-    }
-    return out.items;
-}
-
-/// appendSwept adds fragments not already present (case-insensitive), creating
-/// the file if needed. Returns the fragments actually added.
-pub fn appendSwept(arena: std.mem.Allocator, io: Io, home: []const u8, frags: []const []const u8) ![][]const u8 {
-    const existing = try loadSwept(arena, io, home);
-    var seen: std.ArrayList([]const u8) = .empty; // lowercased
-    for (existing) |f| try seen.append(arena, try lower(arena, f));
-    var added: std.ArrayList([]const u8) = .empty;
-    var buf: std.ArrayList(u8) = .empty;
-    for (frags) |f0| {
-        const f = std.mem.trim(u8, f0, " \t");
-        if (f.len == 0) continue;
-        const lf = try lower(arena, f);
-        var dup = false;
-        for (seen.items) |s| if (std.mem.eql(u8, s, lf)) {
-            dup = true;
-            break;
-        };
-        if (dup) continue;
-        try seen.append(arena, lf);
-        try added.append(arena, f);
-        try buf.appendSlice(arena, f);
-        try buf.append(arena, '\n');
-    }
-    if (added.items.len == 0) return &.{};
-    // Append to the file (read + atomic rewrite, so a crash can't truncate it).
-    const p = try sweptPath(arena, home);
-    const prior = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch "";
-    var full: std.ArrayList(u8) = .empty;
-    try full.appendSlice(arena, prior);
-    try full.appendSlice(arena, buf.items);
-    try util.writeFileAtomic(arena, io, p, full.items);
-    return added.items;
-}
-
 /// pickerExcludes composes the full exclusion list: exclude (or defaults), then
-/// exclude_extra, then the swept file — deduplicated case-insensitively.
-pub fn pickerExcludes(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: Config) ![][]const u8 {
+/// exclude_extra — deduplicated case-insensitively.
+pub fn pickerExcludes(arena: std.mem.Allocator, cfg: Config) ![][]const u8 {
     var merged: std.ArrayList([]const u8) = .empty;
     if (cfg.picker_exclude) |ex| {
         try merged.appendSlice(arena, ex);
@@ -425,8 +368,6 @@ pub fn pickerExcludes(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: C
         try merged.appendSlice(arena, pickerExcludeDefaults());
     }
     try merged.appendSlice(arena, cfg.picker_exclude_extra);
-    const swept = try loadSwept(arena, io, home);
-    try merged.appendSlice(arena, swept);
 
     var out: std.ArrayList([]const u8) = .empty;
     var seen: std.ArrayList([]const u8) = .empty;

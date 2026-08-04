@@ -35,7 +35,7 @@ pub fn prefixedProducers(app: *App, targets: []const GroupTarget, argv: []const 
 
 /// printProducerRows runs a picker's row producer WITHOUT the picker, writing
 /// its rows to stdout — the `--no-prompt` form of every fzf command, matching
-/// what `--prune`/`--sweep` already do under the same flag. Rows keep the
+/// what `--prune` already does under the same flag. Rows keep the
 /// picker's shape (multi-root stays `alias\rel`), so what prints is exactly
 /// what would have been offered to pick from.
 ///

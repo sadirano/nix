@@ -20,7 +20,6 @@ const actions = @import("actions.zig");
 const winpath = @import("winpath.zig");
 const util = @import("util.zig");
 const app_zig = @import("app.zig");
-const sweep = @import("sweep.zig");
 const init_zig = @import("init.zig");
 const picker = @import("picker.zig");
 const quit = @import("quit.zig");
@@ -337,7 +336,6 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .notes => notes.cmdNotes(app, rest, grep),
         .log_list => logs.cmdLogs(app, rest),
         .time => timelog.cmdTime(app, rest),
-        .sweep => sweep.cmdSweep(app, rest),
         .sync => init_zig.cmdSync(app),
         .sync_bin => bin_exports.cmdSyncBin(app),
         .@"export" => init_zig.cmdExport(app, rest),
@@ -1147,7 +1145,6 @@ test {
     _ = winpath;
     _ = util;
     _ = app_zig;
-    _ = sweep;
     _ = palette;
     _ = paste;
     _ = init_zig;
