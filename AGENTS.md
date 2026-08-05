@@ -54,7 +54,11 @@ zig test src/env.zig --test-filter "merge"
 ```
 
 `zig build e2e` has no filter at all; it drives the real exe as a child process
-against a scratch `NIX_HOME` under `%TEMP%\nix-e2e-<ms>`.
+against a scratch `NIX_HOME` under `%TEMP%\nix-e2e-<ms>`. It also sets
+`$NIX_CLIPBOARD_FILE` to a file in that scratch dir: when that variable is set,
+every clipboard write goes there instead of the system clipboard, so a `--yank`
+check cannot cost whoever ran the suite whatever they had copied. A manual run
+of anything that yanks or pastes deserves the same treatment.
 
 ### Never test against the real `~/.nix`
 
