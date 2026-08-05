@@ -157,6 +157,11 @@ pub fn main(init: std.process.Init) !void {
     try init.environ_map.put("NIX_HOME", home);
     // A pinned editor keeps editor resolution deterministic; nothing spawns it.
     try init.environ_map.put("EDITOR", "notepad");
+    // Yank writes the clipboard, and a suite that ran while you had something
+    // copied would hand you a scratch path instead. Redirect it to a file:
+    // still asserted, no longer the runner's own clipboard.
+    const clip = try std.fs.path.join(arena, &.{ root, "clipboard.txt" });
+    try init.environ_map.put("NIX_CLIPBOARD_FILE", clip);
 
     // The build runner hands a zig-cache-relative exe path; children run in
     // the scratch dir, so make it absolute first.
@@ -976,10 +981,13 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "+work", "--run", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "notified=pa,hello,ok,0") != null, "a group :action fan-out notifies per member", r);
 
-        // Bare `y` records what it copied (note: writes the runner's clipboard —
-        // a scratch path — which is what makes the hook fire).
+        // Bare `y` records what it copied. The copy goes to $NIX_CLIPBOARD_FILE,
+        // so the hook fires on a real write without the suite costing whoever
+        // ran it whatever they had on the clipboard.
         r = try c.run(&.{ "pa", "--yank" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "yank-hook=pa,ok,info:yanked path ") != null, "on_yank records the copied path", r);
+        const copied = trim(readFileOr(&c, clip, ""));
+        c.check(copied.len > 0 and std.mem.indexOf(u8, r.out, copied) != null, "the yank lands on the clipboard (redirected to a file, never the runner's)", r);
 
         // Quiet keys (#50). A threshold high enough that `echo` can never beat
         // it silences the success, and the failure still gets through - the

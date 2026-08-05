@@ -9,7 +9,23 @@ const png = @import("png.zig");
 
 const is_windows = builtin.os.tag == .windows;
 
-pub fn writeText(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
+/// sink_env names a file that stands in for the system clipboard: when it is
+/// set, every write lands there instead. The clipboard is the one piece of
+/// machine state a test run shares with the person running it, and losing what
+/// they had copied is not something a passing test may cost them - so nix's own
+/// e2e harness sets this, the way it sets NIX_HOME to keep --sync off the real
+/// PATH.
+pub const sink_env = "NIX_CLIPBOARD_FILE";
+
+fn sink(io: Io, env: *std.process.Environ.Map, data: []const u8) !bool {
+    const path = env.get(sink_env) orelse return false;
+    if (path.len == 0) return false;
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+    return true;
+}
+
+pub fn writeText(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map, text: []const u8) !void {
+    if (try sink(io, env, text)) return;
     if (is_windows) return writeTextWindows(arena, io, text);
     return writeTextUnix(arena, io, text);
 }
@@ -18,7 +34,15 @@ pub fn writeText(arena: std.mem.Allocator, io: Io, text: []const u8) !void {
 /// CF_HDROP file drop (Windows), so pasting in Explorer drops the real files —
 /// the inverse of readFiles. Returns error.Unsupported off Windows (the caller
 /// falls back to copying the paths as text).
-pub fn writeFiles(arena: std.mem.Allocator, io: Io, paths: []const []const u8) !void {
+pub fn writeFiles(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map, paths: []const []const u8) !void {
+    if (env.get(sink_env) != null) {
+        var buf: std.ArrayList(u8) = .empty;
+        for (paths, 0..) |p, i| {
+            if (i > 0) try buf.append(arena, '\n');
+            try buf.appendSlice(arena, p);
+        }
+        if (try sink(io, env, buf.items)) return;
+    }
     if (!is_windows) return error.Unsupported;
     return writeFilesWindows(arena, io, paths);
 }
