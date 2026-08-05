@@ -322,7 +322,7 @@ fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
     }
     try app.out.print("{s}\n", .{buf.items});
     try app.out.flush();
-    clipboard.writeText(app.arena, app.io, buf.items) catch |e| {
+    clipboard.writeText(app.arena, app.io, app.env, buf.items) catch |e| {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
         return 0;
     };

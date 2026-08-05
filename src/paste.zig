@@ -110,7 +110,7 @@ fn pasteContent(app: *App, alias: []const u8, target: []const u8, name: []const 
     try app.out.flush();
     // Clipboard gets the host-separator path: / is not always a valid
     // separator on Windows (cmd.exe, some dialogs), \ always is.
-    clipboard.writeText(app.arena, app.io, dest) catch {};
+    clipboard.writeText(app.arena, app.io, app.env, dest) catch {};
     const kind = if (std.mem.eql(u8, default_ext, ".png")) "image" else "text";
     notifyEvent(app, .paste, alias, target, try std.fmt.allocPrint(app.arena, "pasted {s} {s}", .{ kind, dest }));
     return 0;
@@ -151,7 +151,7 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
         if (i > 0) try joined.append(app.arena, '\n');
         try joined.appendSlice(app.arena, o);
     }
-    clipboard.writeText(app.arena, app.io, joined.items) catch {};
+    clipboard.writeText(app.arena, app.io, app.env, joined.items) catch {};
     const msg = if (outs.items.len == 1)
         try std.fmt.allocPrint(app.arena, "pasted {s}", .{outs.items[0]})
     else
@@ -166,7 +166,7 @@ pub fn yankPathText(app: *App, alias: []const u8, target: []const u8) !u8 {
     const text = (try spell(app, target)) orelse return 1;
     try app.out.print("{s}\n", .{text});
     try app.out.flush();
-    clipboard.writeText(app.arena, app.io, text) catch |e| {
+    clipboard.writeText(app.arena, app.io, app.env, text) catch |e| {
         try app.err.print("warning: clipboard copy failed: {s}\n", .{@errorName(e)});
         return 0; // path was still printed; nothing landed on the clipboard to record
     };
@@ -212,7 +212,7 @@ pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, sele
             if (i > 0) try buf.append(app.arena, '\n');
             try buf.appendSlice(app.arena, (try spell(app, p)) orelse return 1);
         }
-        clipboard.writeText(app.arena, app.io, buf.items) catch |e| {
+        clipboard.writeText(app.arena, app.io, app.env, buf.items) catch |e| {
             try app.err.print("nix: clipboard copy failed: {s}\n", .{@errorName(e)});
             return 1;
         };
@@ -221,7 +221,7 @@ pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, sele
         return 0;
     }
 
-    clipboard.writeFiles(app.arena, app.io, paths.items) catch |e| {
+    clipboard.writeFiles(app.arena, app.io, app.env, paths.items) catch |e| {
         if (e == error.Unsupported) {
             // Non-Windows: no file-drop format — copy the paths as text instead.
             var buf: std.ArrayList(u8) = .empty;
@@ -229,7 +229,7 @@ pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, sele
                 if (i > 0) try buf.append(app.arena, '\n');
                 try buf.appendSlice(app.arena, p);
             }
-            clipboard.writeText(app.arena, app.io, buf.items) catch {};
+            clipboard.writeText(app.arena, app.io, app.env, buf.items) catch {};
             try app.err.writeAll("note: file-drop clipboard is Windows-only - copied the paths as text\n");
         } else {
             try app.err.print("nix: clipboard file copy failed: {s}\n", .{@errorName(e)});
