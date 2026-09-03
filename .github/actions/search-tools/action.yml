@@ -11,6 +11,47 @@ description: >
 runs:
   using: composite
   steps:
+    # `choco install` exits 0 when the community feed refuses it. The nightly of
+    # 2026-08-31 took a 504 for ripgrep and a 503 for fd, installed "0/0
+    # packages", and this step still went green; the run only died two minutes
+    # later, as ten skipped e2e checks, which reads like a harness bug rather
+    # than a download that never happened. So the transient 5xx gets retried,
+    # and whether rg and fd are actually on PATH - not choco's exit code -
+    # decides the step.
     - name: Install ripgrep and fd
       shell: pwsh
-      run: choco install ripgrep fd -y --no-progress
+      run: |
+        # A failing choco must not abort the loop before the retry.
+        $PSNativeCommandUseErrorActionPreference = $false
+
+        $chocoRoot = $env:ChocolateyInstall
+        if (-not $chocoRoot) { $chocoRoot = 'C:\ProgramData\chocolatey' }
+        $chocoBin = Join-Path $chocoRoot 'bin'
+
+        # The shim directory is normally on the runner's PATH already; put it
+        # there explicitly so this check and the steps after it agree about
+        # what is installed.
+        $env:PATH = "$chocoBin;$env:PATH"
+        Add-Content -Path $env:GITHUB_PATH -Value $chocoBin
+
+        function Get-MissingTools {
+          @('rg', 'fd') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
+        }
+
+        $attempts = 3
+        for ($i = 1; $i -le $attempts; $i++) {
+          choco install ripgrep fd -y --no-progress
+          $missing = Get-MissingTools
+          if (-not $missing) { break }
+          Write-Host "::warning::$($missing -join ', ') still missing after attempt $i of $attempts"
+          if ($i -lt $attempts) { Start-Sleep -Seconds (15 * $i) }
+        }
+
+        $missing = Get-MissingTools
+        if ($missing) {
+          Write-Host "::error::$($missing -join ', ') could not be installed in $attempts attempt(s) - the e2e harness would skip its grep/find/notes checks and fail on the skip"
+          exit 1
+        }
+
+        rg --version
+        fd --version
