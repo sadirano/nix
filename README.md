@@ -509,9 +509,11 @@ Those referenced files are part of the approval, not just the display: editing `
 
 Approving records those files' **current bytes**, so it runs silently from then on — until a `git pull` rewrites any of them, which re-arms the prompt. That's the same hash discipline context sources and `[bin]` exports already use: what you approved is the text you read, not the filename. `nix --trust <alias>` approves an alias's actions, its `.nix/scripts`, and its context sources in one gesture, which is the sane way to take on a fresh clone; `nix --doctor` lists which aliases are still waiting.
 
+**`--trust` is held to the gate's own standard**, because it is the gate's batch answer. It prints every action it would approve with its command text, every script those commands run, `env.toml` and each context source — then asks once, with the same `y/N/e` the inline prompt offers, and writes nothing until you say yes. A batch approval that showed you nothing would be strictly weaker than the `y` it replaces, which at least prints the one command it covers.
+
 Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.toml`, `~/.nix/scripts`, a project that lives under `~/.nix`, and anything you type as a literal command (`x acme git status`) run untouched — they're under your home directory or you wrote them just now, and there the provenance is you. Scripts get the same treatment as the actions file beside them, since gating `:build` while leaving `x acme build` open would only move the unreviewed code one filename over.
 
-**Nothing can approve on your behalf.** Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead. That's deliberate: an agent approving a repo it just cloned is the check approving itself.
+**Nothing can approve on your behalf** — including `--trust` itself. Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead; run `--trust` in one of those and it refuses too, saying it needs a console because it exists to record that a *person* read this. That's deliberate: an agent approving a repo it just cloned is the check approving itself. It is a consent boundary rather than a security one — anything running as you can append to `trusted.toml` directly — but the ordinary way of granting trust now needs the person whose trust it is.
 
 ### Failures don't vanish from a shortcut
 

@@ -833,8 +833,9 @@ pub const specs = [_]Spec{
         \\An action you just wrote in a project is unapproved code like any
         \\other: running it non-interactively refuses with the `--trust`
         \\instruction. That is working as intended - ask the user to approve it,
-        \\and never run `--trust` yourself. An elevated action you cannot run at
-        \\all; hand it to the user.
+        \\and never run `--trust` yourself, which refuses in your shell for the
+        \\same reason. An elevated action you cannot run at all; hand it to the
+        \\user.
         \\
         \\Write the comment above it too, especially when the command is long,
         \\slow, or not reversible - that line is what the user reads in the
@@ -1016,11 +1017,13 @@ pub const specs = [_]Spec{
         \\shell rather than hanging. Do not retry it: read the rows, then use
         \\the inline form (`nix <seg>:<value>@<alias>`), which never prompts.
         \\
-        \\Do not run `--trust` on the user's behalf. It is an approval gesture,
-        \\and approving a script you just wrote defeats the check entirely. The
-        \\bare `nix --trust <alias>` form now covers the alias's project actions
-        \\and scripts as well as its context sources, so it is even less yours to
-        \\run: it is the user saying they have read the repo.
+        \\Do not run `--trust` on the user's behalf - and you cannot: it prints
+        \\everything it would approve, asks once, and refuses outright without a
+        \\console, which is the position your shell is in. It is an approval
+        \\gesture, and approving a script you just wrote defeats the check
+        \\entirely. The bare `nix --trust <alias>` form covers the alias's
+        \\project actions and scripts as well as its context sources: it is the
+        \\user saying they have read the repo.
         ,
         .examples = &.{
             "`nix docs@acme` - resolve a segment to its path",

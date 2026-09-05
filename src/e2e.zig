@@ -27,17 +27,40 @@ const Ctx = struct {
     skips: usize = 0,
 
     fn run(c: *Ctx, args: []const []const u8) !RunResult {
+        return c.runAnswering(args, null);
+    }
+
+    /// trust runs `--trust` the way a person does: with a console (see
+    /// NIX_E2E_TTY) and a `y` at the confirmation. Every approval in the suite
+    /// goes through here, so a change that stops asking shows up as the answer
+    /// going unread rather than as silence.
+    fn trust(c: *Ctx, args: []const []const u8) !RunResult {
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.append(c.arena, "--trust");
+        try argv.appendSlice(c.arena, args);
+        return c.runAnswering(argv.items, "y\n");
+    }
+
+    fn runAnswering(c: *Ctx, args: []const []const u8, answer: ?[]const u8) !RunResult {
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(c.arena, c.exe);
         try argv.appendSlice(c.arena, args);
         var child = try std.process.spawn(c.io, .{
             .argv = argv.items,
             .cwd = .{ .path = c.work },
-            .stdin = .ignore,
+            .stdin = if (answer == null) .ignore else .pipe,
             .stdout = .pipe,
             .stderr = .pipe,
             .environ_map = c.env,
         });
+        if (answer) |a| {
+            var wb: [64]u8 = undefined;
+            var w = child.stdin.?.writer(c.io, &wb);
+            w.interface.writeAll(a) catch {};
+            w.interface.flush() catch {};
+            child.stdin.?.close(c.io);
+            child.stdin = null;
+        }
         var ob: [4096]u8 = undefined;
         var or_ = child.stdout.?.reader(c.io, &ob);
         const out = or_.interface.allocRemaining(c.arena, .unlimited) catch "";
@@ -135,7 +158,7 @@ fn join(c: *Ctx, parts: []const []const u8) []const u8 {
 /// consent first - once per edit, since each edit re-arms it.
 fn writeActions(c: *Ctx, alias: []const u8, dir: []const u8, body: []const u8) !void {
     try writeFile(c, join(c, &.{ dir, ".nix", "actions.toml" }), body);
-    _ = try c.run(&.{ "--trust", alias });
+    _ = try c.trust(&.{alias});
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -155,6 +178,11 @@ pub fn main(init: std.process.Init) !void {
     try util.mkdirAll(io, work);
 
     try init.environ_map.put("NIX_HOME", home);
+    // `--trust` refuses without a console, because it exists to record that a
+    // person read something. Children here are spawned with piped handles and
+    // have none, so the suite says so explicitly; Ctx.trust still has to send
+    // the `y`.
+    try init.environ_map.put("NIX_E2E_TTY", "1");
     // A pinned editor keeps editor resolution deterministic; nothing spawns it.
     try init.environ_map.put("EDITOR", "notepad");
     // Yank writes the clipboard, and a suite that ran while you had something
@@ -562,7 +590,7 @@ pub fn main(init: std.process.Init) !void {
         // approved is the text, not the name that was typed.
         c.check(std.mem.indexOf(u8, r.err, "echo built") != null, "the refusal shows the command it withheld", r);
 
-        r = try c.run(&.{ "--trust", "pg" });
+        r = try c.trust(&.{"pg"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "approved") != null, "--trust approves the project action file", r);
         r = try c.run(&.{ "pg", "--run", ":build" });
         c.check(r.code == 0 and hasLineFold(r.out, "built"), "an approved action runs without asking again", r);
@@ -573,6 +601,33 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pg", "--run", ":build" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "rewritten") == null and
             std.mem.indexOf(u8, r.err, "not been approved") != null, "editing the file re-arms the gate", r);
+
+        // --trust is the batch answer to that same gate, so it is held to the
+        // same standard: it shows what it would approve and asks once, and it
+        // refuses outright where there is nobody to ask. NIX_E2E_TTY=1 is what
+        // stands in for a console everywhere else in this suite; drop it and
+        // this is exactly the position an agent's shell is in.
+        try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo consented\"\n");
+        try c.env.put("NIX_E2E_TTY", "0");
+        r = try c.trust(&.{"pg"});
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "needs a console") != null, "--trust refuses where there is no person to answer", r);
+        try c.env.put("NIX_E2E_TTY", "1");
+        r = try c.run(&.{ "pg", "--run", ":build" });
+        c.check(r.code != 0, "the refused --trust approved nothing", r);
+
+        // Answering anything but yes approves nothing - the default is no, the
+        // same way the inline gate's is.
+        r = try c.runAnswering(&.{ "--trust", "pg" }, "n\n");
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nothing was approved") != null and
+            std.mem.indexOf(u8, r.out, "echo consented") != null, "--trust shows the command and a no approves nothing", r);
+        r = try c.run(&.{ "pg", "--run", ":build" });
+        c.check(r.code != 0, "a declined --trust leaves the gate armed", r);
+
+        // ...and a yes covers it.
+        r = try c.trust(&.{"pg"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "approved") != null, "--trust approves what it showed", r);
+        r = try c.run(&.{ "pg", "--run", ":build" });
+        c.check(r.code == 0 and hasLineFold(r.out, "consented"), "the approved action runs", r);
 
         // A central action is never gated - it lives under $home and the user
         // wrote it. Same name, so only the layer differs.
@@ -586,7 +641,7 @@ pub fn main(init: std.process.Init) !void {
         // Elevation is not a provenance question, so approval cannot answer it:
         // an elevated action refuses unattended even with the file approved.
         try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo rewritten\"\ninstall = \"sudo echo elevated\"\n");
-        _ = try c.run(&.{ "--trust", "pg" });
+        _ = try c.trust(&.{"pg"});
         r = try c.run(&.{ "pg", "--run", ":build" });
         c.check(r.code == 0 and hasLineFold(r.out, "rewritten"), "--trust re-approves the edited file", r);
         r = try c.run(&.{ "pg", "--run", ":install" });
@@ -616,7 +671,7 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pg", "--run", "hello" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "script-ran") == null and
             std.mem.indexOf(u8, r.err, "not been approved") != null, "a bare-name project script is gated too", r);
-        _ = try c.run(&.{ "--trust", "pg" });
+        _ = try c.trust(&.{"pg"});
         r = try c.run(&.{ "pg", "--run", "hello" });
         c.check(r.code == 0 and hasLineFold(r.out, "script-ran"), "--trust approves the scripts beside the actions file", r);
 
@@ -637,7 +692,7 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pg", "--run", ":ship" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not been approved") != null and
             std.mem.indexOf(u8, r.err, "deploy.py") != null, "the gate names the script an action runs, not just the command", r);
-        _ = try c.run(&.{ "--trust", "pg" });
+        _ = try c.trust(&.{"pg"});
         r = try c.run(&.{ "pg", "--run", ":ship" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "deploy v1") != null, "--trust covers the referenced script", r);
         // The actions file is untouched here - only the script changed.
@@ -652,7 +707,7 @@ pub fn main(init: std.process.Init) !void {
         const built = join(&c, &.{ pg, "out", "tool.exe" });
         try writeFile(&c, built, "MZ-binary-v1");
         try writeFile(&c, pg_actions, "[actions]\nrun = \"echo ran out/tool.exe\"\n");
-        _ = try c.run(&.{ "--trust", "pg" });
+        _ = try c.trust(&.{"pg"});
         r = try c.run(&.{ "pg", "--run", ":run" });
         c.check(r.code == 0, "an approved action naming a build output runs", r);
         try writeFile(&c, built, "MZ-binary-v2-rebuilt");
@@ -661,7 +716,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Put the simple form back for the checks below.
         try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo rebuilt\"\n");
-        _ = try c.run(&.{ "--trust", "pg" });
+        _ = try c.trust(&.{"pg"});
 
         // --no-prompt is not a way to consent: it refuses with the instruction,
         // exactly as a pipe does. (An agent approving code it just cloned would
@@ -693,7 +748,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") == null and
             std.mem.indexOf(u8, r.err, "nix --trust pe env") != null, "an unapproved env.toml sets nothing, and the run still happens", r);
 
-        r = try c.run(&.{ "--trust", "pe", "env" });
+        r = try c.trust(&.{ "pe", "env" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "env: approved") != null, "--trust <alias> env approves the file", r);
         r = try c.run(&.{ "pe", "--run", ":show" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "url=[from-project]") != null and
@@ -705,7 +760,7 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pe", "--run", ":show" });
         c.check(std.mem.indexOf(u8, r.out, "from-project-v2") == null and
             std.mem.indexOf(u8, r.err, "not been approved") != null, "editing env.toml re-arms the gate", r);
-        _ = try c.run(&.{ "--trust", "pe" }); // the bare form covers env too
+        _ = try c.trust(&.{"pe"}); // the bare form covers env too
 
         // The PRIVATE central layer wins - the override that doesn't dirty the
         // repo - and matches the project's name case-insensitively.
@@ -1197,7 +1252,7 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--sync-bin"});
         c.check(std.mem.indexOf(u8, r.err, "nix --trust pg") != null and
             !proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "risky{s}", .{ext}) })), "an unapproved action is listed, not installed", r);
-        _ = try c.run(&.{ "--trust", "pg" });
+        _ = try c.trust(&.{"pg"});
         r = try c.run(&.{"--sync-bin"});
         c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "risky{s}", .{ext}) })), "--trust unblocks the export, and sync-bin installs it", r);
         try writeFile(&c, pg_actions, pg_restore);
@@ -1485,7 +1540,7 @@ pub fn main(init: std.process.Init) !void {
         var r = try c.run(&.{ "task:123@pa", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null, "an unapproved context source refuses and says how to approve", r);
 
-        r = try c.run(&.{ "--trust", "pa", "task" });
+        r = try c.trust(&.{ "pa", "task" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "approved") != null, "--trust approves the context source", r);
 
         const expected = join(&c, &.{ pa, "acme", "123" });
@@ -1874,7 +1929,7 @@ pub fn main(init: std.process.Init) !void {
             \\>>"%NIX_CONTEXT_OUT%" echo who=fine
             \\
         );
-        _ = try c.run(&.{ "--trust", "pg", "big" });
+        _ = try c.trust(&.{ "pg", "big" });
         var r = try c.run(&.{ "big:1@pg", "--resolve" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "fine") != null, "a small context answer is unaffected by the bounds", r);
 
@@ -1884,7 +1939,7 @@ pub fn main(init: std.process.Init) !void {
             \\>>"%NIX_CONTEXT_OUT%" echo who={s}
             \\
         , .{"x" ** 5000}));
-        _ = try c.run(&.{ "--trust", "pg", "big" });
+        _ = try c.trust(&.{ "pg", "big" });
         r = try c.run(&.{ "big:1@pg", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "who") != null and
             std.mem.indexOf(u8, r.err, "limit") != null, "an oversized context value is refused, naming the variable", r);
@@ -1894,7 +1949,7 @@ pub fn main(init: std.process.Init) !void {
         try many.appendSlice(arena, "@echo off\r\n");
         for (0..100) |i| try many.print(arena, ">>\"%NIX_CONTEXT_OUT%\" echo k{d}=v\r\n", .{i});
         try writeFile(&c, join(&c, &.{ scripts, "flood.cmd" }), many.items);
-        _ = try c.run(&.{ "--trust", "pg", "big" });
+        _ = try c.trust(&.{ "pg", "big" });
         r = try c.run(&.{ "big:1@pg", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "variables") != null and
             std.mem.indexOf(u8, r.err, "limit") != null, "too many context variables is refused", r);
@@ -1915,7 +1970,7 @@ pub fn main(init: std.process.Init) !void {
             \\>>"%NIX_CONTEXT_OUT%" echo secret:VAULT_TOKEN=s.abc123
             \\
         );
-        _ = try c.run(&.{ "--trust", "pg", "vault" });
+        _ = try c.trust(&.{ "pg", "vault" });
         r = try c.run(&.{ "vault:1@pg", "--resolve" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "fine") != null, "a secret variable does not disturb the path it helped resolve", r);
 
@@ -1973,7 +2028,7 @@ pub fn main(init: std.process.Init) !void {
             \\:done
             \\
         );
-        _ = try c.run(&.{ "--trust", "pm", "ticket" });
+        _ = try c.trust(&.{ "pm", "ticket" });
 
         // An inline value never prompts - it is the deterministic form, and the
         // one agents are told to use.
@@ -2008,7 +2063,7 @@ pub fn main(init: std.process.Init) !void {
             \\>>"%NIX_CONTEXT_OUT%" echo client_name=solo
             \\
         );
-        _ = try c.run(&.{ "--trust", "pm", "ticket" });
+        _ = try c.trust(&.{ "pm", "ticket" });
         r = try c.run(&.{ "ticket@pm", "--resolve" });
         c.check(r.code == 0 and std.mem.indexOf(u8, trim(r.out), "solo") != null, "a single candidate resolves with no menu at all", r);
 
@@ -2023,7 +2078,7 @@ pub fn main(init: std.process.Init) !void {
             \\>>"%NIX_CONTEXT_OUT%" echo client_name=initech
             \\
         );
-        _ = try c.run(&.{ "--trust", "pm", "ticket" });
+        _ = try c.trust(&.{ "pm", "ticket" });
         r = try c.run(&.{ "--no-prompt", "ticket@pm", "--resolve" });
         const after = readFileOr(&c, join(&c, &.{ home, "contexts-cache.toml" }), "");
         c.check(std.mem.indexOf(u8, after, "s.menu") == null and
@@ -2148,7 +2203,7 @@ pub fn main(init: std.process.Init) !void {
             \\source-template = "/"
             \\
         );
-        _ = try c.run(&.{ "--trust", "kb", "at" });
+        _ = try c.trust(&.{ "kb", "at" });
         r = try c.run(&.{ "at:x@kb", "--run", ":shown" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "who=[from-context]") != null, "a context variable outranks env.toml for the same name", r);
         // And it does not persist: the next run of the same alias, with no
@@ -2170,7 +2225,7 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "kb", "--run", ":shown" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "kb") != null and
             std.mem.indexOf(u8, r.err, "--trust") != null, "an edited project re-arms its own gate", r);
-        _ = try c.run(&.{ "--trust", "kb" });
+        _ = try c.trust(&.{"kb"});
 
         // The same crossing through a [bin] export: the installed exe is a copy
         // of nix that looks its action up at run time, so an edit to the
@@ -2193,7 +2248,7 @@ pub fn main(init: std.process.Init) !void {
             c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null and
                 std.mem.indexOf(u8, r.out, "who=[kb]") == null, "an edited project re-arms the gate behind its [bin] export", r);
             c.exe = saved_exe;
-            _ = try c.run(&.{ "--trust", "kb" });
+            _ = try c.trust(&.{"kb"});
         } else {
             c.skip("an exported action runs as a bare global command", "a successful --sync-bin");
             c.skip("an edited project re-arms the gate behind its [bin] export", "a successful --sync-bin");

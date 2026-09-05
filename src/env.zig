@@ -25,6 +25,7 @@ const std = @import("std");
 const app_zig = @import("app.zig");
 const actions = @import("actions.zig");
 const context = @import("context.zig");
+const provenance = @import("provenance.zig");
 const secret = @import("secret.zig");
 const store = @import("store.zig");
 const util = @import("util.zig");
@@ -244,21 +245,25 @@ pub fn load(app: *App, alias: []const u8, dir: []const u8) !Loaded {
     };
 }
 
-/// approveEnv records a project env.toml's current bytes - the `env` half of
-/// `nix --trust <alias>`. Returns how many new records it wrote (0 or 1), so
-/// the caller's "nothing new to approve" stays honest.
-pub fn approveEnv(app: *App, alias: []const u8, dir: []const u8) !usize {
+/// planEnv adds a project env.toml's current bytes to what `nix --trust
+/// <alias>` is asking about - the `env` half of the command. It writes
+/// nothing; cmdTrust asks first and commits the plan after.
+pub fn planEnv(app: *App, alias: []const u8, dir: []const u8, plan: *provenance.Plan) !void {
     const path = try projectPath(app.arena, dir);
-    if (context.underHome(app.home, path)) return 0;
-    const body = app_zig.readFileMaybe(app, path) orelse return 0;
+    if (context.underHome(app.home, path)) return;
+    const body = app_zig.readFileMaybe(app, path) orelse return;
     const record = try trustRecord(app.arena, body);
     if (context.isTrusted(app, record)) {
         try app.out.print("env: already approved (unchanged)\n", .{});
-        return 0;
+        return;
     }
-    try context.recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|env", .{alias}));
-    try app.out.print("env: approved {s}\n", .{path});
-    return 1;
+    try plan.line(app.arena, "  env      {s}\n", .{path});
+    try plan.wrote(app.arena, "env: approved {s}\n", .{path});
+    try plan.add(app.arena, .{
+        .record = record,
+        .label = try std.fmt.allocPrint(app.arena, "{s}|env", .{alias}),
+        .files = try app.arena.dupe([]const u8, &.{path}),
+    });
 }
 
 // ---- injection ---------------------------------------------------------------
