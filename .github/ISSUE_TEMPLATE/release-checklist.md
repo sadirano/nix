@@ -133,7 +133,11 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       review, so grepping stdout for it cannot tell "refused" from "ran".
       `.nix/scripts/` files are gated identically: `x <alias> <script-name>`.
 - [ ] 🧪 `nix --trust <alias>` approves it; editing the file asks again.
-      After `--trust` the same action runs. Then change one character in
+      `--trust` must first LIST what it would approve (each action with its
+      command, the scripts they run, env.toml, each context source) and ask
+      `y/N/e`; answering `n` must approve nothing, and running it from a
+      pipe (`echo | nix --trust <alias>`) must refuse for want of a console.
+      After a `y` the same action runs. Then change one character in
       actions.toml and re-run: it must ask AGAIN. Guards the gate keying on
       the file's identity rather than its contents - approving once must
       never bless every future edit that arrives with a `git pull`.

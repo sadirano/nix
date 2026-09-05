@@ -16,6 +16,8 @@ const context = @import("context.zig");
 const proc = @import("proc.zig");
 const store = @import("store.zig");
 const config = @import("config.zig");
+const segments = @import("segments.zig");
+const util = @import("util.zig");
 
 const App = app_zig.App;
 
@@ -184,6 +186,20 @@ fn canPrompt(app: *App, mode: Mode) bool {
     return mode == .may_prompt and !app.no_prompt and interactive();
 }
 
+/// canGrant is `nix --trust`'s own precondition. That command exists to record
+/// that a PERSON read something, so it must refuse where there is nobody to
+/// read: an agent's shell has no console, which is already why the gate
+/// refuses there instead of prompting into the void. It makes the machine
+/// convention that `--trust` is the user's to run into something the code
+/// enforces rather than something a doc asks for.
+///
+/// Not a security boundary, and it is not meant as one - anything running as
+/// the user can append to trusted.toml directly. It is a consent boundary: the
+/// ordinary way of granting trust now requires the person whose trust it is.
+pub fn canGrant(app: *App) bool {
+    return canPrompt(app, .may_prompt);
+}
+
 /// isConfirmTrusted reports whether config.toml's `[confirm] trusted` names this
 /// action. Read here rather than threaded in, so every caller of gateAction gets
 /// it without each having to remember to load config. A config that will not
@@ -316,12 +332,12 @@ pub fn scriptRecord(arena: std.mem.Allocator, body: []const u8) ![]const u8 {
     return context.sha256Hex(arena, try std.fmt.allocPrint(arena, "script:{s}", .{body}));
 }
 
-/// approveProject records the current bytes of an alias's project action file
-/// and every script beside it - the batch form behind `nix --trust <alias>`.
-/// Returns how many new records it wrote. It cannot pre-approve an elevated
-/// action: that prompt is not a provenance question.
-pub fn approveProject(app: *App, alias: []const u8, dir: []const u8) !usize {
-    var approved: usize = 0;
+/// planProject collects what `nix --trust <alias>` would approve out of the
+/// project's action file and the scripts beside it: the current bytes, as they
+/// stand. It writes nothing - cmdTrust asks first, then commits the plan.
+/// It cannot pre-approve an elevated action: that prompt is not a provenance
+/// question.
+pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !void {
     const path = try actions.projectPath(app.arena, dir);
     if (!context.underHome(app.home, path)) {
         if (app_zig.readFileMaybe(app, path)) |body| {
@@ -329,16 +345,27 @@ pub fn approveProject(app: *App, alias: []const u8, dir: []const u8) !usize {
             // as well as the shared declaration - two actions calling different
             // scripts are two different things to have read. Identical ref-sets
             // collapse to one row on their own, since the hash is the same.
-            var wrote_any = false;
+            var named_file = false;
             for (try actions.parseTable(app.arena, body, "actions")) |a| {
                 const record = (try recordForCommand(app, dir, true, a.command)) orelse continue;
                 if (context.isTrusted(app, record)) continue;
-                try context.recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|actions", .{alias}));
-                approved += 1;
-                wrote_any = true;
+                if (!named_file) {
+                    try plan.line(app.arena, "  actions  {s}\n", .{path});
+                    named_file = true;
+                }
+                // The command, not just the action's name: the name is what the
+                // user chose, the command is what a clone chose for them.
+                try plan.line(app.arena, "    :{s: <9}{s}\n", .{ a.name, a.command });
+                const refs = try referencedFiles(app, dir, a.command);
+                for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
+                try plan.add(app.arena, .{
+                    .record = record,
+                    .label = try std.fmt.allocPrint(app.arena, "{s}|actions", .{alias}),
+                    .files = try withDecl(app, path, refs),
+                });
             }
-            if (wrote_any) {
-                try app.out.print("{s}: approved {s}\n", .{ alias, path });
+            if (named_file) {
+                try plan.wrote(app.arena, "{s}: approved {s}\n", .{ alias, path });
                 // Name the scripts too - "approved" should say how far it reached.
                 var seen: std.ArrayList([]const u8) = .empty;
                 for (try actions.parseTable(app.arena, body, "actions")) |a| {
@@ -350,15 +377,15 @@ pub fn approveProject(app: *App, alias: []const u8, dir: []const u8) !usize {
                         };
                         if (dup) continue;
                         try seen.append(app.arena, f);
-                        try app.out.print("{s}:   including {s}\n", .{ alias, f });
+                        try plan.wrote(app.arena, "{s}:   including {s}\n", .{ alias, f });
                     }
                 }
             } else try app.out.print("{s}: actions already approved (unchanged)\n", .{alias});
         }
     }
     const scripts = try std.fs.path.join(app.arena, &.{ dir, ".nix", "scripts" });
-    if (context.underHome(app.home, scripts)) return approved;
-    var d = Io.Dir.cwd().openDir(app.io, scripts, .{ .iterate = true }) catch return approved;
+    if (context.underHome(app.home, scripts)) return;
+    var d = Io.Dir.cwd().openDir(app.io, scripts, .{ .iterate = true }) catch return;
     defer d.close(app.io);
     var it = d.iterate();
     while (it.next(app.io) catch null) |entry| {
@@ -367,11 +394,14 @@ pub fn approveProject(app: *App, alias: []const u8, dir: []const u8) !usize {
         const body = app_zig.readFileMaybe(app, full) orelse continue;
         const record = try scriptRecord(app.arena, body);
         if (context.isTrusted(app, record)) continue;
-        try context.recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|script", .{alias}));
-        try app.out.print("{s}: approved {s}\n", .{ alias, full });
-        approved += 1;
+        try plan.line(app.arena, "  script   {s}\n", .{full});
+        try plan.wrote(app.arena, "{s}: approved {s}\n", .{ alias, full });
+        try plan.add(app.arena, .{
+            .record = record,
+            .label = try std.fmt.allocPrint(app.arena, "{s}|script", .{alias}),
+            .files = try app.arena.dupe([]const u8, &.{full}),
+        });
     }
-    return approved;
 }
 
 /// unapproved reports whether any of an alias's project actions is awaiting
@@ -387,6 +417,177 @@ pub fn unapproved(app: *App, dir: []const u8) bool {
         if (!context.isTrusted(app, record)) return true;
     }
     return false;
+}
+
+/// Grant is one row `--trust` intends to write, held back until the user has
+/// seen it. Collecting the whole set before writing any is what lets `--trust`
+/// show its full reach in a single question: the gate's inline `y` at least
+/// shows the one command it covers, while `--trust` used to show nothing at
+/// all and approve everything it could reach.
+pub const Grant = struct {
+    record: []const u8,
+    label: []const u8,
+    /// Files the `e` answer opens - the bytes this row vouches for.
+    files: []const []const u8 = &.{},
+};
+
+/// Plan is the pending grants plus two blocks of text: what the question is
+/// about, and what to say once it has been answered yes. Each planner writes
+/// its own section as it collects, so nothing reaches the terminal until there
+/// is something to ask about, and nothing claims to be approved until it is.
+pub const Plan = struct {
+    grants: std.ArrayList(Grant) = .empty,
+    show: std.ArrayList(u8) = .empty,
+    done: std.ArrayList(u8) = .empty,
+
+    pub fn add(p: *Plan, arena: std.mem.Allocator, g: Grant) !void {
+        try p.grants.append(arena, g);
+    }
+
+    /// line describes something the pending answer would cover.
+    pub fn line(p: *Plan, arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
+        try p.show.print(arena, fmt, args);
+    }
+
+    /// wrote is what gets printed after the ledger is actually written.
+    pub fn wrote(p: *Plan, arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
+        try p.done.print(arena, fmt, args);
+    }
+
+    /// viewFiles is every file the pending answer covers, deduplicated, in the
+    /// order the plan named them - the set `e` opens as one editor invocation.
+    pub fn viewFiles(p: *const Plan, arena: std.mem.Allocator) ![]const []const u8 {
+        var out: std.ArrayList([]const u8) = .empty;
+        for (p.grants.items) |g| {
+            next: for (g.files) |f| {
+                for (out.items) |o| if (util.eqlPathAscii(o, f)) continue :next;
+                try out.append(arena, f);
+            }
+        }
+        return out.items;
+    }
+};
+
+// ---- `nix --trust <alias> [segment]` ----------------------------------------
+
+/// cmdTrust is the batch form of the gate, and so is held to the gate's own
+/// standard: it asks, once, showing everything the answer covers, and it
+/// refuses where there is nobody to ask. It used to do neither - which made
+/// `--trust` strictly weaker than the `y` it stands in for, since that at
+/// least prints the command it is about to run.
+///
+/// `NIX_E2E_TTY=1` is the test suite's way in - see `e2eConsole`.
+/// e2eConsole is the one hook past the console check, for the test suite: it
+/// runs nix as a child with piped handles, so without it every `--trust` in
+/// e2e would refuse. It grants the console half only - the `y` still has to
+/// arrive on stdin - and it is deliberately not a general escape hatch, which
+/// is why it is spelled for the suite and matched exactly.
+fn e2eConsole(app: *App) bool {
+    return std.mem.eql(u8, app.env.get("NIX_E2E_TTY") orelse "", "1");
+}
+
+pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: anytype, env_zig: anytype) !u8 {
+    if (rest.len < 1 or rest.len > 2) {
+        try app.err.writeAll("usage: nix --trust <alias> [segment|env]   (approve an alias's project actions, scripts, context sources and env.toml as they stand)\n");
+        return 1;
+    }
+    const alias = rest[0];
+    if (!canGrant(app) and !e2eConsole(app)) {
+        try app.err.print("nix: --trust needs a console - it records that a person read this, so a person has to answer.\n", .{});
+        try app.err.print("  Run it yourself in a terminal:\n    nix --trust {s}\n", .{alias});
+        return 1;
+    }
+    const dir = (try resolve_zig.resolveAliasPath(app, alias)) orelse return 1;
+    const merged = try loadContextsFor(app, alias, dir);
+    var plan: Plan = .{};
+    // Project actions and scripts approve alongside context sources: one clone,
+    // one review, one command. Named-segment form (`--trust acme seg`) is asking
+    // about that segment specifically, so it leaves the action file alone.
+    if (rest.len < 2) try planProject(app, alias, dir, &plan);
+    // The project's env.toml, under the reserved word `env`. A context segment
+    // could also be called "env", so the named form approves BOTH rather than
+    // making one of them unreachable - the loop below still matches it.
+    if (rest.len < 2 or util.eqlFoldAscii(rest[1], "env")) {
+        try env_zig.planEnv(app, alias, dir, &plan);
+    }
+    for (merged.contexts) |cd| {
+        if (rest.len == 2 and !util.eqlFoldAscii(cd.segment, rest[1])) continue;
+        // Resolve exactly as resolution will: an inline `run` wins, else the
+        // producer named by `uses`. A context with neither executes nothing and
+        // has nothing to approve.
+        const src = if (cd.run.len > 0)
+            try context.fromContext(app.arena, &cd)
+        else if (cd.uses.len > 0) blk: {
+            const p = segments.lookupProducer(merged.producers, cd.uses) orelse {
+                try app.err.print("{s}: unknown producer \"{s}\"\n", .{ cd.segment, cd.uses });
+                continue;
+            };
+            break :blk try context.fromProducer(app.arena, p, &cd);
+        } else continue;
+
+        const r = (try context.locate(app, src, dir, run_zig)) orelse continue;
+        if (r.implicit_trust) {
+            try app.out.print("{s}: already trusted (declared and scripted under {s})\n", .{ cd.segment, app.home });
+            continue;
+        }
+        if (context.isTrusted(app, r.record)) {
+            try app.out.print("{s}: already approved (unchanged)\n", .{cd.segment});
+            continue;
+        }
+        try plan.line(app.arena, "  context  {s} -> {s}\n", .{ cd.segment, r.script });
+        try plan.wrote(app.arena, "{s}: approved {s}\n", .{ cd.segment, r.script });
+        try plan.add(app.arena, .{
+            .record = r.record,
+            .label = try std.fmt.allocPrint(app.arena, "{s}|{s}", .{ alias, cd.segment }),
+            .files = try app.arena.dupe([]const u8, &.{r.script}),
+        });
+    }
+    if (plan.grants.items.len == 0) {
+        try app.err.writeAll("nothing new to approve\n");
+        return 0;
+    }
+    try app.out.print("{s}: --trust would approve these as they stand now:\n", .{alias});
+    try app.out.writeAll(plan.show.items);
+    if (!try confirm(app, "Approve all of it?", try plan.viewFiles(app.arena))) {
+        try app.err.writeAll("nix: nothing was approved\n");
+        return 1;
+    }
+    for (plan.grants.items) |g| try context.recordTrust(app, g.record, g.label);
+    try app.out.writeAll(plan.done.items);
+    return 0;
+}
+
+/// loadContextsFor merges an alias's context files in the same precedence order
+/// resolveSegmented uses, so `--trust` sees exactly what resolution will.
+/// Producers merge by name across the same three files.
+pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.SegFile {
+    var ctxs: std.ArrayList(segments.ContextDef) = .empty;
+    var prods: std.ArrayList(segments.ProducerDef) = .empty;
+    const paths = [_][]const u8{
+        try segments.localPath(app.arena, try dirToSlash(app.arena, dir)),
+        try segments.centralPath(app.arena, app.home, alias),
+        try segments.globalPath(app.arena, app.home),
+    };
+    for (paths) |p| {
+        const sf = try segments.loadSegmentsFile(app.arena, app.io, p);
+        outer: for (sf.contexts) |cd| {
+            for (ctxs.items) |m| if (util.eqlFoldAscii(m.segment, cd.segment)) continue :outer;
+            try ctxs.append(app.arena, cd);
+        }
+        next: for (sf.producers) |pd| {
+            for (prods.items) |m| if (util.eqlFoldAscii(m.name, pd.name)) continue :next;
+            try prods.append(app.arena, pd);
+        }
+    }
+    return .{ .contexts = ctxs.items, .producers = prods.items };
+}
+
+fn dirToSlash(arena: std.mem.Allocator, dir: []const u8) ![]const u8 {
+    const out = try arena.dupe(u8, dir);
+    for (out) |*c| if (c.* == '\\') {
+        c.* = '/';
+    };
+    return out;
 }
 
 // ---- the prompt --------------------------------------------------------------
@@ -405,7 +606,7 @@ const interactive = proc.interactive;
 /// immediately rather than when the window closes, so the question comes back
 /// while the file is still open; the prompt names the editor it opened rather
 /// than pretending to wait.
-fn confirm(app: *App, question: []const u8, files: []const []const u8) !bool {
+pub fn confirm(app: *App, question: []const u8, files: []const []const u8) !bool {
     const viewable = files.len > 0;
     while (true) {
         try app.out.flush();
@@ -446,6 +647,23 @@ fn view(app: *App, files: []const []const u8) !void {
 }
 
 // ---- tests -------------------------------------------------------------------
+
+test "Plan.viewFiles: one editor invocation, no file twice" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // Two actions declared in the same file, one of them running a script:
+    // the declaration must not open twice, and the spelling a command happened
+    // to use must not make it a second file.
+    var plan: Plan = .{};
+    try plan.add(a, .{ .record = "r1", .label = "acme|actions", .files = &.{ "D:\\p\\.nix\\actions.toml", "D:\\p\\tools\\deploy.py" } });
+    try plan.add(a, .{ .record = "r2", .label = "acme|actions", .files = &.{ "D:/p/.nix/Actions.toml", "D:\\p\\tools\\other.py" } });
+    const files = try plan.viewFiles(a);
+    try std.testing.expectEqual(@as(usize, 3), files.len);
+    try std.testing.expectEqualStrings("D:\\p\\.nix\\actions.toml", files[0]);
+    try std.testing.expectEqualStrings("D:\\p\\tools\\deploy.py", files[1]);
+    try std.testing.expectEqualStrings("D:\\p\\tools\\other.py", files[2]);
+}
 
 test "decide: elevated is answered before provenance, approval cannot suppress it" {
     // Every combination that would otherwise be .allow - central file, under
