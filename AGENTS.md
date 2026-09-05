@@ -117,7 +117,10 @@ Anything that arrives with a `git clone` - `.nix/actions.toml`, `.nix/scripts/`,
 the first run shows the command and asks, and **without a console it refuses**.
 An agent's shell is such a console-less case, so an action you just wrote will
 not run for you until the user runs `nix --trust <alias>`. That is the gate
-working. `--trust` and `--force` are never yours to add.
+working. `--trust` and `--force` are never yours to add - and `--trust` will
+not have you either: it is the gate's batch answer, so it prints everything it
+would approve, asks once, and refuses without a console for the same reason
+the gate does.
 
 ### Other load-bearing modules
 

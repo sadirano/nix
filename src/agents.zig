@@ -133,8 +133,11 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   first run of an unapproved file shows the command and asks, and
         \\   without a console (an agent's shell) it refuses instead. So an action
         \\   you just wrote will NOT run for you until the user approves it with
-        \\   `nix --trust <alias>` - that is the check working, not a bug, and
-        \\   `--trust` is never yours to run. Files under `~/.nix` are not gated.
+        \\   `nix --trust <alias>` - that is the check working, not a bug.
+        \\   `--trust` is not yours to run, and will not let you: it prints
+        \\   everything it would approve, asks once, and without a console it
+        \\   refuses exactly as the gate does. Files under `~/.nix` are not
+        \\   gated.
         \\   Configuration the commands NEED goes in `.nix/env.toml` under
         \\   `[env]`, and is set for every `{[x]s} <alias> ...` and every
         \\   `{[o]s} <alias>` session (`~/.nix/env/<alias>.toml` is the private
