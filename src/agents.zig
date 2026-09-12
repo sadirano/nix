@@ -160,7 +160,7 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   to get the path, then use the absolute path. `{[x]s} <alias> <cmd>` works
         \\   fine from agent shells.
         \\6. **Add `--no-prompt` instead of avoiding the pickers.** `{[g]s}`, `{[f]s}`,
-        \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, `nix --notes`, and `nix --prune` open fzf and would block a
+        \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, `nix --notes`, `nix --logs`, and `nix --prune` open fzf and would block a
         \\   non-interactive shell. With `--no-prompt` they print what they would have
         \\   offered and act on nothing: `nix <alias> --no-prompt --grep <pat>`,
         \\   `nix <alias> --no-prompt --find <pat>`. The flag goes BEFORE the action

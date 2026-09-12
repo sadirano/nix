@@ -110,7 +110,7 @@ pub const system = [_]System{
     .{ .flags = &.{ "--which", "-w" }, .verb = .which, .args = "[path]", .help = "print the alias containing a path (default: cwd)", .spec = "--which" },
     .{ .flags = &.{ "--edit", "-e" }, .verb = .edit, .help = "open ~/.nix in your editor", .spec = "" },
     .{ .flags = &.{"--prune"}, .verb = .prune, .help = "interactively remove stale aliases", .spec = "" },
-    .{ .flags = &.{ "--doctor", "-D" }, .verb = .doctor, .help = "check tools/config and what the picker will use", .spec = "--doctor" },
+    .{ .flags = &.{ "--doctor", "-D" }, .verb = .doctor, .args = "[-q]", .help = "check tools/config and what the picker will use", .spec = "--doctor" },
     .{ .flags = &.{ "--groups", "-G" }, .verb = .groups, .help = "list alias groups  (+<group> --list shows members)", .spec = "groups" },
     .{ .flags = &.{ "--actions", "-A" }, .verb = .actions, .args = "[pat]", .help = "every alias's actions in one picker; Enter runs the pick", .spec = "--actions" },
     .{ .flags = &.{ "--notes", "-N" }, .verb = .notes, .args = "[pat]", .help = "search every alias's notes in one view", .spec = "notes" },
@@ -133,10 +133,10 @@ pub const system = [_]System{
 
 pub const actions = [_]Action{
     .{ .flags = &.{"--resolve"}, .verb = .resolve, .help = "print the resolved path", .spec = "" },
-    .{ .flags = &.{ "--edit", "-e" }, .verb = .edit, .help = "open in your editor", .spec = "e" },
+    .{ .flags = &.{ "--edit", "-e" }, .verb = .edit, .args = "[file]", .help = "open in your editor", .spec = "e" },
     .{ .flags = &.{ "--explore", "-x" }, .verb = .explore, .args = "[pat]", .help = "open in the file manager; with a pattern, pick files -> open them", .spec = "s" },
     .{ .flags = &.{ "--yank", "-y" }, .verb = .yank, .args = "[pat]", .help = "copy the path; with a pattern, pick files -> copy the files", .spec = "y" },
-    .{ .flags = &.{ "--paste", "-p" }, .verb = .paste, .help = "save the clipboard into the dir", .spec = "p" },
+    .{ .flags = &.{ "--paste", "-p" }, .verb = .paste, .args = "[name]", .help = "save the clipboard into the dir", .spec = "p" },
     .{ .flags = &.{ "--run", "-r" }, .verb = .run, .args = "<cmd>", .help = "run a command at the dir (`:name` runs a saved action)", .spec = "x" },
     .{ .flags = &.{ "--grep", "-g" }, .verb = .grep, .args = "<pat>", .help = "ripgrep search (add --all/-a to search via rga)", .spec = "g" },
     .{ .flags = &.{ "--find", "-f" }, .verb = .find, .args = "[pat]", .help = "fuzzy-find files", .spec = "f" },
@@ -268,7 +268,7 @@ pub fn flagFor(verb: ActionVerb) []const u8 {
 /// knows reports whether a token is a flag nix accepts anywhere - the universe
 /// the agentdocs safe_form lint checks against.
 pub fn knows(flag: []const u8) bool {
-    return systemVerb(flag) != null or aliasAction(flag) != null or isGlobal(flag);
+    return systemVerb(flag) != null or aliasAction(flag) != null or isGlobal(flag) or impliedAction(flag) != null;
 }
 
 // ---- rendering --------------------------------------------------------------
@@ -332,6 +332,12 @@ test "every flag resolves to its verb, unknown flags to null" {
 
     try std.testing.expect(isGlobal("--no-prompt"));
     try std.testing.expect(!isGlobal("-q"));
+
+    try std.testing.expect(knows("--list"));
+    try std.testing.expect(knows("--grep"));
+    try std.testing.expect(knows("--no-prompt"));
+    try std.testing.expect(knows("--watch"));
+    try std.testing.expect(!knows("--bogus"));
 }
 
 test "no flag is claimed by two rows of the same table" {
