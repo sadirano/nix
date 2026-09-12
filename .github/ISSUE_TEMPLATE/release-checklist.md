@@ -298,16 +298,12 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 ## 11. Backup and rollback
 
-- [ ] ⚠️ `nix --export backup.toml` against the real store; stash it with the
-      `~/.nix` snapshot. This is the rollback artifact for this release, so
-      take it BEFORE anything else in this section touches the store, and
-      keep it somewhere the release itself cannot overwrite.
-- [ ] 🧪 `--import` merges without overwriting, and `--import --replace`
-      restores exactly. In a scratch NIX_HOME: import over an alias of the
-      same name and confirm the EXISTING path survives (merge never
-      overwrites), then `--import --replace` and confirm the path becomes the
-      file's. Check that groups and action descriptions survive the round
-      trip too, not just alias names.
+- [ ] ⚠️ Take a full snapshot backup (`backup-snapshot`) against the real store.
+      This is the rollback artifact for this release, so take it BEFORE anything
+      else in this section touches the store, and keep it somewhere the release
+      itself cannot overwrite.
+- [ ] 🧪 Verify snapshot integrity with `backup-check`. Confirm bundles, loose
+      stores, and hashed files are intact.
 
 ## 12. Release hygiene
 

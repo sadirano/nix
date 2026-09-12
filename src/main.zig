@@ -14,7 +14,6 @@ const segments = @import("segments.zig");
 const snippet = @import("snippet.zig");
 const agents = @import("agents.zig");
 const agentdocs = @import("agentdocs.zig");
-const portable = @import("portable.zig");
 const groups = @import("groups.zig");
 const actions = @import("actions.zig");
 const winpath = @import("winpath.zig");
@@ -339,8 +338,6 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .time => timelog.cmdTime(app, rest),
         .sync => init_zig.cmdSync(app),
         .sync_bin => bin_exports.cmdSyncBin(app),
-        .@"export" => init_zig.cmdExport(app, rest),
-        .import => init_zig.cmdImport(app, rest),
         .secret => secret.cmdSecret(app, rest),
         .trust => provenance.cmdTrust(app, rest, resolve, run_zig, env_zig),
         .agent => cmdAgent(app, rest),

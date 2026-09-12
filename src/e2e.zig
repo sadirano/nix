@@ -498,9 +498,6 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{ "_default", join(&c, &.{ root, "reserved" }) });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "reserved") != null, "registering the _default alias is rejected", r);
-
-        r = try c.run(&.{"--export"});
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[actions._default]") != null, "--export includes the machine-wide default actions", r);
     }
 
     // --- action arguments and chains -------------------------------------------
@@ -810,14 +807,6 @@ pub fn main(init: std.process.Init) !void {
         const first = std.mem.indexOf(u8, r.out, "from-central");
         const second = if (first) |i| std.mem.indexOfPos(u8, r.out, i + 1, "from-central") else null;
         c.check(first != null and second == null, "a group member's env doesn't leak into the next", r);
-
-        // The central layer travels in an export; the project's own file stays
-        // with its repo, where it already is.
-        const envbak = join(&c, &.{ root, "env-backup.toml" });
-        r = try c.run(&.{ "--export", envbak });
-        const doc = readFileOr(&c, envbak, "");
-        c.check(r.code == 0 and std.mem.indexOf(u8, doc, "[env.pe]") != null and
-            std.mem.indexOf(u8, doc, "from-central") != null, "--export carries the central env layers", r);
 
         // Leave nothing behind: later sections run these aliases too.
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "pe.toml" })) catch {};
@@ -1626,20 +1615,6 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and pathEql(trim(r.out), pc) and !proc.pathExists(io, pc), "--resolve never re-creates a deleted dir", r);
     }
 
-    // --- export (before the removal tests mutate state) ---------------------------
-    const backup = join(&c, &.{ root, "backup.toml" });
-    {
-        // A described central action, so the backup has one to carry - plus a
-        // central [bin] export, which travels as a declaration.
-        try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }), "[actions]\n# Wipes the cache; the next build is slow.\nonly = \"echo central-only\"\n[bin]\nonlycmd = \":only\"\n");
-        const r = try c.run(&.{ "--export", backup });
-        c.check(r.code == 0 and proc.pathExists(io, backup), "--export writes the backup file", r);
-        c.check(std.mem.indexOf(u8, readFileOr(&c, backup, ""), "[bin.pa]") != null, "--export carries central [bin] declarations", r);
-        // Descriptions are written back as the comment they were read from -
-        // without this, --import --replace would silently discard them.
-        c.check(std.mem.indexOf(u8, readFileOr(&c, backup, ""), "# Wipes the cache") != null, "--export carries action descriptions", r);
-    }
-
     // --- removals -------------------------------------------------------------------
     {
         var r = try c.run(&.{ "pa+work", "--remove" });
@@ -1671,38 +1646,6 @@ pub fn main(init: std.process.Init) !void {
 
         r = try c.run(&.{ "pb", "--resolve" });
         c.check(r.code != 0, "a removed alias no longer resolves", r);
-    }
-
-    // --- import: merge then replace ------------------------------------------------
-    {
-        try c.env.put("NIX_HOME", home2);
-        const other = join(&c, &.{ root, "proj", "other" });
-        _ = try c.run(&.{ "pa", other });
-
-        var r = try c.run(&.{ "--import", backup });
-        var res = try c.run(&.{ "pa", "--resolve" });
-        c.check(r.code == 0 and pathEql(trim(res.out), other), "--import merge never overwrites an existing alias", res);
-
-        res = try c.run(&.{ "pb", "--resolve" });
-        c.check(res.code == 0 and pathEql(trim(res.out), pb), "--import merge restores missing aliases", res);
-
-        res = try c.run(&.{ "+work", "--list" });
-        c.check(res.code == 0 and std.mem.indexOf(u8, res.out, "pa") != null, "--import merge restores groups", res);
-
-        r = try c.run(&.{ "--import", backup, "--replace" });
-        res = try c.run(&.{ "pa", "--resolve" });
-        c.check(r.code == 0 and pathEql(trim(res.out), pa), "--import --replace restores the exported path", res);
-        // --replace overwrites each central actions file, so this is where a
-        // description would be lost if the round trip dropped it.
-        c.check(std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home2, "actions", "pa.toml" }), ""), "# Wipes the cache") != null, "--import --replace restores action descriptions", res);
-        // The [bin] table shares that file, so a restore that rewrote only
-        // [actions] would silently delete the user's global commands.
-        const restored = readFileOr(&c, join(&c, &.{ home2, "actions", "pa.toml" }), "");
-        c.check(std.mem.indexOf(u8, restored, "[bin]") != null and std.mem.indexOf(u8, restored, "onlycmd") != null, "--import restores central [bin] declarations alongside actions", res);
-        // Declarations travel; consent does not - nothing is on PATH yet.
-        c.check(!proc.pathExists(io, join(&c, &.{ home2, "bin", "onlycmd.exe" })), "an imported export is declared, not installed", res);
-
-        try c.env.put("NIX_HOME", home);
     }
 
     // --- --agent specs -----------------------------------------------------------------
@@ -1897,11 +1840,6 @@ pub fn main(init: std.process.Init) !void {
         else
             try c.run(&.{ "pt", "--run", "--outside", "sh", "-c", "echo detached" });
         c.check(readFileOr(&c, ledger, "").len == before, "an --outside run records no time", null);
-
-        // The ledger is churny machine-local state, like `usage`: a backup that
-        // carried it would restore one machine's hours onto another.
-        r = try c.run(&.{"--export"});
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[time]") == null, "--export leaves the time ledger behind", r);
     }
 
     // --- context source bounds (issue #15) ---------------------------------------------

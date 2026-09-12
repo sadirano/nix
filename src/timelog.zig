@@ -16,8 +16,7 @@
 //! would write down a session nobody had, and the ledger's only claim is that
 //! what it says happened, happened.
 //!
-//! Like `usage`, this is churny machine-local state and is deliberately not
-//! carried by `--export`.
+//! Like `usage`, this is churny machine-local state.
 
 const std = @import("std");
 const Io = std.Io;
