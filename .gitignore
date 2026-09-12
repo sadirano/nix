@@ -5,3 +5,7 @@ zig-out/
 # Release packaging artifacts
 dist/
 *.zip
+
+# Python bytecode from the tools/ scripts
+__pycache__/
+*.py[cod]
