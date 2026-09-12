@@ -150,26 +150,38 @@ fn escapes(rel: []const u8) bool {
     return false;
 }
 
-/// recordForCommand is the approval token for one action: the project actions
-/// file plus every reviewable project file that command runs. Both the gate
-/// and `nix --trust` go through it, which is what keeps them in agreement -
-/// hashing different sets would make --trust report success while the gate
-/// kept refusing. Null when there is nothing cloned to approve.
-pub fn recordForCommand(app: *App, dir: []const u8, from_project: bool, command: []const u8) !?[]const u8 {
+/// recordForCommand is the approval token for one action: the line that action
+/// will run, plus every reviewable project file it runs. Both the gate and
+/// `nix --trust` go through it, which is what keeps them in agreement - hashing
+/// different sets would make --trust report success while the gate kept
+/// refusing. Null when there is nothing cloned to approve.
+pub fn recordForCommand(app: *App, dir: []const u8, from_project: bool, name: []const u8, command: []const u8) !?[]const u8 {
     const decl: ?[]const u8 = if (from_project) try actions.projectPath(app.arena, dir) else null;
-    return combinedRecord(app, decl, try referencedFiles(app, dir, command));
+    return combinedRecord(app, decl, name, command, try referencedFiles(app, dir, command));
 }
 
-/// combinedRecord hashes everything one approval covers: the declaring file's
-/// bytes, then each referenced file's path and bytes. Paths are included so that
-/// moving a script to a new name is a change even when its contents are not, and
-/// so two files cannot swap places unnoticed.
-fn combinedRecord(app: *App, decl: ?[]const u8, refs: []const []const u8) !?[]const u8 {
+/// combinedRecord hashes exactly what one approval covers: the action's own
+/// name and command line, then each referenced file's path and bytes. Paths are
+/// included so that moving a script to a new name is a change even when its
+/// contents are not, and so two files cannot swap places unnoticed.
+///
+/// It hashes THIS action's line rather than the whole declaring file, because
+/// the file is shared and the approval is not. Hashing the file put every other
+/// action's text inside every token, so editing a comment re-armed the lot: on
+/// 2026-09-12 one project had 41 actions, 304 rows in the ledger, and was still
+/// unapproved - the user had answered that prompt seven times over. The module
+/// warns that re-arming on unrelated edits "is how people learn to answer `y`
+/// without looking", and the file-wide hash was doing precisely that.
+///
+/// The declaring file is still read, and still decides whether there is
+/// anything to approve at all - an action that came from a file nix cannot read
+/// is not a refusal, the same as before.
+fn combinedRecord(app: *App, decl: ?[]const u8, name: []const u8, command: []const u8, refs: []const []const u8) !?[]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var any = false;
     if (decl) |path| {
-        if (app_zig.readFileMaybe(app, path)) |body| {
-            try buf.print(app.arena, "actions:{s}", .{body});
+        if (app_zig.readFileMaybe(app, path)) |_| {
+            try buf.appendSlice(app.arena, try actionRecordInput(app.arena, path, name, command));
             any = true;
         }
     }
@@ -213,11 +225,21 @@ fn isConfirmTrusted(app: *App, name: []const u8) bool {
 /// gateAction decides whether a named action may run, printing and recording as
 /// `decide` dictates. `elevated` is passed in rather than detected here
 /// (run.stripSudo owns the marker) so the policy stays free of the run path.
+/// `declared` is the action's command AS WRITTEN in its actions file;
+/// `command` is that line with this invocation's arguments applied. Only
+/// `declared` reaches the record, because approval is of the ACTION, not of one
+/// invocation - hashing the expanded line made `x proj :build -- --release` a
+/// different thing to approve from `x proj :build`, so every argument set
+/// needed its own `y`. Arguments come from the person at the keyboard, who is
+/// their own provenance; the gate exists for the bytes that arrived with a
+/// clone. `command` is still what gets PRINTED, so the prompt shows what will
+/// actually run.
 pub fn gateAction(
     app: *App,
     alias: []const u8,
     dir: []const u8,
     name: []const u8,
+    declared: []const u8,
     command: []const u8,
     from_project: bool,
     elevated: bool,
@@ -228,7 +250,7 @@ pub fn gateAction(
     // runs. The second half is why a central action is still checked - the user
     // wrote the line, but not necessarily the script it calls.
     const decl: ?[]const u8 = if (from_project) try actions.projectPath(app.arena, dir) else null;
-    const refs = try referencedFiles(app, dir, command);
+    const refs = try referencedFiles(app, dir, declared);
     const has_cloned = decl != null or refs.len > 0;
 
     var record: []const u8 = "";
@@ -237,7 +259,7 @@ pub fn gateAction(
     if (has_cloned and !elevated) {
         implicit = context.underHome(app.home, dir);
         if (!implicit) {
-            if (try recordForCommand(app, dir, from_project, command)) |rec| {
+            if (try recordForCommand(app, dir, from_project, name, declared)) |rec| {
                 record = rec;
                 approved = context.isTrusted(app, record);
             } else implicit = true; // nothing readable to approve; not a refusal
@@ -272,8 +294,10 @@ pub fn gateAction(
             try app.err.print("nix: {s}'s :{s} wants to run:\n", .{ alias, name });
             try app.err.print("  {s}\n", .{command});
             try describeCovered(app, decl, refs);
-            if (!try confirm(app, "Approve these files as they stand, and run?", viewable)) return false;
-            try context.recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|actions", .{alias}));
+            if (!try confirm(app, "Approve these files as they stand, and run?", viewable)) {
+                return false;
+            }
+            try recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, name }));
             return true;
         },
     }
@@ -317,15 +341,82 @@ pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) 
     }
     try app.err.print("nix: {s} wants to run a project script:\n  {s}\n", .{ alias, script });
     if (!try confirm(app, "Approve this script's current contents and run?", &.{script})) return false;
-    try context.recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|script", .{alias}));
+    try recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|script", .{alias}));
     return true;
 }
 
-/// The approval tokens. Prefixed so an actions file and a script that happened
+/// recordTrust records an approval, REPLACING whatever that label approved
+/// before. The value is a human label (`alias|:action`, `alias|script`,
+/// `alias|segment`) so `nix --trust` output and the file itself stay readable;
+/// only the key is ever matched.
+///
+/// Superseding rather than appending is what makes approval mean "these bytes,
+/// now". While this appended, every version ever approved stayed trusted
+/// forever, so `git checkout` back to an old actions.toml ran WITHOUT asking -
+/// the opposite of the guarantee the gate is documented to give. It also grew
+/// without bound: on 2026-09-12 that file held 338 rows of which 331 could
+/// never match anything again.
+///
+/// Legacy `alias|actions` rows are dropped for the alias being approved. They
+/// predate per-action tokens and cannot be matched by any current action, so
+/// keeping them would preserve exactly the stale approvals this closes.
+pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
+    const path = try context.trustPath(app.arena, app.home);
+    const prior = app_zig.readFileMaybe(app, path) orelse "";
+    const legacy = try legacyLabelFor(app.arena, label);
+
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(app.arena, "[trusted]\n");
+    for (try actions.parseTable(app.arena, prior, "trusted")) |row| {
+        if (std.mem.eql(u8, row.command, label)) continue; // superseded
+        if (legacy) |l| if (std.mem.eql(u8, row.command, l)) continue; // migrated
+        try buf.print(app.arena, "{s} = \"{s}\"\n", .{ row.name, row.command });
+    }
+    try buf.print(app.arena, "{s} = \"{s}\"\n", .{ record, label });
+    try util.writeFileAtomic(app.arena, app.io, path, buf.items);
+}
+
+/// legacyLabelFor maps `alias|:action` back to the pre-per-action `alias|actions`
+/// label, so approving any one action clears that alias's dead rows. Null for
+/// labels that were never file-wide (`|script`, context segments), which are
+/// superseded by exact label like everything else.
+fn legacyLabelFor(arena: std.mem.Allocator, label: []const u8) !?[]const u8 {
+    const bar = std.mem.indexOfScalar(u8, label, '|') orelse return null;
+    if (bar + 1 >= label.len or label[bar + 1] != ':') return null;
+    return try std.fmt.allocPrint(arena, "{s}|actions", .{label[0..bar]});
+}
+
+/// actionRecordInput is what an action's token is computed over: the DECLARING
+/// FILE's path, the action's name, and its declared command.
+///
+/// The path is in there because the token must not collide across projects.
+/// Two repos holding a byte-identical `shown = "echo ..."` produced the same
+/// token without it, so approving one approved the other - and, worse,
+/// superseding one project's row left the other project's row still vouching
+/// for those bytes, which quietly reopened the stale-approval hole this is
+/// meant to close. Canonicalised, so the same file reached through two aliases
+/// (`game` and `nix-game` name one directory here) is one approval, not two.
+fn actionRecordInput(arena: std.mem.Allocator, decl: []const u8, name: []const u8, command: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "action:{s}:{s}={s}", .{ try canonPath(arena, decl), name, command });
+}
+
+/// canonPath folds the spellings of one path together: separators, and case on
+/// Windows. Only for hashing - never for display, which wants what the user
+/// would paste back.
+fn canonPath(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const out = try arena.dupe(u8, path);
+    for (out) |*ch| {
+        if (ch.* == '\\') ch.* = '/';
+        if (proc.is_windows) ch.* = std.ascii.toLower(ch.*);
+    }
+    return out;
+}
+
+/// The approval tokens. Prefixed so an action line and a script that happened
 /// to hold identical bytes could never approve one another, and so neither can
 /// collide with a context source's record (which hashes a pair).
-pub fn actionRecord(arena: std.mem.Allocator, body: []const u8) ![]const u8 {
-    return context.sha256Hex(arena, try std.fmt.allocPrint(arena, "actions:{s}", .{body}));
+pub fn actionRecord(arena: std.mem.Allocator, decl: []const u8, name: []const u8, command: []const u8) ![]const u8 {
+    return context.sha256Hex(arena, try actionRecordInput(arena, decl, name, command));
 }
 
 pub fn scriptRecord(arena: std.mem.Allocator, body: []const u8) ![]const u8 {
@@ -347,7 +438,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
             // collapse to one row on their own, since the hash is the same.
             var named_file = false;
             for (try actions.parseTable(app.arena, body, "actions")) |a| {
-                const record = (try recordForCommand(app, dir, true, a.command)) orelse continue;
+                const record = (try recordForCommand(app, dir, true, a.name, a.command)) orelse continue;
                 if (context.isTrusted(app, record)) continue;
                 if (!named_file) {
                     try plan.line(app.arena, "  actions  {s}\n", .{path});
@@ -360,7 +451,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
                 try plan.add(app.arena, .{
                     .record = record,
-                    .label = try std.fmt.allocPrint(app.arena, "{s}|actions", .{alias}),
+                    .label = try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, a.name }),
                     .files = try withDecl(app, path, refs),
                 });
             }
@@ -413,7 +504,7 @@ pub fn unapproved(app: *App, dir: []const u8) bool {
     if (context.underHome(app.home, dir)) return false;
     const body = app_zig.readFileMaybe(app, path) orelse return false;
     for (actions.parseTable(app.arena, body, "actions") catch return false) |a| {
-        const record = (recordForCommand(app, dir, true, a.command) catch continue) orelse continue;
+        const record = (recordForCommand(app, dir, true, a.name, a.command) catch continue) orelse continue;
         if (!context.isTrusted(app, record)) return true;
     }
     return false;
@@ -552,7 +643,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: an
         try app.err.writeAll("nix: nothing was approved\n");
         return 1;
     }
-    for (plan.grants.items) |g| try context.recordTrust(app, g.record, g.label);
+    for (plan.grants.items) |g| try recordTrust(app, g.record, g.label);
     try app.out.writeAll(plan.done.items);
     return 0;
 }
@@ -746,8 +837,50 @@ test "records: the two kinds cannot approve one another" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const body = "[actions]\nbuild = \"zig build\"\n";
-    try std.testing.expect(!std.mem.eql(u8, try actionRecord(a, body), try scriptRecord(a, body)));
-    // And the record tracks the bytes: one edit, one re-arm.
-    try std.testing.expect(!std.mem.eql(u8, try actionRecord(a, body), try actionRecord(a, body ++ " ")));
+    const cmd = "zig build";
+    const decl = "D:\\p\\.nix\\actions.toml";
+    try std.testing.expect(!std.mem.eql(u8, try actionRecord(a, decl, "build", cmd), try scriptRecord(a, cmd)));
+    // The record tracks the command: one edit, one re-arm.
+    try std.testing.expect(!std.mem.eql(u8, try actionRecord(a, decl, "build", cmd), try actionRecord(a, decl, "build", cmd ++ " --release")));
+    // ... and the name, so renaming an action is a new thing to have read.
+    try std.testing.expect(!std.mem.eql(u8, try actionRecord(a, decl, "build", cmd), try actionRecord(a, decl, "ship", cmd)));
+    // ... and the project, so identical text in two repos is two approvals.
+    try std.testing.expect(!std.mem.eql(u8, try actionRecord(a, decl, "build", cmd), try actionRecord(a, "D:\\other\\.nix\\actions.toml", "build", cmd)));
+    // One file reached by two aliases is ONE approval: spelling must not split it.
+    try std.testing.expectEqualStrings(
+        try actionRecord(a, decl, "build", cmd),
+        try actionRecord(a, "D:/p/.nix/actions.toml", "build", cmd),
+    );
+}
+
+test "actionRecordInput: the token's inputs, and only those" {
+    // The regression this guards: the token used to hash the whole
+    // actions.toml, so editing ANY action - or a comment above one - re-armed
+    // every action in the project (41 actions, 304 ledger rows, still
+    // unapproved). Asserted on the readable INPUT rather than on a hash of it,
+    // so a widening shows up as text a reviewer can see. The end-to-end half
+    // lives in e2e: "a sibling action does not re-arm an approved one".
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // All-lowercase fixture: separator folding happens everywhere, case folding
+    // only on Windows, so this one string is right on both.
+    try std.testing.expectEqualStrings(
+        "action:d:/p/.nix/actions.toml:build=zig build",
+        try actionRecordInput(a, "d:\\p\\.nix\\actions.toml", "build", "zig build"),
+    );
+}
+
+test "legacyLabelFor: only per-action labels carry a legacy form" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // A per-action label knows which file-wide rows it supersedes.
+    try std.testing.expectEqualStrings("jpmine|actions", (try legacyLabelFor(a, "jpmine|:class")).?);
+    // Scripts and context segments were never file-wide: exact label only.
+    try std.testing.expect((try legacyLabelFor(a, "jpmine|script")) == null);
+    try std.testing.expect((try legacyLabelFor(a, "acme|ticket")) == null);
+    // Malformed labels must not invent a legacy key to delete by.
+    try std.testing.expect((try legacyLabelFor(a, "nobar")) == null);
+    try std.testing.expect((try legacyLabelFor(a, "trailing|")) == null);
 }

@@ -330,7 +330,7 @@ fn runPicked(app: *App, e: Entry) !u8 {
     const dir = (try resolve.resolveAliasPath(app, e.alias)) orelse return 1;
     const r = (try freshCommand(app, e, dir)) orelse return 1;
     // A single pick runs here, in this terminal, so the gate can ask here too.
-    if (!try provenance.gateAction(app, e.alias, dir, e.name, r.command, r.from_project, run_zig.stripSudo(r.command) != null, .may_prompt)) return 1;
+    if (!try provenance.gateAction(app, e.alias, dir, e.name, r.command, r.command, r.from_project, run_zig.stripSudo(r.command) != null, .may_prompt)) return 1;
     return run_zig.runAction(app, r.command, e.alias, dir, e.name, false);
 }
 
@@ -359,7 +359,7 @@ fn startAll(app: *App, picks: []const Entry) !u8 {
         // than prompting somewhere nobody is looking. Approve it with
         // `nix --trust <alias>`, or run it as a single pick, and it fans out
         // freely after that.
-        if (!try provenance.gateAction(app, e.alias, dir, e.name, r.command, r.from_project, run_zig.stripSudo(r.command) != null, .never_prompt)) {
+        if (!try provenance.gateAction(app, e.alias, dir, e.name, r.command, r.command, r.from_project, run_zig.stripSudo(r.command) != null, .never_prompt)) {
             code = 1;
             continue;
         }
