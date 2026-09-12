@@ -148,7 +148,7 @@ TOTAL  2h30m     14h45m
 
 `--day` narrows to today, `--all` widens to the ledger's lifetime (a year; older lines are dropped as new ones are written), and naming an alias adds the split by kind — which is how dwell time and build time come apart. Detached (`--outside`) and elevated runs record nothing: nix returns as soon as the window is up, so there is no finish to observe.
 
-It is measurement, never inference. A shell left open overnight is logged at its real fourteen hours and marked `*`, with the total given both with and without it — a cap would be tidier and would record a session nobody had. Like `usage`, the ledger is machine-local and is not carried by `--export`.
+It is measurement, never inference. A shell left open overnight is logged at its real fourteen hours and marked `*`, with the total given both with and without it — a cap would be tidier and would record a session nobody had. Like `usage`, the ledger is machine-local.
 
 ### Path dialects
 
@@ -427,7 +427,7 @@ serve   npm run dev
 test    zig build test
 ```
 
-There's no new syntax to learn: a run of `#` lines directly above an action is joined into one line of prose and becomes its description, so files that were already commented this way gain descriptions without being touched. A blank line between the comment and the action detaches it (that's how a file-header comment avoids describing the first action), a banner rule of dashes is never mistaken for prose, and the column only appears when something actually has one. `nix --actions` searches descriptions too — `nix --actions "not reversible"` finds the dangerous ones — and `--export`/`--import` carry them, so a `--replace` restore can't quietly drop them.
+There's no new syntax to learn: a run of `#` lines directly above an action is joined into one line of prose and becomes its description, so files that were already commented this way gain descriptions without being touched. A blank line between the comment and the action detaches it (that's how a file-header comment avoids describing the first action), a banner rule of dashes is never mistaken for prose, and the column only appears when something actually has one. `nix --actions` searches descriptions too — `nix --actions "not reversible"` finds the dangerous ones.
 
 ```powershell
 x acme :test              # run acme's `test` action in acme's dir
@@ -644,7 +644,7 @@ Every `x acme <cmd>`, every `x acme :action`, every `x +work <cmd>` fan-out, and
 **The private layer wins.** `~/.nix/env/<alias>.toml` has the same `[env]` shape and overrides the committed file per key — deliberately the opposite of the actions rule. The committed file is the project's *defaults*, the thing that should work for everyone who clones it; the central file is the only place your machine's real database can go without dirtying the repo:
 
 ```toml
-# ~/.nix/env/acme.toml   (private, never committed, travels in --export)
+# ~/.nix/env/acme.toml   (private, never committed)
 [env]
 DATABASE_URL = "postgres://box.local:5433/acme"
 ```
@@ -665,7 +665,7 @@ env for acme
   DATABASE_URL  central  postgres://box.local:5433/acme
 ```
 
-**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. The resolved value exists only in that child's environment — `--env` prints the reference (and tells you when nothing is stored under it), `--export` carries the reference, and no listing ever sees the secret. On an `x`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
+**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. The resolved value exists only in that child's environment — `--env` prints the reference (and tells you when nothing is stored under it), and no listing ever sees the secret. On an `x`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
 
 `PATH`, `PATHEXT`, `COMSPEC` and anything starting with `NIX_` are refused, and say so. PATH is composed by `.nix/scripts` and `[bin]`, which nix rebuilds on every run; a value set here would be both overridden and later removed as stale. Names that aren't shell-referenceable at all (`my key`, `1BAD`) are refused for the same reason: a variable that silently never arrives costs an afternoon.
 
@@ -797,8 +797,6 @@ Other tools can point at the same file wherever they take custom instructions.
 `nix --init` (covered under Install) is idempotent — re-run it any time. `nix --sync` regenerates the agent guide and the command wrappers (plus the shell snippet on Unix-likes) after you move the binary or edit `config.toml`. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
 
 `nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh). Group fan-outs are charged to the group itself — a `+name` key in the same file — never to the members, so an alias's own frecency only moves when you use it directly. Prune still won't ambush you: members of a recently used group inherit its recency in the ranking, marked `(via +group)`, so an alias you only ever reach through `x +work …` doesn't rank as never-used.
-
-`nix --export [file]` writes a portable backup of your aliases, groups, `config.toml`, central per-alias actions, `[bin]` declarations, and central `[env]` layers as one TOML document (to stdout when no file is given; the machine-local `usage` ranking is left out). `nix --import <file>` restores one: by default it **merges**, adding only alias/group/action names you don't already have and never overwriting your `config.toml`, so re-importing is safe. `nix --import <file> --replace` does a deliberate full restore instead — aliases, groups, and config are replaced from the file, and each alias's central actions file is overwritten. Together they cover backup, moving your setup to a new machine, and recovering after a `~/.nix` mishap. Exports travel as **declarations only** — the consent that puts them on PATH stays behind, so a restored backup is still one deliberate `nix --sync-bin` away from installing anything.
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, the per-project `[env]` layers, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
