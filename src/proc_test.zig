@@ -61,7 +61,7 @@ test "runPipelineFiltered forwards the producer's lines and reports the count" {
     const res = try proc.runPipelineFiltered(
         a,
         std.testing.io,
-        &.{ "cmd", "/c", "echo b& echo a& echo c" },
+        &.{ "cmd", "/c", "echo beta& echo alpha& echo gamma" },
         &.{ "cmd", "/c", "sort" },
         ".",
         null,
@@ -70,14 +70,14 @@ test "runPipelineFiltered forwards the producer's lines and reports the count" {
         true,
     );
     try std.testing.expectEqual(@as(usize, 3), res.forwarded);
-    try std.testing.expect(std.mem.indexOf(u8, res.output, "a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.output, "alpha") != null);
 
     // The cap stops the pump early, which is the path that must KILL the
     // producer rather than wait on it.
     const capped = try proc.runPipelineFiltered(
         a,
         std.testing.io,
-        &.{ "cmd", "/c", "echo b& echo a& echo c" },
+        &.{ "cmd", "/c", "echo beta& echo alpha& echo gamma" },
         &.{ "cmd", "/c", "sort" },
         ".",
         null,
