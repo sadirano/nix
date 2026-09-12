@@ -237,7 +237,7 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
         return 1;
     };
     const cmd = try applyArgs(app.arena, r.command, args);
-    if (!try provenance.gateAction(app, ctx_alias, dir, action, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
+    if (!try provenance.gateAction(app, ctx_alias, dir, action, r.command, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
     return runAction(app, cmd, ctx_alias, dir, action, false);
 }
 
@@ -288,7 +288,7 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
         const cmd = try applyArgs(app.arena, r.command, call.args);
         // from_project = false: _default.toml lives under ~/.nix, the user's own
         // and ungated. A `sudo` command still routes through the gate.
-        if (!try provenance.gateAction(app, ctx_alias, dir, name, cmd, false, stripSudo(cmd) != null, .may_prompt)) return 1;
+        if (!try provenance.gateAction(app, ctx_alias, dir, name, r.command, cmd, false, stripSudo(cmd) != null, .may_prompt)) return 1;
         const code = try runAction(app, cmd, ctx_alias, dir, name, false);
         if (code != 0) return code;
     }
@@ -365,7 +365,7 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
         const cmd = try applyArgs(app.arena, r.command, call.args);
         // Gated per link, not once for the chain: each link is its own command,
         // and an elevated one asks again even if an earlier link just did.
-        if (!try provenance.gateAction(app, alias, dir, name, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
+        if (!try provenance.gateAction(app, alias, dir, name, r.command, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
         if (chained) {
             try app.out.flush();
             try app.err.print("==> {s} :{s}\n", .{ alias, name });

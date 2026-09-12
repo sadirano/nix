@@ -300,19 +300,8 @@ pub fn isTrusted(app: *App, record: []const u8) bool {
     return false;
 }
 
-/// recordTrust appends an approval. The value is a human label (alias|segment)
-/// so `nix --trust` output and the file itself stay readable; only the key is
-/// ever matched.
-pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
-    const path = try trustPath(app.arena, app.home);
-    const prior = app_zig.readFileMaybe(app, path) orelse "";
-    var buf: std.ArrayList(u8) = .empty;
-    if (prior.len == 0) try buf.appendSlice(app.arena, "[trusted]\n");
-    try buf.appendSlice(app.arena, prior);
-    if (prior.len > 0 and !std.mem.endsWith(u8, prior, "\n")) try buf.append(app.arena, '\n');
-    try buf.print(app.arena, "{s} = \"{s}\"\n", .{ record, label });
-    try util.writeFileAtomic(app.arena, app.io, path, buf.items);
-}
+// recordTrust - the ledger's WRITE half - lives in provenance.zig, beside the
+// policy that decides what to record and constructs the labels.
 
 // ---- what a source may return -----------------------------------------------
 
