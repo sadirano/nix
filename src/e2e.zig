@@ -808,6 +808,17 @@ pub fn main(init: std.process.Init) !void {
         const second = if (first) |i| std.mem.indexOfPos(u8, r.out, i + 1, "from-central") else null;
         c.check(first != null and second == null, "a group member's env doesn't leak into the next", r);
 
+        // ...and the member that does NOT override it sees the AMBIENT value,
+        // not an empty one. Undoing an injection is a restore, never a plain
+        // remove: pe overrides DATABASE_URL, and a remove would have deleted
+        // the variable the user exported for every member after it.
+        try c.env.put("DATABASE_URL", "from-ambient");
+        r = try c.run(&fan);
+        try c.env.put("DATABASE_URL", "");
+        const over = std.mem.indexOf(u8, r.out, "from-central");
+        const back = std.mem.indexOf(u8, r.out, "from-ambient");
+        c.check(over != null and back != null and back.? > over.?, "the ambient value returns for the next member", r);
+
         // Leave nothing behind: later sections run these aliases too.
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "pe.toml" })) catch {};
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "pf.toml" })) catch {};
