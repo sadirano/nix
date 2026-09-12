@@ -42,6 +42,45 @@ pub fn eqlPathAscii(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+/// Environment names nix owns, and refuses to let a config file or a context
+/// source define. PATH/PATHEXT/COMSPEC decide what runs and how it is found:
+/// aliasRunEnv rebuilds PATH each call to put the scripts dirs in front, and
+/// proc.runShellInherit reads COMSPEC to pick the shell - a value set here
+/// would be clobbered on one path and honoured on another, which is worse than
+/// either - a context PATH also gets REMOVED as stale on the next group member,
+/// leaving that child with no PATH at all. The `NIX_` prefix is nix's own protocol with the child (NIX_ALIAS,
+/// NIX_CONTEXT_OUT, ...); redefining those is talking back over the input
+/// channel.
+///
+/// One list, because two were the bug: env.toml refused COMSPEC and context
+/// sources did not, so the same name was reserved or not depending on which
+/// file it arrived in.
+const reserved_env_names = [_][]const u8{ "PATH", "PATHEXT", "COMSPEC" };
+pub const reserved_env_prefix = "NIX_";
+
+/// isReservedEnvName matches case-insensitively: Windows environment names fold
+/// case, so accepting "Path" would let the same clobber in through the back door.
+pub fn isReservedEnvName(key: []const u8) bool {
+    for (reserved_env_names) |r| if (std.ascii.eqlIgnoreCase(key, r)) return true;
+    return key.len >= reserved_env_prefix.len and
+        std.ascii.eqlIgnoreCase(key[0..reserved_env_prefix.len], reserved_env_prefix);
+}
+
+test "isReservedEnvName: the names nix owns, however they are spelled" {
+    try std.testing.expect(isReservedEnvName("PATH"));
+    try std.testing.expect(isReservedEnvName("Path"));
+    try std.testing.expect(isReservedEnvName("PATHEXT"));
+    // COMSPEC picks the shell proc.runShellInherit spawns, so a source that
+    // could set it could choose what every later command runs under.
+    try std.testing.expect(isReservedEnvName("COMSPEC"));
+    try std.testing.expect(isReservedEnvName("comspec"));
+    try std.testing.expect(isReservedEnvName("NIX_ALIAS"));
+    try std.testing.expect(isReservedEnvName("nix_anything"));
+    try std.testing.expect(!isReservedEnvName("PATHS"));
+    try std.testing.expect(!isReservedEnvName("client_name"));
+    try std.testing.expect(!isReservedEnvName(""));
+}
+
 test "eqlPathAscii: separators and case are both ignored" {
     try std.testing.expect(eqlPathAscii("C:/Users/x/.nix", "C:\\Users\\x\\.nix"));
     try std.testing.expect(eqlPathAscii("C:/USERS/X/.NIX", "c:\\users\\x\\.nix"));

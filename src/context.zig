@@ -141,27 +141,14 @@ fn candidateOf(arena: std.mem.Allocator, body: []const u8) !?Candidate {
     return .{ .display = display, .vars = kept.items };
 }
 
-/// Variable names a context source may not define. Two kinds: PATH, which
-/// aliasRunEnv rebuilds each call to put the scripts dirs in front (a context
-/// var of that name would both win over it and, worse, get REMOVED as stale
-/// context on the next group member, leaving the child with no PATH at all),
-/// and the protocol variables nix sets for the script itself - a source
-/// redefining those would be talking back over its own input channel.
-const reserved_vars = [_][]const u8{
-    "PATH",
-    "NIX_ALIAS",
-    "NIX_ALIAS_PATH",
-    "NIX_CONTEXT_OUT",
-    "NIX_SEGMENT",
-    "NIX_SEGMENT_VALUE",
-};
-
-/// isReservedVar reports whether a context source may not define `key`. Matched
-/// case-insensitively: Windows environment names are, so accepting "Path" would
-/// let the same clobber through the back door.
+/// isReservedVar reports whether a context source may not define `key`. It is
+/// util's list, not a second one: this used to name PATH and the NIX_ protocol
+/// variables only, so a source could set COMSPEC - which proc.runShellInherit
+/// reads to choose the shell - while env.toml refused it. A source whose OUTPUT
+/// is attacker-influenced (a branch name, a file it reads) could then pick what
+/// every later command ran under.
 pub fn isReservedVar(key: []const u8) bool {
-    for (reserved_vars) |r| if (std.ascii.eqlIgnoreCase(key, r)) return true;
-    return false;
+    return util.isReservedEnvName(key);
 }
 
 /// parseDuration reads "30s" / "10m" / "2h" / "1d", a bare number (seconds), or
@@ -705,10 +692,17 @@ test "isReservedVar: names nix owns, case-insensitively" {
     try std.testing.expect(isReservedVar("NIX_ALIAS"));
     try std.testing.expect(isReservedVar("NIX_CONTEXT_OUT"));
     try std.testing.expect(isReservedVar("NIX_SEGMENT_VALUE"));
+    // COMSPEC and PATHEXT decide what runs; env.toml always refused them and a
+    // context source no longer gets the exception.
+    try std.testing.expect(isReservedVar("COMSPEC"));
+    try std.testing.expect(isReservedVar("PATHEXT"));
+    // The whole NIX_ prefix is nix's namespace now, not an enumerated list.
+    // NIX_SEGMENTS used to be allowed for want of being spelled out; reserving
+    // the prefix is what stops the next protocol variable from being a gap.
+    try std.testing.expect(isReservedVar("NIX_SEGMENTS"));
     // Ordinary context variables, including near-misses, stay allowed.
     try std.testing.expect(!isReservedVar("client_name"));
     try std.testing.expect(!isReservedVar("PATHS"));
-    try std.testing.expect(!isReservedVar("NIX_SEGMENTS"));
     try std.testing.expect(!isReservedVar(""));
 }
 
