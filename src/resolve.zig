@@ -267,6 +267,8 @@ test "selectedIndex maps a picked row back to its block, and refuses anything el
     try std.testing.expect(selectedIndex("x\trow", 2) == null);
     // Out of range: the menu changed under us, or fzf echoed something else.
     // Navigating to candidate 0 instead would be the wrong destination, silently.
+    // Specifically verify the boundary (idx == n) is refused, not just distant values.
+    try std.testing.expect(selectedIndex("2\trow", 2) == null);
     try std.testing.expect(selectedIndex("5\trow", 2) == null);
 }
 
@@ -726,4 +728,39 @@ test "whichAlias: two aliases on the same dir - first in file order wins" {
         .{ .name = "zz", .path = "c:/proj/x" },
     };
     try std.testing.expectEqualStrings("aa", (try whichAlias(a, &aliases, "c:/proj/x/sub")).?);
+}
+
+test "whichAlias: ignores empty alias paths" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // A corrupted or empty path entry in the store must be ignored rather
+    // than matching against arbitrary paths.
+    const aliases = [_]store.Alias{
+        .{ .name = "empty", .path = "" },
+        .{ .name = "acme", .path = "c:/proj/acme" },
+    };
+    try std.testing.expectEqualStrings("acme", (try whichAlias(a, &aliases, "c:/proj/acme/src")).?);
+    try std.testing.expect((try whichAlias(a, &aliases, "c:/other")) == null);
+}
+
+test "nameErrorText and pathErrorText explain validation failures" {
+    // Human-readable guidance prevents opaque internal error names from
+    // reaching the user when alias registration input fails validation.
+    try std.testing.expectEqualStrings("the name is empty", nameErrorText(error.EmptyName).?);
+    try std.testing.expectEqualStrings("names can't contain / or \\", nameErrorText(error.PathSeparatorInName).?);
+    try std.testing.expectEqualStrings("names can't contain @ (the segment sigil)", nameErrorText(error.AtInName).?);
+    try std.testing.expectEqualStrings("names can't contain + (the group sigil)", nameErrorText(error.PlusInName).?);
+    try std.testing.expectEqualStrings("names can't contain : (the action sigil)", nameErrorText(error.ColonInName).?);
+    try std.testing.expectEqualStrings("names can't contain spaces", nameErrorText(error.SpaceInName).?);
+    try std.testing.expectEqualStrings("names can't contain control characters", nameErrorText(error.ControlInName).?);
+    try std.testing.expectEqualStrings("names can't contain [ ] = # or quotes", nameErrorText(error.TomlMetaInName).?);
+    try std.testing.expectEqualStrings("\"_default\" is reserved (machine-wide default actions)", nameErrorText(error.ReservedName).?);
+    try std.testing.expectEqualStrings("\".nix\" is reserved - it always names nix's own home", nameErrorText(error.ReservedSelfName).?);
+    try std.testing.expect(nameErrorText(error.FileNotFound) == null);
+
+    try std.testing.expectEqualStrings("the path is empty", pathErrorText(error.EmptyPath).?);
+    try std.testing.expectEqualStrings("a path can't contain : < > \" | ? *", pathErrorText(error.BadCharInPath).?);
+    try std.testing.expectEqualStrings("a path can't contain control characters", pathErrorText(error.ControlInPath).?);
+    try std.testing.expect(pathErrorText(error.FileNotFound) == null);
 }
