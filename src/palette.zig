@@ -71,7 +71,7 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
             return 1;
         }
         if (pat.len > 0) {
-            try app.err.writeAll("usage: nix --actions [pattern]\n");
+            try app.err.writeAll("usage: nix --actions [pat]\n");
             return 1;
         }
         pat = a;

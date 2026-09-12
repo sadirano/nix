@@ -644,10 +644,10 @@ pub const specs = [_]Spec{
     },
     .{
         .topic = "--actions",
-        .args = "[pattern]",
+        .args = "[pat]",
         .summary = "every alias's actions in one picker; Enter runs the pick",
         .safety = .blocks,
-        .safe_form = "nix --no-prompt --actions [pattern]",
+        .safe_form = "nix --no-prompt --actions [pat]",
         .needs_tools = &.{"fzf"},
         .detail =
         \\Actions are declared per alias but invoked from anywhere, so the thing
@@ -1233,6 +1233,13 @@ test "the grammar's spec pointers and the spec table agree" {
             return e;
         };
     }
+    for (grammar.globals) |r| {
+        if (r.spec.len == 0) continue;
+        std.testing.expect(find(r.spec) != null) catch |e| {
+            std.debug.print("no spec for grammar topic \"{s}\"\n", .{r.spec});
+            return e;
+        };
+    }
     // Reverse: a spec whose topic is a FLAG must still be a flag nix parses -
     // otherwise renaming or dropping a command leaves an agent reading a spec
     // for something the binary no longer answers to.
@@ -1252,6 +1259,8 @@ test "every flag a safe form tells an agent to run is one nix parses" {
     // Only safe_form: `examples` legitimately carry the user's flags
     // (`--port`, `--prod`) for commands nix merely runs.
     for (&specs) |*s| {
+        if (s.safe_form.len == 0) continue;
+        try std.testing.expect(std.mem.startsWith(u8, s.safe_form, "nix ") or std.mem.eql(u8, s.safe_form, "nix"));
         var it = std.mem.tokenizeScalar(u8, s.safe_form, ' ');
         while (it.next()) |tok| {
             if (tok.len < 2 or tok[0] != '-') continue;
@@ -1269,6 +1278,20 @@ test "every shortcut slot has a spec" {
     }
     var buf: [config.builtinShortcuts().len]*const Spec = undefined;
     try std.testing.expectEqual(config.builtinShortcuts().len, wrapperSpecs(&buf).len);
+
+    // Reverse: every spec with a slot corresponds to a valid builtin shortcut.
+    for (&specs) |*s| {
+        if (s.slot.len == 0) continue;
+        var found = false;
+        for (config.builtinShortcuts()) |b| {
+            if (std.mem.eql(u8, b.builtin, s.slot)) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+        try std.testing.expectEqualStrings(s.slot, s.topic);
+    }
 }
 
 test "expand substitutes effective command names" {
@@ -1332,5 +1355,68 @@ test "index lists every topic" {
     const out = try renderIndex(arena_state.allocator(), .{});
     for (&specs) |*s| {
         try std.testing.expect(std.mem.indexOf(u8, out, s.summary) != null);
+    }
+}
+
+test "every see_also reference resolves to a spec" {
+    for (&specs) |*s| {
+        for (s.see_also) |sa| {
+            std.testing.expect(find(sa) != null) catch |e| {
+                std.debug.print("spec \"{s}\" has invalid see_also topic \"{s}\"\n", .{ s.topic, sa });
+                return e;
+            };
+        }
+    }
+}
+
+test "every spec topic is unique" {
+    for (specs, 0..) |a, i| {
+        for (specs[i + 1 ..]) |b| {
+            try std.testing.expect(!std.mem.eql(u8, a.topic, b.topic));
+        }
+    }
+}
+
+test "every concept spec is reachable" {
+    // A concept spec (no shortcut slot and no leading "--") must be reachable:
+    // either directly mapped from a grammar row's .spec or referenced in
+    // another spec's see_also list.
+    for (&specs) |*s| {
+        if (s.slot.len > 0 or std.mem.startsWith(u8, s.topic, "--")) continue;
+        var reachable = false;
+        for (grammar.system) |r| if (std.mem.eql(u8, r.spec, s.topic)) {
+            reachable = true;
+            break;
+        };
+        if (!reachable) for (grammar.actions) |r| if (std.mem.eql(u8, r.spec, s.topic)) {
+            reachable = true;
+            break;
+        };
+        if (!reachable) for (grammar.globals) |r| if (std.mem.eql(u8, r.spec, s.topic)) {
+            reachable = true;
+            break;
+        };
+        if (!reachable) outer: for (&specs) |*other| {
+            if (other == s) continue;
+            for (other.see_also) |sa| if (std.mem.eql(u8, sa, s.topic)) {
+                reachable = true;
+                break :outer;
+            };
+        };
+        std.testing.expect(reachable) catch |e| {
+            std.debug.print("concept spec \"{s}\" is unreachable\n", .{s.topic});
+            return e;
+        };
+    }
+}
+
+test "system flag specs agree with grammar rows" {
+    for (grammar.system) |r| {
+        if (r.spec.len == 0) continue;
+        if (find(r.spec)) |s| {
+            if (std.mem.startsWith(u8, s.topic, "--") and std.mem.eql(u8, s.topic, r.flags[0])) {
+                try std.testing.expect(std.mem.startsWith(u8, s.args, r.args));
+            }
+        }
     }
 }

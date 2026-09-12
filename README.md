@@ -156,7 +156,7 @@ It is measurement, never inference. A shell left open overnight is logged at its
 
 | dialect | example |
 |---|---|
-| `win` | `C:cme\src` |
+| `win` | `C:\acme\src` |
 | `slash` | `C:/acme/src` |
 | `gitbash` | `/c/acme/src` |
 | `wsl` | `/mnt/c/acme/src` |
@@ -665,7 +665,7 @@ env for acme
   DATABASE_URL  central  postgres://box.local:5433/acme
 ```
 
-**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. The resolved value exists only in that child's environment — `--env` prints the reference (and tells you when nothing is stored under it), and no listing ever sees the secret. On an `x`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
+**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. The resolved value exists only in that child's environment — `--env` prints the reference (and tells you when nothing is stored under it), and no listing ever sees the secret. Manage secret values using `nix --secret set <NAME>` (prompts securely for the value and stores it in the Windows Credential Manager), `nix --secret rm <NAME>`, and `nix --secret list` (lists stored secret names only, never values). On an `x`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
 
 `PATH`, `PATHEXT`, `COMSPEC` and anything starting with `NIX_` are refused, and say so. PATH is composed by `.nix/scripts` and `[bin]`, which nix rebuilds on every run; a value set here would be both overridden and later removed as stale. Names that aren't shell-referenceable at all (`my key`, `1BAD`) are refused for the same reason: a variable that silently never arrives costs an afternoon.
 
@@ -784,7 +784,7 @@ On Windows there is no completion (and no shell snippet): the commands are plain
 
 ## AI agents
 
-`nix --init` also writes `~/.nix/AGENTS.md`, a short guide that teaches coding agents your command surface — so they say "run it with `x acme :test`" instead of quoting absolute paths, register repeatable commands as actions, and know to resolve with `nix <alias>` rather than `o` in their own non-interactive shells. `nix --sync` regenerates it, so the guide always shows your effective `[shortcuts]` names.
+`nix --init` also writes `~/.nix/AGENTS.md`, a short guide that teaches coding agents your command surface — so they say "run it with `x acme :test`" instead of quoting absolute paths, register repeatable commands as actions, and know to resolve with `nix <alias>` rather than `o` in their own non-interactive shells. `nix --sync` regenerates it, so the guide always shows your effective `[shortcuts]` names. Every command and concept also has an on-demand specification: `<cmd> --agent` or `nix --agent <topic>` (bare `nix --agent` lists all topics), stating agent safety tiers and safe non-interactive invocations.
 
 nix never registers the file with any agent itself — wiring it up is a deliberate, per-user step. For Claude Code, import it from your global memory file, `~/.claude/CLAUDE.md`:
 
@@ -795,6 +795,10 @@ Other tools can point at the same file wherever they take custom instructions.
 ## Commands
 
 `nix --init` (covered under Install) is idempotent — re-run it any time. `nix --sync` regenerates the agent guide and the command wrappers (plus the shell snippet on Unix-likes) after you move the binary or edit `config.toml`. `nix --version` prints the build version and OS/arch. `nix --help` lists everything.
+
+`nix --secret set|rm|list [NAME]` manages credential values stored securely in the Windows Credential Manager for actions and env to reference as `${secret:NAME}`.
+
+`nix --agent [topic]` prints the full specification and safety tier for an agent (or `<cmd> --agent`; bare `nix --agent` indexes all topics).
 
 `nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh). Group fan-outs are charged to the group itself — a `+name` key in the same file — never to the members, so an alias's own frecency only moves when you use it directly. Prune still won't ambush you: members of a recently used group inherit its recency in the ranking, marked `(via +group)`, so an alias you only ever reach through `x +work …` doesn't rank as never-used.
 
