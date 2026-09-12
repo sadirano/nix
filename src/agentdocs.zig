@@ -1060,7 +1060,6 @@ pub const specs = [_]Spec{
         ,
         .examples = &.{
             "`nix acme C:\\\\repo\\\\acme` - register an alias the supported way",
-            "`nix --export backup.toml` - portable backup of aliases/groups/config",
         },
         .see_also = &.{ "--doctor", "actions" },
     },

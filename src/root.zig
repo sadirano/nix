@@ -18,7 +18,6 @@ pub const clipboard = @import("clipboard.zig");
 pub const editor = @import("editor.zig");
 pub const snippet = @import("snippet.zig");
 pub const agents = @import("agents.zig");
-pub const portable = @import("portable.zig");
 pub const proc = @import("proc.zig");
 pub const hold = @import("hold.zig");
 pub const png = @import("png.zig");

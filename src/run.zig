@@ -580,7 +580,7 @@ pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_defa
 /// `${secret:NAME}` placeholders (see secret.zig) are expanded here — the one
 /// choke point every named action passes through, foreground or detached — so
 /// a resolved credential exists only for the duration of this call and never
-/// reaches listings, --export, or [notify] messages (those all read the raw,
+/// reaches listings or [notify] messages (those all read the raw,
 /// unexpanded command string). An unresolved name aborts before spawn.
 pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool) !u8 {
     const cmd = (try expandSecrets(app, command)) orelse return 1;

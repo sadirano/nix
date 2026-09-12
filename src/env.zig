@@ -18,7 +18,7 @@
 //! A value is literal text with exactly one exception: `${secret:NAME}` is
 //! resolved through the Credential Manager at injection time (secret.zig), and
 //! ONLY there. Everything that displays an entry reads the raw text, so a
-//! resolved credential never reaches a listing, an `--export`, or a [notify]
+//! resolved credential never reaches a listing or a [notify]
 //! message - the same discipline run.runShellString gives an action's command.
 
 const std = @import("std");
