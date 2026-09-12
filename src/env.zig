@@ -91,15 +91,12 @@ pub fn validKey(key: []const u8) bool {
 /// which is worse than either. The `NIX_` prefix is nix's own protocol with the
 /// child (NIX_ALIAS, NIX_ACTION, ...); a file redefining those would be talking
 /// back over its own input channel.
-const reserved_names = [_][]const u8{ "PATH", "PATHEXT", "COMSPEC" };
-pub const reserved_prefix = "NIX_";
+pub const reserved_prefix = util.reserved_env_prefix;
 
-/// isReserved matches case-insensitively: Windows environment names fold case,
-/// so accepting "Path" would let the same clobber in through the back door.
+/// isReserved defers to util so env.toml and context sources refuse exactly the
+/// same names - see util.isReservedEnvName.
 pub fn isReserved(key: []const u8) bool {
-    for (reserved_names) |r| if (std.ascii.eqlIgnoreCase(key, r)) return true;
-    return key.len >= reserved_prefix.len and
-        std.ascii.eqlIgnoreCase(key[0..reserved_prefix.len], reserved_prefix);
+    return util.isReservedEnvName(key);
 }
 
 /// orderFold compares names the way the listing should read: case-insensitively,
