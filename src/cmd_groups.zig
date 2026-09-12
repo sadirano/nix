@@ -450,7 +450,7 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
                 // A group runs its members one at a time in this terminal, so
                 // the gate can ask - and asks per member, since each has its own
                 // cloned actions.toml. A refusal counts as that member failing.
-                if (!try provenance.gateAction(app, t.name, t.path, n, cmd, r.from_project, run_zig.stripSudo(cmd) != null, .may_prompt)) {
+                if (!try provenance.gateAction(app, t.name, t.path, n, r.command, cmd, r.from_project, run_zig.stripSudo(cmd) != null, .may_prompt)) {
                     rc = 1;
                     break;
                 }

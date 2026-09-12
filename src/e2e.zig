@@ -2216,15 +2216,35 @@ pub fn main(init: std.process.Init) !void {
 
         // Provenance under composition. Reaching a project INDIRECTLY must gate
         // exactly as reaching it directly does - the gate lives on the file, not
-        // on how the user happened to arrive at it. Editing kb's actions.toml
-        // re-arms it; ka is still approved, so only the dependency is untrusted.
-        // The edit has to CHANGE the bytes: approval is on content, so rewriting
-        // the same text re-arms nothing (a check that wrote identical bytes here
-        // passed for the wrong reason and proved only that trust is sticky).
+        // on how the user happened to arrive at it.
+        //
+        // Approval is per ACTION, not per file. Adding a sibling action leaves
+        // :shown's own line untouched, so :shown stays approved and only the new
+        // one is unapproved. While the token hashed the whole actions.toml, one
+        // added line re-armed everything in the file: 41 actions in a real
+        // project meant 41 prompts, 304 ledger rows, and a gate nobody read.
         try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\nextra = \"echo added-later\"\n", .{show}));
         r = try c.run(&.{ "kb", "--run", ":shown" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "kb") != null and
-            std.mem.indexOf(u8, r.err, "--trust") != null, "an edited project re-arms its own gate", r);
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "who=[kb]") != null, "a sibling action does not re-arm an approved one", r);
+        // The sibling itself arrived unapproved, and is gated on its own.
+        r = try c.run(&.{ "kb", "--run", ":extra" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "added-later") == null and
+            std.mem.indexOf(u8, r.err, "--trust") != null, "an action added to an approved file is still gated", r);
+        // Editing the action's OWN command re-arms it - that is what approval is of.
+        try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), "[actions]\nshown = \"echo rewritten\"\n");
+        r = try c.run(&.{ "kb", "--run", ":shown" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "rewritten") == null and
+            std.mem.indexOf(u8, r.err, "--trust") != null, "an edited action re-arms its own gate", r);
+        // A revert to previously-approved text is NOT trust: re-approval
+        // supersedes the old row rather than leaving it valid forever, so a
+        // `git checkout` back to an approved version still has to be answered.
+        try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\n", .{show}));
+        _ = try c.trust(&.{"kb"});
+        try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), "[actions]\nshown = \"echo rewritten\"\n");
+        _ = try c.trust(&.{"kb"});
+        try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\n", .{show}));
+        r = try c.run(&.{ "kb", "--run", ":shown" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null, "reverting to once-approved bytes does not restore trust", r);
         _ = try c.trust(&.{"kb"});
 
         // The same crossing through a [bin] export: the installed exe is a copy
@@ -2240,9 +2260,12 @@ pub fn main(init: std.process.Init) !void {
             c.exe = kbshow;
             r = try c.run(&.{});
             c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "who=[kb]") != null, "an exported action runs as a bare global command", r);
-            // Re-arm by editing the file the export resolves through.
+            // Re-arm by editing the ACTION the export resolves through - a
+            // comment elsewhere in the file is not this action's business, but
+            // its own command line is. Otherwise `[bin]` would be a way to
+            // launder unapproved project code into a bare global command.
             c.exe = saved_exe;
-            try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\n\n[bin]\nkbshow = \":shown\"\n# edited\n", .{show}));
+            try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), "[actions]\nshown = \"echo laundered\"\n\n[bin]\nkbshow = \":shown\"\n");
             c.exe = kbshow;
             r = try c.run(&.{});
             c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null and
