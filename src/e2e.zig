@@ -2086,7 +2086,10 @@ pub fn main(init: std.process.Init) !void {
 
         // Everything after `--` belongs to the command, including a literal
         // `--as` a user is passing through to something else.
-        r = try c.run(&.{ "pa", "--run", "--", "echo", "--as", "wsl" });
+        r = if (proc.is_windows)
+            try c.run(&.{ "pa", "--run", "--", "cmd", "/c", "echo", "--as", "wsl" })
+        else
+            try c.run(&.{ "pa", "--run", "--", "echo", "--as", "wsl" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "--as") != null, "`--` protects a literal --as from nix", r);
     }
 
