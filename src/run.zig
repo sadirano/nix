@@ -479,14 +479,15 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.
     // stops here, before anything is spawned.
     if ((try env_zig.inject(app, alias, dir, mode)) == null) return null;
     // Context-source variables (context.zig). Names are arbitrary, so unlike
-    // PATH they can't be rebuilt from an original — remove what the previous
+    // PATH they can't be rebuilt from an original — restore what the previous
     // call injected first, or a group fan-out would carry one member's context
-    // into the next.
-    for (app.ctx_injected) |k| _ = app.env.orderedRemove(k);
-    var injected: std.ArrayList([]const u8) = .empty;
+    // into the next. Restore rather than remove: the name may have been the
+    // user's own before a context source answered with it.
+    try app_zig.restoreVars(app, app.ctx_injected);
+    var injected: std.ArrayList(app_zig.SavedVar) = .empty;
     for (app.ctx_vars) |kv| {
+        try injected.append(app.arena, try app_zig.saveVar(app, kv.key));
         try app.env.put(kv.key, kv.value);
-        try injected.append(app.arena, kv.key);
     }
     app.ctx_injected = injected.items;
     return app.env;

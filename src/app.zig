@@ -62,11 +62,11 @@ pub const App = struct {
     /// Names aliasRunEnv injected from ctx_vars last call, removed before the
     /// next injection so a group fan-out never leaks one member's context into
     /// the next (the same discipline PATH gets via orig_path).
-    ctx_injected: []const []const u8 = &.{},
+    ctx_injected: []const SavedVar = &.{},
     /// What env.zig contributed last call, and the names to remove before the
     /// next - the same leak discipline as ctx_vars/ctx_injected.
     env_vars: []const EnvVar = &.{},
-    env_injected: []const []const u8 = &.{},
+    env_injected: []const SavedVar = &.{},
     /// Whether this process has already reported an env.toml problem (an
     /// unapproved project layer, a refused name). A chain injects once per link,
     /// and the same note three times reads as three separate problems.
@@ -86,6 +86,35 @@ pub const stepFmt = telemetry.stepFmt;
 /// credential must not go (run.elevatedCommand). Declared here so App can name
 /// it without depending on env.zig.
 pub const EnvVar = struct { key: []const u8, value: []const u8, from_secret: bool };
+
+/// One variable nix overwrote, with whatever was under it. `prev` is null when
+/// the name was not set at all before nix put it there.
+///
+/// Removing an injected name is not the same as undoing the injection: if the
+/// ambient environment already had DATABASE_URL and one group member's env.toml
+/// overrides it, a plain remove leaves the NEXT member with no DATABASE_URL at
+/// all - nix would have deleted a variable the user set, which no layer of
+/// config asked for. Restoring is the undo; removing is only the undo for a
+/// name that was not there to begin with.
+pub const SavedVar = struct { key: []const u8, prev: ?[]const u8 };
+
+/// saveVar records the current value of `key` (duped, since the map's own
+/// storage is rewritten by the put that follows) so restoreVars can put it back.
+pub fn saveVar(app: *App, key: []const u8) !SavedVar {
+    const prev = app.env.get(key);
+    return .{
+        .key = key,
+        .prev = if (prev) |v| try app.arena.dupe(u8, v) else null,
+    };
+}
+
+/// restoreVars undoes a previous injection: each name goes back to the value it
+/// had, or out of the environment entirely if it had none.
+pub fn restoreVars(app: *App, saved: []const SavedVar) !void {
+    for (saved) |sv| {
+        if (sv.prev) |v| try app.env.put(sv.key, v) else _ = app.env.orderedRemove(sv.key);
+    }
+}
 
 /// exePath returns the real on-disk image path, lazily and cached. Asks the OS
 /// rather than deriving it from argv[0]+cwd, which under a wrapper yields a
