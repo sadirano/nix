@@ -277,11 +277,13 @@ pub const Mode = enum { run, navigate };
 /// when a secret could not be resolved on a `.run` (already reported - the
 /// caller must abort without spawning).
 ///
-/// Injected names are recorded on the App and removed again on the next call,
-/// the same discipline context variables get: without it a group fan-out would
-/// carry one member's DATABASE_URL into the next member's command.
+/// Injected names are recorded on the App and RESTORED on the next call - put
+/// back to whatever was under them, or removed if nothing was. Without the undo
+/// a group fan-out would carry one member's DATABASE_URL into the next; without
+/// it being a restore, an ambient DATABASE_URL the user exported would be gone
+/// from every member after the one that overrode it.
 pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode) !?[]const app_zig.EnvVar {
-    for (app.env_injected) |k| _ = app.env.orderedRemove(k);
+    try app_zig.restoreVars(app, app.env_injected);
     app.env_injected = &.{};
     app.env_vars = &.{};
 
@@ -289,7 +291,7 @@ pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode) !?[]con
     try report(app, alias, loaded);
     if (loaded.merged.entries.len == 0) return &.{};
 
-    var names: std.ArrayList([]const u8) = .empty;
+    var names: std.ArrayList(app_zig.SavedVar) = .empty;
     var out: std.ArrayList(app_zig.EnvVar) = .empty;
     var cred = secret.CredResolveCtx{ .arena = app.arena };
     for (loaded.merged.entries) |e| {
@@ -307,8 +309,8 @@ pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode) !?[]con
                 continue;
             },
         };
+        try names.append(app.arena, try app_zig.saveVar(app, e.key));
         try app.env.put(e.key, value);
-        try names.append(app.arena, e.key);
         try out.append(app.arena, .{ .key = e.key, .value = value, .from_secret = from_secret });
     }
     app.env_injected = names.items;
