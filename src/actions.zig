@@ -408,7 +408,7 @@ test "both templates are inert: they declare no action and no export" {
     try std.testing.expect(std.mem.indexOf(u8, default_template, "[actions]\n") != null);
 }
 
-test "centralPath / projectPath shape" {
+test "centralPath / projectPath / defaultPath shape" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -418,6 +418,9 @@ test "centralPath / projectPath shape" {
     const pp = try projectPath(a, "D");
     try std.testing.expect(std.mem.endsWith(u8, pp, "actions.toml"));
     try std.testing.expect(std.mem.indexOf(u8, pp, ".nix") != null);
+    const dp = try defaultPath(a, "H");
+    try std.testing.expect(std.mem.endsWith(u8, dp, "_default.toml"));
+    try std.testing.expect(std.mem.indexOf(u8, dp, "actions") != null);
 }
 
 test "namesAction: bare name matches any alias, alias:action matches one" {
@@ -428,4 +431,20 @@ test "namesAction: bare name matches any alias, alias:action matches one" {
     try std.testing.expect(!namesAction(list, "other", "digest"));
     try std.testing.expect(!namesAction(list, "nix", "ci"));
     try std.testing.expect(!namesAction(&.{}, "nix", "deploy"));
+}
+
+test "commentText: handles multi-hash headings and all banner rule characters" {
+    // Markdown-style headers (##, ###) must have all leading hashes stripped so
+    // the heading text itself becomes the action description.
+    try std.testing.expectEqualStrings("Header", commentText("## Header").?);
+    try std.testing.expectEqualStrings("Deep header", commentText("### Deep header").?);
+
+    // All supported rule characters (- = _ * ~ +) are recognized as decorative
+    // separator rules and ignored rather than treated as prose descriptions.
+    try std.testing.expect(commentText("# ----------------") == null);
+    try std.testing.expect(commentText("# ================") == null);
+    try std.testing.expect(commentText("# ****************") == null);
+    try std.testing.expect(commentText("# ~~~~~~~~~~~~~~~~") == null);
+    try std.testing.expect(commentText("# ++++++++++++++++") == null);
+    try std.testing.expect(commentText("# ________________") == null);
 }

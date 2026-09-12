@@ -417,3 +417,18 @@ test "spellings joins the accepted forms" {
     try std.testing.expectEqualStrings("--list, --ls, -l", spellings(&buf, system[0].flags));
     try std.testing.expectEqualStrings("--list-names", spellings(&buf, system[1].flags));
 }
+
+test "knows recognizes flags across system, action, and global tables" {
+    // The safe_form lint requires knowing whether a flag is valid anywhere,
+    // so all three tables and their short forms must answer affirmatively.
+    try std.testing.expect(knows("--list"));
+    try std.testing.expect(knows("-l"));
+    try std.testing.expect(knows("--grep"));
+    try std.testing.expect(knows("-g"));
+    try std.testing.expect(knows("--force"));
+    try std.testing.expect(knows("--no-prompt"));
+    try std.testing.expect(knows("-j"));
+    try std.testing.expect(!knows("--bogus"));
+    try std.testing.expect(!knows("-q"));
+    try std.testing.expect(!knows("bare_word"));
+}

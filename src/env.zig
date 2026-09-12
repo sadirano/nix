@@ -504,6 +504,9 @@ test "isReserved: nix's own names, case-insensitively" {
     try std.testing.expect(isReserved("COMSPEC"));
     try std.testing.expect(isReserved("NIX_ALIAS"));
     try std.testing.expect(isReserved("nix_anything"));
+    // Exact prefix match at the boundary (len == reserved_prefix.len).
+    try std.testing.expect(isReserved("NIX_"));
+    try std.testing.expect(isReserved("nix_"));
     // Near-misses stay ordinary variables.
     try std.testing.expect(!isReserved("PATHS"));
     try std.testing.expect(!isReserved("MY_PATH"));
@@ -610,4 +613,16 @@ test "trustRecord: tracks the bytes, and cannot collide with an actions record" 
     // The "env:" prefix is what keeps identical bytes in a different file from
     // approving this one.
     try std.testing.expect(!std.mem.eql(u8, rec, try context.sha256Hex(a, body)));
+}
+
+test "problemText and Source.label describe dropped declarations and layers" {
+    // Problem messages and source labels are rendered in --env and --doctor,
+    // so they must provide consistent descriptions for both reasons and origins.
+    try std.testing.expectEqualStrings("project", Source.project.label());
+    try std.testing.expectEqualStrings("central", Source.central.label());
+
+    const p_invalid: Problem = .{ .key = "1BAD", .source = .project, .reason = .invalid_name };
+    const p_reserved: Problem = .{ .key = "PATH", .source = .central, .reason = .reserved };
+    try std.testing.expect(std.mem.indexOf(u8, problemText(p_invalid), "not a usable variable name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, problemText(p_reserved), "reserved") != null);
 }
