@@ -164,25 +164,20 @@ pub fn launchTerminal(app: *App, cfg: config.Config, dir: []const u8) bool {
     return false; // Unix: no [nav] terminal configured → can't open extras
 }
 
+/// trimmedEnv reads an environment variable and treats a blank (or
+/// whitespace-only) value the same as an unset one.
+fn trimmedEnv(app: *App, name: []const u8) ?[]const u8 {
+    const v = app.env.get(name) orelse return null;
+    const t = std.mem.trim(u8, v, " \t");
+    return if (t.len > 0) t else null;
+}
+
 /// interactiveShell picks the shell for navigation: NIX_SHELL wins, else
 /// $COMSPEC/cmd.exe on Windows, else $SHELL//bin/sh.
 pub fn interactiveShell(app: *App) []const u8 {
-    if (app.env.get("NIX_SHELL")) |s| {
-        const t = std.mem.trim(u8, s, " \t");
-        if (t.len > 0) return t;
-    }
-    if (proc.is_windows) {
-        if (app.env.get("COMSPEC")) |c| {
-            const t = std.mem.trim(u8, c, " \t");
-            if (t.len > 0) return t;
-        }
-        return "cmd.exe";
-    }
-    if (app.env.get("SHELL")) |s| {
-        const t = std.mem.trim(u8, s, " \t");
-        if (t.len > 0) return t;
-    }
-    return "/bin/sh";
+    if (trimmedEnv(app, "NIX_SHELL")) |s| return s;
+    if (proc.is_windows) return trimmedEnv(app, "COMSPEC") orelse "cmd.exe";
+    return trimmedEnv(app, "SHELL") orelse "/bin/sh";
 }
 
 test "buildTerminalArgv: {dir} substitution, tokenization, spaces in dir" {
