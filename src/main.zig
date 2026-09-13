@@ -278,6 +278,17 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
 
 // ---- grammar ----------------------------------------------------------------
 
+/// parseGroupToken parses a `+`-bearing token, printing nix's own "invalid
+/// group token" diagnostic and returning null on error - the shared failure
+/// path between dispatch() (an alias/group position) and navigate() (an `o`
+/// target), which used to print the same message from two copies of this catch.
+fn parseGroupToken(app: *App, token: []const u8) !?groups.Ref {
+    return groups.parseRef(token) catch |e| {
+        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ token, @errorName(e) });
+        return null;
+    };
+}
+
 fn dispatch(app: *App, args: [][]const u8) !u8 {
     // Global flags may LEAD the command: setGlobalFlags has already read them
     // wherever they sit, so skipping them here makes `nix --no-prompt --prune`
@@ -296,10 +307,7 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
     }
     // Group grammar (`+group …` / `member+group …`) — `+` is reserved in names,
     // so any `+` in the first token means a group operation, not an alias.
-    switch (groups.parseRef(first) catch |e| {
-        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ first, @errorName(e) });
-        return 1;
-    }) {
+    switch ((try parseGroupToken(app, first)) orelse return 1) {
         .none => {},
         .reference => |g| return dispatchGroupRef(app, g, rest[1..]),
         .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]),
@@ -647,6 +655,14 @@ fn cmdEditDefaultActions(app: *App) !u8 {
     return app_zig.openFileInEditor(app, path, "", app.home);
 }
 
+/// hasPattern reports whether any action arg is a real positional rather than
+/// a global flag - the shared "was a pattern typed" check `s`/`y` both make
+/// before deciding between their bare form and the picker.
+fn hasPattern(action_args: [][]const u8) bool {
+    for (action_args) |a| if (!isGlobalFlag(a)) return true;
+    return false;
+}
+
 /// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it
 /// mirrors `y <alias> <pat>`: an exact existing file opens directly (the
 /// original `s <alias> <file>` form), anything else runs the `f` picker and
@@ -654,12 +670,7 @@ fn cmdEditDefaultActions(app: *App) !u8 {
 /// files to copy.
 fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
-    var has_pat = false;
-    for (action_args) |a| if (!isGlobalFlag(a)) {
-        has_pat = true;
-        break;
-    };
-    if (!has_pat) return exploreTarget(app, dir);
+    if (!hasPattern(action_args)) return exploreTarget(app, dir);
 
     // Exact file wins over the picker: `s acme report.pdf` keeps opening that
     // file directly when it exists.
@@ -696,10 +707,7 @@ fn navigate(app: *App, alias: []const u8) !u8 {
     // A malformed group token (`pa+`, `+`) must error here like it does in
     // dispatch — swallowing it as .none would send the user through the
     // unknown-alias picker only to fail on the name validation at the end.
-    switch (groups.parseRef(alias) catch |e| {
-        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ alias, @errorName(e) });
-        return 1;
-    }) {
+    switch ((try parseGroupToken(app, alias)) orelse return 1) {
         .none => {},
         .reference => |g| return navigateGroup(app, g),
         .add => |ad| {
@@ -729,13 +737,8 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// cmdYank: `y <alias> <pat>` runs the `f` picker and copies the selected FILES
 /// to the clipboard as an OS file drop; bare `y <alias>` copies the path text.
 fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
-    var has_pat = false;
-    for (action_args) |a| if (!isGlobalFlag(a)) {
-        has_pat = true;
-        break;
-    };
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    if (!has_pat) return paste.yankPathText(app, alias, target);
+    if (!hasPattern(action_args)) return paste.yankPathText(app, alias, target);
     return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, action_args)) {
         .selected => |sel| paste.yankSelectionFiles(app, alias, target, sel),
         .cancelled => 0,
