@@ -655,6 +655,14 @@ fn cmdEditDefaultActions(app: *App) !u8 {
     return app_zig.openFileInEditor(app, path, "", app.home);
 }
 
+/// hasPattern reports whether any action arg is a real positional rather than
+/// a global flag - the shared "was a pattern typed" check `s`/`y` both make
+/// before deciding between their bare form and the picker.
+fn hasPattern(action_args: [][]const u8) bool {
+    for (action_args) |a| if (!isGlobalFlag(a)) return true;
+    return false;
+}
+
 /// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it
 /// mirrors `y <alias> <pat>`: an exact existing file opens directly (the
 /// original `s <alias> <file>` form), anything else runs the `f` picker and
@@ -662,12 +670,7 @@ fn cmdEditDefaultActions(app: *App) !u8 {
 /// files to copy.
 fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
-    var has_pat = false;
-    for (action_args) |a| if (!isGlobalFlag(a)) {
-        has_pat = true;
-        break;
-    };
-    if (!has_pat) return exploreTarget(app, dir);
+    if (!hasPattern(action_args)) return exploreTarget(app, dir);
 
     // Exact file wins over the picker: `s acme report.pdf` keeps opening that
     // file directly when it exists.
@@ -734,13 +737,8 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// cmdYank: `y <alias> <pat>` runs the `f` picker and copies the selected FILES
 /// to the clipboard as an OS file drop; bare `y <alias>` copies the path text.
 fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
-    var has_pat = false;
-    for (action_args) |a| if (!isGlobalFlag(a)) {
-        has_pat = true;
-        break;
-    };
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    if (!has_pat) return paste.yankPathText(app, alias, target);
+    if (!hasPattern(action_args)) return paste.yankPathText(app, alias, target);
     return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, action_args)) {
         .selected => |sel| paste.yankSelectionFiles(app, alias, target, sel),
         .cancelled => 0,
