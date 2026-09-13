@@ -1,8 +1,8 @@
 //! Ctrl-C during a foreground run, without losing the run.
 //!
 //! nix does its bookkeeping AFTER the child wait returns - the ledger line, the
-//! recording's footer, the telemetry child_exit, `[notify] on_finish`. With no
-//! console handler registered, Windows' default action for Ctrl-C is to
+//! recording's footer, `[notify] on_finish`. With no console handler
+//! registered, Windows' default action for Ctrl-C is to
 //! terminate the process, so an abandoned `x nix :build` was nine minutes that
 //! never happened as far as `nix --time` was concerned.
 //!
