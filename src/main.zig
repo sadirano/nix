@@ -278,6 +278,17 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
 
 // ---- grammar ----------------------------------------------------------------
 
+/// parseGroupToken parses a `+`-bearing token, printing nix's own "invalid
+/// group token" diagnostic and returning null on error - the shared failure
+/// path between dispatch() (an alias/group position) and navigate() (an `o`
+/// target), which used to print the same message from two copies of this catch.
+fn parseGroupToken(app: *App, token: []const u8) !?groups.Ref {
+    return groups.parseRef(token) catch |e| {
+        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ token, @errorName(e) });
+        return null;
+    };
+}
+
 fn dispatch(app: *App, args: [][]const u8) !u8 {
     // Global flags may LEAD the command: setGlobalFlags has already read them
     // wherever they sit, so skipping them here makes `nix --no-prompt --prune`
@@ -296,10 +307,7 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
     }
     // Group grammar (`+group …` / `member+group …`) — `+` is reserved in names,
     // so any `+` in the first token means a group operation, not an alias.
-    switch (groups.parseRef(first) catch |e| {
-        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ first, @errorName(e) });
-        return 1;
-    }) {
+    switch ((try parseGroupToken(app, first)) orelse return 1) {
         .none => {},
         .reference => |g| return dispatchGroupRef(app, g, rest[1..]),
         .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]),
@@ -696,10 +704,7 @@ fn navigate(app: *App, alias: []const u8) !u8 {
     // A malformed group token (`pa+`, `+`) must error here like it does in
     // dispatch — swallowing it as .none would send the user through the
     // unknown-alias picker only to fail on the name validation at the end.
-    switch (groups.parseRef(alias) catch |e| {
-        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ alias, @errorName(e) });
-        return 1;
-    }) {
+    switch ((try parseGroupToken(app, alias)) orelse return 1) {
         .none => {},
         .reference => |g| return navigateGroup(app, g),
         .add => |ad| {
