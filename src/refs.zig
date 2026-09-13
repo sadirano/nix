@@ -9,6 +9,7 @@ const std = @import("std");
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
 const store = @import("store.zig");
+const util = @import("util.zig");
 
 const App = app_zig.App;
 
@@ -62,18 +63,16 @@ pub fn referencedFiles(app: *App, dir: []const u8, command: []const u8) ![]const
         // looks malformed is a bad thing to ask a person to vouch for.
         const full = nativeSep(app.arena, std.fs.path.join(app.arena, &.{ dir, rel }) catch continue);
         if (!proc.fileExists(app.io, full)) continue;
-        if (!containsFold(out.items, full)) try out.append(app.arena, full);
+        if (!util.containsFold(out.items, full)) try out.append(app.arena, full);
     }
     return out.items;
 }
 
-/// containsFold reports whether `list` already holds `item`, folded the same
-/// way referenced-file paths are deduped (case-insensitive on Windows, no
-/// separator normalisation - these are always already-`nativeSep`'d paths).
-pub fn containsFold(list: []const []const u8, item: []const u8) bool {
-    for (list) |o| if (store.eqlFoldAscii(o, item)) return true;
-    return false;
-}
+/// containsFold: referenced-file paths are always already-`nativeSep`'d, so
+/// util's plain ASCII fold (no separator normalisation) is exactly the
+/// comparison this list needs. Re-exported so provenance's script listing can
+/// dedup the same way without importing util.zig just for this.
+pub const containsFold = util.containsFold;
 
 /// QuotedTokens splits a command line on whitespace, except inside quotes.
 ///

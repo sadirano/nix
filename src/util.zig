@@ -24,6 +24,18 @@ pub fn eqlFoldAscii(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+/// containsFold reports whether list already holds an entry equal to item,
+/// ASCII case-insensitive. Two call sites had this under different names with
+/// provably identical folds (eqlFoldAscii here, std.ascii.eqlIgnoreCase there
+/// - both length-then-per-byte toLower): the trust gate's file-listing dedup,
+/// where entries are already-`nativeSep`'d paths (no separator normalisation
+/// needed), and shortcut/wrapper names, compared without regard to case
+/// everywhere they appear.
+pub fn containsFold(list: []const []const u8, item: []const u8) bool {
+    for (list) |o| if (eqlFoldAscii(o, item)) return true;
+    return false;
+}
+
 /// eqlPathAscii compares two path fragments the way Windows treats them:
 /// case-folded, and with `/` and `\` interchangeable.
 ///
