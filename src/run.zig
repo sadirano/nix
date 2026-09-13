@@ -20,6 +20,7 @@ const provenance = @import("provenance.zig");
 const exports = @import("exports.zig");
 const env_zig = @import("env.zig");
 const watch = @import("watch.zig");
+const interrupt = @import("interrupt.zig");
 
 const App = app_zig.App;
 const padPrint = app_zig.padPrint;
@@ -174,6 +175,15 @@ fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8) 
         const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
         const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
 
+        // Ctrl-C during a rerun now returns through the normal path instead of
+        // taking nix down, so the loop has to notice and leave - otherwise the
+        // documented way out of `--watch` would just start the next rerun.
+        if (interrupt.fired()) {
+            try app.out.flush();
+            try app.err.print("\nwatching {s} - stopped after {d} run{s}\n", .{ alias, runs, if (runs == 1) "" else "s" });
+            try app.err.flush();
+            return code;
+        }
         try app.out.flush();
         try app.err.print("watching {s} - {d} run{s}, last: {s} in {s} - Ctrl-C to stop\n", .{
             alias,
@@ -628,16 +638,29 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
         app.last_alias = alias;
         app.last_action = name;
     }
+    // Ctrl-C is intercepted for exactly the length of the child's run, so that
+    // an abandoned build still writes its ledger line, its footer and its
+    // notification instead of taking nix down mid-sentence. Disarmed on the way
+    // out, including the error paths - outside this window Ctrl-C keeps meaning
+    // "stop now", which is what it should mean at a picker or a prompt.
+    interrupt.arm();
+    defer interrupt.disarm();
     if (try openRecording(app, alias, name, command)) |rec| {
         var file = rec.file;
         // Footer written while the handle is open: Io.File exposes no
         // seek-to-end to append with later.
         const t0 = Io.Clock.awake.now(app.io).nanoseconds;
-        const code = proc.runShellTee(app.arena, app.io, cmd, dir, env, app.out, &file) catch |e| {
+        // A recorded run reaches the child over a pipe, so an interrupt ends it
+        // by closing that pipe rather than through the wait - the read loop
+        // just finishes early. The exit code is restated here for the same
+        // reason it is in the inherited path: "interrupted" is not the same
+        // answer as whatever the dying child last managed to return.
+        const raw = proc.runShellTee(app.arena, app.io, cmd, dir, env, app.out, &file) catch |e| {
             file.close(app.io);
             try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
             return 1;
         };
+        const code = if (interrupt.fired()) interrupt.code else raw;
         const ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
         const ms: u64 = if (ns > 0) @intCast(@divTrunc(ns, std.time.ns_per_ms)) else 0;
         const foot = try logs.footer(app.arena, code, try notify.fmtDuration(app.arena, ms));

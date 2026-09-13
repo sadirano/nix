@@ -1,6 +1,7 @@
 //! Process spawning helpers, mirroring exec.go / explorer_windows.go.
 
 const std = @import("std");
+const interrupt = @import("interrupt.zig");
 const builtin = @import("builtin");
 const Io = std.Io;
 
@@ -208,7 +209,6 @@ pub fn spawnNewConsole(
     w.CloseHandle(pi.hProcess);
 }
 
-extern "kernel32" fn WaitForSingleObject(hHandle: *anyopaque, dwMilliseconds: u32) callconv(.winapi) u32;
 extern "kernel32" fn GetExitCodeProcess(hProcess: *anyopaque, lpExitCode: *u32) callconv(.winapi) i32;
 extern "kernel32" fn GetStdHandle(nStdHandle: u32) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn SetHandleInformation(hObject: *anyopaque, dwMask: u32, dwFlags: u32) callconv(.winapi) i32;
@@ -277,7 +277,7 @@ pub fn runShellInherit(
         w.CloseHandle(pi.hThread);
         w.CloseHandle(pi.hProcess);
     }
-    _ = WaitForSingleObject(pi.hProcess, 0xFFFFFFFF); // INFINITE
+    if (interrupt.waitFor(pi.hProcess)) |interrupted| return interrupted;
     var code: u32 = 1;
     if (GetExitCodeProcess(pi.hProcess, &code) == 0) return error.SpawnFailed;
     // Exit codes are a byte here as everywhere else in nix; a status that
@@ -286,6 +286,12 @@ pub fn runShellInherit(
     return if (low == 0 and code != 0) 1 else low;
 }
 
+/// waitInterruptible blocks until the child exits, or until a Ctrl-C arrives
+/// while interrupt.zig is armed. Returns null for the ordinary case (child
+/// exited; read its code as before) and the interrupt code when the user asked
+/// to stop - the caller then continues down its NORMAL completion path, which
+/// is the whole point: the ledger line and the recording footer get written.
+///
 // ShellExecuteExW is the only way to raise privileges: elevation is a shell
 // service (it prompts through UAC and starts the process under a different
 // token), not something CreateProcess can ask for. shell32 is loaded lazily,
