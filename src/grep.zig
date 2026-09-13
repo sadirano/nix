@@ -94,6 +94,16 @@ fn buildSearchArgv(app: *App, bin: []const u8, relaxed: bool, extras: [][]const 
     return argv;
 }
 
+/// requireFzf reports whether fzf must be on PATH but is not. Under
+/// --no-prompt the rows go to stdout instead, so fzf isn't needed there.
+fn requireFzf(app: *App) !bool {
+    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+        try app.err.writeAll("nix: fzf not found on PATH\n");
+        return false;
+    }
+    return true;
+}
+
 /// grepRg is the classic `g`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
 fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
@@ -101,11 +111,7 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
     }
-    // Under --no-prompt the rows go to stdout, so fzf isn't needed.
-    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.writeAll("nix: fzf not found on PATH\n");
-        return 1;
-    }
+    if (!try requireFzf(app)) return 1;
     var query: []const u8 = if (gargs.len > 0) gargs[0] else "";
     const extras = if (gargs.len > 1) gargs[1..] else gargs[0..0];
     var relaxed = false;
@@ -173,11 +179,7 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
     }
-    // Under --no-prompt the rows go to stdout, so fzf isn't needed.
-    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.writeAll("nix: fzf not found on PATH\n");
-        return 1;
-    }
+    if (!try requireFzf(app)) return 1;
     var query: []const u8 = if (gargs.len > 0) gargs[0] else "";
     const extras = if (gargs.len > 1) gargs[1..] else gargs[0..0];
     if (query.len == 0) {
