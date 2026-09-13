@@ -295,18 +295,21 @@ pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: 
     return 0;
 }
 
+/// hasPattern reports whether args carries a non-flag token - the `[pat]`
+/// that switches a group fan-out (`y`/`s +group`) from "every member" to "one
+/// picker over every member, filtered".
+fn hasPattern(args: []const []const u8) bool {
+    for (args) |a| if (!isGlobalFlag(a)) return true;
+    return false;
+}
+
 /// cmdGroupYank: bare `y +group` copies every member path (newline-separated)
 /// to the clipboard and echoes them. With a pattern it mirrors `y <alias>
 /// <pat>` across the group: one picker over all members (alias-prefixed rows),
 /// the selected FILES copied to the clipboard as an OS file drop.
 fn cmdGroupYank(app: *App, group: []const u8, args: [][]const u8) !u8 {
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
-    var has_pat = false;
-    for (args) |a| if (!isGlobalFlag(a)) {
-        has_pat = true;
-        break;
-    };
-    if (has_pat) {
+    if (hasPattern(args)) {
         const group_label = try std.fmt.allocPrint(app.arena, "+{s}", .{group});
         return switch (try findPick(app, targets, args)) {
             .selected => |sel| paste.yankSelectionFiles(app, group_label, targets[0].path, try expandPrefixedSelection(app.arena, targets, sel)),
@@ -384,12 +387,7 @@ fn cmdGroupPaste(app: *App, group: []const u8, args: [][]const u8) !u8 {
 /// selection opened with the OS handler.
 fn cmdGroupExplore(app: *App, group: []const u8, args: [][]const u8) !u8 {
     const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
-    var has_pat = false;
-    for (args) |a| if (!isGlobalFlag(a)) {
-        has_pat = true;
-        break;
-    };
-    if (!has_pat) {
+    if (!hasPattern(args)) {
         var rc: u8 = 0;
         for (targets) |t| {
             if (try exploreTarget(app, t.path) != 0) rc = 1;
