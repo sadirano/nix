@@ -120,10 +120,7 @@ pub fn runInheritEnv(io: Io, argv: []const []const u8, cwd: []const u8, env: ?*c
         .environ_map = env,
     });
     const term = try child.wait(io);
-    return switch (term) {
-        .exited => |c| c,
-        else => 1,
-    };
+    return exitCode(term);
 }
 
 /// runDetached starts argv in cwd without waiting (fire-and-forget). Used for
@@ -674,10 +671,7 @@ pub fn runShellTee(
         sink.writeStreamingAll(io, buf[0..n]) catch {};
     }
     const term = try child.wait(io);
-    return switch (term) {
-        .exited => |c| c,
-        else => 1,
-    };
+    return exitCode(term);
 }
 
 /// LineSink is forEachLine's consumer: called once per stdout line (newline
@@ -797,10 +791,7 @@ pub fn runPipeline(
     var r = fzf.stdout.?.reader(io, &obuf);
     const out = r.interface.allocRemaining(arena, .unlimited) catch "";
     const term = try fzf.wait(io);
-    return .{ .output = out, .code = switch (term) {
-        .exited => |c| c,
-        else => 1,
-    } };
+    return .{ .output = out, .code = exitCode(term) };
 }
 
 /// PrefixedProducer is one member of a multi-root pipeline: argv run in cwd,
@@ -872,10 +863,7 @@ pub fn runPipelinePrefixed(
     var r = fzf.stdout.?.reader(io, &obuf);
     const out = r.interface.allocRemaining(arena, .unlimited) catch "";
     const term = try fzf.wait(io);
-    return .{ .output = out, .code = switch (term) {
-        .exited => |c| c,
-        else => 1,
-    } };
+    return .{ .output = out, .code = exitCode(term) };
 }
 
 fn writePrefixedLine(io: Io, fin: Io.File, prefix: []const u8, line0: []const u8) !void {
@@ -949,10 +937,7 @@ pub fn runPipelineFiltered(
     var r = fzf.stdout.?.reader(io, &obuf);
     const out = r.interface.allocRemaining(arena, .unlimited) catch "";
     const term = try fzf.wait(io);
-    return .{ .output = out, .forwarded = relay.forwarded, .code = switch (term) {
-        .exited => |c| c,
-        else => 1,
-    } };
+    return .{ .output = out, .forwarded = relay.forwarded, .code = exitCode(term) };
 }
 
 // ---- tests -------------------------------------------------------------------
