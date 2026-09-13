@@ -376,12 +376,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 var seen: std.ArrayList([]const u8) = .empty;
                 for (try actions.parseTable(app.arena, body, "actions")) |a| {
                     for (try refs_zig.referencedFiles(app, dir, a.command)) |f| {
-                        var dup = false;
-                        for (seen.items) |s| if (store.eqlFoldAscii(s, f)) {
-                            dup = true;
-                            break;
-                        };
-                        if (dup) continue;
+                        if (refs_zig.containsFold(seen.items, f)) continue;
                         try seen.append(app.arena, f);
                         try plan.wrote(app.arena, "{s}:   including {s}\n", .{ alias, f });
                     }
