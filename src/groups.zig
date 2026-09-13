@@ -73,19 +73,11 @@ pub fn loadGroups(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Gro
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         if (key.len == 0) continue;
-        // Gather the array body, which may span lines until its closing ']'.
-        // Comment lines inside the array are skipped — their quoted text must
-        // not parse as members, nor a ']' in one end the array.
-        var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(arena, std.mem.trim(u8, line[eq + 1 ..], " \t"));
-        while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i + 1 < all.items.len) {
-            i += 1;
-            const cont = std.mem.trim(u8, all.items[i], " \t\r");
-            if (cont.len > 0 and cont[0] == '#') continue;
-            try buf.append(arena, ' ');
-            try buf.appendSlice(arena, cont);
-        }
-        try out.append(arena, .{ .name = try lowerDup(arena, key), .members = try parseStringArray(arena, buf.items) });
+        // Gather the array body, which may span lines until its closing ']' -
+        // shared with config.zig's own multi-line arrays (see gatherArrayBody).
+        const val_start = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        const body = try util.gatherArrayBody(arena, all.items, &i, val_start);
+        try out.append(arena, .{ .name = try lowerDup(arena, key), .members = try parseStringArray(arena, body) });
     }
     return out;
 }

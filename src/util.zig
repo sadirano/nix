@@ -113,6 +113,26 @@ pub fn parseStringArray(arena: std.mem.Allocator, text: []const u8) ![][]const u
     return out.items;
 }
 
+/// gatherArrayBody collects a TOML inline array's text from `val_start` (the
+/// bytes already on the key's own line) across any following lines, up to the
+/// closing `]`, advancing `i` past what it consumed. Comment lines inside are
+/// skipped so their quoted text cannot parse as elements, and a `]` in one
+/// cannot end the array early. Every multi-line array in config.toml and
+/// groups.toml goes through here - it was two copies of the same loop before
+/// they did.
+pub fn gatherArrayBody(arena: std.mem.Allocator, all: []const []const u8, i: *usize, val_start: []const u8) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, val_start);
+    while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i.* + 1 < all.len) {
+        i.* += 1;
+        const cont = std.mem.trim(u8, all[i.*], " \t\r");
+        if (cont.len > 0 and cont[0] == '#') continue;
+        try buf.append(arena, ' ');
+        try buf.appendSlice(arena, cont);
+    }
+    return buf.items;
+}
+
 /// mkdirAll creates path and any missing parents (os.MkdirAll equivalent).
 pub fn mkdirAll(io: Io, path: []const u8) !void {
     Io.Dir.cwd().createDir(io, path, .default_dir) catch |e| switch (e) {
@@ -267,6 +287,40 @@ test parseStringArray {
     try std.testing.expectEqualStrings("c", arr[2]);
     const empty = try parseStringArray(a, "[]");
     try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test gatherArrayBody {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Single-line array: nothing to gather, i is untouched.
+    const lines_one = [_][]const u8{"exclude = [\"a\", \"b\"]"};
+    var idx0: usize = 0;
+    const got0 = try gatherArrayBody(a, &lines_one, &idx0, "[\"a\", \"b\"]");
+    try std.testing.expectEqualStrings("[\"a\", \"b\"]", got0);
+    try std.testing.expectEqual(@as(usize, 0), idx0);
+
+    // Multi-line array with a comment line inside: the comment's own quotes and
+    // bracket must not end the array early or become an element.
+    const lines_multi = [_][]const u8{
+        "exclude = [",
+        "  \"a\",",
+        "  # \"skip]me\"",
+        "  \"b\",",
+        "]",
+    };
+    var idx1: usize = 0;
+    const got1 = try gatherArrayBody(a, &lines_multi, &idx1, "[");
+    try std.testing.expectEqualStrings("[ \"a\", \"b\", ]", got1);
+    try std.testing.expectEqual(@as(usize, 4), idx1); // advanced to the closing line
+
+    // Unterminated array: stops at the end of input rather than looping forever.
+    const lines_open = [_][]const u8{ "exclude = [", "  \"a\"" };
+    var idx2: usize = 0;
+    const got2 = try gatherArrayBody(a, &lines_open, &idx2, "[");
+    try std.testing.expectEqualStrings("[ \"a\"", got2);
+    try std.testing.expectEqual(@as(usize, 1), idx2);
 }
 
 test uniqueTmpName {
