@@ -213,6 +213,19 @@ const max_depth = 2;
 /// renamed. Without the extension, matching what a process name reads as.
 pub const export_var = "NIX_EXPORT";
 
+/// currentDepth reads the recursion guard's counter above - 0 when absent or
+/// unparseable, which is the state a top-level invocation starts from.
+fn currentDepth(app: *App) u8 {
+    const d = app.env.get(depth_var) orelse return 0;
+    return std.fmt.parseInt(u8, d, 10) catch 0;
+}
+
+/// bumpDepth writes the counter one past `depth`, for whatever this call is
+/// about to spawn.
+fn bumpDepth(app: *App, depth: u8) !void {
+    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+}
+
 /// cmdExport runs a `[bin]` action export: the global command `ship`, resolved
 /// from the manifest to an alias and an action.
 ///
@@ -225,13 +238,12 @@ pub const export_var = "NIX_EXPORT";
 /// alias directory and runs in the CURRENT one. NIX_ALIAS is still filled in
 /// when the cwd sits inside an alias.
 pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const u8, args: [][]const u8) !u8 {
-    var depth: u8 = 0;
-    if (app.env.get(depth_var)) |d| depth = std.fmt.parseInt(u8, d, 10) catch 0;
+    const depth = currentDepth(app);
     if (depth >= max_depth) {
         try app.err.print("nix: \"{s}\" called itself {d} levels deep - stopping (an exported action must not run its own export name)\n", .{ name, depth });
         return 1;
     }
-    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+    try bumpDepth(app, depth);
     try app.env.put(export_var, name);
 
     const machine_wide = std.mem.eql(u8, alias, actions.default_owner);
@@ -279,13 +291,12 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
         .call => |c| c,
     };
 
-    var depth: u8 = 0;
-    if (app.env.get(depth_var)) |d| depth = std.fmt.parseInt(u8, d, 10) catch 0;
+    const depth = currentDepth(app);
     if (depth >= max_depth) {
         try app.err.print("nix: :{s} called itself {d} levels deep - stopping\n", .{ call.names[0], depth });
         return 1;
     }
-    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+    try bumpDepth(app, depth);
 
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = try std.process.currentPath(app.io, &buf);
