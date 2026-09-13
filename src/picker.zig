@@ -18,9 +18,6 @@ const isGlobalFlag = app_zig.isGlobalFlag;
 const absPath = app_zig.absPath;
 const lowerDup = util.lowerDup;
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
 /// PickerSource is what feeds the unknown-alias picker. es output is captured up
 /// front — es is an instant index, so buffering is fine — while the fd/find
 /// fallback is returned as an argv to *stream* into fzf: those walks can take

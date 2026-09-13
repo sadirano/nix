@@ -19,10 +19,6 @@ const rowPath = resolve.rowPath;
 const rowName = resolve.rowName;
 const aliasRunEnv = run_zig.aliasRunEnv;
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
 /// single-target navigation primitive shared by alias and group navigation. The
 /// shell gets the alias's `.nix/scripts` on PATH (scoped to the subshell), so
