@@ -19,6 +19,7 @@ const store = @import("store.zig");
 const config = @import("config.zig");
 const segments = @import("segments.zig");
 const util = @import("util.zig");
+const refs_zig = @import("refs.zig");
 
 const App = app_zig.App;
 
@@ -66,91 +67,6 @@ pub fn decide(elevated: bool, has_cloned: bool, implicit: bool, approved: bool, 
     return if (can_prompt) .confirm_unapproved else .refuse_unapproved;
 }
 
-/// Most files any one command is credited with referencing. A command naming
-/// more than this is doing something the gate cannot summarise usefully anyway,
-/// and the cap keeps a pathological line from turning approval into a scan.
-pub const max_refs: usize = 8;
-
-/// Extensions worth reviewing: interpreted source, where the file IS the
-/// instructions.
-///
-/// An allowlist, not a blocklist. A project's build OUTPUT is a project file
-/// too, and hashing it would re-arm approval on every rebuild - which is how
-/// people learn to answer `y` without looking. A binary cannot be reviewed by
-/// opening it either.
-const script_exts = [_][]const u8{
-    ".py", ".sh",  ".bash", ".zsh", ".ps1",  ".psm1", ".cmd", ".bat",
-    ".js", ".mjs", ".cjs",  ".ts",  ".rb",   ".pl",   ".lua", ".php",
-    ".r",  ".jl",  ".tcl",  ".awk", ".fish",
-};
-
-fn reviewable(path: []const u8) bool {
-    const ext = std.fs.path.extension(path);
-    if (ext.len == 0) return false;
-    for (script_exts) |e| if (std.ascii.eqlIgnoreCase(ext, e)) return true;
-    return false;
-}
-
-/// referencedFiles returns the project files a command actually runs: every
-/// whitespace-separated token resolving to an existing file inside the project
-/// dir. It is what lets an edit to deploy.py re-arm the gate.
-///
-/// A shallow heuristic on purpose: it sees what the command line names, not
-/// what those files then call, and skips absolute paths and `..` escapes -
-/// hashing a system binary would re-arm every approval on the next OS update.
-/// Order follows the command line and duplicates collapse, so the same command
-/// always produces the same list.
-pub fn referencedFiles(app: *App, dir: []const u8, command: []const u8) ![]const []const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.tokenizeAny(u8, command, " \t\r\n");
-    while (it.next()) |raw| {
-        if (out.items.len >= max_refs) break;
-        const tok = std.mem.trim(u8, raw, "\"'");
-        if (tok.len == 0 or tok[0] == '-') continue; // a flag is not a path
-        const rel = stripDotSlash(tok);
-        if (rel.len == 0 or std.fs.path.isAbsolute(rel) or escapes(rel)) continue;
-        if (!reviewable(rel)) continue; // build outputs and binaries are not review material
-        // The token keeps whatever separator the command used, so a `/` inside an
-        // otherwise-`\` path would print as `...\proj\tools/deploy.py`. These
-        // paths are shown to someone deciding whether to trust them; a path that
-        // looks malformed is a bad thing to ask a person to vouch for.
-        const full = nativeSep(app.arena, std.fs.path.join(app.arena, &.{ dir, rel }) catch continue);
-        if (!proc.fileExists(app.io, full)) continue;
-        var dup = false;
-        for (out.items) |o| if (store.eqlFoldAscii(o, full)) {
-            dup = true;
-            break;
-        };
-        if (!dup) try out.append(app.arena, full);
-    }
-    return out.items;
-}
-
-/// nativeSep rewrites separators to the platform's, so a displayed path is one
-/// the user could paste back. Returns the input untouched off Windows, where `/`
-/// is already native.
-fn nativeSep(arena: std.mem.Allocator, path: []const u8) []const u8 {
-    if (!proc.is_windows) return path;
-    const out = arena.dupe(u8, path) catch return path;
-    for (out) |*ch| if (ch.* == '/') {
-        ch.* = '\\';
-    };
-    return out;
-}
-
-fn stripDotSlash(tok: []const u8) []const u8 {
-    if (std.mem.startsWith(u8, tok, "./") or std.mem.startsWith(u8, tok, ".\\")) return tok[2..];
-    return tok;
-}
-
-/// escapes reports whether a relative path walks out of its root via `..`. A
-/// textual check, so it never has to touch the filesystem to say no.
-fn escapes(rel: []const u8) bool {
-    var it = std.mem.tokenizeAny(u8, rel, "/\\");
-    while (it.next()) |seg| if (std.mem.eql(u8, seg, "..")) return true;
-    return false;
-}
-
 /// recordForCommand is the approval token for one action: the line that action
 /// will run, plus every reviewable project file it runs. Both the gate and
 /// `nix --trust` go through it, which is what keeps them in agreement - hashing
@@ -158,7 +74,7 @@ fn escapes(rel: []const u8) bool {
 /// refusing. Null when there is nothing cloned to approve.
 pub fn recordForCommand(app: *App, dir: []const u8, from_project: bool, name: []const u8, command: []const u8) !?[]const u8 {
     const decl: ?[]const u8 = if (from_project) try actions.projectPath(app.arena, dir) else null;
-    return combinedRecord(app, decl, name, command, try referencedFiles(app, dir, command));
+    return combinedRecord(app, dir, decl, name, command, try refs_zig.referencedFiles(app, dir, command));
 }
 
 /// combinedRecord hashes exactly what one approval covers: the action's own
@@ -177,7 +93,14 @@ pub fn recordForCommand(app: *App, dir: []const u8, from_project: bool, name: []
 /// The declaring file is still read, and still decides whether there is
 /// anything to approve at all - an action that came from a file nix cannot read
 /// is not a refusal, the same as before.
-fn combinedRecord(app: *App, decl: ?[]const u8, name: []const u8, command: []const u8, refs: []const []const u8) !?[]const u8 {
+///
+/// A referenced file enters the record under its path RELATIVE TO `dir`, not
+/// its basename. Two projects each holding `scripts/deploy.py` with the same
+/// bytes used to hash identically, so approving one approved the other - and a
+/// central action, whose record has no declaring file to anchor it, was nothing
+/// but those basenames. `dir` seeds that case for the same reason the decl path
+/// seeds the other: an approval belongs to one place on disk.
+fn combinedRecord(app: *App, dir: []const u8, decl: ?[]const u8, name: []const u8, command: []const u8, refs: []const []const u8) !?[]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     var any = false;
     if (decl) |path| {
@@ -185,10 +108,14 @@ fn combinedRecord(app: *App, decl: ?[]const u8, name: []const u8, command: []con
             try buf.appendSlice(app.arena, try actionRecordInput(app.arena, path, name, command));
             any = true;
         }
+    } else if (refs.len > 0) {
+        try buf.appendSlice(app.arena, try actionRecordInput(app.arena, dir, name, command));
+        any = true;
     }
     for (refs) |path| {
+        const rel = refs_zig.relativeTo(dir, path);
         const body = app_zig.readFileMaybe(app, path) orelse continue;
-        try buf.print(app.arena, "file:{s}:{s}", .{ std.fs.path.basename(path), body });
+        try buf.print(app.arena, "file:{s}:{s}", .{ try refs_zig.canonPath(app.arena, rel), body });
         any = true;
     }
     if (!any) return null;
@@ -251,7 +178,7 @@ pub fn gateAction(
     // runs. The second half is why a central action is still checked - the user
     // wrote the line, but not necessarily the script it calls.
     const decl: ?[]const u8 = if (from_project) try actions.projectPath(app.arena, dir) else null;
-    const refs = try referencedFiles(app, dir, declared);
+    const refs = try refs_zig.referencedFiles(app, dir, declared);
     const has_cloned = decl != null or refs.len > 0;
 
     var record: []const u8 = "";
@@ -402,19 +329,7 @@ fn legacyLabelFor(arena: std.mem.Allocator, label: []const u8) !?[]const u8 {
 /// meant to close. Canonicalised, so the same file reached through two aliases
 /// (`game` and `nix-game` name one directory here) is one approval, not two.
 fn actionRecordInput(arena: std.mem.Allocator, decl: []const u8, name: []const u8, command: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(arena, "action:{s}:{s}={s}", .{ try canonPath(arena, decl), name, command });
-}
-
-/// canonPath folds the spellings of one path together: separators, and case on
-/// Windows. Only for hashing - never for display, which wants what the user
-/// would paste back.
-fn canonPath(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, path);
-    for (out) |*ch| {
-        if (ch.* == '\\') ch.* = '/';
-        if (proc.is_windows) ch.* = std.ascii.toLower(ch.*);
-    }
-    return out;
+    return std.fmt.allocPrint(arena, "action:{s}:{s}={s}", .{ try refs_zig.canonPath(arena, decl), name, command });
 }
 
 /// The approval tokens. Prefixed so an action line and a script that happened
@@ -452,7 +367,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 // The command, not just the action's name: the name is what the
                 // user chose, the command is what a clone chose for them.
                 try plan.line(app.arena, "    :{s: <9}{s}\n", .{ a.name, a.command });
-                const refs = try referencedFiles(app, dir, a.command);
+                const refs = try refs_zig.referencedFiles(app, dir, a.command);
                 for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
                 try plan.add(app.arena, .{
                     .record = record,
@@ -465,7 +380,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 // Name the scripts too - "approved" should say how far it reached.
                 var seen: std.ArrayList([]const u8) = .empty;
                 for (try actions.parseTable(app.arena, body, "actions")) |a| {
-                    for (try referencedFiles(app, dir, a.command)) |f| {
+                    for (try refs_zig.referencedFiles(app, dir, a.command)) |f| {
                         var dup = false;
                         for (seen.items) |s| if (store.eqlFoldAscii(s, f)) {
                             dup = true;
@@ -806,36 +721,6 @@ test "decide: only unapproved cloned code is gated" {
     // Unapproved: ask if there is someone to ask, refuse if there is not.
     try std.testing.expectEqual(Decision.confirm_unapproved, decide(false, true, false, false, true, false));
     try std.testing.expectEqual(Decision.refuse_unapproved, decide(false, true, false, false, false, false));
-}
-
-test "reviewable: interpreted source yes, build output no" {
-    // The point of the allowlist: this repo's own `sync` action runs
-    // zig-out\bin\nix.exe, and hashing that would re-arm approval on every
-    // rebuild - which is how people learn to stop reading the prompt.
-    try std.testing.expect(!reviewable("zig-out\\bin\\nix.exe"));
-    try std.testing.expect(!reviewable("build\\app.dll"));
-    try std.testing.expect(!reviewable("Makefile")); // no extension: not claimed either way
-    try std.testing.expect(reviewable("tools/deploy.py"));
-    try std.testing.expect(reviewable("scripts\\publish.cmd"));
-    try std.testing.expect(reviewable("BUILD.PS1")); // extension match is case-insensitive
-}
-
-test "escapes: a `..` segment is refused wherever it sits" {
-    try std.testing.expect(escapes(".."));
-    try std.testing.expect(escapes("../outside.py"));
-    try std.testing.expect(escapes("tools/../../outside.py"));
-    try std.testing.expect(escapes("tools\\..\\..\\outside.py"));
-    // A name that merely CONTAINS dots is not traversal.
-    try std.testing.expect(!escapes("tools/deploy..py"));
-    try std.testing.expect(!escapes("tools/..hidden/x.py"));
-}
-
-test "stripDotSlash: a leading ./ or .\\ is not part of the path" {
-    try std.testing.expectEqualStrings("build.sh", stripDotSlash("./build.sh"));
-    try std.testing.expectEqualStrings("build.sh", stripDotSlash(".\\build.sh"));
-    try std.testing.expectEqualStrings("build.sh", stripDotSlash("build.sh"));
-    // Not to be confused with a parent reference, which escapes() then rejects.
-    try std.testing.expectEqualStrings("../x.sh", stripDotSlash("../x.sh"));
 }
 
 test "records: the two kinds cannot approve one another" {
