@@ -29,6 +29,15 @@ fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
+/// elapsedMs is the whole-millisecond duration since `t0` (an
+/// `Io.Clock.awake.now(io).nanoseconds` reading), clamped to zero rather than
+/// negative. Three call sites in this file measured a run's duration for
+/// display with this exact formula; collapsed here so it is decided once.
+fn elapsedMs(io: Io, t0: i128) u64 {
+    const ns = Io.Clock.awake.now(io).nanoseconds - t0;
+    return if (ns > 0) @intCast(@divTrunc(ns, std.time.ns_per_ms)) else 0;
+}
+
 pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     var argv = action_args;
@@ -158,8 +167,7 @@ fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8) 
         runs += 1;
         const t0 = Io.Clock.awake.now(app.io).nanoseconds;
         code = try runOnce(app, alias, dir, argv, false);
-        const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
-        const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
+        const ms = elapsedMs(app.io, t0);
 
         // Ctrl-C during a rerun now returns through the normal path instead of
         // taking nix down, so the loop has to notice and leave - otherwise the
@@ -644,8 +652,7 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
             return 1;
         };
         const code = if (interrupt.fired()) interrupt.code else raw;
-        const ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
-        const ms: u64 = if (ns > 0) @intCast(@divTrunc(ns, std.time.ns_per_ms)) else 0;
+        const ms = elapsedMs(app.io, t0);
         const foot = try logs.footer(app.arena, code, try notify.fmtDuration(app.arena, ms));
         file.writeStreamingAll(app.io, foot) catch {};
         file.close(app.io);
@@ -863,8 +870,7 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
     if (cfg.notify_on_finish.len == 0) return runShellString(app, command, alias, dir, name, false);
     const t0 = Io.Clock.awake.now(app.io).nanoseconds;
     const code = try runShellString(app, command, alias, dir, name, false);
-    const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
-    const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
+    const ms = elapsedMs(app.io, t0);
     const ok = code == 0;
     // Silence is decided AFTER the run, from what it cost and what it was
     // called - the only two things the user has to reason about (#50).
