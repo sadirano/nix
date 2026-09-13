@@ -122,6 +122,15 @@ pub fn exePath(app: *App) []const u8 {
 /// grammar table.
 pub const isGlobalFlag = grammar.isGlobal;
 
+/// hasPattern reports whether args carries a real positional rather than only
+/// global flags - the "was a pattern typed" check `s`/`y` make, for one alias
+/// or fanned out across a `+group`, before choosing between their bare form
+/// (every target, or the alias dir) and the picker form (one filtered pick).
+pub fn hasPattern(args: []const []const u8) bool {
+    for (args) |a| if (!isGlobalFlag(a)) return true;
+    return false;
+}
+
 pub fn startsWithDash(s: []const u8) bool {
     return s.len > 0 and s[0] == '-';
 }

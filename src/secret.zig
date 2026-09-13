@@ -10,6 +10,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const app_zig = @import("app.zig");
+const util = @import("util.zig");
 
 const App = app_zig.App;
 const is_windows = builtin.os.tag == .windows;
@@ -114,10 +115,6 @@ pub fn deleteSecret(arena: std.mem.Allocator, name: []const u8) !bool {
     return delFn(target.ptr, CRED_TYPE_GENERIC, 0) != 0;
 }
 
-fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.order(u8, a, b) == .lt;
-}
-
 /// listSecretNames returns every stored secret's bare name (the "nix/" prefix
 /// stripped), sorted — names only, values are never read or printed.
 pub fn listSecretNames(arena: std.mem.Allocator) ![]const []const u8 {
@@ -137,7 +134,7 @@ pub fn listSecretNames(arena: std.mem.Allocator) ![]const []const u8 {
         const full = try std.unicode.utf16LeToUtf8Alloc(arena, std.mem.span(tname));
         if (std.mem.startsWith(u8, full, "nix/")) try out.append(arena, full["nix/".len..]);
     }
-    std.mem.sort([]const u8, out.items, {}, lessThanStr);
+    std.mem.sort([]const u8, out.items, {}, util.lessThanStr);
     return out.items;
 }
 

@@ -118,11 +118,7 @@ fn cascadeStripFromGroups(app: *App, alias_lower: []const u8) !void {
 pub fn cmdList(app: *App) !u8 {
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     const aliases = try store.loadAliasesWithSelf(app.arena, data, app.home);
-    std.mem.sort(store.Alias, aliases.items, {}, struct {
-        fn lt(_: void, a: store.Alias, b: store.Alias) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(store.Alias, aliases.items);
     if (aliases.items.len == 0) {
         try app.out.writeAll("no aliases registered (run: nix <name> <path>)\n");
         return 0;
@@ -209,11 +205,7 @@ pub fn cmdPrune(app: *App) !u8 {
         try app.out.writeAll("no aliases registered (run: nix <name> <path>)\n");
         return 0;
     }
-    std.mem.sort(store.Alias, aliases.items, {}, struct {
-        fn lt(_: void, a: store.Alias, b: store.Alias) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(store.Alias, aliases.items);
 
     const u = try usage.load(app.arena, app.io, app.home);
     // Group usage protects members: an alias inside a recently used +group

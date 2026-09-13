@@ -24,6 +24,39 @@ pub fn eqlFoldAscii(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+/// containsFold reports whether list already holds an entry equal to item,
+/// ASCII case-insensitive. Two call sites had this under different names with
+/// provably identical folds (eqlFoldAscii here, std.ascii.eqlIgnoreCase there
+/// - both length-then-per-byte toLower): the trust gate's file-listing dedup,
+/// where entries are already-`nativeSep`'d paths (no separator normalisation
+/// needed), and shortcut/wrapper names, compared without regard to case
+/// everywhere they appear.
+pub fn containsFold(list: []const []const u8, item: []const u8) bool {
+    for (list) |o| if (eqlFoldAscii(o, item)) return true;
+    return false;
+}
+
+/// lessThanStr is std.mem.sort's comparator for ascending byte order over
+/// plain strings - written out as its own three-line anonymous struct in half
+/// a dozen modules (config, logs, resolve, store, secret) for exactly the same
+/// sort. Pass it directly: `std.mem.sort([]const u8, items, {}, lessThanStr)`.
+pub fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+/// sortByName sorts items ascending by their `name` field's byte order - the
+/// one-key sort that cmd_groups' Group listing, cmd_registry's Alias listing
+/// (twice), groups.zig's own Group save/round-trip, store.saveAliases and
+/// usage.save each wrote as their own anonymous-struct comparator. Works for
+/// any T with a `name: []const u8` field.
+pub fn sortByName(comptime T: type, items: []T) void {
+    std.mem.sort(T, items, {}, struct {
+        fn lt(_: void, a: T, b: T) bool {
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lt);
+}
+
 /// eqlPathAscii compares two path fragments the way Windows treats them:
 /// case-folded, and with `/` and `\` interchangeable.
 ///

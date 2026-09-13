@@ -7,6 +7,7 @@ const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
 const store = @import("store.zig");
+const util = @import("util.zig");
 const proc = @import("proc.zig");
 const groups = @import("groups.zig");
 const usage = @import("usage.zig");
@@ -25,6 +26,7 @@ const grammar = @import("grammar.zig");
 
 const App = app_zig.App;
 const isGlobalFlag = app_zig.isGlobalFlag;
+const hasPattern = app_zig.hasPattern;
 const aliasAction = app_zig.aliasAction;
 const fzfEnv = app_zig.fzfEnv;
 const GroupTarget = resolve.GroupTarget;
@@ -64,11 +66,7 @@ fn validateGroupMember(member: []const u8) !void {
 pub fn cmdGroups(app: *App) !u8 {
     const data = try groups.readGroupsFile(app.arena, app.io, app.home);
     const gs = try groups.loadGroups(app.arena, data);
-    std.mem.sort(groups.Group, gs.items, {}, struct {
-        fn lt(_: void, a: groups.Group, b: groups.Group) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(groups.Group, gs.items);
     var width: usize = "GROUP".len;
     var any = false;
     for (gs.items) |g| if (g.members.len > 0) {
@@ -293,14 +291,6 @@ pub fn dispatchGroupAdd(app: *App, member: []const u8, group: []const u8, rest: 
     try groups.saveGroups(app.arena, app.io, app.home, gs.items);
     try app.err.print("added {s} to group +{s}\n", .{ member, group });
     return 0;
-}
-
-/// hasPattern reports whether args carries a non-flag token - the `[pat]`
-/// that switches a group fan-out (`y`/`s +group`) from "every member" to "one
-/// picker over every member, filtered".
-fn hasPattern(args: []const []const u8) bool {
-    for (args) |a| if (!isGlobalFlag(a)) return true;
-    return false;
 }
 
 /// cmdGroupYank: bare `y +group` copies every member path (newline-separated)

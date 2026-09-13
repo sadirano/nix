@@ -144,11 +144,7 @@ pub fn prune(arena: std.mem.Allocator, io: Io, dir_path: []const u8, action: []c
         try names.append(arena, try arena.dupe(u8, ent.name));
     }
     if (names.items.len <= keep) return;
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn lt(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lt);
+    std.mem.sort([]const u8, names.items, {}, util.lessThanStr);
     // Oldest first; drop everything before the last `keep`.
     for (names.items[0 .. names.items.len - keep]) |n| {
         const p = std.fs.path.join(arena, &.{ dir_path, n }) catch continue;

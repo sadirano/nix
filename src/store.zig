@@ -162,11 +162,7 @@ pub fn loadAliases(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Al
 /// blank line, then sorted [name] tables with `path = 'value'`. Atomic via
 /// temp + rename.
 pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: []Alias) !void {
-    std.mem.sort(Alias, aliases, {}, struct {
-        fn lt(_: void, a: Alias, b: Alias) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(Alias, aliases);
 
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "# nix aliases - edit with care, prefer `nix <name> <path>` / `nix <name> --remove`\n\n");
@@ -217,11 +213,7 @@ pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]co
         if (end <= 1) continue;
         try names.append(arena, try util.lowerDup(arena, line[1..end]));
     }
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn lt(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lt);
+    std.mem.sort([]const u8, names.items, {}, util.lessThanStr);
     return names;
 }
 
@@ -250,11 +242,7 @@ pub fn listNamesWithSelf(arena: std.mem.Allocator, data: []const u8) !std.ArrayL
     var names = try listNames(arena, data);
     for (names.items) |n| if (isSelfAlias(n)) return names;
     try names.append(arena, self_alias);
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn lt(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lt);
+    std.mem.sort([]const u8, names.items, {}, util.lessThanStr);
     return names;
 }
 

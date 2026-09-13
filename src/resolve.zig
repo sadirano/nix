@@ -470,11 +470,7 @@ pub fn cmdContexts(app: *App) !u8 {
     for (contexts) |cd| {
         var keys: std.ArrayList([]const u8) = .empty;
         for (cd.vars.items) |kv| try keys.append(app.arena, kv.key);
-        std.mem.sort([]const u8, keys.items, {}, struct {
-            fn lt(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.lessThan(u8, a, b);
-            }
-        }.lt);
+        std.mem.sort([]const u8, keys.items, {}, util.lessThanStr);
         var env_str: []const u8 = "-";
         if (keys.items.len > 0) {
             var jb: std.ArrayList(u8) = .empty;
