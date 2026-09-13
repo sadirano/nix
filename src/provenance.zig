@@ -376,12 +376,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 var seen: std.ArrayList([]const u8) = .empty;
                 for (try actions.parseTable(app.arena, body, "actions")) |a| {
                     for (try refs_zig.referencedFiles(app, dir, a.command)) |f| {
-                        var dup = false;
-                        for (seen.items) |s| if (store.eqlFoldAscii(s, f)) {
-                            dup = true;
-                            break;
-                        };
-                        if (dup) continue;
+                        if (refs_zig.containsFold(seen.items, f)) continue;
                         try seen.append(app.arena, f);
                         try plan.wrote(app.arena, "{s}:   including {s}\n", .{ alias, f });
                     }
@@ -570,7 +565,7 @@ pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.
     var ctxs: std.ArrayList(segments.ContextDef) = .empty;
     var prods: std.ArrayList(segments.ProducerDef) = .empty;
     const paths = [_][]const u8{
-        try segments.localPath(app.arena, try dirToSlash(app.arena, dir)),
+        try segments.localPath(app.arena, try store.toSlash(app.arena, dir)),
         try segments.centralPath(app.arena, app.home, alias),
         try segments.globalPath(app.arena, app.home),
     };
@@ -586,14 +581,6 @@ pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.
         }
     }
     return .{ .contexts = ctxs.items, .producers = prods.items };
-}
-
-fn dirToSlash(arena: std.mem.Allocator, dir: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, dir);
-    for (out) |*c| if (c.* == '\\') {
-        c.* = '/';
-    };
-    return out;
 }
 
 // ---- the prompt --------------------------------------------------------------

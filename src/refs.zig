@@ -62,14 +62,17 @@ pub fn referencedFiles(app: *App, dir: []const u8, command: []const u8) ![]const
         // looks malformed is a bad thing to ask a person to vouch for.
         const full = nativeSep(app.arena, std.fs.path.join(app.arena, &.{ dir, rel }) catch continue);
         if (!proc.fileExists(app.io, full)) continue;
-        var dup = false;
-        for (out.items) |o| if (store.eqlFoldAscii(o, full)) {
-            dup = true;
-            break;
-        };
-        if (!dup) try out.append(app.arena, full);
+        if (!containsFold(out.items, full)) try out.append(app.arena, full);
     }
     return out.items;
+}
+
+/// containsFold reports whether `list` already holds `item`, folded the same
+/// way referenced-file paths are deduped (case-insensitive on Windows, no
+/// separator normalisation - these are always already-`nativeSep`'d paths).
+pub fn containsFold(list: []const []const u8, item: []const u8) bool {
+    for (list) |o| if (store.eqlFoldAscii(o, item)) return true;
+    return false;
 }
 
 /// QuotedTokens splits a command line on whitespace, except inside quotes.
