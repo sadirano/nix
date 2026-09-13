@@ -75,6 +75,35 @@ pub fn grepIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
     return grepRg(app, targets, filtered.items);
 }
 
+/// buildSearchArgv assembles the argv prefix shared by grepRg and grepRga: the
+/// binary name, ripgrep's shared flags, the --no-unicode toggle for a relaxed
+/// query, the interactive-only --colors table, and any passed-through extra
+/// flags. The caller appends its own trailing query argument(s) - a plain rg
+/// query is optional, rga's is always `-e <query>`.
+fn buildSearchArgv(app: *App, bin: []const u8, relaxed: bool, extras: [][]const u8) !std.ArrayList([]const u8) {
+    var argv: std.ArrayList([]const u8) = .empty;
+    try argv.appendSlice(app.arena, &.{ bin, "--smart-case", if (app.no_prompt) "--color=never" else "--color=always", "--line-number", "--no-heading" });
+    if (relaxed) try argv.append(app.arena, "--no-unicode");
+    if (!app.no_prompt) {
+        for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
+            try argv.append(app.arena, "--colors");
+            try argv.append(app.arena, spec);
+        }
+    }
+    for (extras) |x| try argv.append(app.arena, x);
+    return argv;
+}
+
+/// requireFzf reports whether fzf must be on PATH but is not. Under
+/// --no-prompt the rows go to stdout instead, so fzf isn't needed there.
+fn requireFzf(app: *App) !bool {
+    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+        try app.err.writeAll("nix: fzf not found on PATH\n");
+        return false;
+    }
+    return true;
+}
+
 /// grepRg is the classic `g`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
 fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
@@ -82,11 +111,7 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
     }
-    // Under --no-prompt the rows go to stdout, so fzf isn't needed.
-    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.writeAll("nix: fzf not found on PATH\n");
-        return 1;
-    }
+    if (!try requireFzf(app)) return 1;
     var query: []const u8 = if (gargs.len > 0) gargs[0] else "";
     const extras = if (gargs.len > 1) gargs[1..] else gargs[0..0];
     var relaxed = false;
@@ -97,18 +122,9 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         }
     }
 
-    var rg: std.ArrayList([]const u8) = .empty;
     // Colour exists for fzf's --ansi; printed rows stay clean so `file:line:text`
     // survives being parsed.
-    try rg.appendSlice(app.arena, &.{ "rg", "--smart-case", if (app.no_prompt) "--color=never" else "--color=always", "--line-number", "--no-heading" });
-    if (relaxed) try rg.append(app.arena, "--no-unicode");
-    if (!app.no_prompt) {
-        for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
-            try rg.append(app.arena, "--colors");
-            try rg.append(app.arena, spec);
-        }
-    }
-    for (extras) |x| try rg.append(app.arena, x);
+    var rg = try buildSearchArgv(app, "rg", relaxed, extras);
     if (query.len > 0) try rg.append(app.arena, query);
 
     if (app.no_prompt) return open_zig.printProducerRows(app, targets, rg.items);
@@ -163,11 +179,7 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
     }
-    // Under --no-prompt the rows go to stdout, so fzf isn't needed.
-    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.writeAll("nix: fzf not found on PATH\n");
-        return 1;
-    }
+    if (!try requireFzf(app)) return 1;
     var query: []const u8 = if (gargs.len > 0) gargs[0] else "";
     const extras = if (gargs.len > 1) gargs[1..] else gargs[0..0];
     if (query.len == 0) {
@@ -180,17 +192,8 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
         relaxed = true;
     }
 
-    var rga: std.ArrayList([]const u8) = .empty;
     // Colour exists for fzf's --ansi; printed rows stay clean for parsing.
-    try rga.appendSlice(app.arena, &.{ "rga", "--smart-case", if (app.no_prompt) "--color=never" else "--color=always", "--line-number", "--no-heading" });
-    if (relaxed) try rga.append(app.arena, "--no-unicode");
-    if (!app.no_prompt) {
-        for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
-            try rga.append(app.arena, "--colors");
-            try rga.append(app.arena, spec);
-        }
-    }
-    for (extras) |x| try rga.append(app.arena, x);
+    var rga = try buildSearchArgv(app, "rga", relaxed, extras);
     try rga.append(app.arena, "-e");
     try rga.append(app.arena, query);
 
