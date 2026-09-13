@@ -267,7 +267,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             // filename, so it takes the alias charset rules, and never "nix".
             var customs: [][]const u8 = undefined;
             if (val_start.len > 0 and val_start[0] == '[') {
-                customs = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+                customs = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             } else {
                 customs = try arena.alloc([]const u8, 1);
                 customs[0] = stripQuotes(val_start);
@@ -314,7 +314,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             // always did: a typo must not silence the hook.
             if (std.mem.eql(u8, key, "on_finish_min_ms")) cfg.notify_on_finish_min_ms = std.fmt.parseInt(u64, stripQuotes(val_start), 10) catch 0;
             if (std.mem.eql(u8, key, "on_finish_skip")) {
-                cfg.notify_on_finish_skip = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+                cfg.notify_on_finish_skip = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             }
             if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, stripQuotes(val_start));
             if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, stripQuotes(val_start));
@@ -322,14 +322,14 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         }
         if (std.mem.eql(u8, section, "hold")) {
             if (std.mem.eql(u8, key, "on_success")) {
-                cfg.hold_on_success = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+                cfg.hold_on_success = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             }
             if (std.mem.eql(u8, key, "seconds")) cfg.hold_seconds = std.fmt.parseInt(u32, stripQuotes(val_start), 10) catch 5;
             continue;
         }
         if (std.mem.eql(u8, section, "confirm")) {
             if (std.mem.eql(u8, key, "trusted")) {
-                cfg.confirm_trusted = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+                cfg.confirm_trusted = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             }
             continue;
         }
@@ -337,7 +337,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             // Additions to watch's ignore defaults, never a replacement - see
             // Config.watch_exclude.
             if (std.mem.eql(u8, key, "exclude")) {
-                cfg.watch_exclude = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+                cfg.watch_exclude = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             }
             continue;
         }
@@ -345,7 +345,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         if (std.mem.eql(u8, key, "exclude") or std.mem.eql(u8, key, "exclude_extra") or
             std.mem.eql(u8, key, "search_roots"))
         {
-            const arr = try parseStringArray(arena, try gatherArray(arena, all.items, &i, val_start));
+            const arr = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             if (std.mem.eql(u8, key, "exclude")) {
                 cfg.picker_exclude = arr;
             } else if (std.mem.eql(u8, key, "exclude_extra")) {
@@ -383,23 +383,6 @@ pub fn pickerExcludes(arena: std.mem.Allocator, cfg: Config) ![][]const u8 {
         try out.append(arena, f);
     }
     return out.items;
-}
-
-/// gatherArray collects an array value's text from `val_start` across lines to
-/// the closing ']', advancing `i` past what it consumed. Comment lines inside
-/// are skipped so their quoted text cannot parse as elements. Every multi-line
-/// array in this file goes through here.
-fn gatherArray(arena: std.mem.Allocator, all: []const []const u8, i: *usize, val_start: []const u8) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    try buf.appendSlice(arena, val_start);
-    while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i.* + 1 < all.len) {
-        i.* += 1;
-        const cont = std.mem.trim(u8, all[i.*], " \t\r");
-        if (cont.len > 0 and cont[0] == '#') continue;
-        try buf.append(arena, ' ');
-        try buf.appendSlice(arena, cont);
-    }
-    return buf.items;
 }
 
 /// parseBool reads a TOML-ish boolean: true/1/yes/on (case-insensitive) → true;
