@@ -22,10 +22,6 @@ const opensWithDefaultApp = open_zig.opensWithDefaultApp;
 const absUnder = open_zig.absUnder;
 const openSelectionsInEditor = open_zig.openSelectionsInEditor;
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 pub fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     return findIn(app, &.{.{ .name = alias, .path = target }}, args);

@@ -20,10 +20,6 @@ const absPath = app_zig.absPath;
 const padPrint = app_zig.padPrint;
 const lowerDup = util.lowerDup;
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 /// nameErrorText renders validateAliasName errors as plain instructions —
 /// a bare `@errorName` prints "SpaceInName", which reads as gibberish for
 /// the most common typo.
@@ -336,6 +332,14 @@ fn evalSegment(
     return "";
 }
 
+/// lookupCtx finds a segment's [[contexts]] block across the three files in
+/// the same local -> central -> global precedence contexts get elsewhere.
+fn lookupCtx(sf_local: segments.SegFile, sf_central: segments.SegFile, sf_global: segments.SegFile, name: []const u8) ?*const segments.ContextDef {
+    return segments.lookupContext(sf_local.contexts, name) orelse
+        segments.lookupContext(sf_central.contexts, name) orelse
+        segments.lookupGlobalContext(sf_global.contexts, name);
+}
+
 /// mergeProducers flattens the three segment files' `[[producers]]` blocks by
 /// name, nearest-first (local, central, global) — the same precedence contexts
 /// get, so a project can shadow a central lookup without editing it.
@@ -394,9 +398,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
     while (i > 0) {
         i -= 1;
         const ps = parsed.segs[i];
-        var cd = segments.lookupContext(sf_local.contexts, ps.name) orelse
-            segments.lookupContext(sf_central.contexts, ps.name) orelse
-            segments.lookupGlobalContext(sf_global.contexts, ps.name);
+        var cd = lookupCtx(sf_local, sf_central, sf_global, ps.name);
         if (cd == null) {
             if (app.no_prompt) {
                 try app.err.print("nix: segment \"{s}\" is not defined in segments.toml\n", .{ps.name});
@@ -410,9 +412,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
             sf_central = try segments.loadSegmentsFile(app.arena, app.io, cpath);
             sf_global = try segments.loadSegmentsFile(app.arena, app.io, gpath);
             producers = try mergeProducers(app, sf_local, sf_central, sf_global);
-            cd = segments.lookupContext(sf_local.contexts, ps.name) orelse
-                segments.lookupContext(sf_central.contexts, ps.name) orelse
-                segments.lookupGlobalContext(sf_global.contexts, ps.name);
+            cd = lookupCtx(sf_local, sf_central, sf_global, ps.name);
             if (cd == null) {
                 try app.err.print("nix: segment \"{s}\": defined but not loadable\n", .{ps.name});
                 return null;
