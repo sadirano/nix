@@ -565,7 +565,7 @@ pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.
     var ctxs: std.ArrayList(segments.ContextDef) = .empty;
     var prods: std.ArrayList(segments.ProducerDef) = .empty;
     const paths = [_][]const u8{
-        try segments.localPath(app.arena, try dirToSlash(app.arena, dir)),
+        try segments.localPath(app.arena, try store.toSlash(app.arena, dir)),
         try segments.centralPath(app.arena, app.home, alias),
         try segments.globalPath(app.arena, app.home),
     };
@@ -581,14 +581,6 @@ pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.
         }
     }
     return .{ .contexts = ctxs.items, .producers = prods.items };
-}
-
-fn dirToSlash(arena: std.mem.Allocator, dir: []const u8) ![]const u8 {
-    const out = try arena.dupe(u8, dir);
-    for (out) |*c| if (c.* == '\\') {
-        c.* = '/';
-    };
-    return out;
 }
 
 // ---- the prompt --------------------------------------------------------------
