@@ -16,13 +16,11 @@ const timelog = @import("timelog.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
-const exports = @import("exports.zig");
 const env_zig = @import("env.zig");
 const watch = @import("watch.zig");
 const interrupt = @import("interrupt.zig");
 
 const App = app_zig.App;
-const padPrint = app_zig.padPrint;
 const resolveAliasPath = resolve.resolveAliasPath;
 
 fn eql(a: []const u8, b: []const u8) bool {
