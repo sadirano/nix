@@ -11,7 +11,6 @@
 //! compiler cut off mid-write leaves a corrupt cache.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Io = std.Io;
 const proc = @import("proc.zig");
 const config = @import("config.zig");

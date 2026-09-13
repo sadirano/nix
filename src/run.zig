@@ -16,17 +16,24 @@ const timelog = @import("timelog.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
-const exports = @import("exports.zig");
 const env_zig = @import("env.zig");
 const watch = @import("watch.zig");
 const interrupt = @import("interrupt.zig");
 
 const App = app_zig.App;
-const padPrint = app_zig.padPrint;
 const resolveAliasPath = resolve.resolveAliasPath;
 
 fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
+}
+
+/// elapsedMs is the whole-millisecond duration since `t0` (an
+/// `Io.Clock.awake.now(io).nanoseconds` reading), clamped to zero rather than
+/// negative. Three call sites in this file measured a run's duration for
+/// display with this exact formula; collapsed here so it is decided once.
+fn elapsedMs(io: Io, t0: i128) u64 {
+    const ns = Io.Clock.awake.now(io).nanoseconds - t0;
+    return if (ns > 0) @intCast(@divTrunc(ns, std.time.ns_per_ms)) else 0;
 }
 
 pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
@@ -158,8 +165,7 @@ fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8) 
         runs += 1;
         const t0 = Io.Clock.awake.now(app.io).nanoseconds;
         code = try runOnce(app, alias, dir, argv, false);
-        const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
-        const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
+        const ms = elapsedMs(app.io, t0);
 
         // Ctrl-C during a rerun now returns through the normal path instead of
         // taking nix down, so the loop has to notice and leave - otherwise the
@@ -207,6 +213,33 @@ const max_depth = 2;
 /// renamed. Without the extension, matching what a process name reads as.
 pub const export_var = "NIX_EXPORT";
 
+/// currentDepth reads the recursion guard's counter above - 0 when absent or
+/// unparseable, which is the state a top-level invocation starts from.
+fn currentDepth(app: *App) u8 {
+    const d = app.env.get(depth_var) orelse return 0;
+    return std.fmt.parseInt(u8, d, 10) catch 0;
+}
+
+/// bumpDepth writes the counter one past `depth`, for whatever this call is
+/// about to spawn.
+fn bumpDepth(app: *App, depth: u8) !void {
+    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+}
+
+/// CurrentContext is the current directory, and the alias that owns it if any -
+/// what a machine-wide action call (cmdExport's machine-wide branch, cmdHere)
+/// resolves before running, since there is no alias argument to read it from.
+const CurrentContext = struct { dir: []const u8, alias: []const u8 };
+
+fn currentContext(app: *App) !CurrentContext {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try std.process.currentPath(app.io, &buf);
+    const dir = try app.arena.dupe(u8, buf[0..n]);
+    const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
+    const ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+    return .{ .dir = dir, .alias = ctx_alias };
+}
+
 /// cmdExport runs a `[bin]` action export: the global command `ship`, resolved
 /// from the manifest to an alias and an action.
 ///
@@ -219,24 +252,21 @@ pub const export_var = "NIX_EXPORT";
 /// alias directory and runs in the CURRENT one. NIX_ALIAS is still filled in
 /// when the cwd sits inside an alias.
 pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const u8, args: [][]const u8) !u8 {
-    var depth: u8 = 0;
-    if (app.env.get(depth_var)) |d| depth = std.fmt.parseInt(u8, d, 10) catch 0;
+    const depth = currentDepth(app);
     if (depth >= max_depth) {
         try app.err.print("nix: \"{s}\" called itself {d} levels deep - stopping (an exported action must not run its own export name)\n", .{ name, depth });
         return 1;
     }
-    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+    try bumpDepth(app, depth);
     try app.env.put(export_var, name);
 
     const machine_wide = std.mem.eql(u8, alias, actions.default_owner);
     var dir: []const u8 = undefined;
     var ctx_alias: []const u8 = "";
     if (machine_wide) {
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const n = try std.process.currentPath(app.io, &buf);
-        dir = try app.arena.dupe(u8, buf[0..n]);
-        const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
-        ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+        const cur = try currentContext(app);
+        dir = cur.dir;
+        ctx_alias = cur.alias;
     } else {
         dir = (try resolveAliasPath(app, alias)) orelse return 1;
         ctx_alias = alias;
@@ -273,19 +303,16 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
         .call => |c| c,
     };
 
-    var depth: u8 = 0;
-    if (app.env.get(depth_var)) |d| depth = std.fmt.parseInt(u8, d, 10) catch 0;
+    const depth = currentDepth(app);
     if (depth >= max_depth) {
         try app.err.print("nix: :{s} called itself {d} levels deep - stopping\n", .{ call.names[0], depth });
         return 1;
     }
-    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+    try bumpDepth(app, depth);
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = try std.process.currentPath(app.io, &buf);
-    const dir = try app.arena.dupe(u8, buf[0..n]);
-    const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
-    const ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+    const cur = try currentContext(app);
+    const dir = cur.dir;
+    const ctx_alias = cur.alias;
 
     // A chain stops at the first failure, exactly as `r <alias> :a :b` does.
     for (call.names) |name| {
@@ -644,8 +671,7 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
             return 1;
         };
         const code = if (interrupt.fired()) interrupt.code else raw;
-        const ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
-        const ms: u64 = if (ns > 0) @intCast(@divTrunc(ns, std.time.ns_per_ms)) else 0;
+        const ms = elapsedMs(app.io, t0);
         const foot = try logs.footer(app.arena, code, try notify.fmtDuration(app.arena, ms));
         file.writeStreamingAll(app.io, foot) catch {};
         file.close(app.io);
@@ -863,8 +889,7 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
     if (cfg.notify_on_finish.len == 0) return runShellString(app, command, alias, dir, name, false);
     const t0 = Io.Clock.awake.now(app.io).nanoseconds;
     const code = try runShellString(app, command, alias, dir, name, false);
-    const elapsed_ns = Io.Clock.awake.now(app.io).nanoseconds - t0;
-    const ms: u64 = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, std.time.ns_per_ms)) else 0;
+    const ms = elapsedMs(app.io, t0);
     const ok = code == 0;
     // Silence is decided AFTER the run, from what it cost and what it was
     // called - the only two things the user has to reason about (#50).
