@@ -487,6 +487,7 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
 // calls belongs here: a re-export nothing below uses is dead weight that reads
 // like a seam between the modules when there isn't one.
 const isGlobalFlag = app_zig.isGlobalFlag;
+const hasPattern = app_zig.hasPattern;
 const aliasAction = app_zig.aliasAction;
 const nameErrorText = resolve.nameErrorText;
 const addAlias = resolve.addAlias;
@@ -653,14 +654,6 @@ fn cmdEditDefaultActions(app: *App) !u8 {
         try app.err.print("nix: created {s} - uncomment an action to define one\n", .{path});
     }
     return app_zig.openFileInEditor(app, path, "", app.home);
-}
-
-/// hasPattern reports whether any action arg is a real positional rather than
-/// a global flag - the shared "was a pattern typed" check `s`/`y` both make
-/// before deciding between their bare form and the picker.
-fn hasPattern(action_args: [][]const u8) bool {
-    for (action_args) |a| if (!isGlobalFlag(a)) return true;
-    return false;
 }
 
 /// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it
