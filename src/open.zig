@@ -16,10 +16,6 @@ const GroupTarget = resolve.GroupTarget;
 const resolveEditor = app_zig.resolveEditor;
 const exePath = app_zig.exePath;
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
-}
-
 /// prefixedProducers builds one PrefixedProducer per group member: the same
 /// search argv run IN each member dir, rows prefixed `alias\` — so a group row
 /// reads `gw2\src\renderer.ts:604:…` instead of the member's absolute root.
