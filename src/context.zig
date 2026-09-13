@@ -26,7 +26,6 @@ const proc = @import("proc.zig");
 const segments = @import("segments.zig");
 const actions = @import("actions.zig");
 const util = @import("util.zig");
-const provenance = @import("provenance.zig");
 const ctxcache = @import("ctxcache.zig");
 
 const App = app_zig.App;
