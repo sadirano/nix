@@ -7,6 +7,7 @@ const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
 const store = @import("store.zig");
+const util = @import("util.zig");
 const proc = @import("proc.zig");
 const groups = @import("groups.zig");
 const usage = @import("usage.zig");
@@ -65,11 +66,7 @@ fn validateGroupMember(member: []const u8) !void {
 pub fn cmdGroups(app: *App) !u8 {
     const data = try groups.readGroupsFile(app.arena, app.io, app.home);
     const gs = try groups.loadGroups(app.arena, data);
-    std.mem.sort(groups.Group, gs.items, {}, struct {
-        fn lt(_: void, a: groups.Group, b: groups.Group) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(groups.Group, gs.items);
     var width: usize = "GROUP".len;
     var any = false;
     for (gs.items) |g| if (g.members.len > 0) {

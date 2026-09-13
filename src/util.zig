@@ -36,6 +36,19 @@ pub fn containsFold(list: []const []const u8, item: []const u8) bool {
     return false;
 }
 
+/// sortByName sorts items ascending by their `name` field's byte order - the
+/// one-key sort that cmd_groups' Group listing, cmd_registry's Alias listing
+/// (twice), groups.zig's own Group save/round-trip, store.saveAliases and
+/// usage.save each wrote as their own anonymous-struct comparator. Works for
+/// any T with a `name: []const u8` field.
+pub fn sortByName(comptime T: type, items: []T) void {
+    std.mem.sort(T, items, {}, struct {
+        fn lt(_: void, a: T, b: T) bool {
+            return std.mem.lessThan(u8, a.name, b.name);
+        }
+    }.lt);
+}
+
 /// eqlPathAscii compares two path fragments the way Windows treats them:
 /// case-folded, and with `/` and `\` interchangeable.
 ///

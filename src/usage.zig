@@ -91,11 +91,7 @@ pub fn remove(arena: std.mem.Allocator, io: Io, home: []const u8, names: []const
 }
 
 fn save(arena: std.mem.Allocator, io: Io, home: []const u8, entries: []Named) !void {
-    std.mem.sort(Named, entries, {}, struct {
-        fn lt(_: void, a: Named, b: Named) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(Named, entries);
     var b: std.ArrayList(u8) = .empty;
     for (entries) |e| {
         try b.print(arena, "{s} {d} {d}\n", .{ e.name, e.count, e.last });

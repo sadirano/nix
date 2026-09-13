@@ -162,11 +162,7 @@ pub fn loadAliases(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Al
 /// blank line, then sorted [name] tables with `path = 'value'`. Atomic via
 /// temp + rename.
 pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: []Alias) !void {
-    std.mem.sort(Alias, aliases, {}, struct {
-        fn lt(_: void, a: Alias, b: Alias) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(Alias, aliases);
 
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "# nix aliases - edit with care, prefer `nix <name> <path>` / `nix <name> --remove`\n\n");

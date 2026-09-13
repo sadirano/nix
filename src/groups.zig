@@ -86,11 +86,7 @@ pub fn loadGroups(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Gro
 /// lines. Empty groups are dropped (removing a group's last member deletes it).
 /// Atomic via temp + rename, mirroring store.saveAliases.
 pub fn saveGroups(arena: std.mem.Allocator, io: Io, home: []const u8, groups: []Group) !void {
-    std.mem.sort(Group, groups, {}, struct {
-        fn lt(_: void, a: Group, b: Group) bool {
-            return std.mem.lessThan(u8, a.name, b.name);
-        }
-    }.lt);
+    util.sortByName(Group, groups);
 
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "# nix alias groups - members are alias names; a +name member references another group\n");
@@ -381,11 +377,7 @@ test "saveGroups/loadGroups round-trip, sorted, drops empty" {
     var b: std.ArrayList(u8) = .empty;
     // Mirror saveGroups' serialization (its writer needs IO) and assert the loader
     // recovers it: sorted, with the empty group dropped.
-    std.mem.sort(Group, groups.items, {}, struct {
-        fn lt(_: void, x: Group, y: Group) bool {
-            return std.mem.lessThan(u8, x.name, y.name);
-        }
-    }.lt);
+    util.sortByName(Group, groups.items);
     for (groups.items) |g| {
         if (g.members.len == 0) continue;
         try b.appendSlice(a, g.name);
