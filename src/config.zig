@@ -145,11 +145,7 @@ pub fn resolvedShortcutNames(arena: std.mem.Allocator, cfg: Config) ![][]const u
         }
         if (!overridden) try appendUniqueFold(arena, &names, b.builtin);
     }
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn lt(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
-        }
-    }.lt);
+    std.mem.sort([]const u8, names.items, {}, util.lessThanStr);
     return names.items;
 }
 

@@ -36,6 +36,14 @@ pub fn containsFold(list: []const []const u8, item: []const u8) bool {
     return false;
 }
 
+/// lessThanStr is std.mem.sort's comparator for ascending byte order over
+/// plain strings - written out as its own three-line anonymous struct in half
+/// a dozen modules (config, logs, resolve, store, secret) for exactly the same
+/// sort. Pass it directly: `std.mem.sort([]const u8, items, {}, lessThanStr)`.
+pub fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 /// sortByName sorts items ascending by their `name` field's byte order - the
 /// one-key sort that cmd_groups' Group listing, cmd_registry's Alias listing
 /// (twice), groups.zig's own Group save/round-trip, store.saveAliases and
