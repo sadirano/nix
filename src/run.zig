@@ -226,6 +226,20 @@ fn bumpDepth(app: *App, depth: u8) !void {
     try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
 }
 
+/// CurrentContext is the current directory, and the alias that owns it if any -
+/// what a machine-wide action call (cmdExport's machine-wide branch, cmdHere)
+/// resolves before running, since there is no alias argument to read it from.
+const CurrentContext = struct { dir: []const u8, alias: []const u8 };
+
+fn currentContext(app: *App) !CurrentContext {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try std.process.currentPath(app.io, &buf);
+    const dir = try app.arena.dupe(u8, buf[0..n]);
+    const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
+    const ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+    return .{ .dir = dir, .alias = ctx_alias };
+}
+
 /// cmdExport runs a `[bin]` action export: the global command `ship`, resolved
 /// from the manifest to an alias and an action.
 ///
@@ -250,11 +264,9 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
     var dir: []const u8 = undefined;
     var ctx_alias: []const u8 = "";
     if (machine_wide) {
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const n = try std.process.currentPath(app.io, &buf);
-        dir = try app.arena.dupe(u8, buf[0..n]);
-        const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
-        ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+        const cur = try currentContext(app);
+        dir = cur.dir;
+        ctx_alias = cur.alias;
     } else {
         dir = (try resolveAliasPath(app, alias)) orelse return 1;
         ctx_alias = alias;
@@ -298,11 +310,9 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
     }
     try bumpDepth(app, depth);
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = try std.process.currentPath(app.io, &buf);
-    const dir = try app.arena.dupe(u8, buf[0..n]);
-    const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
-    const ctx_alias = (try resolve.whichAlias(app.arena, aliases.items, dir)) orelse "";
+    const cur = try currentContext(app);
+    const dir = cur.dir;
+    const ctx_alias = cur.alias;
 
     // A chain stops at the first failure, exactly as `r <alias> :a :b` does.
     for (call.names) |name| {
