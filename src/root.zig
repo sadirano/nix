@@ -19,6 +19,7 @@ pub const editor = @import("editor.zig");
 pub const snippet = @import("snippet.zig");
 pub const agents = @import("agents.zig");
 pub const refs = @import("refs.zig");
+pub const interrupt = @import("interrupt.zig");
 pub const proc = @import("proc.zig");
 pub const hold = @import("hold.zig");
 pub const png = @import("png.zig");
