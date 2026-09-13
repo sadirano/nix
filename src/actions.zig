@@ -10,6 +10,7 @@ const std = @import("std");
 const Io = std.Io;
 const store = @import("store.zig");
 const stripQuotes = @import("util.zig").stripQuotes;
+const centralFile = @import("util.zig").centralFile;
 
 /// namesAction reports whether a config list picks out this alias's action.
 /// An entry with ':' is an `alias:action` pair matched whole; a bare entry
@@ -125,8 +126,7 @@ pub const default_template =
 
 /// centralPath: <home>/actions/<alias>.toml — private, per-alias.
 pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8) ![]const u8 {
-    const file = try std.fmt.allocPrint(arena, "{s}.toml", .{alias});
-    return std.fs.path.join(arena, &.{ home, "actions", file });
+    return centralFile(arena, home, "actions", alias);
 }
 
 /// The name `_default.toml` stands under: the owner recorded for a machine-wide

@@ -5,6 +5,7 @@
 const std = @import("std");
 const Io = std.Io;
 const eqlFold = @import("util.zig").eqlFoldAscii;
+const centralFile = @import("util.zig").centralFile;
 
 /// One variable, from a `[contexts.vars]` default or produced by a source.
 ///
@@ -120,9 +121,7 @@ pub fn localPath(arena: std.mem.Allocator, alias_base: []const u8) ![]const u8 {
 
 /// centralPath: <home>/segments/<lower alias>.toml
 pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8) ![]const u8 {
-    const lower = try arena.dupe(u8, alias);
-    for (lower) |*c| c.* = std.ascii.toLower(c.*);
-    return std.fs.path.join(arena, &.{ home, "segments", try std.fmt.allocPrint(arena, "{s}.toml", .{lower}) });
+    return centralFile(arena, home, "segments", alias);
 }
 
 // ---- [[contexts]] parser ----------------------------------------------------

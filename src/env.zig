@@ -170,8 +170,7 @@ pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 
 
 /// centralPath: <home>/env/<alias>.toml - private, per-alias, never committed.
 pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8) ![]const u8 {
-    const file = try std.fmt.allocPrint(arena, "{s}.toml", .{alias});
-    return std.fs.path.join(arena, &.{ home, "env", file });
+    return util.centralFile(arena, home, "env", alias);
 }
 
 /// trustRecord is the approval token for a project env.toml: its exact bytes,

@@ -44,6 +44,21 @@ pub fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
+/// centralFile is where a feature keeps its per-alias file under ~/.nix:
+/// <home>/<feature>/<alias>.toml. Three modules each spelled this out for
+/// themselves - actions, env and segments - which is how the third came to
+/// lowercase the alias while the other two did not.
+///
+/// Lowercasing is the version that survived, because it is the one that
+/// matches how the name is stored: store lowercases an alias both when
+/// registering it and when reading it back out of aliases.toml, so a caller
+/// holding a raw `docs@ACME` segment still lands on the same file the
+/// registry would. On Windows the two spellings are the same file anyway.
+pub fn centralFile(arena: std.mem.Allocator, home: []const u8, feature: []const u8, alias: []const u8) ![]const u8 {
+    const file = try std.fmt.allocPrint(arena, "{s}.toml", .{try lowerDup(arena, alias)});
+    return std.fs.path.join(arena, &.{ home, feature, file });
+}
+
 /// sortByName sorts items ascending by their `name` field's byte order - the
 /// one-key sort that cmd_groups' Group listing, cmd_registry's Alias listing
 /// (twice), groups.zig's own Group save/round-trip, store.saveAliases and
@@ -320,6 +335,23 @@ test parseStringArray {
     try std.testing.expectEqualStrings("c", arr[2]);
     const empty = try parseStringArray(a, "[]");
     try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test centralFile {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // The feature name is the only thing that varies between the three callers.
+    const acts = try centralFile(a, "H", "actions", "acme");
+    const envs = try centralFile(a, "H", "env", "acme");
+    try std.testing.expectEqualStrings(try std.fs.path.join(a, &.{ "H", "actions", "acme.toml" }), acts);
+    try std.testing.expectEqualStrings(try std.fs.path.join(a, &.{ "H", "env", "acme.toml" }), envs);
+
+    // A raw alias spelling lands on the same file the registry stores it under,
+    // which is what segments.zig alone used to get right.
+    try std.testing.expectEqualStrings(acts, try centralFile(a, "H", "actions", "ACME"));
+    try std.testing.expectEqualStrings(acts, try centralFile(a, "H", "actions", "aCmE"));
 }
 
 test gatherArrayBody {
