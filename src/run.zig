@@ -407,9 +407,19 @@ fn joinArgs(arena: std.mem.Allocator, args: []const []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     for (args, 0..) |a, i| {
         if (i > 0) try buf.append(arena, ' ');
+        // Whitespace, and the characters cmd reads as structure before the
+        // child ever sees them. An unquoted `&` ENDED the command: `:show --
+        // a&b` ran `echo a` and then `b` as a command of its own, which looks
+        // like the argument was silently truncated.
+        //
+        // Quoting only. Nothing is escaped INSIDE the quotes, because this
+        // string is handed to `cmd /c` (proc.runShellInherit) and cmd does not
+        // read `\"` as an escaped quote the way a CRT does - writing one there
+        // sends a literal backslash to the child.
+        //
         // An argument that already carries its own quotes is passed through:
         // the user quoted it deliberately, and re-wrapping would nest them.
-        const needs = (a.len == 0 or std.mem.indexOfAny(u8, a, " \t") != null) and
+        const needs = (a.len == 0 or std.mem.indexOfAny(u8, a, " \t&|<>()^") != null) and
             std.mem.indexOfScalar(u8, a, '"') == null;
         if (needs) try buf.append(arena, '"');
         try buf.appendSlice(arena, a);
@@ -965,6 +975,19 @@ test "applyArgs: appended by default, substituted where the command asks" {
         "echo \"already quoted\"",
         try applyArgs(a, "echo", &.{"\"already quoted\""}),
     );
+    // cmd would have read these as structure and ended the command at them.
+    // Measured before the fix: `a&b` reached the child as `a`, and `b` ran as
+    // a command of its own.
+    try std.testing.expectEqualStrings("echo \"a&b\"", try applyArgs(a, "echo", &.{"a&b"}));
+    try std.testing.expectEqualStrings("echo \"a|b\"", try applyArgs(a, "echo", &.{"a|b"}));
+    try std.testing.expectEqualStrings("echo \"a>b\"", try applyArgs(a, "echo", &.{"a>b"}));
+    try std.testing.expectEqualStrings("echo \"(x)\"", try applyArgs(a, "echo", &.{"(x)"}));
+    // Ordinary arguments are still handed over bare - quoting everything would
+    // change what a cmd builtin prints.
+    try std.testing.expectEqualStrings("echo plain", try applyArgs(a, "echo", &.{"plain"}));
+    // No backslash escaping: cmd does not read `\"` as a quote, so an argument
+    // carrying one is left exactly as the user typed it.
+    try std.testing.expectEqualStrings("echo a\"b", try applyArgs(a, "echo", &.{"a\"b"}));
 }
 
 test "runAction message shapes (via notify.expandTemplate pairs)" {
