@@ -63,6 +63,9 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
     try store.validateAliasPath(p);
     const expanded = try store.expandTilde(app.arena, app.env, p);
     const abs = try absPath(app, expanded);
+    // Also before the save: a mistyped path must not leave an alias pointing
+    // at a directory nobody agreed to create.
+    if (!try ensureDir(app, abs, "")) return error.Cancelled;
 
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     var aliases = try store.loadAliases(app.arena, data);
@@ -88,7 +91,6 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
     }
     if (!replaced) try aliases.append(app.arena, .{ .name = lower, .path = slashed });
     try store.saveAliases(app.arena, app.io, app.home, aliases.items);
-    store.mkdirAll(app.io, abs) catch {};
 
     try app.err.print("registered {s} -> {s}\n", .{ lower, abs });
     try app.out.print("{s}\n", .{abs});
@@ -116,6 +118,45 @@ fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs
     try app.out.flush();
     try app.err.print("nix: \"{s}\" already points at:\n  {s}\nrepoint it to:\n  {s}\nThis forgets the old path. Repoint? [y/N] ", .{ alias, old_host, new_abs });
     try app.err.flush();
+    return readYes(app);
+}
+
+/// ensureDir reports whether `path` is a directory nix may hand on: it exists,
+/// or the person at the console just agreed to create it. `subject` prefixes
+/// the message (`"acme" points at `) so the refusal names what led there.
+///
+/// Without a console it REFUSES and creates nothing. Silently materializing a
+/// missing directory turned an agent's typo into a plausible empty sibling of
+/// the real one, and whatever wrote next landed there. The refusal names no
+/// flag to retry with on purpose: an agent that means it creates the directory
+/// itself, which is a decision rather than a reflex.
+pub fn ensureDir(app: *App, path: []const u8, subject: []const u8) !bool {
+    if (proc.pathExists(app.io, path)) return true;
+    if (!app_zig.canAsk(app)) {
+        try app.err.print(
+            "nix: {s}{s} does not exist\n  refusing to create it without a console to confirm - check the path, or create the directory yourself and rerun\n",
+            .{ subject, path },
+        );
+        return false;
+    }
+    try app.out.flush();
+    try app.err.print("nix: {s}{s} does not exist. Create it? [y/N] ", .{ subject, path });
+    try app.err.flush();
+    if (!try readYes(app)) {
+        try app.err.writeAll("nix: nothing created\n");
+        return false;
+    }
+    store.mkdirAll(app.io, path) catch |e| {
+        try app.err.print("nix: could not create {s} ({s})\n", .{ path, @errorName(e) });
+        return false;
+    };
+    try app.err.print("created {s}\n", .{path});
+    return true;
+}
+
+/// readYes reads one answer from stdin. Anything but an explicit yes declines,
+/// EOF included.
+fn readYes(app: *App) !bool {
     var buf: [64]u8 = undefined;
     var iov = [_][]u8{buf[0..]};
     const n = Io.File.stdin().readStreaming(app.io, &iov) catch return false;
@@ -125,13 +166,14 @@ fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs
     return std.ascii.eqlIgnoreCase(ans, "y") or std.ascii.eqlIgnoreCase(ans, "yes");
 }
 
-/// resolveAliasPath resolves an alias to its directory, creating it and
-/// recording usage — the shared entry point for every action. Unknown aliases
-/// error for now (onix offers an es+fzf picker here; that is a later port).
+/// resolveAliasPath resolves an alias to its directory and records usage - the
+/// shared entry point for every action. A registered directory that has gone
+/// missing goes through ensureDir rather than being recreated behind the
+/// caller's back.
 pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     if (std.mem.indexOfScalar(u8, name, '@') != null) {
         const path = (try resolveSegmented(app, name)) orelse return null;
-        store.mkdirAll(app.io, path) catch {};
+        if (!try ensureDir(app, path, "")) return null;
         const parsed = try segments.parseSegmentedAlias(app.arena, name);
         usage.record(app.arena, app.io, app.home, parsed.alias) catch {};
         return path;
@@ -146,7 +188,7 @@ pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     }
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     if (try store.scanForAlias(app.arena, data, name)) |path| {
-        store.mkdirAll(app.io, path) catch {};
+        if (!try ensureDir(app, path, try std.fmt.allocPrint(app.arena, "\"{s}\" points at ", .{name}))) return null;
         usage.record(app.arena, app.io, app.home, name) catch {};
         return path;
     }
@@ -400,7 +442,9 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
         const ps = parsed.segs[i];
         var cd = lookupCtx(sf_local, sf_central, sf_global, ps.name);
         if (cd == null) {
-            if (app.no_prompt) {
+            // Defining it writes config, so it takes someone to ask: a probe
+            // from an agent's shell used to leave definitions nobody authored.
+            if (!app_zig.canAsk(app)) {
                 try app.err.print("nix: segment \"{s}\" is not defined in segments.toml\n", .{ps.name});
                 return null;
             }
@@ -642,7 +686,10 @@ pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]
     var out: std.ArrayList(GroupTarget) = .empty;
     for (names) |n| {
         if (try store.lookupAlias(app.arena, adata, n, app.home)) |p| {
-            if (create_dirs) store.mkdirAll(app.io, p) catch {};
+            if (create_dirs and !try ensureDir(app, p, try std.fmt.allocPrint(app.arena, "\"{s}\" points at ", .{n}))) {
+                try app.err.print("nix: group \"+{s}\": skipping \"{s}\"\n", .{ group, n });
+                continue;
+            }
             try out.append(app.arena, .{ .name = n, .path = p });
         } else {
             try app.err.print("nix: group \"+{s}\": skipping dead member \"{s}\" (no such alias)\n", .{ group, n });

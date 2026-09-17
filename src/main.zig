@@ -513,7 +513,7 @@ const dispatchGroupAdd = cmd_groups.dispatchGroupAdd;
 
 // cmdResolve prints the alias's path WITHOUT creating the directory — resolve
 // is the read-only query form (scripts and agents probe with it); only the
-// navigation/action paths (resolveAliasPath) materialize missing dirs.
+// navigation/action paths (resolveAliasPath) offer to create missing dirs.
 fn cmdResolve(app: *App, name: []const u8) !u8 {
     if (std.mem.indexOfScalar(u8, name, '@') != null) {
         const path = (try resolveSegmented(app, name)) orelse return 1;
@@ -1036,7 +1036,7 @@ fn printUsage(app: *App) !void {
         \\
         \\USAGE
         \\  nix <alias>                 resolve an alias to its absolute path
-        \\  nix <alias> <path>          register or update an alias (dir auto-created)
+        \\  nix <alias> <path>          register or update an alias (asks to create a missing dir)
         \\  nix <alias> --<action>      run an action against an alias
         \\  nix --<command>             system-wide command
         \\  nix <seg>@<alias>           resolve a sub-alias segment (see README)

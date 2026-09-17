@@ -117,6 +117,22 @@ pub fn exePath(app: *App) []const u8 {
     return p;
 }
 
+/// canAsk reports whether a question put to stdin has a person behind it. An
+/// agent's shell, a script, and --no-prompt all answer no, and every consent
+/// gate refuses there rather than deciding on the user's behalf.
+pub fn canAsk(app: *App) bool {
+    return !app.no_prompt and (proc.interactive() or e2eConsole(app));
+}
+
+/// e2eConsole is the one hook past the console check, for the test suite: it
+/// runs nix as a child with piped handles, so without it every gate in e2e
+/// would refuse. It grants the console half only - the `y` still has to
+/// arrive on stdin - and it is deliberately not a general escape hatch, which
+/// is why it is spelled for the suite and matched exactly.
+pub fn e2eConsole(app: *App) bool {
+    return std.mem.eql(u8, app.env.get("NIX_E2E_TTY") orelse "", "1");
+}
+
 /// isGlobalFlag reports the process-wide flags any sub-parser silently
 /// accepts, so they never read as an unexpected argument. Declared in the
 /// grammar table.

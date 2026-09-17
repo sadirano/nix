@@ -106,8 +106,9 @@ pub const specs = [_]Spec{
         .needs_tools = &.{"fzf"},
         .detail =
         \\Navigation. `o <alias>` changes the user's CURRENT shell to the alias
-        \\dir. `o <alias> <path>` registers the alias to that path first (creating
-        \\the directory) and then lands there. `o <seg>@<alias>` navigates to a
+        \\dir. `o <alias> <path>` registers the alias to that path first (asking
+        \\before creating a directory that does not exist, and refusing without a
+        \\console) and then lands there. `o <seg>@<alias>` navigates to a
         \\sub-alias segment; `o +<group>` opens an fzf multi-select where the
         \\first pick keeps the current shell and the rest open new terminals.
         \\

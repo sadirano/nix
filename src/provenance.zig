@@ -477,23 +477,14 @@ pub const Plan = struct {
 /// `--trust` strictly weaker than the `y` it stands in for, since that at
 /// least prints the command it is about to run.
 ///
-/// `NIX_E2E_TTY=1` is the test suite's way in - see `e2eConsole`.
-/// e2eConsole is the one hook past the console check, for the test suite: it
-/// runs nix as a child with piped handles, so without it every `--trust` in
-/// e2e would refuse. It grants the console half only - the `y` still has to
-/// arrive on stdin - and it is deliberately not a general escape hatch, which
-/// is why it is spelled for the suite and matched exactly.
-fn e2eConsole(app: *App) bool {
-    return std.mem.eql(u8, app.env.get("NIX_E2E_TTY") orelse "", "1");
-}
-
+/// `NIX_E2E_TTY=1` is the test suite's way in - see `app_zig.e2eConsole`.
 pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: anytype, env_zig: anytype) !u8 {
     if (rest.len < 1 or rest.len > 2) {
         try app.err.writeAll("usage: nix --trust <alias> [segment|env]   (approve an alias's project actions, scripts, context sources and env.toml as they stand)\n");
         return 1;
     }
     const alias = rest[0];
-    if (!canGrant(app) and !e2eConsole(app)) {
+    if (!canGrant(app) and !app_zig.e2eConsole(app)) {
         try app.err.print("nix: --trust needs a console - it records that a person read this, so a person has to answer.\n", .{});
         try app.err.print("  Run it yourself in a terminal:\n    nix --trust {s}\n", .{alias});
         return 1;

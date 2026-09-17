@@ -206,8 +206,21 @@ pub fn main(init: std.process.Init) !void {
 
     // --- alias basics -------------------------------------------------------
     {
+        // A directory that does not exist is never created behind anyone's
+        // back: an agent's typo used to become a plausible empty sibling of the
+        // real folder. With nobody to ask it refuses and registers nothing.
+        try c.env.put("NIX_E2E_TTY", "0");
         var r = try c.run(&.{ "pa", pa });
-        c.check(r.code == 0 and proc.pathExists(io, pa), "add registers and auto-creates the dir", r);
+        try c.env.put("NIX_E2E_TTY", "1");
+        const r0 = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code != 0 and !proc.pathExists(io, pa) and std.mem.indexOf(u8, r.err, "does not exist") != null and
+            r0.code != 0, "registering a missing dir without a console refuses and creates nothing", r);
+        r = try c.runAnswering(&.{ "pa", pa }, "n\n");
+        c.check(r.code != 0 and !proc.pathExists(io, pa), "a no at the create prompt creates and registers nothing", r);
+        r = try c.runAnswering(&.{ "pa", pa }, "y\n");
+        c.check(r.code == 0 and proc.pathExists(io, pa) and std.mem.indexOf(u8, r.err, "created") != null, "a yes creates the dir and registers", r);
+        try util.mkdirAll(io, pa2);
+        try util.mkdirAll(io, pb);
 
         r = try c.run(&.{ "pa", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), pa), "--resolve prints the registered path", r);
@@ -319,6 +332,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and pathEql(trim(r.out), home), "the refused registration did not move .nix", r);
 
         // A leading dot is not itself reserved - only the exact name.
+        try util.mkdirAll(io, join(&c, &.{ root, "dotted" }));
         r = try c.run(&.{ ".nixrc", join(&c, &.{ root, "dotted" }) });
         c.check(r.code == 0, "a dotted name that isn't .nix still registers", r);
         _ = try c.run(&.{ ".nixrc", "--remove" });
@@ -331,6 +345,7 @@ pub fn main(init: std.process.Init) !void {
         try util.mkdirAll(io, under);
         r = try c.run(&.{ "--no-prompt", "--which", under });
         c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), ".nix"), "--which reports .nix from a subdirectory", r);
+        util.mkdirAll(io, under) catch {};
         _ = try c.run(&.{ "inner", under });
         r = try c.run(&.{ "--no-prompt", "--which", under });
         c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "inner"), "a deeper registered alias still wins over .nix", r);
@@ -357,6 +372,7 @@ pub fn main(init: std.process.Init) !void {
 
         // A nested alias must beat its ancestor (deepest dir wins).
         const pad = join(&c, &.{ pa, "docs" });
+        util.mkdirAll(io, pad) catch {};
         _ = try c.run(&.{ "pad", pad });
         r = try c.run(&.{ "--which", join(&c, &.{ pad, "img" }) });
         c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "pad"), "--which picks the deepest containing alias", r);
@@ -572,6 +588,7 @@ pub fn main(init: std.process.Init) !void {
     // would make these tests and the ones above depend on each other's order.
     {
         const pg = join(&c, &.{ root, "proj", "pg" });
+        util.mkdirAll(io, pg) catch {};
         _ = try c.run(&.{ "pg", pg });
         const pg_actions = join(&c, &.{ pg, ".nix", "actions.toml" });
 
@@ -727,7 +744,9 @@ pub fn main(init: std.process.Init) !void {
     {
         const pe = join(&c, &.{ root, "proj", "pe" });
         const pf = join(&c, &.{ root, "proj", "pf" });
+        util.mkdirAll(io, pe) catch {};
         _ = try c.run(&.{ "pe", pe });
+        util.mkdirAll(io, pf) catch {};
         _ = try c.run(&.{ "pf", pf });
         // One action, echoing the variables back through the shell nix spawns.
         const show = if (proc.is_windows)
@@ -925,6 +944,7 @@ pub fn main(init: std.process.Init) !void {
 
         // A note is keyed on the NAME, so removing the alias must not touch it -
         // and doctor reports the orphan rather than tidying it away.
+        util.mkdirAll(io, join(&c, &.{ root, "proj", "pnote" })) catch {};
         r = try c.run(&.{ "pnote", join(&c, &.{ root, "proj", "pnote" }) });
         _ = try c.run(&.{ "pnote", "--note", "temporary" });
         r = try c.run(&.{ "pnote", "--remove" });
@@ -1368,6 +1388,7 @@ pub fn main(init: std.process.Init) !void {
         const bare = join(&c, &.{ root, "proj", "bare" });
         try util.mkdirAll(io, bare);
         c.exe = real_exe; // registering is nix's own form, not the e wrapper's
+        util.mkdirAll(io, bare) catch {};
         _ = try c.run(&.{ "bare", bare });
         const bare_actions = join(&c, &.{ bare, ".nix", "actions.toml" });
         c.exe = e_exe;
@@ -1515,6 +1536,13 @@ pub fn main(init: std.process.Init) !void {
         const r = try c.run(&.{ "docs@pa", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), expected), "@-segment resolves through its template", r);
         c.check(!proc.pathExists(io, expected), "segmented --resolve does not create the directory", r);
+
+        // Defining a segment writes config, so an agent's probe must not leave
+        // a definition behind for a name nobody authored.
+        try c.env.put("NIX_E2E_TTY", "0");
+        const r3 = try c.run(&.{ "nosuch@pa", "--resolve" });
+        try c.env.put("NIX_E2E_TTY", "1");
+        c.check(r3.code != 0 and std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "segments", "pa.toml" }), ""), "nosuch") == null, "an undefined segment is not auto-defined without a console", r3);
     }
 
     // --- context sources (run + trust + cache) ------------------------------------
@@ -1620,10 +1648,20 @@ pub fn main(init: std.process.Init) !void {
     // --- read-only --resolve ------------------------------------------------------
     {
         const pc = join(&c, &.{ root, "proj", "pc" });
+        util.mkdirAll(io, pc) catch {};
         _ = try c.run(&.{ "pc", pc });
         try Io.Dir.cwd().deleteDir(io, pc);
         const r = try c.run(&.{ "pc", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), pc) and !proc.pathExists(io, pc), "--resolve never re-creates a deleted dir", r);
+
+        // Every other command used to mkdir it back silently. With nobody to
+        // ask, a vanished dir is an error that names the alias, not a new
+        // empty folder the next write lands in.
+        try c.env.put("NIX_E2E_TTY", "0");
+        const r2 = try c.run(&.{ "pc", "--run", "echo", "ran" });
+        try c.env.put("NIX_E2E_TTY", "1");
+        c.check(r2.code != 0 and !proc.pathExists(io, pc) and std.mem.indexOf(u8, r2.out, "ran") == null and
+            std.mem.indexOf(u8, r2.err, "\"pc\" points at") != null, "a registered dir that is gone is not re-created without a console", r2);
     }
 
     // --- removals -------------------------------------------------------------------
@@ -1716,7 +1754,9 @@ pub fn main(init: std.process.Init) !void {
         // here: earlier sections leave +work's existence up in the air.
         // Re-register both first: an unregistered member would picker-route the
         // add. --no-prompt keeps that impossible even if this drifts again.
+        util.mkdirAll(io, pa) catch {};
         _ = try c.run(&.{ "pa", pa });
+        util.mkdirAll(io, pb) catch {};
         _ = try c.run(&.{ "pb", pb });
         _ = try c.run(&.{ "pa+np", "--no-prompt" });
         _ = try c.run(&.{ "pb+np", "--no-prompt" });
@@ -1744,6 +1784,7 @@ pub fn main(init: std.process.Init) !void {
     // --- flight recorder (--log / --logs, issue #26) ------------------------------------
     {
         const pr = join(&c, &.{ root, "proj", "pr" });
+        util.mkdirAll(io, pr) catch {};
         _ = try c.run(&.{ "pr", pr });
         try writeActions(&c, "pr", pr,
             \\[actions]
@@ -1813,6 +1854,7 @@ pub fn main(init: std.process.Init) !void {
     // --- time ledger (--time, issue #20) -----------------------------------------------
     {
         const pt = join(&c, &.{ root, "proj", "pt" });
+        util.mkdirAll(io, pt) catch {};
         _ = try c.run(&.{ "pt", pt });
         const ledger = join(&c, &.{ home, "time" });
 
@@ -1860,6 +1902,7 @@ pub fn main(init: std.process.Init) !void {
     // partially read answer can produce a path that looks right.
     {
         const pg = join(&c, &.{ root, "proj", "pg" });
+        util.mkdirAll(io, pg) catch {};
         _ = try c.run(&.{ "pg", pg });
         const scripts = join(&c, &.{ pg, ".nix", "scripts" });
         util.mkdirAll(io, scripts) catch {};
@@ -1933,6 +1976,7 @@ pub fn main(init: std.process.Init) !void {
 
         // It still reaches the child environment: withholding it there would
         // break the case the marker exists to make safe.
+        util.mkdirAll(io, join(&c, &.{ pg, "fine" })) catch {};
         r = if (proc.is_windows)
             try c.run(&.{ "vault:1@pg", "--run", "cmd", "/c", "echo tok=%VAULT_TOKEN%" })
         else
@@ -1948,6 +1992,7 @@ pub fn main(init: std.process.Init) !void {
     // never prompts, and that the list survives a cache round-trip.
     {
         const pm = join(&c, &.{ root, "proj", "pm" });
+        util.mkdirAll(io, pm) catch {};
         _ = try c.run(&.{ "pm", pm });
         const scripts = join(&c, &.{ pm, ".nix", "scripts" });
         util.mkdirAll(io, scripts) catch {};
@@ -2113,7 +2158,9 @@ pub fn main(init: std.process.Init) !void {
     {
         const ka = join(&c, &.{ root, "proj", "ka" });
         const kb = join(&c, &.{ root, "proj", "kb" });
+        util.mkdirAll(io, ka) catch {};
         _ = try c.run(&.{ "ka", ka });
+        util.mkdirAll(io, kb) catch {};
         _ = try c.run(&.{ "kb", kb });
 
         const show = if (proc.is_windows)

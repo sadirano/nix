@@ -6,7 +6,7 @@ One TOML file holds every alias, one binary serves every command. State lives in
 
 ## Demos
 
-**Jump to any project.** `o acme` stacks a shell rooted at the alias directory; `o newproj C:\path` registers a new alias and jumps there in one step (the directory is auto-created).
+**Jump to any project.** `o acme` stacks a shell rooted at the alias directory; `o newproj C:\path` registers a new alias and jumps there in one step (if the directory does not exist, nix asks before creating it).
 
 ![o navigation](assets/navigate.gif)
 
@@ -62,10 +62,10 @@ The run command is `x`, not `r`, for a PowerShell reason: pwsh resolves aliases 
 ## Use
 
 ```powershell
-nix acme C:\Users\dev\projects\acme        # register an alias (auto-creates the dir if missing)
+nix acme C:\Users\dev\projects\acme        # register an alias (asks before creating a missing dir)
 nix --force acme D:\moved\acme             # repoint an EXISTING alias (asks first without --force)
 o acme                                     # jump to it
-o acme C:\Users\dev\projects\acme          # register + jump in one step (dir auto-created)
+o acme C:\Users\dev\projects\acme          # register + jump in one step
 o                                          # no args: open ~/.nix in your editor
 e acme                                     # open it in your editor
 s acme                                     # open it in Explorer
