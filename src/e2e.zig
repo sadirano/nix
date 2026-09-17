@@ -217,8 +217,22 @@ pub fn main(init: std.process.Init) !void {
             r0.code != 0, "registering a missing dir without a console refuses and creates nothing", r);
         r = try c.runAnswering(&.{ "pa", pa }, "n\n");
         c.check(r.code != 0 and !proc.pathExists(io, pa), "a no at the create prompt creates and registers nothing", r);
-        r = try c.runAnswering(&.{ "pa", pa }, "y\n");
-        c.check(r.code == 0 and proc.pathExists(io, pa) and std.mem.indexOf(u8, r.err, "created") != null, "a yes creates the dir and registers", r);
+        r = try c.runAnswering(&.{ "pa", pa }, "\n");
+        c.check(r.code == 0 and proc.pathExists(io, pa) and std.mem.indexOf(u8, r.err, "created") != null, "Enter at the create prompt means yes", r);
+
+        // `[confirm] create_dirs = false` drops the question at a console, and
+        // only there: the refusal is the guard, the prompt was a courtesy.
+        const pauto = join(&c, &.{ root, "proj", "pauto" });
+        const cfg_path = join(&c, &.{ home, "config.toml" });
+        try writeFile(&c, cfg_path, "[confirm]\ncreate_dirs = false\n");
+        try c.env.put("NIX_E2E_TTY", "0");
+        r = try c.run(&.{ "pauto", pauto });
+        try c.env.put("NIX_E2E_TTY", "1");
+        c.check(r.code != 0 and !proc.pathExists(io, pauto), "create_dirs = false still refuses without a console", r);
+        r = try c.run(&.{ "pauto", pauto });
+        c.check(r.code == 0 and proc.pathExists(io, pauto) and std.mem.indexOf(u8, r.err, "Create it?") == null, "create_dirs = false creates without asking at a console", r);
+        _ = try c.run(&.{ "pauto", "--remove" });
+        try Io.Dir.cwd().deleteFile(io, cfg_path);
         try util.mkdirAll(io, pa2);
         try util.mkdirAll(io, pb);
 

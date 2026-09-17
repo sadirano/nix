@@ -52,6 +52,11 @@ pub const Config = struct {
     /// exemption is refused whenever the invocation touches project bytes
     /// (provenance.decide).
     confirm_trusted: []const []const u8 = &.{},
+    /// [confirm] create_dirs: whether nix asks before creating a directory
+    /// that does not exist. false creates it straight away - at a console only;
+    /// with nobody to ask it still refuses, which is the part that protects
+    /// against an agent's typo.
+    confirm_create_dirs: bool = true,
     /// [notify] on_finish: command template run after every foreground
     /// `r <alias> :action` finishes — the notification hook (e.g. hoot).
     /// Placeholders: {alias} {action} {exit} {status} {duration} {level}
@@ -228,7 +233,7 @@ fn configPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 }
 
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
-/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted, [bin] foreign,
+/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted/create_dirs, [bin] foreign,
 /// and [watch] exclude. Unknown sections are ignored. A missing file yields the
 /// zero Config.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
@@ -327,6 +332,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             if (std.mem.eql(u8, key, "trusted")) {
                 cfg.confirm_trusted = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             }
+            if (std.mem.eql(u8, key, "create_dirs")) cfg.confirm_create_dirs = parseBool(stripQuotes(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "watch")) {

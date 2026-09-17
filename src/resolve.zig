@@ -14,6 +14,7 @@ const groups = @import("groups.zig");
 const picker = @import("picker.zig");
 const proc = @import("proc.zig");
 const util = @import("util.zig");
+const config = @import("config.zig");
 
 const App = app_zig.App;
 const absPath = app_zig.absPath;
@@ -118,11 +119,12 @@ fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs
     try app.out.flush();
     try app.err.print("nix: \"{s}\" already points at:\n  {s}\nrepoint it to:\n  {s}\nThis forgets the old path. Repoint? [y/N] ", .{ alias, old_host, new_abs });
     try app.err.flush();
-    return readYes(app);
+    return readAnswer(app, false);
 }
 
 /// ensureDir reports whether `path` is a directory nix may hand on: it exists,
-/// or the person at the console just agreed to create it. `subject` prefixes
+/// or someone is at the console and agreed to create it (or waived the question
+/// with `[confirm] create_dirs = false`). `subject` prefixes
 /// the message (`"acme" points at `) so the refusal names what led there.
 ///
 /// Without a console it REFUSES and creates nothing. Silently materializing a
@@ -139,12 +141,17 @@ pub fn ensureDir(app: *App, path: []const u8, subject: []const u8) !bool {
         );
         return false;
     }
-    try app.out.flush();
-    try app.err.print("nix: {s}{s} does not exist. Create it? [y/N] ", .{ subject, path });
-    try app.err.flush();
-    if (!try readYes(app)) {
-        try app.err.writeAll("nix: nothing created\n");
-        return false;
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    if (cfg.confirm_create_dirs) {
+        // Default yes: at a console a new directory is usually what was meant.
+        // The guard that matters is the refusal above.
+        try app.out.flush();
+        try app.err.print("nix: {s}{s} does not exist. Create it? [Y/n] ", .{ subject, path });
+        try app.err.flush();
+        if (!try readAnswer(app, true)) {
+            try app.err.writeAll("nix: nothing created\n");
+            return false;
+        }
     }
     store.mkdirAll(app.io, path) catch |e| {
         try app.err.print("nix: could not create {s} ({s})\n", .{ path, @errorName(e) });
@@ -154,15 +161,18 @@ pub fn ensureDir(app: *App, path: []const u8, subject: []const u8) !bool {
     return true;
 }
 
-/// readYes reads one answer from stdin. Anything but an explicit yes declines,
-/// EOF included.
-fn readYes(app: *App) !bool {
+/// readAnswer reads one answer from stdin. A bare Enter takes `default_yes`;
+/// otherwise only an explicit yes accepts. EOF always declines - no answer
+/// arrived, so nobody chose the default.
+fn readAnswer(app: *App, default_yes: bool) !bool {
     var buf: [64]u8 = undefined;
     var iov = [_][]u8{buf[0..]};
     const n = Io.File.stdin().readStreaming(app.io, &iov) catch return false;
+    if (n == 0) return false;
     const line = buf[0..n];
     const end = std.mem.indexOfScalar(u8, line, '\n') orelse line.len;
     const ans = std.mem.trim(u8, line[0..end], " \t\r\n");
+    if (ans.len == 0) return default_yes;
     return std.ascii.eqlIgnoreCase(ans, "y") or std.ascii.eqlIgnoreCase(ans, "yes");
 }
 

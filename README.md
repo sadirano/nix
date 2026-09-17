@@ -6,7 +6,7 @@ One TOML file holds every alias, one binary serves every command. State lives in
 
 ## Demos
 
-**Jump to any project.** `o acme` stacks a shell rooted at the alias directory; `o newproj C:\path` registers a new alias and jumps there in one step (if the directory does not exist, nix asks before creating it).
+**Jump to any project.** `o acme` stacks a shell rooted at the alias directory; `o newproj C:\path` registers a new alias and jumps there in one step (if the directory does not exist, nix asks before creating it - Enter says yes).
 
 ![o navigation](assets/navigate.gif)
 
@@ -490,6 +490,15 @@ trusted = ["hosts", "env"]
 It waives **nix's** confirmation and nothing else. UAC still prompts — that is the check that actually stops an unwanted elevation — and an unattended run still refuses, listed or not, because UAC cannot be answered where nobody is watching.
 
 The list lives in `config.toml`, not in an actions file, and that is deliberate: `config.toml` is yours and travels with no repo, so a cloned `actions.toml` can never grant itself the exemption. For the same reason a listed name is ignored the moment the invocation touches project bytes — listing `deploy` exempts *your* `deploy`, never a cloned repo's elevated one, and never a central action whose command runs a project script.
+
+#### Missing directories: `[confirm] create_dirs`
+
+When a path nix is about to use does not exist (registering `nix acme C:\new`, an alias whose folder was moved, a `seg@alias`, a group member), it asks `Create it? [Y/n]`; Enter creates it. Without a console (an agent's shell, a script, `--no-prompt`) it refuses and creates nothing, so a typo cannot quietly become an empty folder that the next write lands in. If you never want the question yourself:
+
+```toml
+[confirm]
+create_dirs = false   # create at a console without asking; unattended runs still refuse
+```
 
 ### Actions that arrived with a clone
 
