@@ -56,13 +56,25 @@ pub const Decision = enum {
 /// and is ANDed with `!has_cloned` so the exemption never carries onto project
 /// bytes. A non-interactive run refuses either way: UAC cannot be answered
 /// where nobody is watching.
-pub fn decide(elevated: bool, has_cloned: bool, implicit: bool, approved: bool, can_prompt: bool, trusted: bool) Decision {
+///
+/// `standing` is the alias appearing in config.toml's `[trust] always`, and is
+/// deliberately the opposite trade: it DOES carry onto project bytes, in any
+/// shell, because that is the whole of what it is for. Approval per file hash
+/// means a repo the user writes re-arms on every edit, so the prompt stops
+/// being about provenance and becomes a reflex. Naming the alias says "I own
+/// this" once.
+///
+/// It is read AFTER the elevated case for the same reason `trusted` is ANDed
+/// with `!has_cloned`: UAC names the shell rather than the command line, so an
+/// elevated action is not a provenance question and no standing grant can
+/// answer it. `[confirm] trusted` remains the way to waive that one.
+pub fn decide(elevated: bool, has_cloned: bool, implicit: bool, approved: bool, can_prompt: bool, trusted: bool, standing: bool) Decision {
     if (elevated) {
         if (!can_prompt) return .refuse_elevated;
         if (trusted and !has_cloned) return .allow;
         return .confirm_elevated;
     }
-    if (!has_cloned or implicit or approved) return .allow;
+    if (!has_cloned or implicit or approved or standing) return .allow;
     return if (can_prompt) .confirm_unapproved else .refuse_unapproved;
 }
 
@@ -179,11 +191,15 @@ pub fn gateAction(
     const decl: ?[]const u8 = if (from_project) try actions.projectPath(app.arena, dir) else null;
     const refs = try refs_zig.referencedFiles(app, dir, declared);
     const has_cloned = decl != null or refs.len > 0;
+    const standing = context.standing(app, alias);
 
     var record: []const u8 = "";
     var implicit = false;
     var approved = false;
-    if (has_cloned and !elevated) {
+    // Standing trust short-circuits the hashing as well as the prompt: reading
+    // and hashing every referenced script to reach an answer already known is
+    // the per-run cost the grant exists to remove.
+    if (has_cloned and !elevated and !standing) {
         implicit = context.underHome(app.home, dir);
         if (!implicit) {
             if (try recordForCommand(app, dir, from_project, name, declared)) |rec| {
@@ -196,7 +212,7 @@ pub fn gateAction(
     // the scripts it points at.
     const viewable = try withDecl(app, decl, refs);
     const trusted = elevated and isConfirmTrusted(app, name);
-    switch (decide(elevated, has_cloned, implicit, approved, canPrompt(app, mode), trusted)) {
+    switch (decide(elevated, has_cloned, implicit, approved, canPrompt(app, mode), trusted, standing)) {
         .allow => return true,
         .refuse_elevated => {
             try app.err.print("nix: :{s} runs as administrator, which needs a confirmation:\n", .{name});
@@ -258,6 +274,7 @@ fn listRefs(app: *App, refs: []const []const u8) !void {
 /// marker, so there is no elevated case here.
 pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) !bool {
     if (context.underHome(app.home, script)) return true; // ~/.nix/scripts, or a project under $home
+    if (context.standing(app, alias)) return true; // `[trust] always` - the user owns this repo
     const body = app_zig.readFileMaybe(app, script) orelse return true;
     const record = try scriptRecord(app.arena, body);
     if (context.isTrusted(app, record)) return true;
@@ -409,9 +426,14 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
 /// approval - the read-only form, for --doctor. Never prompts, never records.
 /// Goes through recordForCommand for the same reason --trust does: a --doctor
 /// that computed the token differently would report the wrong thing.
-pub fn unapproved(app: *App, dir: []const u8) bool {
+///
+/// It takes the alias, not just the dir, because standing trust is granted by
+/// NAME: a report that listed a standing-trusted alias as awaiting review would
+/// be describing a prompt that can no longer happen.
+pub fn unapproved(app: *App, alias: []const u8, dir: []const u8) bool {
     const path = actions.projectPath(app.arena, dir) catch return false;
     if (context.underHome(app.home, dir)) return false;
+    if (context.standing(app, alias)) return false;
     const body = app_zig.readFileMaybe(app, path) orelse return false;
     for (actions.parseTable(app.arena, body, "actions") catch return false) |a| {
         const record = (recordForCommand(app, dir, true, a.name, a.command) catch continue) orelse continue;
@@ -479,31 +501,48 @@ pub const Plan = struct {
 ///
 /// `NIX_E2E_TTY=1` is the test suite's way in - see `app_zig.e2eConsole`.
 pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: anytype, env_zig: anytype) !u8 {
-    if (rest.len < 1 or rest.len > 2) {
+    // `--always` is a different GRANT, not a different target, so it is lifted
+    // out before the positional count is checked - `nix --trust jpmine --always`
+    // must not read as the two-argument segment form.
+    var args: std.ArrayList([]const u8) = .empty;
+    var always = false;
+    for (rest) |a| {
+        if (util.eqlFoldAscii(a, "--always")) always = true else try args.append(app.arena, a);
+    }
+    if (args.items.len < 1 or args.items.len > 2 or (always and args.items.len != 1)) {
         try app.err.writeAll("usage: nix --trust <alias> [segment|env]   (approve an alias's project actions, scripts, context sources and env.toml as they stand)\n");
+        try app.err.writeAll("       nix --trust <alias> --always         (standing trust: stop asking about this alias at all)\n");
         return 1;
     }
-    const alias = rest[0];
+    const alias = args.items[0];
     if (!canGrant(app) and !app_zig.e2eConsole(app)) {
         try app.err.print("nix: --trust needs a console - it records that a person read this, so a person has to answer.\n", .{});
         try app.err.print("  Run it yourself in a terminal:\n    nix --trust {s}\n", .{alias});
         return 1;
     }
     const dir = (try resolve_zig.resolveAliasPath(app, alias)) orelse return 1;
+    if (always) return grantStanding(app, alias, dir);
+    // Once an alias is standing-trusted there is nothing left to record, and
+    // recording per-file rows anyway would leave approvals outliving the grant.
+    if (context.standing(app, alias)) {
+        try app.out.print("{s}: standing trust already - config.toml `[trust] always` names it, so nothing asks.\n", .{alias});
+        try app.out.writeAll("  Remove the name there to go back to per-file approval.\n");
+        return 0;
+    }
     const merged = try loadContextsFor(app, alias, dir);
     var plan: Plan = .{};
     // Project actions and scripts approve alongside context sources: one clone,
     // one review, one command. Named-segment form (`--trust acme seg`) is asking
     // about that segment specifically, so it leaves the action file alone.
-    if (rest.len < 2) try planProject(app, alias, dir, &plan);
+    if (args.items.len < 2) try planProject(app, alias, dir, &plan);
     // The project's env.toml, under the reserved word `env`. A context segment
     // could also be called "env", so the named form approves BOTH rather than
     // making one of them unreachable - the loop below still matches it.
-    if (rest.len < 2 or util.eqlFoldAscii(rest[1], "env")) {
+    if (args.items.len < 2 or util.eqlFoldAscii(args.items[1], "env")) {
         try env_zig.planEnv(app, alias, dir, &plan);
     }
     for (merged.contexts) |cd| {
-        if (rest.len == 2 and !util.eqlFoldAscii(cd.segment, rest[1])) continue;
+        if (args.items.len == 2 and !util.eqlFoldAscii(cd.segment, args.items[1])) continue;
         // Resolve exactly as resolution will: an inline `run` wins, else the
         // producer named by `uses`. A context with neither executes nothing and
         // has nothing to approve.
@@ -546,6 +585,48 @@ pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: an
     }
     for (plan.grants.items) |g| try recordTrust(app, g.record, g.label);
     try app.out.writeAll(plan.done.items);
+    return 0;
+}
+
+/// grantStanding is `nix --trust <alias> --always`: it adds the alias to
+/// config.toml's `[trust] always` instead of hashing anything.
+///
+/// It is held to `--trust`'s own standard and then some. The console check has
+/// already run above, so a shell with nobody in it cannot reach here - which is
+/// the point, since this grant is precisely what lets an agent's shell run
+/// project code unreviewed afterwards. What it adds is that the question spells
+/// out the reach BEFORE asking, because unlike a per-file approval this one
+/// covers bytes that do not exist yet.
+///
+/// The per-file rows for the alias are deliberately left in place. They cost
+/// nothing, they are what the gate falls back to the moment the name is removed
+/// from config.toml, and deleting them would make ungranting silently stricter
+/// than it was before the grant.
+fn grantStanding(app: *App, alias: []const u8, dir: []const u8) !u8 {
+    if (context.standing(app, alias)) {
+        try app.out.print("{s}: already has standing trust.\n", .{alias});
+        return 0;
+    }
+    try app.out.print("{s} -> {s}\n", .{ alias, dir });
+    try app.out.writeAll("Standing trust stops nix asking about this alias at all. It covers:\n");
+    try app.out.writeAll("  - its project actions and the scripts they run\n");
+    try app.out.writeAll("  - bare-name scripts in .nix/scripts/\n");
+    try app.out.writeAll("  - .nix/env.toml, which sets variables for every command run there\n");
+    try app.out.writeAll("  - its context sources\n");
+    try app.out.writeAll("...as they stand AND as they are edited later, by anyone, including in a\n");
+    try app.out.writeAll("shell with no console - so an agent that edits a script here can then run it\n");
+    try app.out.writeAll("without a person seeing the change. Grant it for repos you write, not clones.\n");
+    try app.out.writeAll("An action that elevates (sudo) still confirms every time.\n");
+    if (!try confirm(app, "Grant standing trust?", &.{})) {
+        try app.err.writeAll("nix: nothing was granted\n");
+        return 1;
+    }
+    const written = (try config.addTrustAlways(app.arena, app.io, app.home, alias)) orelse {
+        try app.out.print("{s}: already listed in [trust] always\n", .{alias});
+        return 0;
+    };
+    try app.out.print("{s}: standing trust granted, in {s} under [trust] always\n", .{ alias, written });
+    try app.out.print("  Remove the name there to re-arm the gate; `nix --doctor` lists what has it.\n", .{});
     return 0;
 }
 
@@ -655,8 +736,8 @@ test "decide: elevated is answered before provenance, approval cannot suppress i
     for ([_]bool{ true, false }) |has_cloned| {
         for ([_]bool{ true, false }) |implicit| {
             for ([_]bool{ true, false }) |approved| {
-                try std.testing.expectEqual(Decision.confirm_elevated, decide(true, has_cloned, implicit, approved, true, false));
-                try std.testing.expectEqual(Decision.refuse_elevated, decide(true, has_cloned, implicit, approved, false, false));
+                try std.testing.expectEqual(Decision.confirm_elevated, decide(true, has_cloned, implicit, approved, true, false, false));
+                try std.testing.expectEqual(Decision.refuse_elevated, decide(true, has_cloned, implicit, approved, false, false, false));
             }
         }
     }
@@ -668,32 +749,48 @@ test "decide: [confirm] trusted waives the prompt, but never over cloned code" {
     // elevated path ignores either way.
     for ([_]bool{ true, false }) |implicit| {
         for ([_]bool{ true, false }) |approved| {
-            try std.testing.expectEqual(Decision.allow, decide(true, false, implicit, approved, true, true));
+            try std.testing.expectEqual(Decision.allow, decide(true, false, implicit, approved, true, true, false));
         }
     }
     // The moment project bytes are involved the exemption is gone - a listed
     // `deploy` must not silence the prompt for a cloned repo's own elevated
     // `deploy`, nor for a central action that runs a project script.
-    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, false, false, true, true));
-    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, true, true, true, true));
+    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, false, false, true, true, false));
+    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, true, true, true, true, false));
     // And it never turns a refusal into a run: UAC cannot be answered where
     // nobody is watching, so a non-interactive elevated call still refuses.
-    try std.testing.expectEqual(Decision.refuse_elevated, decide(true, false, false, false, false, true));
+    try std.testing.expectEqual(Decision.refuse_elevated, decide(true, false, false, false, false, true, false));
     // Unlisted is exactly the old behaviour.
-    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, false, false, false, true, false));
+    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, false, false, false, true, false, false));
 }
 
 test "decide: only unapproved cloned code is gated" {
     // Nothing cloned in play - a central action naming no project script, or a
     // typed command: the user is the provenance.
-    try std.testing.expectEqual(Decision.allow, decide(false, false, false, false, true, false));
+    try std.testing.expectEqual(Decision.allow, decide(false, false, false, false, true, false, false));
     // A project under $home is code the user wrote, not code that arrived.
-    try std.testing.expectEqual(Decision.allow, decide(false, true, true, false, true, false));
+    try std.testing.expectEqual(Decision.allow, decide(false, true, true, false, true, false, false));
     // Approved bytes run without asking again - that is what approval buys.
-    try std.testing.expectEqual(Decision.allow, decide(false, true, false, true, true, false));
+    try std.testing.expectEqual(Decision.allow, decide(false, true, false, true, true, false, false));
     // Unapproved: ask if there is someone to ask, refuse if there is not.
-    try std.testing.expectEqual(Decision.confirm_unapproved, decide(false, true, false, false, true, false));
-    try std.testing.expectEqual(Decision.refuse_unapproved, decide(false, true, false, false, false, false));
+    try std.testing.expectEqual(Decision.confirm_unapproved, decide(false, true, false, false, true, false, false));
+    try std.testing.expectEqual(Decision.refuse_unapproved, decide(false, true, false, false, false, false, false));
+}
+
+test "decide: standing trust covers cloned bytes in any shell, but never elevation" {
+    // The friction it exists for: unapproved project code, no console (an
+    // agent's shell), which used to be the refusal nobody saw. Both the
+    // prompting and the non-prompting case now run.
+    try std.testing.expectEqual(Decision.allow, decide(false, true, false, false, true, false, true));
+    try std.testing.expectEqual(Decision.allow, decide(false, true, false, false, false, false, true));
+    // It is not a blanket waiver: an elevated action still confirms, and still
+    // refuses where nobody can answer UAC. `[confirm] trusted` is the only way
+    // past that one, and standing trust must not become a second one.
+    try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, false, false, true, false, true));
+    try std.testing.expectEqual(Decision.refuse_elevated, decide(true, true, false, false, false, false, true));
+    // Without the grant, the same inputs are the old behaviour - so the arm
+    // above is the grant doing it, not some other condition.
+    try std.testing.expectEqual(Decision.refuse_unapproved, decide(false, true, false, false, false, false, false));
 }
 
 test "records: the two kinds cannot approve one another" {

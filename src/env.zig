@@ -224,8 +224,10 @@ pub fn load(app: *App, alias: []const u8, dir: []const u8) !Loaded {
     var untrusted = false;
     if (pbody) |body| {
         // A project that itself lives under $home is the user's own writing,
-        // the same rule the action and context gates use.
+        // the same rule the action and context gates use; `[trust] always` says
+        // the same thing about a project that lives anywhere else.
         if (context.underHome(app.home, ppath) or
+            context.standing(app, alias) or
             context.isTrusted(app, try trustRecord(app.arena, body)))
         {
             usable = body;
@@ -247,6 +249,8 @@ pub fn load(app: *App, alias: []const u8, dir: []const u8) !Loaded {
 pub fn planEnv(app: *App, alias: []const u8, dir: []const u8, plan: *provenance.Plan) !void {
     const path = try projectPath(app.arena, dir);
     if (context.underHome(app.home, path)) return;
+    if (context.standing(app, alias)) return; // standing trust already covers it
+
     const body = app_zig.readFileMaybe(app, path) orelse return;
     const record = try trustRecord(app.arena, body);
     if (context.isTrusted(app, record)) {

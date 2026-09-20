@@ -526,6 +526,29 @@ Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.t
 
 **Nothing can approve on your behalf** — including `--trust` itself. Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead; run `--trust` in one of those and it refuses too, saying it needs a console because it exists to record that a *person* read this. That's deliberate: an agent approving a repo it just cloned is the check approving itself. It is a consent boundary rather than a security one — anything running as you can append to `trusted.toml` directly — but the ordinary way of granting trust now needs the person whose trust it is.
 
+#### Standing trust, for repos you write
+
+Everything above is built for code that *arrived*. For a repo you are actively writing, the same discipline inverts: every edit re-arms the gate, so the prompt stops asking a question you don't know the answer to and starts asking one you do, several times a day. That is how `y` becomes a reflex — one project here accounted for 43 of the 100 rows in `trusted.toml`.
+
+So an alias can be trusted **by name**, once:
+
+```
+nix --trust jpmine --always
+```
+
+It spells out the reach before asking, and on a yes it writes the name into `~/.nix/config.toml`:
+
+```toml
+[trust]
+always = ["jpmine", "jap"]
+```
+
+From then on that alias never raises the gate — not for its actions, its `.nix/scripts`, its `env.toml` or its context sources; not for edits made after the grant; and not in a shell with no console, which is the part that matters, since most of those edits come from an agent session. Be clear about what you're buying: an agent can edit a script in a standing-trusted repo and then run it without you having seen the change. That is the point for a repo you own, and exactly why the grant is per alias and opt-in rather than per parent directory — a directory would also trust whatever gets cloned into it next year.
+
+Two things it deliberately does not do. It **does not waive the elevated confirmation**: a `sudo` action still shows its line every run, because UAC names the shell rather than the command and that prompt is the only place the command is ever displayed. (`[confirm] trusted` remains the way to waive that one, for a specific action name.) And it **does not touch the per-file ledger**: delete the name from `config.toml` and the gate comes back exactly as strict as it was, with whatever was approved before still approved.
+
+Granting it needs a console, same as `--trust`, so an agent cannot standing-trust the repo it is editing. `nix --doctor` lists which aliases have it — a grant that outlives the session that made it has to be findable by someone who has forgotten making it.
+
 ### Failures don't vanish from a shortcut
 
 Pin `x acme :build :test` to the Start menu and Windows makes a console for it, then destroys that console the moment nix exits — so a failure prints its message and disappears in the same instant. When nix is the **only** process attached to its console, it knows the window is about to go with it, and waits:

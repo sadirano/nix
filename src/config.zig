@@ -57,6 +57,20 @@ pub const Config = struct {
     /// with nobody to ask it still refuses, which is the part that protects
     /// against an agent's typo.
     confirm_create_dirs: bool = true,
+    /// [trust] always: aliases whose project files never raise nix's approval
+    /// prompt - their actions, scripts, env.toml and context segments run as
+    /// they stand, including edits made later and in shells with no console.
+    ///
+    /// The provenance gate exists for bytes that arrived with a `git clone`.
+    /// For a repo the user WRITES, every edit re-arms it, so the prompt stops
+    /// asking about provenance and starts training a reflex `y` - one alias
+    /// held 43 of the 100 rows in the ledger. Standing trust says "I own this"
+    /// once instead.
+    ///
+    /// It lives in config.toml for the same reason `confirm_trusted` does: no
+    /// cloned file can reach it. It does NOT waive the elevated confirmation,
+    /// which is not a provenance question (provenance.decide).
+    trust_always: []const []const u8 = &.{},
     /// [notify] on_finish: command template run after every foreground
     /// `r <alias> :action` finishes — the notification hook (e.g. hoot).
     /// Placeholders: {alias} {action} {exit} {status} {duration} {level}
@@ -233,7 +247,7 @@ fn configPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 }
 
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
-/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted/create_dirs, [bin] foreign,
+/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted/create_dirs, [trust] always, [bin] foreign,
 /// and [watch] exclude. Unknown sections are ignored. A missing file yields the
 /// zero Config.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
@@ -333,6 +347,12 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
                 cfg.confirm_trusted = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             }
             if (std.mem.eql(u8, key, "create_dirs")) cfg.confirm_create_dirs = parseBool(stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "trust")) {
+            if (std.mem.eql(u8, key, "always")) {
+                cfg.trust_always = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
+            }
             continue;
         }
         if (std.mem.eql(u8, section, "watch")) {
@@ -530,4 +550,132 @@ test "shortcutSlotOverrides counts slots, not entries" {
     // none of them silently passes as a slot.
     for ([_][]const u8{ "r", "sg", "ff" }) |retired| try std.testing.expect(!isBuiltinSlot(retired));
     for ([_][]const u8{ "o", "e", "s", "y", "p", "x", "g", "f", "q", "n" }) |slot| try std.testing.expect(isBuiltinSlot(slot));
+}
+
+// ---- writing `[trust] always` ------------------------------------------------
+
+/// renderTrustAlways rewrites config.toml so `[trust] always` holds `names`,
+/// leaving every other byte alone.
+///
+/// A whole-file reserialization would be shorter and would throw away the
+/// comments this file is mostly made of - config.toml is the one nix file the
+/// user writes by hand, and `nix --trust --always` is not a reason to reformat
+/// it. So the array is replaced in place when it exists, and a new `[trust]`
+/// block is appended when it does not.
+///
+/// Returns null when there is nothing to write (the array already reads this
+/// way), so the caller can say "already granted" rather than rewriting the file
+/// to identical bytes.
+pub fn renderTrustAlways(arena: std.mem.Allocator, existing: []const u8, names: []const []const u8) !?[]const u8 {
+    var arr: std.ArrayList(u8) = .empty;
+    try arr.appendSlice(arena, "always = [");
+    for (names, 0..) |n, i| {
+        if (i > 0) try arr.appendSlice(arena, ", ");
+        try arr.print(arena, "\"{s}\"", .{n});
+    }
+    try arr.append(arena, ']');
+
+    var out: std.ArrayList(u8) = .empty;
+    var section: []const u8 = "";
+    var replaced = false;
+    // Split the body WITHOUT its final newline: splitting "a\n" yields a
+    // trailing empty piece, and re-terminating that piece appends a blank line
+    // to config.toml on every grant.
+    const body = if (std.mem.endsWith(u8, existing, "\n")) existing[0 .. existing.len - 1] else existing;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (if (body.len == 0) null else lines.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        const t = std.mem.trim(u8, line, " \t");
+        if (t.len > 1 and t[0] == '[' and t[t.len - 1] == ']') section = t[1 .. t.len - 1];
+        const is_key = std.mem.eql(u8, section, "trust") and
+            std.mem.startsWith(u8, t, "always") and
+            std.mem.indexOfScalar(u8, t, '=') != null;
+        if (!is_key) {
+            try out.appendSlice(arena, line);
+            try out.append(arena, '\n');
+            continue;
+        }
+        // Swallow the old value, however many lines its array spans, then emit
+        // the new one-liner in its place. A leftover `]` would be parsed as a
+        // section header and silently reassign every key after it.
+        var depth: usize = std.mem.count(u8, t, "[") - @min(std.mem.count(u8, t, "["), std.mem.count(u8, t, "]"));
+        while (depth > 0) {
+            const cont = lines.next() orelse break;
+            depth += std.mem.count(u8, cont, "[");
+            depth -= @min(depth, std.mem.count(u8, cont, "]"));
+        }
+        try out.appendSlice(arena, arr.items);
+        try out.append(arena, '\n');
+        replaced = true;
+    }
+    if (!replaced) {
+        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.append(arena, '\n');
+        try out.appendSlice(arena,
+            \\
+            \\# [trust] always names the aliases whose project files never raise nix's
+            \\# approval prompt - their actions, scripts, env.toml and context sources
+            \\# run as they stand, including edits made later and in shells with no
+            \\# console. The gate exists for code that arrived with a clone; these are
+            \\# repos you write. An elevated (sudo) action still confirms every time.
+            \\[trust]
+            \\
+        );
+        try out.appendSlice(arena, arr.items);
+        try out.append(arena, '\n');
+    }
+    if (std.mem.eql(u8, out.items, existing)) return null;
+    return out.items;
+}
+
+/// addTrustAlways adds `alias` to config.toml's `[trust] always`, creating the
+/// section if it is not there. Null when the alias was already listed; the
+/// config's path when it was written.
+pub fn addTrustAlways(arena: std.mem.Allocator, io: Io, home: []const u8, alias: []const u8) !?[]const u8 {
+    const path = try configPath(arena, home);
+    const existing = Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |e| switch (e) {
+        error.FileNotFound => "",
+        else => return e,
+    };
+    const cfg = try loadConfig(arena, io, home);
+    var names: std.ArrayList([]const u8) = .empty;
+    for (cfg.trust_always) |n| {
+        if (store.eqlFoldAscii(n, alias)) return null;
+        try names.append(arena, n);
+    }
+    try names.append(arena, alias);
+    const rendered = (try renderTrustAlways(arena, existing, names.items)) orelse return null;
+    try util.writeFileAtomic(arena, io, path, rendered);
+    return path;
+}
+
+test renderTrustAlways {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // No [trust] section: the block is appended, and nothing above it moves.
+    const kept = "[notify]\non_finish = 'x'\n";
+    const made = (try renderTrustAlways(a, kept, &.{"jpmine"})).?;
+    try std.testing.expect(std.mem.startsWith(u8, made, kept));
+    try std.testing.expect(std.mem.indexOf(u8, made, "[trust]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, made, "always = [\"jpmine\"]") != null);
+
+    // An existing single-line array is replaced, not appended to twice.
+    const one = "[trust]\nalways = [\"jpmine\"]\n[grep]\nall = true\n";
+    const two = (try renderTrustAlways(a, one, &.{ "jpmine", "jap" })).?;
+    try std.testing.expectEqualStrings("[trust]\nalways = [\"jpmine\", \"jap\"]\n[grep]\nall = true\n", two);
+
+    // A multi-line array is swallowed whole: a leftover `]` line would read as
+    // a section header and reassign every key below it.
+    const multi = "[trust]\nalways = [\n  \"jpmine\",\n  \"jap\",\n]\n[grep]\nall = true\n";
+    const flat = (try renderTrustAlways(a, multi, &.{ "jpmine", "jap" })).?;
+    try std.testing.expectEqualStrings("[trust]\nalways = [\"jpmine\", \"jap\"]\n[grep]\nall = true\n", flat);
+
+    // An `always` key outside [trust] belongs to somebody else; leave it alone.
+    const other = "[watch]\nalways = [\"x\"]\n";
+    const safe = (try renderTrustAlways(a, other, &.{"jpmine"})).?;
+    try std.testing.expect(std.mem.indexOf(u8, safe, "[watch]\nalways = [\"x\"]") != null);
+
+    // Identical result means there is nothing to write.
+    try std.testing.expectEqual(@as(?[]const u8, null), try renderTrustAlways(a, "[trust]\nalways = [\"jpmine\"]\n", &.{"jpmine"}));
 }

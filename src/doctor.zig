@@ -14,6 +14,7 @@ const picker = @import("picker.zig");
 const bin_exports = @import("bin_exports.zig");
 const util = @import("util.zig");
 const provenance = @import("provenance.zig");
+const context = @import("context.zig");
 const notes = @import("notes.zig");
 const groups = @import("groups.zig");
 const env_zig = @import("env.zig");
@@ -466,11 +467,25 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         {
             var pending: std.ArrayList([]const u8) = .empty;
             for (aliases.items) |a| {
-                if (provenance.unapproved(app, a.path)) try pending.append(app.arena, a.name);
+                if (provenance.unapproved(app, a.name, a.path)) try pending.append(app.arena, a.name);
             }
             if (pending.items.len > 0) {
                 try d.row(.note, "unapproved", try std.fmt.allocPrint(app.arena, "project actions awaiting review: {s}", .{try std.mem.join(app.arena, ", ", pending.items)}));
                 try d.cont("read the file, then `nix --trust <alias>` (an edit re-arms it)");
+            }
+        }
+
+        // Standing trust is a grant that outlives the session that made it, so
+        // it has to be visible somewhere the user already looks - otherwise the
+        // only evidence an alias stopped asking is that it stopped asking.
+        {
+            var always: std.ArrayList([]const u8) = .empty;
+            for (aliases.items) |a| {
+                if (context.standing(app, a.name)) try always.append(app.arena, a.name);
+            }
+            if (always.items.len > 0) {
+                try d.row(.note, "trust", try std.fmt.allocPrint(app.arena, "standing trust, never asks: {s}", .{try std.mem.join(app.arena, ", ", always.items)}));
+                try d.cont("granted in config.toml `[trust] always` - remove a name there to re-arm the gate");
             }
         }
 

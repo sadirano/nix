@@ -825,6 +825,13 @@ pub const specs = [_]Spec{
         \\under ~/.nix and the user wrote them. An ELEVATED action is confirmed
         \\on EVERY run and cannot be pre-approved: UAC names the shell, not the
         \\command, so that prompt is the only place its line is ever shown.
+        \\
+        \\STANDING TRUST is the exception, and it is the user's to grant: an
+        \\alias named in config.toml's `[trust] always` is never asked about,
+        \\whatever changes and whichever shell runs it. So on some aliases the
+        \\gate will simply not appear. `nix --doctor` lists which ones have it;
+        \\`nix --trust <alias> --always` grants it and refuses without a console,
+        \\exactly as `--trust` does, so it is not yours to run either.
         ,
         .agent_use =
         \\Prefer writing an action over handing the user a command line. It

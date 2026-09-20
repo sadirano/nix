@@ -280,7 +280,7 @@ fn addDecls(
                 // resolved out of a committed actions.toml is cloned code, and
                 // choosing a name for it is not consent to run it. A central or
                 // machine-wide action is the user's own and passes.
-                const blocked: ?[]const u8 = if (resolved.from_project and provenance.unapproved(app, d.dir))
+                const blocked: ?[]const u8 = if (resolved.from_project and provenance.unapproved(app, d.alias, d.dir))
                     try std.fmt.allocPrint(app.arena, "{s}'s actions are unapproved - review them with `nix --trust {s}`", .{ d.alias, d.alias })
                 else
                     null;

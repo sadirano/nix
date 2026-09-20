@@ -27,6 +27,7 @@ const segments = @import("segments.zig");
 const actions = @import("actions.zig");
 const util = @import("util.zig");
 const ctxcache = @import("ctxcache.zig");
+const config = @import("config.zig");
 
 const App = app_zig.App;
 const Var = segments.Var;
@@ -286,6 +287,23 @@ pub fn isTrusted(app: *App, record: []const u8) bool {
     return false;
 }
 
+/// standing reports whether config.toml's `[trust] always` names this alias.
+///
+/// It answers a different question from `isTrusted`: not "have these bytes been
+/// read" but "does the user own this repo". A `git clone` cannot put a name in
+/// config.toml, so the two together still mean nobody else's code runs
+/// unreviewed - but the user's own project stops re-arming on every edit.
+///
+/// Read from disk per call rather than cached on App, matching `isTrusted`: the
+/// gate must reflect config.toml as it stands, and an unreadable config means
+/// "not listed", so a broken file fails toward the prompt.
+pub fn standing(app: *App, alias: []const u8) bool {
+    if (alias.len == 0) return false;
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return false;
+    for (cfg.trust_always) |a| if (util.eqlFoldAscii(a, alias)) return true;
+    return false;
+}
+
 // recordTrust - the ledger's WRITE half - lives in provenance.zig, beside the
 // policy that decides what to record and constructs the labels.
 
@@ -439,7 +457,7 @@ pub fn run(
     // happened to look up earlier. The gate has to mean one thing. locate()
     // already read and hashed both files for the cache key, so this costs one
     // extra read of trusted.toml.
-    if (!r.implicit_trust and !isTrusted(app, r.record)) {
+    if (!r.implicit_trust and !standing(app, alias) and !isTrusted(app, r.record)) {
         try app.err.print("nix: {s} wants to run: {s}\n", .{ src.label, src.run });
         try app.err.print("  declared in {s}\n", .{src.origin});
         try app.err.print("  script      {s}\n", .{r.script});

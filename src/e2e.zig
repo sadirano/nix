@@ -754,6 +754,75 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "--no-prompt never consents", r);
     }
 
+    // --- standing trust (`[trust] always`) --------------------------------------
+    // The opposite trade from everything above: an alias the user OWNS stops
+    // being asked about, including for bytes edited after the grant and in a
+    // shell with no console. Its own alias and its own config.toml, both torn
+    // down at the end, so nothing here leaks into the checks that follow.
+    {
+        const ps = join(&c, &.{ root, "proj", "ps" });
+        util.mkdirAll(io, ps) catch {};
+        _ = try c.run(&.{ "ps", ps });
+        const ps_actions = join(&c, &.{ ps, ".nix", "actions.toml" });
+        const cfg = join(&c, &.{ home, "config.toml" });
+        try writeFile(&c, ps_actions, "[actions]\nbuild = \"echo ps-one\"\n");
+
+        // The grant is a consent step, so it is held to `--trust`'s standard:
+        // no console, no grant. This is what stops an agent standing-trusting
+        // the repo it is editing.
+        try c.env.put("NIX_E2E_TTY", "0");
+        var r = try c.run(&.{ "--trust", "ps", "--always" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "needs a console") != null, "--trust --always refuses where there is nobody to ask", r);
+        try c.env.put("NIX_E2E_TTY", "1");
+
+        // It also states its reach before asking, and a no grants nothing.
+        r = try c.runAnswering(&.{ "--trust", "ps", "--always" }, "n\n");
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nothing was granted") != null and
+            std.mem.indexOf(u8, r.out, "edited later") != null, "--trust --always says what it covers, and a no grants nothing", r);
+        r = try c.run(&.{ "ps", "--run", ":build" });
+        c.check(r.code != 0, "a declined standing grant leaves the gate armed", r);
+
+        r = try c.runAnswering(&.{ "--trust", "ps", "--always" }, "y\n");
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "standing trust granted") != null, "--trust --always grants", r);
+        const written = try Io.Dir.cwd().readFileAlloc(io, cfg, arena, .unlimited);
+        c.check(std.mem.indexOf(u8, written, "[trust]") != null and
+            std.mem.indexOf(u8, written, "\"ps\"") != null, "the grant lands in config.toml where it can be read and removed", r);
+
+        // The friction it exists for: the file changes under an alias the user
+        // writes, and nothing asks again. The harness's children have no
+        // console, so this is an agent's shell running an edit nobody approved.
+        try writeFile(&c, ps_actions, "[actions]\nbuild = \"echo ps-two\"\n");
+        r = try c.run(&.{ "ps", "--run", ":build" });
+        c.check(r.code == 0 and hasLineFold(r.out, "ps-two"), "an edit to a standing-trusted alias runs without approval", r);
+        r = try c.run(&.{ "--no-prompt", "ps", "--run", ":build" });
+        c.check(r.code == 0 and hasLineFold(r.out, "ps-two"), "standing trust holds under --no-prompt too", r);
+
+        // It reaches the other three gated things, not just actions.toml.
+        const ps_script = join(&c, &.{ ps, ".nix", "scripts", if (proc.is_windows) "ran.cmd" else "ran.sh" });
+        try writeFile(&c, ps_script, if (proc.is_windows) "@echo ps-script\n" else "#!/bin/sh\necho ps-script\n");
+        r = try c.run(&.{ "ps", "--run", "ran" });
+        c.check(r.code == 0 and hasLineFold(r.out, "ps-script"), "a project script under standing trust runs unapproved", r);
+        try writeFile(&c, join(&c, &.{ ps, ".nix", "env.toml" }), "[env]\nPS_VAR = \"ps-env\"\n");
+        try writeFile(&c, ps_actions, if (proc.is_windows)
+            "[actions]\nshow = \"echo var=[%PS_VAR%]\"\n"
+        else
+            "[actions]\nshow = \"echo var=[$PS_VAR]\"\n");
+        r = try c.run(&.{ "ps", "--run", ":show" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "var=[ps-env]") != null, "an unapproved env.toml injects under standing trust", r);
+
+        // --doctor names it, because a grant that outlives the session has to be
+        // findable by someone who has forgotten making it.
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "standing trust") != null and
+            std.mem.indexOf(u8, r.out, "ps") != null, "--doctor reports which aliases have standing trust", r);
+
+        // Removing the name is the whole of ungranting: the per-file ledger is
+        // untouched, so the gate comes back exactly as strict as it was.
+        Io.Dir.cwd().deleteFile(io, cfg) catch {};
+        r = try c.run(&.{ "ps", "--run", ":show" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not been approved") != null, "removing the name from config.toml re-arms the gate", r);
+    }
+
     // --- per-project environment (.nix/env.toml) --------------------------------
     {
         const pe = join(&c, &.{ root, "proj", "pe" });

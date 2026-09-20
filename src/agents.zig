@@ -137,7 +137,12 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   `--trust` is not yours to run, and will not let you: it prints
         \\   everything it would approve, asks once, and without a console it
         \\   refuses exactly as the gate does. Files under `~/.nix` are not
-        \\   gated.
+        \\   gated, and neither is an alias the user has given STANDING TRUST
+        \\   (`[trust] always` in config.toml, granted by
+        \\   `nix --trust <alias> --always`, listed by `nix --doctor`) - there
+        \\   the gate never appears, however the files change. That grant is the
+        \\   user's, refuses without a console like `--trust`, and is not yours
+        \\   to ask for on your own behalf.
         \\   Configuration the commands NEED goes in `.nix/env.toml` under
         \\   `[env]`, and is set for every `{[x]s} <alias> ...` and every
         \\   `{[o]s} <alias>` session (`~/.nix/env/<alias>.toml` is the private

@@ -121,7 +121,7 @@ pub const system = [_]System{
     .{ .flags = &.{ "--sync", "-S" }, .verb = .sync, .help = "regenerate wrappers and generated files", .spec = "" },
     .{ .flags = &.{"--sync-bin"}, .verb = .sync_bin, .help = "install projects' [bin] exports into ~/.nix/bin", .spec = "--sync-bin" },
     .{ .flags = &.{"--secret"}, .verb = .secret, .args = "set|rm|list [NAME]", .help = "manage ${secret:NAME} values for actions (Windows Credential Manager)", .spec = "--secret" },
-    .{ .flags = &.{"--trust"}, .verb = .trust, .args = "<alias> [segment|env]", .help = "approve an alias's project actions, scripts, context sources and env.toml as they stand", .spec = "" },
+    .{ .flags = &.{"--trust"}, .verb = .trust, .args = "<alias> [segment|env]", .help = "approve an alias's project actions, scripts, context sources and env.toml as they stand\nadd --always to stop asking about that alias for good ([trust] always in config.toml)", .spec = "" },
     .{ .flags = &.{"--agent"}, .verb = .agent, .args = "[topic]", .help = "full command spec for an agent (`<cmd> --agent` works too)", .spec = "" },
     .{ .flags = &.{"--quit"}, .verb = .quit, .args = "[--dry-run]", .help = "close the shell this ran in (the `q` command)", .spec = "q" },
     .{ .flags = &.{ "--version", "-v" }, .verb = .version, .help = "print version and platform", .spec = "" },
