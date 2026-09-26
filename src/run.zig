@@ -410,7 +410,7 @@ pub fn stripSudo(command: []const u8) ?[]const u8 {
 /// project's own environment (env.zig).
 ///
 /// Rebuilt from orig_path each call, so repeated runs never stack dirs or leak
-/// a previous group member's alias. Returns app.env, or null when `mode` is
+/// a previous run's alias. Returns app.env, or null when `mode` is
 /// `.run` and a `${secret:NAME}` could not be resolved - the caller must then
 /// abort without spawning, the reason having been printed.
 pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.Mode) !?*std.process.Environ.Map {

@@ -75,8 +75,8 @@ pub const EnvVar = struct { key: []const u8, value: []const u8, from_secret: boo
 /// the name was not set at all before nix put it there.
 ///
 /// Removing an injected name is not the same as undoing the injection: if the
-/// ambient environment already had DATABASE_URL and one group member's env.toml
-/// overrides it, a plain remove leaves the NEXT member with no DATABASE_URL at
+/// ambient environment already had DATABASE_URL and one run's env.toml
+/// overrides it, a plain remove leaves the NEXT run with no DATABASE_URL at
 /// all - nix would have deleted a variable the user set, which no layer of
 /// config asked for. Restoring is the undo; removing is only the undo for a
 /// name that was not there to begin with.
