@@ -138,11 +138,25 @@ pub fn exePath(app: *App) []const u8 {
     return p;
 }
 
-/// canAsk reports whether a question put to stdin has a person behind it. An
-/// agent's shell, a script, and --no-prompt all answer no, and every consent
-/// gate refuses there rather than deciding on the user's behalf.
+/// The two "is anyone there" questions, in one place. They used to be spelled
+/// inline in six modules with three different answers, so which prompts
+/// honoured the harness and which refused under --no-prompt was a matter of
+/// which file you were reading.
+///
+/// canAsk: a yes/no typed on stdin can be read. An agent's shell, a script and
+/// --no-prompt all answer no; the e2e harness's piped stdin answers yes (see
+/// e2eConsole), because the answer still has to arrive as bytes. For the
+/// create-dir, repoint and `--trust` prompts.
 pub fn canAsk(app: *App) bool {
     return !app.no_prompt and (proc.interactive() or e2eConsole(app));
+}
+
+/// hasConsole: a real console is attached, which is what a TUI needs (fzf
+/// draws on it and reads keys from it) and what the provenance gate demands
+/// before it prompts at all - an agent's shell must be REFUSED there rather
+/// than prompted into, and the harness stands in for that shell on purpose.
+pub fn hasConsole(app: *App) bool {
+    return !app.no_prompt and proc.interactive();
 }
 
 /// e2eConsole is the one hook past the console check, for the test suite: it

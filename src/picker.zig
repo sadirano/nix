@@ -250,7 +250,7 @@ const PickFilter = struct {
 /// the picked directory (the caller registers it). null = cancelled / no match.
 pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
     // fzf needs a real console - without one it waits on nobody forever.
-    if (!proc.interactive()) {
+    if (!app_zig.hasConsole(app)) {
         try app.err.print("nix: unknown alias \"{s}\" (register it: nix {s} <path>)\n", .{ name, name });
         return null;
     }
