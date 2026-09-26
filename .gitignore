@@ -9,3 +9,6 @@ dist/
 # Python bytecode from the tools/ scripts
 __pycache__/
 *.py[cod]
+
+# Local agent/user handoffs and generated jobs; never commit by accident.
+/.nix/shared/
