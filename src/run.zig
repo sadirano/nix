@@ -85,6 +85,12 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
         for ([_][]const u8{ ".cmd", ".bat", ".exe", ".ps1" }) |ext| {
             const cand = try std.fmt.allocPrint(app.arena, "{s}{c}{s}{s}", .{ target, store.sep, exe, ext });
             if (proc.fileExists(app.io, cand)) {
+                // A script in the alias ROOT reached by bare name is cloned code
+                // exactly as one under .nix/scripts is - and this probe reaches
+                // a `.ps1` CreateProcess never would have. Gating the scripts
+                // dir but not the directory beside it would move the unreviewed
+                // code one folder up, so the same gate applies here.
+                if (!try provenance.gateScript(app, alias, cand, .may_prompt)) return 1;
                 resolved[0] = cand;
                 break;
             }
