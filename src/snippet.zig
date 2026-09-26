@@ -234,7 +234,9 @@ fn installExeWrappers(
 /// caller's stale check.
 fn writeExeAtomic(arena: std.mem.Allocator, io: Io, dst: []const u8, data: []const u8) !void {
     const tmp = try util.uniqueTmpName(arena, io, dst);
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data });
+    // Executable: a wrapper is a copy of the exe, and off Windows the mode bit
+    // is what makes it one.
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data, .flags = .{ .permissions = .executable_file } });
     Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), dst, io) catch |first_err| {
         // Busy but already current: a live session on the NEW build is not a
         // replacement problem — don't park its image on every sync.
