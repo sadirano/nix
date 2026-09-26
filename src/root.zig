@@ -6,6 +6,7 @@ pub const toml = @import("toml.zig");
 pub const dialects = @import("dialects.zig");
 pub const cmd_registry = @import("cmd_registry.zig");
 pub const segments = @import("segments.zig");
+pub const segwalk = @import("segwalk.zig");
 pub const context = @import("context.zig");
 pub const actions = @import("actions.zig");
 pub const provenance = @import("provenance.zig");
