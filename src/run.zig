@@ -349,17 +349,6 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
     return 0;
 }
 
-/// resolveDirQuiet resolves an alias to its path for the dependency walk. It
-/// must NOT be resolveAliasPath: that one records usage, prints its own errors
-/// and materializes a missing directory, none of which belong in a graph walk
-/// that is still deciding whether the chain is runnable at all.
-fn resolveDirQuiet(app: *App, alias: []const u8) anyerror!?[]const u8 {
-    const data = try store.readAliasesFile(app.arena, app.io, app.home);
-    const list = try store.loadAliases(app.arena, data);
-    for (list.items) |a| if (store.eqlFoldAscii(a.name, alias)) return a.path;
-    return null;
-}
-
 /// applyArgs splices a call's arguments into a command string: into every
 /// `{args}` placeholder if there is one, else onto the end. Arguments arrive
 /// already split by the user's shell, so one containing a space is re-quoted

@@ -283,12 +283,6 @@ pub fn runShellInherit(
     return if (low == 0 and code != 0) 1 else low;
 }
 
-/// waitInterruptible blocks until the child exits, or until a Ctrl-C arrives
-/// while interrupt.zig is armed. Returns null for the ordinary case (child
-/// exited; read its code as before) and the interrupt code when the user asked
-/// to stop - the caller then continues down its NORMAL completion path, which
-/// is the whole point: the ledger line and the recording footer get written.
-///
 // ShellExecuteExW is the only way to raise privileges: elevation is a shell
 // service (it prompts through UAC and starts the process under a different
 // token), not something CreateProcess can ask for. shell32 is loaded lazily,
@@ -467,6 +461,11 @@ fn exitCode(term: std.process.Child.Term) u8 {
 /// away bytes already read: the callers that ignore the code (probes) and the
 /// ones that act on it both want the same thing from a child that ended in a
 /// way the OS could not describe.
+///
+/// `input` is written IN FULL before stdout is read, which is only safe for a
+/// child that drains its stdin before producing more than a pipe buffer of
+/// output. fzf does (it reads the whole list, then prints one selection); a
+/// filter that echoes as it reads would deadlock both sides here.
 fn capture(arena: std.mem.Allocator, io: Io, s: Spawn) !FilterResult {
     var child = try std.process.spawn(io, .{
         .argv = s.argv,

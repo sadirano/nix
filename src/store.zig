@@ -279,21 +279,9 @@ pub fn trimLine(line: []const u8) []const u8 {
     return s;
 }
 
-/// validateAliasRef validates a name that REFERS to an existing alias, as
-/// opposed to one about to be registered.
-///
-/// The difference is exactly the reserved self alias: `.nix` can never be
-/// written into aliases.toml, but it is a perfectly good thing to name in a
-/// group (`+cfg` containing `.nix`). Registration
-/// paths want validateAliasName; membership and dependency paths want this.
-pub fn validateAliasRef(name: []const u8) !void {
-    if (isSelfAlias(name)) return;
-    return validateAliasName(name);
-}
-
 /// validateAliasName mirrors store.validateName for aliases. Refuses the names
-/// nix owns, so it is the REGISTRATION check - see validateAliasRef for the
-/// weaker one that referring to an alias needs.
+/// nix owns, so it is the REGISTRATION check: `.nix` and `_default` are fine
+/// to REFER to and never fine to register.
 pub fn validateAliasName(name: []const u8) !void {
     const t = std.mem.trim(u8, name, " \t\r\n");
     if (t.len == 0) return error.EmptyName;
