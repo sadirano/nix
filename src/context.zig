@@ -585,10 +585,14 @@ pub fn run(
     return cands;
 }
 
+/// tmpDir is where a source's $NIX_CONTEXT_OUT file lives for the length of
+/// one run. With neither TEMP nor TMPDIR set it falls back to nix's own home
+/// rather than the current directory: a `.` here used to drop `nix-ctx-*.env`
+/// into whatever project the user was standing in.
 fn tmpDir(app: *App) ![]const u8 {
     if (app.env.get("TEMP")) |t| if (t.len > 0) return t;
     if (app.env.get("TMPDIR")) |t| if (t.len > 0) return t;
-    return if (proc.is_windows) "." else "/tmp";
+    return if (proc.is_windows) app.home else "/tmp";
 }
 
 // ---- tests ------------------------------------------------------------------

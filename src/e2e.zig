@@ -144,7 +144,10 @@ fn readFileOr(c: *Ctx, path: []const u8, fallback: []const u8) []const u8 {
 
 fn writeFile(c: *Ctx, path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |d| try util.mkdirAll(c.io, d);
-    try Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = data });
+    // A POSIX script fixture needs its execute bit, or every bare-name run of
+    // it fails with AccessDenied and the check reads as a gate refusal.
+    const perms: Io.File.Permissions = if (std.mem.endsWith(u8, path, ".sh")) .executable_file else .default_file;
+    try Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = data, .flags = .{ .permissions = perms } });
 }
 
 fn join(c: *Ctx, parts: []const []const u8) []const u8 {
@@ -170,8 +173,17 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     }
 
-    const tmp_base = init.environ_map.get("TEMP") orelse init.environ_map.get("TMPDIR") orelse ".";
-    const root = try std.fmt.allocPrint(arena, "{s}{c}nix-e2e-{d}", .{ tmp_base, std.fs.path.sep, @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_ms) });
+    // The scratch root must be ABSOLUTE: children run with cwd `<root>/work`,
+    // so a relative root would name one directory to the harness and another
+    // to every nix it spawns - the whole suite then fails on paths that look
+    // right, and the litter lands in whatever directory the build ran from.
+    // Off Windows, a machine with neither TEMP nor TMPDIR still has /tmp.
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_len = try std.process.currentPath(io, &cwd_buf);
+    const tmp_base = init.environ_map.get("TEMP") orelse init.environ_map.get("TMPDIR") orelse
+        (if (proc.is_windows) "." else "/tmp");
+    const tmp_abs = if (std.fs.path.isAbsolute(tmp_base)) tmp_base else try std.fs.path.resolve(arena, &.{ cwd_buf[0..cwd_len], tmp_base });
+    const root = try std.fmt.allocPrint(arena, "{s}{c}nix-e2e-{d}", .{ tmp_abs, std.fs.path.sep, @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_ms) });
     const home = try std.fs.path.join(arena, &.{ root, "home" });
     const work = try std.fs.path.join(arena, &.{ root, "work" });
     try util.mkdirAll(io, work);
@@ -192,8 +204,6 @@ pub fn main(init: std.process.Init) !void {
 
     // The build runner hands a zig-cache-relative exe path; children run in
     // the scratch dir, so make it absolute first.
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd_len = try std.process.currentPath(io, &cwd_buf);
     const exe_abs = if (std.fs.path.isAbsolute(args[1])) args[1] else try std.fs.path.resolve(arena, &.{ cwd_buf[0..cwd_len], args[1] });
 
     var c = Ctx{ .arena = arena, .io = io, .exe = exe_abs, .env = init.environ_map, .work = work };
