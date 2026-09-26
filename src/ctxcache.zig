@@ -21,6 +21,7 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const segments = @import("segments.zig");
 const util = @import("util.zig");
+const toml = @import("toml.zig");
 
 const App = app_zig.App;
 const Var = segments.Var;
@@ -72,85 +73,45 @@ fn blockIndex(section: []const u8) usize {
     return std.fmt.parseInt(usize, section[i + 1 ..], 10) catch std.math.maxInt(usize);
 }
 
-/// escapeCacheValue makes a value safe to store as one `key = "value"` line.
-/// Values are arbitrary script output, so a newline in one would otherwise end
-/// the line and let the rest be re-read as further keys - or, with a leading
-/// '[', as a whole fake `[cache.…]` section that the reader would then trust.
-/// Backslash goes first so the escape is reversible.
-fn escapeCacheValue(arena: std.mem.Allocator, v: []const u8) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (v) |c| switch (c) {
-        '\\' => try out.appendSlice(arena, "\\\\"),
-        '"' => try out.appendSlice(arena, "\\\""),
-        '\n' => try out.appendSlice(arena, "\\n"),
-        '\r' => try out.appendSlice(arena, "\\r"),
-        else => try out.append(arena, c),
-    };
-    return out.items;
-}
-
-/// unescapeCacheValue reverses escapeCacheValue. An unknown escape keeps the
-/// character that followed it (`\x` -> `x`) and a trailing lone backslash is
-/// dropped: the lenient posture again, since a hand-edited cache must degrade
-/// to a wrong-but-harmless string rather than an error on a navigation path.
-fn unescapeCacheValue(arena: std.mem.Allocator, v: []const u8) ![]const u8 {
-    if (std.mem.indexOfScalar(u8, v, '\\') == null) return v;
-    var out: std.ArrayList(u8) = .empty;
-    var i: usize = 0;
-    while (i < v.len) : (i += 1) {
-        if (v[i] != '\\') {
-            try out.append(arena, v[i]);
-            continue;
-        }
-        i += 1;
-        if (i >= v.len) break;
-        try out.append(arena, switch (v[i]) {
-            'n' => '\n',
-            'r' => '\r',
-            else => v[i],
-        });
-    }
-    return out.items;
-}
-
 /// loadCache parses the `[cache.<section>]` blocks.
 fn loadCache(app: *App, default_ttl: u64) ![]CacheEntry {
     const path = try cachePath(app.arena, app.home);
     const data = app_zig.readFileMaybe(app, path) orelse return &.{};
     var out: std.ArrayList(CacheEntry) = .empty;
     var cur: ?usize = null;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
-            cur = null;
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            const name = line[1..end];
-            if (!std.mem.startsWith(u8, name, "cache.")) continue;
-            try out.append(app.arena, .{ .section = name["cache.".len..], .at = 0, .ttl = default_ttl });
-            cur = out.items.len - 1;
-            continue;
-        }
+    var lines = toml.Lines.init(data);
+    while (lines.next()) |item| {
+        const kv = switch (item) {
+            .header => |h| {
+                cur = null;
+                if (!std.mem.startsWith(u8, h.name, "cache.")) continue;
+                try out.append(app.arena, .{ .section = h.name["cache.".len..], .at = 0, .ttl = default_ttl });
+                cur = out.items.len - 1;
+                continue;
+            },
+            .pair => |p| p,
+            else => continue,
+        };
         const idx = cur orelse continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        const val = util.stripQuotes(std.mem.trim(u8, line[eq + 1 ..], " \t"));
+        const key = kv.key;
         if (std.mem.eql(u8, key, "_at")) {
-            out.items[idx].at = std.fmt.parseInt(u64, val, 10) catch 0;
+            out.items[idx].at = std.fmt.parseInt(u64, toml.unquoteLoose(kv.raw), 10) catch 0;
             continue;
         }
         if (std.mem.eql(u8, key, "_ttl")) {
-            out.items[idx].ttl = std.fmt.parseInt(u64, val, 10) catch default_ttl;
+            out.items[idx].ttl = std.fmt.parseInt(u64, toml.unquoteLoose(kv.raw), 10) catch default_ttl;
             continue;
         }
+        // Values are script output written back through toml.appendString, so
+        // they read with the strict rule; a hand-mangled one is simply absent.
+        const val = (try toml.unquote(app.arena, kv.raw)) orelse continue;
         if (std.mem.eql(u8, key, display_row)) {
-            out.items[idx].display = try unescapeCacheValue(app.arena, val);
+            out.items[idx].display = val;
             continue;
         }
         var vars: std.ArrayList(Var) = .empty;
         try vars.appendSlice(app.arena, out.items[idx].vars);
-        try vars.append(app.arena, .{ .key = key, .value = try unescapeCacheValue(app.arena, val) });
+        try vars.append(app.arena, .{ .key = key, .value = val });
         out.items[idx].vars = vars.items;
     }
     return out.items;
@@ -231,43 +192,20 @@ pub fn put(app: *App, key: []const u8, cands: []const Candidate, ttl: u64) !void
     for (rows) |e| {
         try buf.print(app.arena, "\n[cache.{s}]\n_at = {d}\n_ttl = {d}\n", .{ e.section, e.at, e.ttl });
         if (e.display.len > 0) {
-            try buf.print(app.arena, "{s} = \"{s}\"\n", .{ display_row, try escapeCacheValue(app.arena, e.display) });
+            try buf.print(app.arena, "{s} = ", .{display_row});
+            try toml.appendString(app.arena, &buf, e.display);
+            try buf.append(app.arena, '\n');
         }
-        for (e.vars) |kv| try buf.print(app.arena, "{s} = \"{s}\"\n", .{
-            kv.key,
-            try escapeCacheValue(app.arena, kv.value),
-        });
+        for (e.vars) |kv| {
+            try buf.print(app.arena, "{s} = ", .{kv.key});
+            try toml.appendString(app.arena, &buf, kv.value);
+            try buf.append(app.arena, '\n');
+        }
     }
     try util.writeFileAtomic(app.arena, app.io, try cachePath(app.arena, app.home), buf.items);
 }
 
 // ---- tests -------------------------------------------------------------------
-
-test "cache value escaping: round-trips, and a newline cannot forge a section" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const cases = [_][]const u8{
-        "plain",
-        "C:\\repo\\acme",
-        "has \"quotes\" inside",
-        "line1\nline2",
-        "\n[cache.forged]\n_at = 99\nstolen = \"yes\"",
-        "trailing\\",
-        "",
-    };
-    for (cases) |c| {
-        const esc = try escapeCacheValue(a, c);
-        // Whatever the input held, the stored form is a single line with no
-        // bare quote to end it early.
-        try std.testing.expect(std.mem.indexOfScalar(u8, esc, '\n') == null);
-        try std.testing.expect(std.mem.indexOfScalar(u8, esc, '\r') == null);
-        try std.testing.expectEqualStrings(c, try unescapeCacheValue(a, esc));
-    }
-    // A hand-written unknown escape degrades to the plain character.
-    try std.testing.expectEqualStrings("x", try unescapeCacheValue(a, "\\x"));
-    try std.testing.expectEqualStrings("ab", try unescapeCacheValue(a, "ab\\"));
-}
 
 test "reapable: judged against the entry's OWN ttl, not a fixed age" {
     const day: u64 = 86400;

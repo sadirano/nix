@@ -1040,6 +1040,7 @@ test {
     _ = env_zig;
     _ = grammar;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
+    _ = @import("toml.zig"); // likewise
 }
 
 test "desugarMultiCall: a wrapper's lone --agent names its own slot" {

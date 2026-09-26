@@ -135,6 +135,12 @@ scripts-dir PATH prepend are injected - and where each is removed before the nex
 injection so one run in a chain cannot leak its environment into the next.
 `store.zig` owns `aliases.toml`, which holds nothing but `[name]` tables with a
 single `path`; actions and env live in their own files rather than polluting it.
+Every TOML-shaped file is read through `toml.zig`, the one line-oriented
+reader (sections, `key = value`, comments, string arrays). It has two value
+rules on purpose: `unquote` decodes escapes and refuses a bare value, for
+things that are strings (paths, segment definitions, the cache);
+`unquoteLoose` strips one pair of quotes and decodes nothing, for command
+lines and config, where `"dir C:\new"` must stay a backslash and an `n`.
 
 ## Conventions
 

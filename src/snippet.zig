@@ -12,6 +12,7 @@ const agents = @import("agents.zig");
 const util = @import("util.zig");
 const store = @import("store.zig");
 const actions = @import("actions.zig");
+const toml = @import("toml.zig");
 const mkdirAll = util.mkdirAll;
 
 const is_windows = builtin.os.tag == .windows;
@@ -40,7 +41,7 @@ fn saveWrapperManifest(arena: std.mem.Allocator, io: Io, home: []const u8, names
     for (names) |n| {
         try b.appendSlice(arena, n);
         try b.appendSlice(arena, " = ");
-        try store.appendTomlString(arena, &b, n);
+        try toml.appendString(arena, &b, n);
         try b.append(arena, '\n');
     }
     try util.writeFileAtomic(arena, io, try wrappersManifestPath(arena, home), b.items);

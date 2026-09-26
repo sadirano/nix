@@ -8,7 +8,7 @@
 const std = @import("std");
 const Io = std.Io;
 const store = @import("store.zig");
-const stripQuotes = @import("util.zig").stripQuotes;
+const toml = @import("toml.zig");
 const centralFile = @import("util.zig").centralFile;
 
 /// namesAction reports whether a config list picks out this alias's action.
@@ -194,41 +194,37 @@ pub fn parseShellTables(arena: std.mem.Allocator, data: []const u8) ![]Action {
 /// entry ends a run, so a file-header comment never leaks onto the first action
 /// and a description never carries to the entry after it. Sections that have no
 /// use for prose (`[bin]`, the exports manifest) simply ignore the field.
+///
+/// Values are read LOOSE (toml.unquoteLoose): these are command lines, and a
+/// backslash in one is a backslash.
 pub fn parseTable(arena: std.mem.Allocator, data: []const u8, section: []const u8) ![]Action {
     var out: std.ArrayList(Action) = .empty;
     var in_section = false;
     var pending: std.ArrayList([]const u8) = .empty; // comment run above the next entry
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        // A blank line separates a comment from what follows it - the ordinary
-        // way people say "this note is not about the next thing".
-        if (line.len == 0) {
-            pending = .empty;
-            continue;
+    var lines = toml.Lines.init(data);
+    while (lines.next()) |item| {
+        switch (item) {
+            // A blank line separates a comment from what follows it - the
+            // ordinary way people say "this note is not about the next thing".
+            .blank => pending = .empty,
+            .comment => |c| if (commentText(c)) |t| try pending.append(arena, t),
+            .header => |h| {
+                in_section = store.eqlFoldAscii(h.name, section);
+                pending = .empty;
+            },
+            .other => pending = .empty,
+            .pair => |kv| {
+                defer pending = .empty; // consumed by this entry, or dropped with it
+                if (!in_section or kv.key.len == 0) continue;
+                const val = toml.unquoteLoose(kv.raw);
+                if (val.len == 0) continue;
+                try out.append(arena, .{
+                    .name = kv.key,
+                    .command = val,
+                    .description = try std.mem.join(arena, " ", pending.items),
+                });
+            },
         }
-        if (line[0] == '#') {
-            if (commentText(line)) |t| try pending.append(arena, t);
-            continue;
-        }
-        if (line[0] == '[') {
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            in_section = store.eqlFoldAscii(line[1..end], section);
-            pending = .empty;
-            continue;
-        }
-        defer pending = .empty; // consumed by this entry, or dropped with it
-        if (!in_section) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        if (key.len == 0) continue;
-        const val = stripQuotes(std.mem.trim(u8, line[eq + 1 ..], " \t"));
-        if (val.len == 0) continue;
-        try out.append(arena, .{
-            .name = key,
-            .command = val,
-            .description = try std.mem.join(arena, " ", pending.items),
-        });
     }
     return out.items;
 }
@@ -263,21 +259,12 @@ pub fn hasKey(data: []const u8, section: []const u8, name: []const u8) bool {
 /// came to change, and a description above it is still on screen from there.
 pub fn lineOf(data: []const u8, section: []const u8, name: []const u8) ?usize {
     var in_section = false;
-    var n: usize = 0;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |raw| {
-        n += 1;
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            in_section = store.eqlFoldAscii(line[1..end], section);
-            continue;
-        }
-        if (!in_section) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        if (store.eqlFoldAscii(std.mem.trim(u8, line[0..eq], " \t"), name)) return n;
-    }
+    var lines = toml.Lines.init(data);
+    while (lines.next()) |item| switch (item) {
+        .header => |h| in_section = store.eqlFoldAscii(h.name, section),
+        .pair => |kv| if (in_section and store.eqlFoldAscii(kv.key, name)) return lines.line_no,
+        else => {},
+    };
     return null;
 }
 

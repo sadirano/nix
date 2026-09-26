@@ -6,8 +6,7 @@ const std = @import("std");
 const Io = std.Io;
 const store = @import("store.zig");
 const util = @import("util.zig");
-const parseStringArray = util.parseStringArray;
-const stripQuotes = util.stripQuotes;
+const toml = @import("toml.zig");
 const lower = util.lowerDup;
 
 pub const Shortcut = struct { builtin: []const u8, custom: []const u8 };
@@ -237,7 +236,8 @@ fn configPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
 /// [grep] all, [notify] hooks, [confirm] trusted/create_dirs, [trust] always and
 /// [bin] foreign. Unknown sections are ignored. A missing file yields the
-/// zero Config.
+/// zero Config. Values are read LOOSE (toml.unquoteLoose): they are command
+/// templates, names and switches, never strings that need decoding.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     const p = try configPath(arena, home);
     const data = Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |e| switch (e) {
@@ -246,22 +246,18 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     };
     var cfg: Config = .{};
     var section: []const u8 = "";
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    var i: usize = 0;
-    // Work on a line buffer we can advance for multi-line arrays.
-    var all: std.ArrayList([]const u8) = .empty;
-    while (lines.next()) |l| try all.append(arena, l);
-    while (i < all.items.len) : (i += 1) {
-        const line = std.mem.trim(u8, all.items[i], " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            section = line[1..end];
-            continue;
-        }
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        const val_start = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    var lines = toml.Lines.init(data);
+    while (lines.next()) |item| {
+        const kv = switch (item) {
+            .header => |h| {
+                section = h.name;
+                continue;
+            },
+            .pair => |pair| pair,
+            else => continue,
+        };
+        const key = kv.key;
+        const val_start = kv.raw;
         if (std.mem.eql(u8, section, "shortcuts")) {
             // value is a (possibly quoted) command name, or an array of names
             // - `x = ["x", "r"]` gives a slot several spellings, the first
@@ -270,10 +266,10 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             // filename, so it takes the alias charset rules, and never "nix".
             var customs: [][]const u8 = undefined;
             if (val_start.len > 0 and val_start[0] == '[') {
-                customs = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
+                customs = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
             } else {
                 customs = try arena.alloc([]const u8, 1);
-                customs[0] = stripQuotes(val_start);
+                customs[0] = toml.unquoteLoose(val_start);
             }
             for (customs) |custom| {
                 const usable = custom.len > 0 and !std.ascii.eqlIgnoreCase(custom, "nix") and
@@ -287,54 +283,54 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             continue;
         }
         if (std.mem.eql(u8, section, "grep")) {
-            if (std.mem.eql(u8, key, "all")) cfg.grep_all = parseBool(stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "all")) cfg.grep_all = parseBool(toml.unquoteLoose(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "bin")) {
             // value is "warn" or "purge"; anything unrecognized keeps the safe
             // default so a typo can never silently start deleting files.
             if (std.mem.eql(u8, key, "foreign")) {
-                const v = stripQuotes(val_start);
+                const v = toml.unquoteLoose(val_start);
                 if (std.ascii.eqlIgnoreCase(v, "purge")) cfg.bin_foreign = .purge else cfg.bin_foreign = .warn;
             }
             continue;
         }
         if (std.mem.eql(u8, section, "shells")) {
-            if (std.mem.eql(u8, key, "bash")) cfg.shell_bash = try arena.dupe(u8, stripQuotes(val_start));
-            if (std.mem.eql(u8, key, "pwsh")) cfg.shell_pwsh = try arena.dupe(u8, stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "bash")) cfg.shell_bash = try arena.dupe(u8, toml.unquoteLoose(val_start));
+            if (std.mem.eql(u8, key, "pwsh")) cfg.shell_pwsh = try arena.dupe(u8, toml.unquoteLoose(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "notify")) {
             // values are command templates with {placeholders}; may contain '='
             // and spaces, so only the first '=' (found above) splits key/value.
-            if (std.mem.eql(u8, key, "on_finish")) cfg.notify_on_finish = try arena.dupe(u8, stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "on_finish")) cfg.notify_on_finish = try arena.dupe(u8, toml.unquoteLoose(val_start));
             // A threshold that failed to parse stays 0, which notifies as it
             // always did: a typo must not silence the hook.
-            if (std.mem.eql(u8, key, "on_finish_min_ms")) cfg.notify_on_finish_min_ms = std.fmt.parseInt(u64, stripQuotes(val_start), 10) catch 0;
+            if (std.mem.eql(u8, key, "on_finish_min_ms")) cfg.notify_on_finish_min_ms = std.fmt.parseInt(u64, toml.unquoteLoose(val_start), 10) catch 0;
             if (std.mem.eql(u8, key, "on_finish_skip")) {
-                cfg.notify_on_finish_skip = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
+                cfg.notify_on_finish_skip = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
             }
-            if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, stripQuotes(val_start));
-            if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, toml.unquoteLoose(val_start));
+            if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, toml.unquoteLoose(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "hold")) {
             if (std.mem.eql(u8, key, "on_success")) {
-                cfg.hold_on_success = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
+                cfg.hold_on_success = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
             }
-            if (std.mem.eql(u8, key, "seconds")) cfg.hold_seconds = std.fmt.parseInt(u32, stripQuotes(val_start), 10) catch 5;
+            if (std.mem.eql(u8, key, "seconds")) cfg.hold_seconds = std.fmt.parseInt(u32, toml.unquoteLoose(val_start), 10) catch 5;
             continue;
         }
         if (std.mem.eql(u8, section, "confirm")) {
             if (std.mem.eql(u8, key, "trusted")) {
-                cfg.confirm_trusted = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
+                cfg.confirm_trusted = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
             }
-            if (std.mem.eql(u8, key, "create_dirs")) cfg.confirm_create_dirs = parseBool(stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "create_dirs")) cfg.confirm_create_dirs = parseBool(toml.unquoteLoose(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "trust")) {
             if (std.mem.eql(u8, key, "always")) {
-                cfg.trust_always = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
+                cfg.trust_always = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
             }
             continue;
         }
@@ -342,7 +338,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         if (std.mem.eql(u8, key, "exclude") or std.mem.eql(u8, key, "exclude_extra") or
             std.mem.eql(u8, key, "search_roots"))
         {
-            const arr = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
+            const arr = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
             if (std.mem.eql(u8, key, "exclude")) {
                 cfg.picker_exclude = arr;
             } else if (std.mem.eql(u8, key, "exclude_extra")) {
@@ -426,7 +422,7 @@ test "notify template survives quotes, '=' and spaces in the value" {
     const line = "on_finish = 'hoot send \"{message}\" --tag {alias} --level {level}'";
     const eq = std.mem.indexOfScalar(u8, line, '=').?;
     const key = std.mem.trim(u8, line[0..eq], " \t");
-    const val = stripQuotes(std.mem.trim(u8, line[eq + 1 ..], " \t"));
+    const val = toml.unquoteLoose(std.mem.trim(u8, line[eq + 1 ..], " \t"));
     try std.testing.expectEqualStrings("on_finish", key);
     try std.testing.expectEqualStrings("hoot send \"{message}\" --tag {alias} --level {level}", val);
 }
