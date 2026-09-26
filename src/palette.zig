@@ -161,7 +161,7 @@ fn seedAndEdit(app: *App, dir: []const u8, path: []const u8) !u8 {
 /// listing just prints, which is what it always did.
 fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fzf: []const u8) !u8 {
     const can_ask = app_zig.hasConsole(app);
-    const have_fzf = proc.findInPath(app.arena, app.io, app.env, "fzf") != null;
+    const have_fzf = can_ask and proc.findInPath(app.arena, app.io, app.env, "fzf") != null;
     if (!can_ask or !have_fzf) {
         if (can_ask and !have_fzf and missing_fzf.len > 0) {
             try app.err.writeAll(missing_fzf);
