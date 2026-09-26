@@ -17,6 +17,7 @@ const provenance = @import("provenance.zig");
 const context = @import("context.zig");
 const env_zig = @import("env.zig");
 const run_zig = @import("run.zig");
+const actions = @import("actions.zig");
 
 // Version baked by build.zig (git describe).
 const build_version = @import("build_options").version;
@@ -522,6 +523,13 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
                 }
             }
         } else |_| {}
+        const defaults = actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home)) catch &.{};
+        for (defaults) |act| {
+            if (try run_zig.shorterForm(app, actions.default_owner, "", act.name, act.command)) |hint| {
+                try d.row(.warn, actions.default_owner, hint);
+                any = true;
+            }
+        }
         if (!any) try d.row(.ok, "actions", "none - every action is as short as nix can make it");
     }
 

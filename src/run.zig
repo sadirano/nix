@@ -270,6 +270,9 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
             try app.err.writeAll("   ~/.nix/actions/_default.toml, or name the alias that owns it: `x <alias> :<name>`)\n");
             return 1;
         };
+        if (try shorterForm(app, actions.default_owner, "", name, r.written)) |hint| {
+            try app.err.print("nix: shorter: {s}\n", .{hint});
+        }
         const cmd = try applyArgs(app.arena, r.command, call.args);
         // from_project = false: _default.toml lives under ~/.nix, the user's own
         // and ungated. A `sudo` command still routes through the gate.
@@ -625,10 +628,15 @@ pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const 
     if (v.len == 0 or v[0] == ':') return null;
     if (compose.longPs1(v)) |hit| {
         if (resolveScript(app, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
-            return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a script in .nix/scripts runs by bare name)", .{ name, hit.stem, if (hit.rest.len > 0) " " else "", hit.rest });
+            return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a .ps1 in the scripts dir runs by bare name)", .{ name, hit.stem, if (hit.rest.len > 0) " " else "", hit.rest });
         };
     }
-    const siblings = mergedActions(app, alias, dir, false) catch &.{};
+    // An empty dir is the machine-wide file, whose siblings are its own lines -
+    // not whatever project the cwd happens to hold.
+    const siblings = if (dir.len == 0)
+        actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home)) catch &.{}
+    else
+        mergedActions(app, alias, dir, false) catch &.{};
     if (compose.sharedStart(name, v, siblings)) |s| {
         return try std.fmt.allocPrint(app.arena, "{s} = \":{s}{s}{s}\" (it repeats :{s})", .{ name, s.name, if (s.rest.len > 0) " " else "", s.rest, s.name });
     }
