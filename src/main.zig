@@ -312,7 +312,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .sync => init_zig.cmdSync(app),
         .sync_bin => bin_exports.cmdSyncBin(app),
         .secret => secret.cmdSecret(app, rest),
-        .trust => provenance.cmdTrust(app, rest, resolve, run_zig, env_zig),
+        .trust => provenance.cmdTrust(app, rest),
         .agent => cmdAgent(app, rest),
         .quit => quit.cmdQuit(app, rest),
         .init => blk: {

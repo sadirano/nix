@@ -28,6 +28,7 @@ const actions = @import("actions.zig");
 const util = @import("util.zig");
 const ctxcache = @import("ctxcache.zig");
 const config = @import("config.zig");
+const run_zig = @import("run.zig");
 
 const App = app_zig.App;
 const Var = segments.Var;
@@ -374,7 +375,7 @@ pub fn fromProducer(arena: std.mem.Allocator, p: *const segments.ProducerDef, cd
 /// other; a name containing a separator is taken relative to the alias dir.
 /// `.ps1` is wrapped through PowerShell by the caller, as CreateProcess cannot
 /// launch one directly.
-pub fn locate(app: *App, src: Source, dir: []const u8, run_zig: anytype) !?Located {
+pub fn locate(app: *App, src: Source, dir: []const u8) !?Located {
     const tokens = try splitRunLine(app.arena, src.run);
     if (tokens.len == 0) return null;
     // Only token 0 is needed here, and a run target naming itself through a
@@ -445,9 +446,8 @@ pub fn run(
     ps: segments.ParsedSegment,
     high: []const Var,
     low: []const Var,
-    run_zig: anytype,
 ) !?[]Candidate {
-    const r = (try locate(app, src, dir, run_zig)) orelse return null;
+    const r = (try locate(app, src, dir)) orelse return null;
 
     // Trust is checked BEFORE the cache, deliberately. A cached value is
     // legitimate (an approved run of this exact command produced it), but
