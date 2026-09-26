@@ -404,46 +404,41 @@ pub fn stripSudo(command: []const u8) ?[]const u8 {
 /// PATH, NIX_ALIAS/NIX_ALIAS_PATH so children know their context, and the
 /// project's own environment (env.zig).
 ///
-/// Rebuilt from orig_path each call, so repeated runs never stack dirs or leak
-/// a previous run's alias. Returns app.env, or null when `mode` is
-/// `.run` and a `${secret:NAME}` could not be resolved - the caller must then
-/// abort without spawning, the reason having been printed.
+/// Everything it puts is recorded in one scope (app.injected) and restored at
+/// the top of the next call, so repeated runs never stack scripts dirs, and a
+/// chain never hands one link's alias, env.toml or context to the next.
+/// Restored rather than removed, because a name may have been the user's own
+/// before nix wrote over it. Returns app.env, or null when `mode` is `.run`
+/// and a `${secret:NAME}` could not be resolved - the caller must then abort
+/// without spawning, the reason having been printed. Runs only on the
+/// run/navigate paths, so the resolve hot path pays nothing.
 pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.Mode) !?*std.process.Environ.Map {
-    // Capture the original PATH lazily (and dupe it — the env.put below may free
-    // the map's value). This runs only here, on the run/navigate paths, so the
-    // resolve hot path pays nothing.
-    const orig = app.orig_path orelse blk: {
-        const dup = try app.arena.dupe(u8, app.env.get("PATH") orelse "");
-        app.orig_path = dup;
-        break :blk dup;
-    };
+    try app_zig.restoreVars(app, app.injected);
+    app.injected = &.{};
+    app.env_vars = &.{};
+    var scope: std.ArrayList(app_zig.SavedVar) = .empty;
+    // Whatever happens below, what was put is what gets undone next time -
+    // including the half of an env.toml that made it in before a missing secret.
+    defer app.injected = scope.items;
+
     const sep = if (proc.is_windows) ";" else ":";
     const local = try std.fs.path.join(app.arena, &.{ dir, ".nix", "scripts" });
     const central = try std.fs.path.join(app.arena, &.{ app.home, "scripts" });
+    const orig = app.env.get("PATH") orelse "";
     const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, orig });
-    try app.env.put("PATH", newpath);
+    try app_zig.putSaved(app, &scope, "PATH", newpath);
     if (alias.len > 0) {
-        try app.env.put("NIX_ALIAS", alias);
-        try app.env.put("NIX_ALIAS_PATH", dir);
+        try app_zig.putSaved(app, &scope, "NIX_ALIAS", alias);
+        try app_zig.putSaved(app, &scope, "NIX_ALIAS_PATH", dir);
     }
     // The project's own environment (.nix/env.toml + ~/.nix/env/<alias>.toml).
     // After PATH and NIX_ALIAS, which are nix's own and which env.toml may not
     // name; before the context variables below, so a live context answer
     // outranks static configuration. A run whose secret cannot be resolved
     // stops here, before anything is spawned.
-    if ((try env_zig.inject(app, alias, dir, mode)) == null) return null;
-    // Context-source variables (context.zig). Names are arbitrary, so unlike
-    // PATH they can't be rebuilt from an original — restore what the previous
-    // call injected first, or a chain would carry one run's context into the
-    // next. Restore rather than remove: the name may have been the
-    // user's own before a context source answered with it.
-    try app_zig.restoreVars(app, app.ctx_injected);
-    var injected: std.ArrayList(app_zig.SavedVar) = .empty;
-    for (app.ctx_vars) |kv| {
-        try injected.append(app.arena, try app_zig.saveVar(app, kv.key));
-        try app.env.put(kv.key, kv.value);
-    }
-    app.ctx_injected = injected.items;
+    if ((try env_zig.inject(app, alias, dir, mode, &scope)) == null) return null;
+    // Context-source variables (context.zig).
+    for (app.ctx_vars) |kv| try app_zig.putSaved(app, &scope, kv.key, kv.value);
     return app.env;
 }
 

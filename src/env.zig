@@ -280,21 +280,19 @@ pub const Mode = enum { run, navigate };
 /// when a secret could not be resolved on a `.run` (already reported - the
 /// caller must abort without spawning).
 ///
-/// Injected names are recorded on the App and RESTORED on the next call - put
-/// back to whatever was under them, or removed if nothing was. Without the undo
-/// a chain would carry one run's DATABASE_URL into the next; without it being a
-/// restore, an ambient DATABASE_URL the user exported would be gone from every
-/// run after the one that overrode it.
-pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode) !?[]const app_zig.EnvVar {
-    try app_zig.restoreVars(app, app.env_injected);
-    app.env_injected = &.{};
+/// Every name goes through `scope`, which the caller (run.aliasRunEnv)
+/// restores before its next injection - put back to whatever was under it, or
+/// removed if nothing was. Without the undo a chain would carry one run's
+/// DATABASE_URL into the next; without it being a restore, an ambient
+/// DATABASE_URL the user exported would be gone from every run after the one
+/// that overrode it.
+pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode, scope: *std.ArrayList(app_zig.SavedVar)) !?[]const app_zig.EnvVar {
     app.env_vars = &.{};
 
     const loaded = try load(app, alias, dir);
     try report(app, alias, loaded);
     if (loaded.merged.entries.len == 0) return &.{};
 
-    var names: std.ArrayList(app_zig.SavedVar) = .empty;
     var out: std.ArrayList(app_zig.EnvVar) = .empty;
     var cred = secret.CredResolveCtx{ .arena = app.arena };
     for (loaded.merged.entries) |e| {
@@ -305,18 +303,15 @@ pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode) !?[]con
                 if (mode == .run) {
                     try app.err.print("nix: {s} needs the secret \"{s}\" - run: nix --secret set {s}\n", .{ e.key, name, name });
                     try app.err.print("  declared in {s} - nothing was run\n", .{loaded.pathOf(e.source)});
-                    app.env_injected = names.items; // undo on the next call anyway
-                    return null;
+                    return null; // what was put so far is in scope, and undone next call
                 }
                 try app.err.print("nix: {s} unset - run: nix --secret set {s}\n", .{ e.key, name });
                 continue;
             },
         };
-        try names.append(app.arena, try app_zig.saveVar(app, e.key));
-        try app.env.put(e.key, value);
+        try app_zig.putSaved(app, scope, e.key, value);
         try out.append(app.arena, .{ .key = e.key, .value = value, .from_secret = from_secret });
     }
-    app.env_injected = names.items;
     app.env_vars = out.items;
     return out.items;
 }

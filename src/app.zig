@@ -47,21 +47,20 @@ pub const App = struct {
     /// the resolve and yank paths; navigate refuses it, since `o`'s stdout
     /// feeds the wrapper's cd.
     dialect: ?dialects.Dialect = null,
-    /// PATH as the process started, captured *lazily* on first aliasRunEnv use
-    /// (the run/navigate paths only) so the resolve hot path does zero extra work.
-    /// aliasRunEnv rebuilds from this each call, so scripts dirs never accumulate.
-    orig_path: ?[]const u8 = null,
     /// Variables a context source returned, exported to the child by
     /// aliasRunEnv. Empty for every non-segmented target.
     ctx_vars: []const segments.Var = &.{},
-    /// Names aliasRunEnv injected from ctx_vars last call, removed before the
-    /// next injection so one run in a chain never leaks its context into the
-    /// next (the same discipline PATH gets via orig_path).
-    ctx_injected: []const SavedVar = &.{},
-    /// What env.zig contributed last call, and the names to remove before the
-    /// next - the same leak discipline as ctx_vars/ctx_injected.
+    /// What env.zig contributed on the last aliasRunEnv call - kept because the
+    /// elevated path has to know which values came from a secret.
     env_vars: []const EnvVar = &.{},
-    env_injected: []const SavedVar = &.{},
+    /// Every name aliasRunEnv put into the child environment on its last call
+    /// (PATH, NIX_ALIAS, env.toml, context variables), with whatever was under
+    /// each. Restored before the next injection, so one link of a chain never
+    /// hands its environment to the next. One list, because there used to be
+    /// three - PATH kept an original to rebuild from, env.toml and context
+    /// variables each kept their own undo list - and each was a place the
+    /// discipline could be forgotten.
+    injected: []const SavedVar = &.{},
     /// Whether this process has already reported an env.toml problem (an
     /// unapproved project layer, a refused name). A chain injects once per link,
     /// and the same note three times reads as three separate problems.
@@ -121,11 +120,49 @@ pub fn saveVar(app: *App, key: []const u8) !SavedVar {
 }
 
 /// restoreVars undoes a previous injection: each name goes back to the value it
-/// had, or out of the environment entirely if it had none.
+/// had, or out of the environment entirely if it had none. Walked in REVERSE,
+/// so a name put twice in one scope ends up as it was before the first put.
 pub fn restoreVars(app: *App, saved: []const SavedVar) !void {
-    for (saved) |sv| {
+    var i = saved.len;
+    while (i > 0) {
+        i -= 1;
+        const sv = saved[i];
         if (sv.prev) |v| try app.env.put(sv.key, v) else _ = app.env.orderedRemove(sv.key);
     }
+}
+
+/// putSaved sets `key` in the child environment and records the undo in
+/// `scope` - the one way anything is injected for a spawn, so nothing can be
+/// put without also being restorable.
+pub fn putSaved(app: *App, scope: *std.ArrayList(SavedVar), key: []const u8, value: []const u8) !void {
+    try scope.append(app.arena, try saveVar(app, key));
+    try app.env.put(key, value);
+}
+
+test "putSaved/restoreVars: a scope undoes exactly what it put" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var env: std.process.Environ.Map = .init(arena_state.allocator());
+    try env.put("KEEP", "ambient");
+    try env.put("PATH", "orig");
+    var app: App = undefined;
+    app.arena = arena_state.allocator();
+    app.env = &env;
+
+    var scope: std.ArrayList(SavedVar) = .empty;
+    try putSaved(&app, &scope, "PATH", "scripts;orig");
+    try putSaved(&app, &scope, "KEEP", "overridden");
+    try putSaved(&app, &scope, "NEW", "one");
+    try putSaved(&app, &scope, "NEW", "two"); // twice in one scope
+    try std.testing.expectEqualStrings("two", env.get("NEW").?);
+
+    try restoreVars(&app, scope.items);
+    // The ambient value comes back, not a removal: deleting a variable the
+    // user set is the bug the restore exists to prevent.
+    try std.testing.expectEqualStrings("ambient", env.get("KEEP").?);
+    try std.testing.expectEqualStrings("orig", env.get("PATH").?);
+    // A name that was not there is gone again, even after two puts.
+    try std.testing.expect(env.get("NEW") == null);
 }
 
 /// exePath returns the real on-disk image path, lazily and cached. Asks the OS
