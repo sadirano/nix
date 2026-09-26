@@ -39,6 +39,9 @@ pub const Config = struct {
     /// (`o +group`). Empty → per-OS defaults on Windows (wt/start), required on
     /// Unix (no probing).
     nav_terminal: []const u8 = "",
+    /// [shells] executable overrides. Empty uses the conventional command name.
+    shell_bash: []const u8 = "",
+    shell_pwsh: []const u8 = "",
     /// [confirm] trusted: action names that may elevate without nix's own
     /// confirmation. UAC still asks.
     ///
@@ -319,6 +322,11 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         if (std.mem.eql(u8, section, "nav")) {
             // value is a command template; may contain spaces (wt -d {dir}).
             if (std.mem.eql(u8, key, "terminal")) cfg.nav_terminal = try arena.dupe(u8, stripQuotes(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "shells")) {
+            if (std.mem.eql(u8, key, "bash")) cfg.shell_bash = try arena.dupe(u8, stripQuotes(val_start));
+            if (std.mem.eql(u8, key, "pwsh")) cfg.shell_pwsh = try arena.dupe(u8, stripQuotes(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "notify")) {

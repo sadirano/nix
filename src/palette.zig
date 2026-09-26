@@ -331,7 +331,7 @@ fn runPicked(app: *App, e: Entry) !u8 {
     const r = (try freshCommand(app, e, dir)) orelse return 1;
     // A single pick runs here, in this terminal, so the gate can ask here too.
     if (!try provenance.gateAction(app, e.alias, dir, e.name, r.command, r.command, r.from_project, run_zig.stripSudo(r.command) != null, .may_prompt)) return 1;
-    return run_zig.runAction(app, r.command, e.alias, dir, e.name, false);
+    return run_zig.runAction(app, r.command, e.alias, dir, e.name, false, r.shell);
 }
 
 /// startAll launches several picks at once, each in its own shell, and returns
@@ -365,7 +365,7 @@ fn startAll(app: *App, picks: []const Entry) !u8 {
         }
         // startInNewShell prints the "started ..." line itself, so an elevated
         // pick is reported as elevated wherever it was launched from.
-        if (try run_zig.startInNewShell(app, r.command, e.alias, dir, e.name) != 0) code = 1;
+        if (try run_zig.startInNewShell(app, r.command, e.alias, dir, e.name, r.shell) != 0) code = 1;
     }
     return code;
 }

@@ -414,6 +414,25 @@ serve  = "npm run dev"
 # Builds, then mirrors dist/ to the live host. Not reversible - it
 # deletes anything on the target that isn't in dist/.
 deploy = "./scripts/build.sh && rsync -a dist/ host:/srv"
+
+# Keep shell-specific commands beside the defaults.
+[bash]
+lint = "./scripts/lint.sh"
+
+[pwsh]
+inspect = "Get-ChildItem"
+```
+
+`[actions]` uses the platform default shell. `[bash]` and `[pwsh]` run entries
+with those shells; a same-name entry there overrides `[actions]` in that file.
+Configure their executable paths in your private `~/.nix/config.toml` under
+`[shells]`. Omitted paths use `bash` and `pwsh` from `PATH`; a selected shell
+that cannot start reports an error.
+
+```toml
+[shells]
+bash = 'C:/Program Files/Git/bin/bash.exe'
+pwsh = 'C:/Program Files/PowerShell/7/pwsh.exe'
 ```
 
 You don't have to write either file from scratch: **`e acme :` opens the project's, creating it from a commented template** when the alias has no actions yet, and **`e :` opens the machine-wide `~/.nix/actions/_default.toml`** the same way — the template is inert (every sample is commented out), and it points at the neighbours a project file grows into, `[bin]` and `.nix/env.toml`. `e acme :deploy` does the same one action at a time, seeding an empty stub for a name that doesn't exist yet and opening the file **on that declaration's line** — in your editor's own dialect (`+42`, `--goto file:42`), the same jump the search picker makes onto a match. Only the editor writes: `o acme :` and `x acme :` are the read-only forms of the same question.

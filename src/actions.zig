@@ -35,7 +35,8 @@ pub fn namesAction(list: []const []const u8, alias: []const u8, action: []const 
 /// comment block written immediately above the action is its description, which
 /// is how people document these files anyway (this project's own actions.toml
 /// included), so every existing file gains descriptions without being touched.
-pub const Action = struct { name: []const u8, command: []const u8, description: []const u8 = "" };
+pub const Shell = enum { default, bash, pwsh };
+pub const Action = struct { name: []const u8, command: []const u8, description: []const u8 = "", shell: Shell = .default };
 
 /// projectPath: <alias-dir>/.nix/actions.toml — committed alongside the project.
 pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 {
@@ -72,6 +73,13 @@ pub const project_template =
     \\# Arguments are appended: `r <alias> :test -- --json`. Put {args} in the
     \\# command to place them somewhere other than the end.
     \\# test = "zig build test"
+    \\
+    \\# Use shell-specific sections when a command needs another syntax/runtime.
+    \\# A matching name in [bash] or [pwsh] overrides [actions] in this file.
+    \\# [bash]
+    \\# lint = "./scripts/lint.sh"
+    \\# [pwsh]
+    \\# inspect = "Get-ChildItem"
     \\
     \\# Anything longer than one line belongs in .nix/scripts/ rather than inside
     \\# a quoted string here. A script there runs by bare name: `r <alias> ship`.
@@ -155,7 +163,27 @@ pub fn loadFile(arena: std.mem.Allocator, io: Io, path: []const u8) ![]Action {
 /// keeps its raw text (one pair of surrounding quotes stripped) so shell operators
 /// (`&&`, `|`, redirects) survive to execution.
 pub fn parse(arena: std.mem.Allocator, data: []const u8) ![]Action {
-    return parseTable(arena, data, "actions");
+    return parseShellTables(arena, data);
+}
+
+/// Parse the default table, then shell-specific tables. A shell-specific
+/// declaration replaces a same-name default in this file.
+pub fn parseShellTables(arena: std.mem.Allocator, data: []const u8) ![]Action {
+    var result: std.ArrayList(Action) = .empty;
+    try result.appendSlice(arena, try parseTable(arena, data, "actions"));
+    for ([_]struct { section: []const u8, shell: Shell }{ .{ .section = "bash", .shell = .bash }, .{ .section = "pwsh", .shell = .pwsh } }) |entry| {
+        const parsed = try parseTable(arena, data, entry.section);
+        for (parsed) |a| {
+            var replaced = false;
+            for (result.items) |*old| if (store.eqlFoldAscii(old.name, a.name)) {
+                old.* = .{ .name = a.name, .command = a.command, .description = a.description, .shell = entry.shell };
+                replaced = true;
+                break;
+            };
+            if (!replaced) try result.append(arena, .{ .name = a.name, .command = a.command, .description = a.description, .shell = entry.shell });
+        }
+    }
+    return result.items;
 }
 
 /// parseTable is parse generalized to any `[section]` name — the same file

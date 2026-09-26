@@ -439,7 +439,7 @@ fn cmdGroupRun(app: *App, group: []const u8, action_args: [][]const u8) !u8 {
                     rc = 1;
                     break;
                 }
-                const code = try runAction(app, cmd, t.name, t.path, n, false);
+                const code = try runAction(app, cmd, t.name, t.path, n, false, r.shell);
                 if (code != 0) {
                     rc = code;
                     break; // the rest of THIS member's chain; other members still run

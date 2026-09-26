@@ -278,7 +278,7 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
     };
     const cmd = try applyArgs(app.arena, r.command, args);
     if (!try provenance.gateAction(app, ctx_alias, dir, action, r.command, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
-    return runAction(app, cmd, ctx_alias, dir, action, false);
+    return runAction(app, cmd, ctx_alias, dir, action, false, r.shell);
 }
 
 /// cmdHere runs `x :<name>` - a machine-wide action in the current directory.
@@ -326,7 +326,7 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
         // from_project = false: _default.toml lives under ~/.nix, the user's own
         // and ungated. A `sudo` command still routes through the gate.
         if (!try provenance.gateAction(app, ctx_alias, dir, name, r.command, cmd, false, stripSudo(cmd) != null, .may_prompt)) return 1;
-        const code = try runAction(app, cmd, ctx_alias, dir, name, false);
+        const code = try runAction(app, cmd, ctx_alias, dir, name, false, r.shell);
         if (code != 0) return code;
     }
     return 0;
@@ -408,7 +408,7 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
             try app.err.print("==> {s} :{s}\n", .{ alias, name });
             try app.err.flush();
         }
-        const code = try runAction(app, cmd, alias, dir, name, outside);
+        const code = try runAction(app, cmd, alias, dir, name, outside, r.shell);
         if (code != 0) {
             if (i + 1 < call.names.len) try app.err.print("nix: :{s} failed (exit {d}) - stopping\n", .{ name, code });
             return code;
@@ -576,6 +576,7 @@ pub fn wrapPs1(app: *App, resolved: [][]const u8) ![][]const u8 {
 pub const Resolved = struct {
     command: []const u8,
     from_project: bool,
+    shell: actions.Shell = .default,
 };
 
 /// resolveAction looks up a named action for an alias: project-local
@@ -584,8 +585,8 @@ pub const Resolved = struct {
 /// `~/.nix/actions/_default.toml`. Returns null if absent.
 pub fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
     for (try actionPaths(app, alias, dir), 0..) |p, i| {
-        if (actions.find(try actions.loadFile(app.arena, app.io, p), name)) |c|
-            return .{ .command = c, .from_project = i == 0 };
+        for (try actions.loadFile(app.arena, app.io, p)) |a| if (store.eqlFoldAscii(a.name, name))
+            return .{ .command = a.command, .from_project = i == 0, .shell = a.shell };
     }
     return null;
 }
@@ -630,8 +631,12 @@ pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_defa
 /// a resolved credential exists only for the duration of this call and never
 /// reaches listings or [notify] messages (those all read the raw,
 /// unexpanded command string). An unresolved name aborts before spawn.
-pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool) !u8 {
+pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool, shell: actions.Shell) !u8 {
     const cmd = (try expandSecrets(app, command)) orelse return 1;
+    if (shell != .default and (outside or stripSudo(cmd) != null)) {
+        try app.err.writeAll("nix: shell-specific actions cannot run in a separate or elevated console yet\n");
+        return 1;
+    }
     // An elevated action is never a foreground run, asked for or not: UAC hands
     // back a separate process under a different token, and it cannot write into
     // this console. It gets a window, like `--outside` does.
@@ -655,6 +660,16 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     // "stop now", which is what it should mean at a picker or a prompt.
     interrupt.arm();
     defer interrupt.disarm();
+    if (shell != .default) {
+        const cfg = config.loadConfig(app.arena, app.io, app.home) catch |e| {
+            try app.err.print("nix: read shell configuration: {s}\n", .{@errorName(e)});
+            return 1;
+        };
+        if (recording(app, cfg, name)) {
+            try app.err.writeAll("nix: recording shell-specific actions is not supported yet\n");
+            return 1;
+        }
+    }
     if (try openRecording(app, alias, name, command)) |rec| {
         var file = rec.file;
         // Footer written while the handle is open: Io.File exposes no
@@ -679,10 +694,25 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
         span.finish(app, alias, kind);
         return code;
     }
-    const code = proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
-        try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
-        return 1;
-    };
+    const code = if (shell == .default)
+        proc.runShellInherit(app.arena, app.io, cmd, dir, env)
+    else
+        blk: {
+            const cfg = config.loadConfig(app.arena, app.io, app.home) catch |e| {
+                try app.err.print("nix: read shell configuration: {s}\n", .{@errorName(e)});
+                return 1;
+            };
+            const executable = switch (shell) {
+                .bash => if (cfg.shell_bash.len > 0) cfg.shell_bash else "bash",
+                .pwsh => if (cfg.shell_pwsh.len > 0) cfg.shell_pwsh else "pwsh",
+                .default => unreachable,
+            };
+            const argv: []const []const u8 = if (shell == .bash) &.{ executable, "-c", cmd } else &.{ executable, "-NoProfile", "-Command", cmd };
+            break :blk proc.runInheritEnv(app.io, argv, dir, env);
+        } catch |e| {
+            try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
+            return 1;
+        };
     span.finish(app, alias, kind);
     return code;
 }
@@ -863,7 +893,11 @@ fn expandSecrets(app: *App, command: []const u8) !?[]const u8 {
 ///
 /// Like `--outside`, no [notify] hook fires: nothing here observes the finish.
 /// An action marked `sudo` starts elevated, here as anywhere else.
-pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8) !u8 {
+pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, shell: actions.Shell) !u8 {
+    if (shell != .default) {
+        try app.err.writeAll("nix: shell-specific actions cannot run in a separate console yet\n");
+        return 1;
+    }
     const cmd = (try expandSecrets(app, command)) orelse return 1;
     return startWindowed(app, cmd, alias, dir, name);
 }
@@ -883,12 +917,12 @@ pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: [
 /// `[notify] on_finish_skip` and `on_finish_min_ms` decide whether the hook
 /// actually fires (notify.silenced): the action still runs, is still timed and
 /// still recorded, it just goes unannounced.
-pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool) !u8 {
-    if (outside or stripSudo(command) != null) return runShellString(app, command, alias, dir, name, true);
+pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool, shell: actions.Shell) !u8 {
+    if (outside or stripSudo(command) != null) return runShellString(app, command, alias, dir, name, true, shell);
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
-    if (cfg.notify_on_finish.len == 0) return runShellString(app, command, alias, dir, name, false);
+    if (cfg.notify_on_finish.len == 0) return runShellString(app, command, alias, dir, name, false, shell);
     const t0 = Io.Clock.awake.now(app.io).nanoseconds;
-    const code = try runShellString(app, command, alias, dir, name, false);
+    const code = try runShellString(app, command, alias, dir, name, false, shell);
     const ms = elapsedMs(app.io, t0);
     const ok = code == 0;
     // Silence is decided AFTER the run, from what it cost and what it was

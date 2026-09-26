@@ -787,6 +787,16 @@ pub const specs = [_]Spec{
         \\    test = "zig build test"
         \\    # Ships to production. Tags the release first.
         \\    deploy = "./scripts/deploy.ps1 --prod"
+        \\    [bash]
+        \\    lint = "./scripts/lint.sh"
+        \\    [pwsh]
+        \\    inspect = "Get-ChildItem"
+        \\
+        \\`[actions]` uses the platform default shell. `[bash]` and `[pwsh]`
+        \\select those shells; a same-name entry overrides `[actions]` in that
+        \\file. Executable paths are set in ~/.nix/config.toml under `[shells]`.
+        \\An omitted path uses the shell from PATH, and a shell that cannot
+        \\start is an error.
         \\
         \\The comment run directly above an action is its DESCRIPTION - joined
         \\into one line and shown by `--run :` and `nix --actions`. There is no
