@@ -128,15 +128,7 @@ One alias is always there: **`.nix` names nix's own home**, so nix's own files a
 
 nix already waits for the things worth measuring — an `o` session until its subshell exits, a foreground `x` until the command returns — so each one writes a line to `~/.nix/time`: alias, start, duration, and which of the three it was (`session`, `run`, `action`). No tracker to remember to start, nothing to sign into, nothing leaving the machine.
 
-```
-$ nix --time
-ALIAS  TODAY     WEEK
-nix    2h30m     11h05m
-acme   -         3h40m
-TOTAL  2h30m     14h45m
-```
-
-`--day` narrows to today, `--all` widens to the ledger's lifetime (a year; older lines are dropped as new ones are written), and naming an alias adds the split by kind — which is how dwell time and build time come apart. Detached (`--outside`) and elevated runs record nothing: nix returns as soon as the window is up, so there is no finish to observe.
+The ledger is plain text for your own reports to read; nix writes it and never displays it. Detached (`--outside`) and elevated runs record nothing: nix returns as soon as the window is up, so there is no finish to observe.
 
 It is measurement, never inference. A shell left open overnight is logged at its real fourteen hours and marked `*`, with the total given both with and without it — a cap would be tidier and would record a session nobody had. Like `usage`, the ledger is machine-local.
 

@@ -1895,16 +1895,12 @@ pub fn main(init: std.process.Init) !void {
             std.mem.indexOf(u8, r.err, "to your user PATH (new shells") == null, "--init under $NIX_HOME refuses to touch the user PATH", r);
     }
 
-    // --- time ledger (--time, issue #20) -----------------------------------------------
+    // --- time ledger (issue #20) -----------------------------------------------
     {
         const pt = join(&c, &.{ root, "proj", "pt" });
         util.mkdirAll(io, pt) catch {};
         _ = try c.run(&.{ "pt", pt });
         const ledger = join(&c, &.{ home, "time" });
-
-        // An empty ledger says so rather than printing a table of nothing.
-        var r = try c.run(&.{"--time"});
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nothing recorded") != null, "--time on an empty ledger says so", r);
 
         // The action waits deliberately: a boundary under a second rounds to
         // zero and is dropped, so an instant `echo` would prove nothing.
@@ -1917,14 +1913,10 @@ pub fn main(init: std.process.Init) !void {
             \\wait = "sleep 2"
             \\
         );
-        r = try c.run(&.{ "pt", "--run", ":wait" });
+        const r = try c.run(&.{ "pt", "--run", ":wait" });
         const line = trim(readFileOr(&c, ledger, ""));
         c.check(r.code == 0 and std.mem.startsWith(u8, line, "pt ") and
             std.mem.endsWith(u8, line, " action"), "a finished action writes one ledger line, tagged action", r);
-
-        r = try c.run(&.{ "--time", "pt" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ALIAS") != null and
-            std.mem.indexOf(u8, r.out, "action") != null, "--time reports the alias and splits it by kind", r);
 
         // Detached runs are inherently untimeable - nix returns as soon as the
         // child is started, so there is no finish to observe. Checked on the

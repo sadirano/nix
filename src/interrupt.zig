@@ -4,7 +4,7 @@
 //! `[notify] on_finish`. With no console handler
 //! registered, Windows' default action for Ctrl-C is to
 //! terminate the process, so an abandoned `x nix :build` was nine minutes that
-//! never happened as far as `nix --time` was concerned.
+//! never happened as far as the time ledger was concerned.
 //!
 //! The handler here does ONE thing: set an event. It does not touch the App,
 //! the arena, or any file - it runs on a thread the OS creates, concurrently
