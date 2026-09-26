@@ -33,6 +33,11 @@ pub const App = struct {
     exe_path: ?[]const u8 = null,
     json: bool,
     no_prompt: bool,
+    /// Whether this binary honours the e2e harness's NIX_E2E_TTY hook. Set from
+    /// build_options by main.zig - only the exe built for `zig build e2e` has
+    /// it, so the shipped binary carries no environment variable that turns a
+    /// piped stdin into a console (see e2eConsole).
+    e2e_hooks: bool = false,
     /// The last foreground named action, for the success hold at nix's single
     /// exit point. Empty when nothing named ran.
     last_alias: []const u8 = "",
@@ -117,10 +122,12 @@ pub fn canAsk(app: *App) bool {
 /// e2eConsole is the one hook past the console check, for the test suite: it
 /// runs nix as a child with piped handles, so without it every gate in e2e
 /// would refuse. It grants the console half only - the `y` still has to
-/// arrive on stdin - and it is deliberately not a general escape hatch, which
-/// is why it is spelled for the suite and matched exactly.
+/// arrive on stdin - and it is not a general escape hatch: the variable is
+/// read only by a binary compiled with the hook (App.e2e_hooks), which the
+/// release build is not. Before that gate an agent's shell could set the
+/// variable, pipe a `y`, and grant itself `--trust --always`.
 pub fn e2eConsole(app: *App) bool {
-    return std.mem.eql(u8, app.env.get("NIX_E2E_TTY") orelse "", "1");
+    return app.e2e_hooks and std.mem.eql(u8, app.env.get("NIX_E2E_TTY") orelse "", "1");
 }
 
 /// isGlobalFlag reports the process-wide flags any sub-parser silently

@@ -86,6 +86,11 @@ pub fn main(init: std.process.Init) !void {
         // (`r a build -q`) flip nix's own switches.
         .json = false,
         .no_prompt = false,
+        // The e2e harness's console hook exists only in the binary built for
+        // the harness (build.zig's e2e exe). A release build never honours
+        // NIX_E2E_TTY, so the gates' "is anyone there" question cannot be
+        // answered by setting a variable.
+        .e2e_hooks = @import("build_options").e2e_hooks,
     };
 
     const code = run(&app, raw_args) catch |e| blk: {
