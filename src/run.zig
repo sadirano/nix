@@ -284,10 +284,11 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
 /// cmdHere runs `x :<name>` - a machine-wide action in the current directory.
 /// `[bin]`'s machine-wide export without the export.
 ///
-/// MACHINE-WIDE ONLY, never the cwd project's own actions: `:<name>` has to
-/// mean one command wherever it is typed, and picking the nearest project is
-/// the guess nix does not make. Name the alias to run a project's action. The
-/// containing alias is still resolved for context (env, scripts, NIX_ALIAS).
+/// Machine-wide FIRST: a name defined there means that one command wherever it
+/// is typed. Only a name it lacks falls to the alias containing the cwd, run
+/// exactly as `r <alias> :<name>` would - that alias is the nearest-enclosing
+/// one, an exact answer rather than a guess. The containing alias is also the
+/// context (env, scripts, NIX_ALIAS) for a machine-wide action.
 pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
     // Same parser as `r <alias> :name`, so the colon grammar - chains, the
     // optional `--`, and "arguments go to a single action, not a chain" - is
@@ -317,6 +318,17 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
     // A chain stops at the first failure, exactly as `r <alias> :a :b` does.
     for (call.names) |name| {
         const r = (try resolveExportAction(app, actions.default_owner, "", name)) orelse {
+            // Not machine-wide: the alias the cwd sits in answers instead, as if
+            // it had been named. Only a name that would otherwise fail - one
+            // defined machine-wide keeps meaning that everywhere.
+            if (ctx_alias.len > 0) {
+                const alias_dir = (try resolveAliasPath(app, ctx_alias)) orelse return 1;
+                if (try resolveAction(app, ctx_alias, alias_dir, name) != null) {
+                    const code = try runCall(app, .{ .names = &.{name}, .args = call.args }, ctx_alias, alias_dir, false);
+                    if (code != 0) return code;
+                    continue;
+                }
+            }
             try app.err.print("nix: no machine-wide action \":{s}\"\n", .{name});
             try app.err.writeAll("  (`nix :` lists every action; add one under [actions] in\n");
             try app.err.writeAll("   ~/.nix/actions/_default.toml, or name the alias that owns it: `r <alias> :<name>`)\n");

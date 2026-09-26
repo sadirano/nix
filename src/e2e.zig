@@ -517,6 +517,20 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{":nosuchdefault"});
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no machine-wide action") != null, "an unknown `:name` errors", r);
 
+        // Standing inside an alias, a name the machine-wide layer lacks falls to
+        // that alias - but one it defines still means the machine-wide command.
+        {
+            const saved_work = c.work;
+            defer c.work = saved_work;
+            c.work = pa;
+            r = try c.run(&.{":whoami"});
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "alias=pa") != null, "`:name` inside an alias falls back to that alias's action", r);
+            r = try c.run(&.{":hello"});
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-default") != null, "`:name` defined machine-wide wins even inside an alias", r);
+            r = try c.run(&.{":nosuchdefault"});
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no machine-wide action") != null, "a name neither layer has still errors inside an alias", r);
+        }
+
         // The colon grammar is parsed once (parseActionCall), so the chain rule
         // is the same one `r <alias> :a :b arg` follows.
         r = try c.run(&.{ ":defonly", ":defonly", "arg" });
