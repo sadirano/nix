@@ -158,27 +158,18 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   Credentials belong there as `${{secret:NAME}}` references, never as
         \\   literal values in a committed file; `nix <alias> --env` prints the
         \\   merged result with provenance and no secret values.
-        \\4. **Read the alias's notes when picking up unfamiliar work.**
-        \\   `nix --no-prompt --notes [pat]` prints every captured line as
-        \\   `<alias>.md:<line>:<text>` and opens nothing. It is where the user
-        \\   records "blocked on X, resume at Y", and often the only explanation
-        \\   for why a project is mid-change. `nix <alias> --no-prompt --notes`
-        \\   narrows that to one alias (what the user types as `{[n]s} <alias>`).
-        \\   WRITING is theirs: `nix <alias> --note <text>` (`{[n]s} <alias>
-        \\   <text>`) captures their working memory in their words, so add one
-        \\   only when asked.
-        \\5. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
+        \\4. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
         \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
         \\   to get the path, then use the absolute path. `{[x]s} <alias> <cmd>` works
         \\   fine from agent shells.
-        \\6. **Add `--no-prompt` instead of avoiding the pickers.** `{[g]s}`, `{[f]s}`,
-        \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, `nix --notes`, and `nix --prune` open fzf and would block a
+        \\5. **Add `--no-prompt` instead of avoiding the pickers.** `{[g]s}`, `{[f]s}`,
+        \\   patterned `{[s]s}`/`{[y]s}`, `nix --actions`, and `nix --prune` open fzf and would block a
         \\   non-interactive shell. With `--no-prompt` they print what they would have
         \\   offered and act on nothing: `nix <alias> --no-prompt --grep <pat>`,
         \\   `nix <alias> --no-prompt --find <pat>`. The flag goes BEFORE the action
         \\   flag - everything after it belongs to the search tool. `{[o]s} +group` and
         \\   `{[p]s} +group` have no non-interactive form and refuse to run.
-        \\7. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
+        \\6. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
         \\   contents (`aliases.toml`, `groups.toml`, `usage`, ...) unless explicitly
         \\   asked; adding a project-local `.nix/actions.toml`, `.nix/env.toml`
         \\   or `.nix/scripts/` inside a project is fine and encouraged. Registering a name that
@@ -206,7 +197,6 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .g = config.shortcutFor(cfg, "g"),
         .f = config.shortcutFor(cfg, "f"),
         .q = config.shortcutFor(cfg, "q"),
-        .n = config.shortcutFor(cfg, "n"),
     });
     return b.items;
 }

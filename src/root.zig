@@ -9,7 +9,6 @@ pub const segments = @import("segments.zig");
 pub const context = @import("context.zig");
 pub const actions = @import("actions.zig");
 pub const provenance = @import("provenance.zig");
-pub const notes = @import("notes.zig");
 pub const config = @import("config.zig");
 pub const usage = @import("usage.zig");
 pub const clipboard = @import("clipboard.zig");

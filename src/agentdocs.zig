@@ -419,44 +419,6 @@ pub const specs = [_]Spec{
         },
         .see_also = &.{"o"},
     },
-    .{
-        .slot = "n",
-        .topic = "n",
-        .args = "[alias] [text...]",
-        .summary = "read notes, or capture one on an alias",
-        .safety = .blocks,
-        .safe_form = "nix --no-prompt --notes [pat]",
-        .needs_tools = &.{ "rg", "fzf" },
-        .detail =
-        \\One command over two scopes, in two directions:
-        \\
-        \\    ${cmd:n}                    every alias's notes  (nix --notes)
-        \\    ${cmd:n} acme               one alias's, read    (nix acme --notes)
-        \\    ${cmd:n} acme blocked on X  one alias's, written (nix acme --note ...)
-        \\
-        \\Words after the alias are joined into a dated bullet, so nothing needs
-        \\quoting; with no words it reads instead of writing. A group works the
-        \\same way and keeps its own file (`${cmd:n} +work`).
-        \\
-        \\Reading is the `${cmd:g}` pipeline over ~/.nix/notes, so rows are
-        \\`<alias>.md:<line>:<text>` and Enter opens the editor there. See the
-        \\`notes` topic for what the files are and why they live under $home.
-        ,
-        .agent_use =
-        \\Reading is safe and often the point: `nix --no-prompt --notes <pat>`
-        \\prints the rows and opens nothing. Do that when picking up work in a
-        \\project you have not seen this session.
-        \\
-        \\Writing is the user's. Capture a note only when asked, in their words -
-        \\see the `notes` topic.
-        ,
-        .suggest = "To leave yourself a marker: `${cmd:n} <alias> <what you were doing>`.",
-        .examples = &.{
-            "`${cmd:n} acme` - read acme's notes",
-            "`nix --no-prompt --notes acme` - the same, printed, opening nothing",
-        },
-        .see_also = &.{ "notes", "g" },
-    },
 
     // ---- system commands ----
 
@@ -872,47 +834,6 @@ pub const specs = [_]Spec{
             "`${cmd:x} +work git status` - fan out a command",
         },
         .see_also = &.{ "x", "g" },
-    },
-    .{
-        .topic = "notes",
-        .summary = "per-alias working memory (~/.nix/notes/ + nix --notes)",
-        .safety = .blocks,
-        .safe_form = "nix --no-prompt --notes [pat]",
-        .detail =
-        \\Freeform markdown per alias in ~/.nix/notes/<alias>.md (and
-        \\+<group>.md for a group), for the thing a directory cannot tell you:
-        \\where the user left off.
-        \\
-        \\`nix <alias> --note <text...>` appends a dated bullet - the remaining
-        \\tokens are joined, so nothing needs quoting. Bare `nix <alias> --note`
-        \\opens the file in the editor.
-        \\
-        \\`nix --notes [pat]` searches every note at once (rg -> fzf, rows as
-        \\`<alias>.md:<line>:<text>`, Enter opens the editor there). No pattern
-        \\lists every line.
-        \\
-        \\Central, not in the repo, on purpose: a project-local notes file either
-        \\commits private notes or gets gitignored, and an ignored file is what
-        \\`git clean -fdx` deletes. Notes are never trust-gated (everything under
-        \\$home, written by the user) and nix never deletes one - removing an
-        \\alias leaves its note, and --doctor reports it as an orphan instead.
-        ,
-        .agent_use =
-        \\READING is useful and safe: `nix --no-prompt --notes <pat>` prints the
-        \\rows and opens nothing. Read it when picking up work in a project you
-        \\have not seen this session - it is where "blocked on X, resume at Y"
-        \\lives, and it is often the only record of why the code is mid-change.
-        \\
-        \\WRITING is the user's, not yours. --note captures THEIR working memory
-        \\in their words; an agent appending its own progress notes turns a
-        \\trusted human record into a log nobody trusts. Write one only when
-        \\asked, in the words they asked for.
-        ,
-        .examples = &.{
-            "`nix --no-prompt --notes acme` - read what is recorded, open nothing",
-            "`nix acme --note blocked on the API key` - capture a line (when asked)",
-        },
-        .see_also = &.{ "g", "state" },
     },
     .{
         .topic = "segments",

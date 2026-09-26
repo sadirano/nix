@@ -18,7 +18,6 @@ const grep = @import("grep.zig");
 const find = @import("find.zig");
 const run_zig = @import("run.zig");
 const provenance = @import("provenance.zig");
-const notes = @import("notes.zig");
 const nav = @import("nav.zig");
 const paste = @import("paste.zig");
 const picker = @import("picker.zig");
@@ -156,13 +155,6 @@ pub fn dispatchGroupRef(app: *App, group: []const u8, rest: [][]const u8) !u8 {
         .paste => cmdGroupPaste(app, group, aargs),
         .grep => cmdGroupGrep(app, group, aargs),
         .find => cmdGroupFind(app, group, aargs),
-        // A group note is not a fan-out: "this whole workstream is blocked" is one
-        // thought about the set, so it goes in the group's own file (`+work.md`) and
-        // not into each member's. Groups have no directory, which is the other
-        // reason notes had to live under $home to be able to have this at all.
-        .note => notes.cmdNote(app, try std.fmt.allocPrint(app.arena, "+{s}", .{group}), aargs),
-        // Reading it back is the same single file, for the same reason.
-        .notes => notes.cmdAliasNotes(app, try std.fmt.allocPrint(app.arena, "+{s}", .{group}), aargs, grep),
         // Per-alias by nature: one editor window or one environment per member
         // is not a fan-out anyone wants.
         .edit, .env => blk: {

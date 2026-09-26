@@ -2,9 +2,8 @@
 //!
 //! Before this file a command existed in four places - the parser's flag map,
 //! the hand-written `--help` heredoc, the agentdocs spec table, and the README
-//! - and only the eight wrapper slots had anything keeping them in step. They
-//! drifted: `--notes`/`-N` and the `--note` action shipped and never reached
-//! `nix --help` at all.
+//! - and only the wrapper slots had anything keeping them in step. They
+//! drifted: commands shipped and never reached `nix --help` at all.
 //!
 //! Now the parser and the help text read the same rows. A flag that is not in a
 //! table does not parse, so the binary can no longer know about a command its
@@ -31,7 +30,6 @@ pub const SystemVerb = enum {
     groups,
     contexts,
     actions,
-    notes,
     init,
     sync,
     sync_bin,
@@ -58,11 +56,6 @@ pub const ActionVerb = enum {
     grep,
     find,
     env,
-    note,
-    /// `nix <alias> --notes`: READ this alias's notes (the `--note` above
-    /// writes one). Same spelling as the system `--notes`, one scope narrower -
-    /// the pair `--edit` already forms across the two tables.
-    notes,
     remove,
 };
 
@@ -111,7 +104,6 @@ pub const system = [_]System{
     .{ .flags = &.{ "--doctor", "-D" }, .verb = .doctor, .args = "[-q]", .help = "check tools/config and what the picker will use", .spec = "--doctor" },
     .{ .flags = &.{ "--groups", "-G" }, .verb = .groups, .help = "list alias groups  (+<group> --list shows members)", .spec = "groups" },
     .{ .flags = &.{ "--actions", "-A" }, .verb = .actions, .args = "[pat]", .help = "every alias's actions in one picker; Enter runs the pick", .spec = "--actions" },
-    .{ .flags = &.{ "--notes", "-N" }, .verb = .notes, .args = "[pat]", .help = "search every alias's notes in one view", .spec = "notes" },
     .{ .flags = &.{ "--contexts", "-c" }, .verb = .contexts, .help = "list global @-segment contexts", .spec = "segments" },
     .{ .flags = &.{ "--init", "-I" }, .verb = .init, .help = "set up ~/.nix, wrappers, and PATH", .spec = "" },
     .{ .flags = &.{ "--sync", "-S" }, .verb = .sync, .help = "regenerate wrappers and generated files", .spec = "" },
@@ -137,8 +129,6 @@ pub const actions = [_]Action{
     .{ .flags = &.{ "--grep", "-g" }, .verb = .grep, .args = "<pat>", .help = "ripgrep search (add --all/-a to search via rga)", .spec = "g" },
     .{ .flags = &.{ "--find", "-f" }, .verb = .find, .args = "[pat]", .help = "fuzzy-find files", .spec = "f" },
     .{ .flags = &.{"--env"}, .verb = .env, .help = "print the project's environment (.nix/env.toml), with provenance", .spec = "env" },
-    .{ .flags = &.{"--note"}, .verb = .note, .args = "<text>", .help = "append a line to the alias's notes", .spec = "notes" },
-    .{ .flags = &.{"--notes"}, .verb = .notes, .args = "[pat]", .help = "search this alias's notes (the `n <alias>` command)", .spec = "n" },
     .{ .flags = &.{ "--remove", "--rm" }, .verb = .remove, .help = "forget the alias", .spec = "" },
 };
 
@@ -305,7 +295,6 @@ pub fn spellings(buf: []u8, flags: []const []const u8) []const u8 {
 test "every flag resolves to its verb, unknown flags to null" {
     try std.testing.expectEqual(SystemVerb.list, systemVerb("--list").?);
     try std.testing.expectEqual(SystemVerb.list, systemVerb("-l").?);
-    try std.testing.expectEqual(SystemVerb.notes, systemVerb("--notes").?);
     try std.testing.expect(systemVerb("--bogus") == null);
     // File deletion was removed: --remove/--rm are actions, never system verbs.
     try std.testing.expect(systemVerb("--remove") == null);

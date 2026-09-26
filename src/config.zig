@@ -127,7 +127,7 @@ pub fn builtinShortcuts() []const Shortcut {
         .{ .builtin = "s", .custom = "s" }, .{ .builtin = "y", .custom = "y" },
         .{ .builtin = "p", .custom = "p" }, .{ .builtin = "x", .custom = "x" },
         .{ .builtin = "g", .custom = "g" }, .{ .builtin = "f", .custom = "f" },
-        .{ .builtin = "q", .custom = "q" }, .{ .builtin = "n", .custom = "n" },
+        .{ .builtin = "q", .custom = "q" },
     };
 }
 
@@ -448,12 +448,12 @@ test "resolvedShortcutNames: defaults sorted; override replaces a slot" {
 
     // Defaults are the identity names, sorted.
     const def = try resolvedShortcutNames(a, .{});
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "n", "o", "p", "q", "s", "x", "y" }), def);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "q", "s", "x", "y" }), def);
 
     // Rename `s` -> `show`: it replaces s and the list stays sorted.
     const shortcuts = [_]Shortcut{.{ .builtin = "s", .custom = "show" }};
     const got = try resolvedShortcutNames(a, .{ .shortcuts = &shortcuts });
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "n", "o", "p", "q", "show", "x", "y" }), got);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "q", "show", "x", "y" }), got);
 }
 
 test "multi-name slot: every listed name resolves; first stays primary" {
@@ -469,7 +469,7 @@ test "multi-name slot: every listed name resolves; first stays primary" {
     };
     const cfg: Config = .{ .shortcuts = &shortcuts };
     const got = try resolvedShortcutNames(a, cfg);
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "n", "o", "p", "q", "r", "s", "x", "y" }), got);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "q", "r", "s", "x", "y" }), got);
     // Help/guide/snippet keep showing the first name.
     try std.testing.expectEqualStrings("x", shortcutFor(cfg, "x"));
 
@@ -479,7 +479,7 @@ test "multi-name slot: every listed name resolves; first stays primary" {
         .{ .builtin = "x", .custom = "R" },
     };
     const got2 = try resolvedShortcutNames(a, .{ .shortcuts = &dup });
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "n", "o", "p", "q", "r", "s", "y" }), got2);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "q", "r", "s", "y" }), got2);
 }
 
 test "a [shortcuts] key naming no slot is inert, reported, and not counted" {
@@ -496,7 +496,7 @@ test "a [shortcuts] key naming no slot is inert, reported, and not counted" {
     // Inert: the default names come back untouched, so --sync installs the
     // stock wrappers and no `x.exe` rename happens.
     const got = try resolvedShortcutNames(a, cfg);
-    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "n", "o", "p", "q", "s", "x", "y" }), got);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{ "e", "f", "g", "o", "p", "q", "s", "x", "y" }), got);
     try std.testing.expectEqualStrings("x", shortcutFor(cfg, "x"));
 
     // Reported, and NOT counted as an override - the raw entry count is 1 here
@@ -534,7 +534,7 @@ test "shortcutSlotOverrides counts slots, not entries" {
     // The retired two-letter names are the likeliest wrong keys, so make sure
     // none of them silently passes as a slot.
     for ([_][]const u8{ "r", "sg", "ff" }) |retired| try std.testing.expect(!isBuiltinSlot(retired));
-    for ([_][]const u8{ "o", "e", "s", "y", "p", "x", "g", "f", "q", "n" }) |slot| try std.testing.expect(isBuiltinSlot(slot));
+    for ([_][]const u8{ "o", "e", "s", "y", "p", "x", "g", "f", "q" }) |slot| try std.testing.expect(isBuiltinSlot(slot));
 }
 
 // ---- writing `[trust] always` ------------------------------------------------

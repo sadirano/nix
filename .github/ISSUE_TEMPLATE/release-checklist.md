@@ -79,8 +79,8 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 ## 4. Pickers and the clipboard
 
-- [ ] `o <alias>` with no argument, `o +<group>`, `nix --prune`, `nix --actions`
-      and `nix --notes` each open fzf and act on the pick.
+- [ ] `o <alias>` with no argument, `o +<group>`, `nix --prune` and
+      `nix --actions` each open fzf and act on the pick.
 - [ ] `f <alias> <pat>` and `s <alias> <pat>` return results and open the picks.
 - [ ] `y <alias>` copies the path; `y <alias> <pat>` puts the real FILES on the
       clipboard (paste into Explorer, not just a text field).
@@ -231,16 +231,12 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       three triggers - a long `x` finishing, a `p`, and a `y` - and confirm
       on_finish also fires for a FAILING command, not only a successful one.
 
-## 10. Doctor and notes on the real machine
+## 10. Doctor on the real machine
 
 - [ ] ⚠️ `nix --doctor` is green; `-q` shows only problems; `--json` parses.
       Against the REAL store, not a scratch one - the point of this step is
       your actual machine's tools and config. Pipe the JSON through a parser
       instead of eyeballing it: `nix --doctor --json | ConvertFrom-Json`.
-- [ ] ⚠️ `nix <alias> --note <text>` appends, and `nix --notes <pat>` finds it.
-      Append twice and confirm the second did not overwrite the first.
-      `nix --no-prompt --notes <pat>` prints `<alias>.md:<line>:<text>` rows
-      and opens nothing.
 
 ## 11. Backup and rollback
 

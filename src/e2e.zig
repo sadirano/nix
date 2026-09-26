@@ -173,7 +173,6 @@ pub fn main(init: std.process.Init) !void {
     const tmp_base = init.environ_map.get("TEMP") orelse init.environ_map.get("TMPDIR") orelse ".";
     const root = try std.fmt.allocPrint(arena, "{s}{c}nix-e2e-{d}", .{ tmp_base, std.fs.path.sep, @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_ms) });
     const home = try std.fs.path.join(arena, &.{ root, "home" });
-    const home2 = try std.fs.path.join(arena, &.{ root, "home2" });
     const work = try std.fs.path.join(arena, &.{ root, "work" });
     try util.mkdirAll(io, work);
 
@@ -962,75 +961,6 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ACTION") != null, "an unattended `:` prints instead of opening the picker", r);
     }
 
-    // --- notes (--note / --notes) ----------------------------------------------
-    {
-        const note_pa = join(&c, &.{ home, "notes", "pa.md" });
-
-        // Capture: tokens are joined, so nothing needed quoting.
-        var r = try c.run(&.{ "pa", "--note", "blocked", "on", "the", "API", "key" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "noted in") != null and
-            proc.pathExists(io, note_pa), "--note creates the note and reports where", r);
-        const body = readFileOr(&c, note_pa, "");
-        // A dated bullet, seconds included, one line.
-        c.check(std.mem.startsWith(u8, body, "- 20") and
-            std.mem.indexOf(u8, body, "blocked on the API key") != null and
-            std.mem.count(u8, body, "\n") == 1, "the capture is one dated bullet with the words joined", r);
-        c.check(std.mem.count(u8, body, ":") == 2, "the stamp carries seconds", r);
-
-        // A second capture appends rather than replacing.
-        r = try c.run(&.{ "pa", "--note", "key", "arrived" });
-        const body2 = readFileOr(&c, note_pa, "");
-        c.check(r.code == 0 and std.mem.count(u8, body2, "\n") == 2 and
-            std.mem.indexOf(u8, body2, "blocked on the API key") != null and
-            std.mem.indexOf(u8, body2, "key arrived") != null, "a second note appends", r);
-
-        // Groups get their own file, keyed `+name` - not a fan-out into members.
-        r = try c.run(&.{ "+work", "--note", "whole", "workstream", "blocked" });
-        c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "notes", "+work.md" })), "a group note lands in +group.md", r);
-
-        // The search view is the `sg` pipeline pointed at the notes dir, so it
-        // needs ripgrep - and without it every one of these exits 1 on "rg not
-        // found", including the no-match check, which would pass for the wrong
-        // reason. Gate them the way the --grep checks below are gated.
-        if (c.has("rg")) {
-            // Rows are <key>.md:<line>:<text>, so the filename is the alias and
-            // a cross-project view needs no header.
-            r = try c.run(&.{ "--no-prompt", "--notes", "API" });
-            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:1:") != null and
-                std.mem.indexOf(u8, r.out, "blocked on the API key") != null, "--notes prints alias-keyed rows", r);
-            // No pattern lists everything, across every note.
-            r = try c.run(&.{ "--no-prompt", "--notes" });
-            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
-                std.mem.indexOf(u8, r.out, "+work.md:") != null, "--notes with no pattern lists every line", r);
-            // No match is exit 1 with nothing opened, the picker contract.
-            r = try c.run(&.{ "--no-prompt", "--notes", "zzz-no-such-note" });
-            c.check(r.code == 1, "--notes reports no matches with exit 1", r);
-        } else {
-            c.skip("--notes prints alias-keyed rows", "rg");
-            c.skip("--notes with no pattern lists every line", "rg");
-            c.skip("--notes reports no matches with exit 1", "rg");
-        }
-
-        // The empty case needs no search tool at all: with no notes directory
-        // --notes says so and exits 1 rather than handing rg a missing path.
-        // Pointed at the spare home, which nothing has captured a note into.
-        try c.env.put("NIX_HOME", home2);
-        r = try c.run(&.{ "--no-prompt", "--notes" });
-        try c.env.put("NIX_HOME", home);
-        c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "no notes yet") != null, "--notes with no notes dir explains and exits 1", r);
-
-        // A note is keyed on the NAME, so removing the alias must not touch it -
-        // and doctor reports the orphan rather than tidying it away.
-        util.mkdirAll(io, join(&c, &.{ root, "proj", "pnote" })) catch {};
-        r = try c.run(&.{ "pnote", join(&c, &.{ root, "proj", "pnote" }) });
-        _ = try c.run(&.{ "pnote", "--note", "temporary" });
-        r = try c.run(&.{ "pnote", "--remove" });
-        c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "notes", "pnote.md" })), "--remove leaves the note file", r);
-        r = try c.run(&.{"--doctor"});
-        c.check(std.mem.indexOf(u8, r.out, "no alias or group") != null and
-            std.mem.indexOf(u8, r.out, "pnote") != null, "--doctor reports an orphaned note", r);
-    }
-
     // --- action palette (nix --actions) ----------------------------------------
     {
         // A second alias with an overlapping action name, so the palette has to
@@ -1549,46 +1479,6 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--agent"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "close the shell") != null, "`q --agent` renders q's own spec", r);
         c.exe = real_exe;
-
-        // `n` is one command over two scopes and two directions: words after
-        // the alias write a note, no words read them back, and no alias at all
-        // reads every note. All three go through the canonical forms, so this
-        // checks the desugaring rather than the notes themselves.
-        const n_exe = join(&c, &.{ root, "n.exe" });
-        try writeFile(&c, n_exe, exe_bytes);
-        c.exe = n_exe;
-        r = try c.run(&.{ "pa", "wrapper", "captured", "this" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "noted in") != null and
-            std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "notes", "pa.md" }), ""), "wrapper captured this") != null, "`n <alias> <words>` captures a note", r);
-        // The READ direction is the sg pipeline pointed at the notes dir, so it
-        // needs ripgrep - same gate as the --notes checks above. Ungated, these
-        // exit 1 on "rg not found" and read as a broken `n`.
-        if (c.has("rg")) {
-            r = try c.run(&.{ "--no-prompt", "pa" });
-            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null and
-                std.mem.indexOf(u8, r.out, "wrapper captured this") != null, "`n <alias>` with no words reads that alias's notes", r);
-            // The global flag sits BEFORE the alias here, which is where an agent
-            // puts it - and where a desugaring that appended it would lose it.
-            r = try c.run(&.{"--no-prompt"});
-            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`n` with no alias reads every note", r);
-        } else {
-            c.skip("`n <alias>` with no words reads that alias's notes", "rg");
-            c.skip("`n` with no alias reads every note", "rg");
-        }
-        r = try c.run(&.{ "--no-prompt", "nosuchalias" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no notes for") != null, "`n` on an alias with no notes says so", r);
-        c.exe = real_exe;
-        // The canonical spelling of the read form parses too - the wrapper and
-        // `nix <alias> --notes` must name the same thing.
-        // The flag goes BEFORE the action here, the same rule every other
-        // alias action follows (`nix <alias> --no-prompt --find <pat>`):
-        // everything after an action flag belongs to that action.
-        if (c.has("rg")) {
-            r = try c.run(&.{ "pa", "--no-prompt", "--notes" });
-            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa.md:") != null, "`nix <alias> --notes` is the canonical read form", r);
-        } else {
-            c.skip("`nix <alias> --notes` is the canonical read form", "rg");
-        }
 
         // A [shortcuts] rename: a wrapper installed under the custom name must
         // desugar to the builtin slot's action, not fall through to `nix <alias>`.
