@@ -101,8 +101,7 @@ pub fn cmdList(app: *App) !u8 {
         try app.out.writeAll("no aliases registered (run: nix <name> <path>)\n");
         return 0;
     }
-    // tabwriter-style: pad the name column to the widest name + 2 spaces,
-    // matching onix's `tabwriter` minwidth=0 padding=2.
+    // tabwriter-style: pad the name column to the widest name + 2 spaces.
     var width: usize = "ALIAS".len;
     for (aliases.items) |a| width = @max(width, a.name.len);
     try padPrint(app.out, "ALIAS", width + 2);

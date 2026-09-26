@@ -149,7 +149,7 @@ pub fn resolveRoots(app: *App, cfg: config.Config) !Roots {
 }
 
 /// pickerSource picks the candidate-directory source for the unknown-alias
-/// picker. Everything ('es') is the instant, whole-system source onix relies on;
+/// picker. Everything ('es') is the instant, whole-system source;
 /// where it isn't available, or is installed but non-functional (returns
 /// nothing), we fall through to a streamed fd/find walk of the search roots.
 pub fn pickerSource(app: *App, cfg: config.Config, name: []const u8) !PickerSource {
