@@ -44,7 +44,7 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     }
     if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
     if (argv.len == 0) {
-        try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `r <alias> :`)\n");
+        try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `x <alias> :`)\n");
         return 1;
     }
     return runOnce(app, alias, target, argv, outside);
@@ -63,7 +63,7 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
             // `o <alias> :` and `r <alias> :` answer identically. This stays as
             // the honest reply if that routing is ever changed.
             .list => {
-                try app.err.writeAll("nix: name the action after ':' (e.g. r <alias> :test)\n");
+                try app.err.writeAll("nix: name the action after ':' (e.g. x <alias> :test)\n");
                 return 1;
             },
             .call => |c| c,
@@ -251,7 +251,7 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
             }
             try app.err.print("nix: no machine-wide action \":{s}\"\n", .{name});
             try app.err.writeAll("  (`nix :` lists every action; add one under [actions] in\n");
-            try app.err.writeAll("   ~/.nix/actions/_default.toml, or name the alias that owns it: `r <alias> :<name>`)\n");
+            try app.err.writeAll("   ~/.nix/actions/_default.toml, or name the alias that owns it: `x <alias> :<name>`)\n");
             return 1;
         };
         const cmd = try applyArgs(app.arena, r.command, call.args);
@@ -298,7 +298,7 @@ pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
     while (n < argv.len and argv[n].len > 1 and argv[n][0] == ':') n += 1;
     if (n == 0) {
         if (argv.len == 1) return .list; // a bare ':' is the listing form
-        try app.err.writeAll("nix: name the action after ':' (e.g. r <alias> :test)\n");
+        try app.err.writeAll("nix: name the action after ':' (e.g. x <alias> :test)\n");
         return .invalid;
     }
     var args = argv[n..];
@@ -307,7 +307,7 @@ pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
     // as `--json` rather than losing the flag to nix's own parsing.
     if (args.len > 0 and eql(args[0], "--")) args = args[1..];
     for (args) |a| if (eql(a, ":")) {
-        try app.err.writeAll("nix: name the action after ':' (e.g. r <alias> :test)\n");
+        try app.err.writeAll("nix: name the action after ':' (e.g. x <alias> :test)\n");
         return .invalid;
     };
     if (n > 1 and args.len > 0) {
@@ -328,7 +328,7 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
     const chained = call.names.len > 1;
     for (call.names, 0..) |name, i| {
         const r = (try resolveAction(app, alias, dir, name)) orelse {
-            try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `r {s} :`)\n", .{ alias, name, alias });
+            try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `x {s} :`)\n", .{ alias, name, alias });
             return 1;
         };
         const cmd = try applyArgs(app.arena, r.command, call.args);

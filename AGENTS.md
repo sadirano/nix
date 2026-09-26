@@ -18,7 +18,7 @@ One TOML file holds every alias; one binary serves every command. State lives in
 ## Build, test, run
 
 The repo is registered as a nix alias itself, so the saved actions in
-`.nix/actions.toml` are the shortest forms (`x <alias> :build`, `:sync`, `:ci`,
+`.nix/actions.toml` are the shortest forms (`x <alias> :deploy`, `:ci`,
 `:checklist`). The raw commands:
 
 ```powershell
@@ -77,7 +77,7 @@ action from `argv[0]` (`main.multicallAction`). With `~/.nix/bin` on the
 persistent user PATH there is no shell snippet on Windows; POSIX still gets shell
 functions from `snippet.zig`. Consequence for the dev loop: **`zig build` alone
 never reaches the binary you actually run** - the wrappers are independent
-copies. Use `zig build deploy` (or `:build` then `:sync`).
+copies. Use `zig build deploy` (the `:deploy` action).
 
 ### Single-source-of-truth tables
 

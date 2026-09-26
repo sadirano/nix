@@ -117,7 +117,7 @@ pub const specs = [_]Spec{
         \\changes nothing the user sees and may leave you in a nested process.
         \\
         \\To get the path, run `nix <alias>` - it prints the absolute path and
-        \\creates nothing. Inside a command started by `r`/`o`, $NIX_ALIAS and
+        \\creates nothing. Inside a command started by `${cmd:x}`/`${cmd:o}`, $NIX_ALIAS and
         \\$NIX_ALIAS_PATH are already set, so no lookup is needed at all.
         ,
         .suggest = "Point the user at `${cmd:o} <alias>` when your work leaves them somewhere they'll want to be.",

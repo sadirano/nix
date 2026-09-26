@@ -58,10 +58,10 @@ pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 
 /// names are spelled canonically (`r`), not with the local [shortcuts] rename:
 /// the reader may be a colleague who cloned the repo.
 pub const project_template =
-    \\# nix project actions - run with `r <alias> :<name>` (list with `r <alias> :`).
+    \\# nix project actions - run with `x <alias> :<name>` (list with `x <alias> :`).
     \\#
     \\# The comment block above an action IS its description: it is what
-    \\# `r <alias> :` shows beside the name. Say WHY the action exists - the
+    \\# `x <alias> :` shows beside the name. Say WHY the action exists - the
     \\# command already says what it does.
     \\#
     \\# Nothing below is active yet. Uncomment a line and edit it.
@@ -69,7 +69,7 @@ pub const project_template =
     \\[actions]
     \\# build = "zig build"
     \\
-    \\# Arguments are appended: `r <alias> :test -- --json`. Put {args} in the
+    \\# Arguments are appended: `x <alias> :test -- --json`. Put {args} in the
     \\# command to place them somewhere other than the end.
     \\# test = "zig build test"
     \\
@@ -81,7 +81,7 @@ pub const project_template =
     \\# inspect = "Get-ChildItem"
     \\
     \\# Anything longer than one line belongs in .nix/scripts/ rather than inside
-    \\# a quoted string here. A script there runs by bare name: `r <alias> ship`.
+    \\# a quoted string here. A script there runs by bare name: `x <alias> ship`.
     \\
     \\# [bin] exports an action as a command that works from anywhere, installed
     \\# by `nix --sync-bin`:

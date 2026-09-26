@@ -8,6 +8,7 @@ const app_zig = @import("app.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
+const util = @import("util.zig");
 const snippet = @import("snippet.zig");
 const agents = @import("agents.zig");
 const bin_exports = @import("bin_exports.zig");
@@ -228,8 +229,12 @@ pub fn cmdInit(app: *App) !u8 {
     if (proc.is_windows) {
         try app.err.writeAll("restart your shell to activate o/e/s/y/p/x, g/f\n");
         // PowerShell resolves aliases before PATH exes, and `r` is a built-in
-        // alias (Invoke-History) — the one wrapper pwsh silently shadows.
-        try app.err.writeAll("PowerShell users: the built-in `r` alias shadows r.exe - add to $PROFILE:  Remove-Item Alias:r -Force\n");
+        // alias (Invoke-History). The run slot is `x` for exactly that reason,
+        // so the warning only applies when [shortcuts] brings `r` back.
+        const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+        if (util.containsFold(try config.resolvedShortcutNames(app.arena, cfg), "r")) {
+            try app.err.writeAll("PowerShell users: the built-in `r` alias shadows r.exe - add to $PROFILE:  Remove-Item Alias:r -Force\n");
+        }
     } else {
         const sh = try snippet.bashPath(app.arena, app.home);
         try app.err.print("add to your shell rc:  [ -f '{s}' ] && . '{s}'\n", .{ sh, sh });
