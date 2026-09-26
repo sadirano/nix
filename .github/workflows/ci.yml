@@ -46,9 +46,10 @@ jobs:
   # The Windows job cross-compiles for linux but never RUNS anything there, so
   # a unit test whose fixture only holds on Windows (a `C:\...` path fed to
   # basename) went red on every other OS without anyone seeing it. This runs
-  # the platform-neutral half of the gate where the fixtures have to be
-  # honest about what they assume. The e2e harness stays Windows-only: its
-  # subject is cmd, UAC and the registry PATH.
+  # the unit tests and the e2e harness where the fixtures have to be honest
+  # about what they assume. Checks whose subject is Windows itself (cmd's
+  # quoting, UAC, the registry PATH, the .exe wrappers, the .cmd context
+  # fixtures) skip here as "Windows only" and are counted, not failed.
   test-linux:
     runs-on: ubuntu-latest
     steps:
@@ -56,5 +57,15 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      # The harness shells out to rg and fd, and treats a missing tool as a
+      # failure (see the Windows job). Ubuntu packages fd as `fdfind`.
+      - name: Install ripgrep and fd
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ripgrep fd-find
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+          rg --version && fd --version
       - name: Unit tests
         run: zig build test
+      - name: End-to-end
+        run: zig build e2e

@@ -6,6 +6,11 @@
 //! the real user PATH), and --secret (it edits the real Windows Credential
 //! Manager) are deliberately out of scope.
 //!
+//! Windows-first, but it runs green on POSIX: a check whose SUBJECT is
+//! Windows (cmd's quoting, UAC, the registry PATH, the .exe wrappers, and
+//! the .cmd context-source fixtures) is wrapped in `c.windowsOnly(...)`,
+//! which skips it there and counts it separately from a missing-tool skip.
+//!
 //! Run with `zig build e2e`; argv[1] is the nix exe to test.
 
 const std = @import("std");
@@ -25,6 +30,10 @@ const Ctx = struct {
     checks: usize = 0,
     fails: usize = 0,
     skips: usize = 0,
+    /// Checks whose SUBJECT is Windows (cmd's quoting, UAC, the registry PATH,
+    /// the .exe wrappers). Reported, never failed: unlike a missing tool, no
+    /// install would make them runnable here.
+    platform_skips: usize = 0,
 
     fn run(c: *Ctx, args: []const []const u8) !RunResult {
         return c.runAnswering(args, null);
@@ -96,6 +105,17 @@ const Ctx = struct {
         std.debug.print("skip {s} (needs {s})\n", .{ name, needs });
     }
 
+    /// windowsOnly gates a check or a block whose subject is Windows itself.
+    /// True on Windows; elsewhere it records the skip and answers false, so
+    /// the caller writes `if (c.windowsOnly("...")) { ... }` and the run stays
+    /// green on a POSIX box with fewer, honestly counted, checks.
+    fn windowsOnly(c: *Ctx, name: []const u8) bool {
+        if (proc.is_windows) return true;
+        c.platform_skips += 1;
+        std.debug.print("skip {s} (Windows only)\n", .{name});
+        return false;
+    }
+
     /// has reports whether a tool is on PATH, for gating the checks that shell
     /// out to it.
     fn has(c: *Ctx, name: []const u8) bool {
@@ -144,9 +164,11 @@ fn readFileOr(c: *Ctx, path: []const u8, fallback: []const u8) []const u8 {
 
 fn writeFile(c: *Ctx, path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |d| try util.mkdirAll(c.io, d);
-    // A POSIX script fixture needs its execute bit, or every bare-name run of
-    // it fails with AccessDenied and the check reads as a gate refusal.
-    const perms: Io.File.Permissions = if (std.mem.endsWith(u8, path, ".sh")) .executable_file else .default_file;
+    // A POSIX script fixture, or a copy of the exe under a wrapper name, needs
+    // its execute bit: without it every run of the file fails with AccessDenied
+    // and the check reads as a refusal.
+    const runnable = std.mem.endsWith(u8, path, ".sh") or std.mem.endsWith(u8, path, ".exe");
+    const perms: Io.File.Permissions = if (runnable) .executable_file else .default_file;
     try Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = data, .flags = .{ .permissions = perms } });
 }
 
@@ -283,10 +305,12 @@ pub fn main(init: std.process.Init) !void {
         // A token that cannot be a path never reaches aliases.toml. `o i :` used
         // to resolve ":" against the cwd, overwrite, save, and only THEN crash
         // trying to enter it.
-        r = try c.run(&.{ "pa", "we|rd" });
-        r2 = try c.run(&.{ "pa", "--resolve" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not a usable path") != null and
-            pathEql(trim(r2.out), pa), "a non-path argument is refused and leaves the alias intact", r);
+        if (c.windowsOnly("a non-path argument is refused and leaves the alias intact")) {
+            r = try c.run(&.{ "pa", "we|rd" });
+            r2 = try c.run(&.{ "pa", "--resolve" });
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not a usable path") != null and
+                pathEql(trim(r2.out), pa), "a non-path argument is refused and leaves the alias intact", r);
+        }
 
         // And a bare `:` is not a path at all - it asks what the alias can run,
         // the same answer `r pa :` gives. Registration must not see it.
@@ -329,7 +353,10 @@ pub fn main(init: std.process.Init) !void {
         // exists.
         // A sub-command flag with an alias in front of it can only have meant
         // its owner, so it runs rather than being explained back.
-        r = try c.run(&.{ "pa", "--outside", "cmd", "/c", "exit", "0" });
+        r = if (proc.is_windows)
+            try c.run(&.{ "pa", "--outside", "cmd", "/c", "exit", "0" })
+        else
+            try c.run(&.{ "pa", "--outside", "true" });
         c.check(r.code == 0, "a run-scoped flag with an alias implies --run", r);
 
         // With no alias there is nothing to imply it onto: still an error, and
@@ -525,9 +552,12 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and hasLineFold(r.out, "one tail"), "arguments append to an action's command", r);
         r = try c.run(&.{ "pa", "--run", ":one", "tail" });
         c.check(r.code == 0 and hasLineFold(r.out, "one tail"), "the `--` separator is optional", r);
-        // A word that was one word in the caller's shell stays one word.
-        r = try c.run(&.{ "pa", "--run", ":one", "--", "two words" });
-        c.check(r.code == 0 and hasLineFold(r.out, "one \"two words\""), "a spaced argument is re-quoted, not split", r);
+        // A word that was one word in the caller's shell stays one word. Read
+        // through cmd's echo, which prints the quotes; sh's strips them.
+        if (c.windowsOnly("a spaced argument is re-quoted, not split")) {
+            r = try c.run(&.{ "pa", "--run", ":one", "--", "two words" });
+            c.check(r.code == 0 and hasLineFold(r.out, "one \"two words\""), "a spaced argument is re-quoted, not split", r);
+        }
         // {args} takes them instead, wherever it sits in the command.
         r = try c.run(&.{ "pa", "--run", ":mid", "--", "X" });
         c.check(r.code == 0 and hasLineFold(r.out, "before X after"), "{args} substitutes in place of appending", r);
@@ -550,10 +580,12 @@ pub fn main(init: std.process.Init) !void {
         // Quotes reach the shell as written. This is what makes the re-quoting
         // above safe, and it is why the foreground run builds its own command
         // line rather than handing argv to std (which would send cmd `\"`).
-        try writeActions(&c, "pa", pa, "[actions]\nquoted = 'echo \"inner quotes\"'\n");
-        r = try c.run(&.{ "pa", "--run", ":quoted" });
-        c.check(r.code == 0 and hasLineFold(r.out, "\"inner quotes\"") and
-            std.mem.indexOf(u8, r.out, "\\\"") == null, "a command's own quotes are not mangled", r);
+        if (c.windowsOnly("a command's own quotes are not mangled")) {
+            try writeActions(&c, "pa", pa, "[actions]\nquoted = 'echo \"inner quotes\"'\n");
+            r = try c.run(&.{ "pa", "--run", ":quoted" });
+            c.check(r.code == 0 and hasLineFold(r.out, "\"inner quotes\"") and
+                std.mem.indexOf(u8, r.out, "\\\"") == null, "a command's own quotes are not mangled", r);
+        }
 
         // Put back what the blocks after this one expect to find.
         try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\n");
@@ -634,25 +666,27 @@ pub fn main(init: std.process.Init) !void {
         _ = try c.trust(&.{"pg"});
         r = try c.run(&.{ "pg", "--run", ":build" });
         c.check(r.code == 0 and hasLineFold(r.out, "rewritten"), "--trust re-approves the edited file", r);
-        r = try c.run(&.{ "pg", "--run", ":install" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null and
-            std.mem.indexOf(u8, r.err, "every time") != null, "an approved elevated action still refuses unattended", r);
-        // ...and it refuses by showing the line UAC would not have shown.
-        c.check(std.mem.indexOf(u8, r.err, "sudo echo elevated") != null, "the elevated refusal shows the command UAC would hide", r);
+        if (c.windowsOnly("elevated actions (sudo is a real program off Windows)")) {
+            r = try c.run(&.{ "pg", "--run", ":install" });
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null and
+                std.mem.indexOf(u8, r.err, "every time") != null, "an approved elevated action still refuses unattended", r);
+            // ...and it refuses by showing the line UAC would not have shown.
+            c.check(std.mem.indexOf(u8, r.err, "sudo echo elevated") != null, "the elevated refusal shows the command UAC would hide", r);
 
-        // `[confirm] trusted` waives nix's confirmation for a vetted line - but
-        // it must NOT reach a project's own elevated action of the same name,
-        // or a cloned repo would inherit an exemption the user wrote for their
-        // own command. Unattended still refuses either way (UAC is unanswerable
-        // here), so the refusal message is what the check reads.
-        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[confirm]\ntrusted = [\"install\"]\n");
-        r = try c.run(&.{ "pg", "--run", ":install" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null, "a listed name does not exempt a PROJECT elevated action", r);
-        // The list itself parses and is scoped to the [confirm] section.
-        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[confirm]\ntrusted = [\n  # a comment inside the array\n  \"install\",\n  \"other\",\n]\n");
-        r = try c.run(&.{ "pg", "--run", ":install" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null, "a multi-line trusted array parses without breaking the gate", r);
-        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
+            // `[confirm] trusted` waives nix's confirmation for a vetted line - but
+            // it must NOT reach a project's own elevated action of the same name,
+            // or a cloned repo would inherit an exemption the user wrote for their
+            // own command. Unattended still refuses either way (UAC is unanswerable
+            // here), so the refusal message is what the check reads.
+            try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[confirm]\ntrusted = [\"install\"]\n");
+            r = try c.run(&.{ "pg", "--run", ":install" });
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null, "a listed name does not exempt a PROJECT elevated action", r);
+            // The list itself parses and is scoped to the [confirm] section.
+            try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[confirm]\ntrusted = [\n  # a comment inside the array\n  \"install\",\n  \"other\",\n]\n");
+            r = try c.run(&.{ "pg", "--run", ":install" });
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "administrator") != null, "a multi-line trusted array parses without breaking the gate", r);
+            Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
+        }
 
         // Scripts beside the actions file are the same cloned code reached by a
         // different spelling, so `r pg hello` is gated too.
@@ -824,8 +858,13 @@ pub fn main(init: std.process.Init) !void {
         _ = try c.trust(&.{"pe"}); // the bare form covers env too
 
         // The PRIVATE central layer wins - the override that doesn't dirty the
-        // repo - and matches the project's name case-insensitively.
-        try writeFile(&c, join(&c, &.{ home, "env", "pe.toml" }), "[env]\ndatabase_url = \"from-central\"\n");
+        // repo - and matches the project's name case-insensitively. The
+        // differently-cased spelling is read back through %DATABASE_URL%, which
+        // only a Windows environment folds; elsewhere the same name is used.
+        try writeFile(&c, join(&c, &.{ home, "env", "pe.toml" }), if (proc.is_windows)
+            "[env]\ndatabase_url = \"from-central\"\n"
+        else
+            "[env]\nDATABASE_URL = \"from-central\"\n");
         r = try c.run(&.{ "pe", "--run", ":show" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "url=[from-central]") != null and
             std.mem.indexOf(u8, r.out, "region=[eu-west-1]") != null, "the central layer overrides one key and leaves the rest", r);
@@ -1261,9 +1300,11 @@ pub fn main(init: std.process.Init) !void {
         const q_file = join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "q{s}", .{ext}) });
         const def_pre = join(&c, &.{ home, "actions", "_default.toml" });
         const def_pre_restore = readFileOr(&c, def_pre, "");
-        try writeFile(&c, join(&c, &.{ home, "exports.toml" }), try std.fmt.allocPrint(arena, "[exports]\nq{s} = \"_default deadbeef :q\"\n", .{ext}));
-        _ = try c.run(&.{"--sync"}); // installs the wrappers, then prunes exports
-        c.check(proc.pathExists(io, q_file), "an export whose name became a wrapper does not delete the wrapper", null);
+        if (c.windowsOnly("an export whose name became a wrapper does not delete the wrapper")) {
+            try writeFile(&c, join(&c, &.{ home, "exports.toml" }), try std.fmt.allocPrint(arena, "[exports]\nq{s} = \"_default deadbeef :q\"\n", .{ext}));
+            _ = try c.run(&.{"--sync"}); // installs the wrappers, then prunes exports
+            c.check(proc.pathExists(io, q_file), "an export whose name became a wrapper does not delete the wrapper", null);
+        }
         try writeFile(&c, def_pre, def_pre_restore);
 
         // A machine-wide export (_default.toml) has no alias dir, so it runs
@@ -1483,7 +1524,7 @@ pub fn main(init: std.process.Init) !void {
     // Declared project-locally, so it must refuse until approved. The script
     // writes to $NIX_CONTEXT_OUT and prints to stdout, proving the noise on
     // stdout never becomes a variable.
-    {
+    if (c.windowsOnly("context sources (.cmd fixtures)")) {
         const scripts = join(&c, &.{ pa, ".nix", "scripts" });
         util.mkdirAll(io, scripts) catch {};
         try writeFile(&c, join(&c, &.{ scripts, "lookup.cmd" }),
@@ -1525,7 +1566,7 @@ pub fn main(init: std.process.Init) !void {
     // --- named producers (issue #3) -----------------------------------------------
     // The producer and its script are central (the machine owner's), so a
     // project file that merely `uses` it is inert data and needs no approval.
-    {
+    if (c.windowsOnly("named producers (.cmd fixtures)")) {
         util.mkdirAll(io, join(&c, &.{ home, "scripts" })) catch {};
         try writeFile(&c, join(&c, &.{ home, "scripts", "ticket.cmd" }),
             \\@echo off
@@ -1663,7 +1704,7 @@ pub fn main(init: std.process.Init) !void {
     // to append <scratch>/bin to the user's REAL registry PATH - one dead entry
     // per run, accumulating silently. The guard is store.isRelocatedHome; these
     // are the checks that keep it.
-    {
+    if (c.windowsOnly("the registry user PATH under $NIX_HOME")) {
         // The absent string is the POSITIVE report, not the substring "added" -
         // the note itself says "NOT added", so a naive check passes for the
         // wrong reason on the very message it is meant to be reading.
@@ -1716,7 +1757,7 @@ pub fn main(init: std.process.Init) !void {
     // contexts-cache.toml (rewritten whole on every put), and is exported into
     // the environment of whatever runs next. Refused rather than truncated - a
     // partially read answer can produce a path that looks right.
-    {
+    if (c.windowsOnly("context source bounds (.cmd fixtures)")) {
         const pg = join(&c, &.{ root, "proj", "pg" });
         util.mkdirAll(io, pg) catch {};
         _ = try c.run(&.{ "pg", pg });
@@ -1806,7 +1847,7 @@ pub fn main(init: std.process.Init) !void {
     // is everything around it - that one block still behaves exactly as before,
     // that several are offered and refused unattended, that an inline value
     // never prompts, and that the list survives a cache round-trip.
-    {
+    if (c.windowsOnly("candidate menus (.cmd fixtures)")) {
         const pm = join(&c, &.{ root, "proj", "pm" });
         util.mkdirAll(io, pm) catch {};
         _ = try c.run(&.{ "pm", pm });
@@ -1932,9 +1973,9 @@ pub fn main(init: std.process.Init) !void {
             r = try c.run(&.{ "pa", "--as", "uri" });
             c.check(r.code == 0 and std.mem.startsWith(u8, trim(r.out), "file:///"), "--as uri produces a file URL", r);
         } else {
-            c.skip("--as wsl produces a /mnt path", "Windows");
-            c.skip("--as gitbash produces a /c/ path", "Windows");
-            c.skip("--as uri produces a file URL", "Windows");
+            _ = c.windowsOnly("--as wsl produces a /mnt path");
+            _ = c.windowsOnly("--as gitbash produces a /c/ path");
+            _ = c.windowsOnly("--as uri produces a file URL");
         }
 
         // A mistyped dialect must never fall through as if no translation had
@@ -2006,11 +2047,15 @@ pub fn main(init: std.process.Init) !void {
         // reason the two injections are separate.
         const kb_scripts = join(&c, &.{ kb, ".nix", "scripts" });
         util.mkdirAll(io, kb_scripts) catch {};
-        try writeFile(&c, join(&c, &.{ kb_scripts, "whois.cmd" }),
-            \\@echo off
-            \\>>"%NIX_CONTEXT_OUT%" echo WHO=from-context
-            \\
-        );
+        if (proc.is_windows) {
+            try writeFile(&c, join(&c, &.{ kb_scripts, "whois.cmd" }),
+                \\@echo off
+                \\>>"%NIX_CONTEXT_OUT%" echo WHO=from-context
+                \\
+            );
+        } else {
+            try writeFile(&c, join(&c, &.{ kb_scripts, "whois.sh" }), "#!/bin/sh\necho WHO=from-context >>\"$NIX_CONTEXT_OUT\"\n");
+        }
         try writeFile(&c, join(&c, &.{ kb, ".nix", "segments.toml" }),
             \\[[contexts]]
             \\segment = "at"
@@ -2121,7 +2166,7 @@ pub fn main(init: std.process.Init) !void {
         c.check((r.code == 0 or r.code == 1) and shaped, "--doctor --json emits valid JSON with sections", r);
     }
 
-    std.debug.print("\ne2e: {d} checks, {d} failure(s), {d} skipped\n", .{ c.checks, c.fails, c.skips });
+    std.debug.print("\ne2e: {d} checks, {d} failure(s), {d} skipped, {d} Windows-only\n", .{ c.checks, c.fails, c.skips, c.platform_skips });
     if (c.fails > 0) {
         std.debug.print("scratch kept for inspection: {s}\n", .{root});
         std.process.exit(1);
