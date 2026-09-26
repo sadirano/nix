@@ -235,6 +235,10 @@ fn inheritableStdHandle(which: u32) ?*anyopaque {
 /// as `git commit -m "wip"` arrived at cmd as `-m \"wip\"`. Here the command
 /// line is assembled exactly as `cmd /c <command>` and cmd parses the string the
 /// user actually wrote. POSIX has no such problem: exec takes the argv as given.
+///
+/// `/d` skips the AutoRun registry command. AutoRun sets up an interactive
+/// console (clink, doskey macros); this shell runs one command and exits, and
+/// with AutoRun every action paid ~14 ms and an extra process before starting.
 pub fn runShellInherit(
     arena: std.mem.Allocator,
     io: Io,
@@ -245,7 +249,7 @@ pub fn runShellInherit(
     if (!is_windows) return runInheritEnv(io, &.{ "/bin/sh", "-c", command }, cwd, env);
     const w = std.os.windows;
     const comspec = if (env) |m| m.get("COMSPEC") orelse "cmd.exe" else "cmd.exe";
-    const line = try std.fmt.allocPrint(arena, "\"{s}\" /c {s}", .{ comspec, command });
+    const line = try std.fmt.allocPrint(arena, "\"{s}\" /d /c {s}", .{ comspec, command });
     const line_w = try std.unicode.wtf8ToWtf16LeAllocZ(arena, line);
     const cwd_w = try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd);
     const block: ?std.process.Environ.WindowsBlock = if (env) |m| try m.createWindowsBlock(arena, .{}) else null;
