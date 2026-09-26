@@ -79,7 +79,7 @@ pub fn onSuccess(app: *App) void {
 }
 
 fn gated(app: *App) bool {
-    return !app.no_prompt and proc.interactive() and proc.ownsConsole();
+    return app_zig.hasConsole(app) and proc.ownsConsole();
 }
 
 /// waitForKey blocks until a key goes down or `timeout_ms` elapses (0 waits

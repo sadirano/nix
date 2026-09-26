@@ -136,22 +136,12 @@ fn combinedRecord(app: *App, dir: []const u8, decl: ?[]const u8, name: []const u
     return try context.sha256Hex(app.arena, buf.items);
 }
 
+/// canPrompt is the gate's own question: a real console (app.hasConsole), and
+/// a call site that has one to prompt in. The harness's stdin hook is NOT
+/// honoured here on purpose - its children stand in for an agent's shell,
+/// which the gate must refuse rather than prompt into.
 fn canPrompt(app: *App, mode: Mode) bool {
-    return mode == .may_prompt and !app.no_prompt and interactive();
-}
-
-/// canGrant is `nix --trust`'s own precondition. That command exists to record
-/// that a PERSON read something, so it must refuse where there is nobody to
-/// read: an agent's shell has no console, which is already why the gate
-/// refuses there instead of prompting into the void. It makes the machine
-/// convention that `--trust` is the user's to run into something the code
-/// enforces rather than something a doc asks for.
-///
-/// Not a security boundary, and it is not meant as one - anything running as
-/// the user can append to trusted.toml directly. It is a consent boundary: the
-/// ordinary way of granting trust now requires the person whose trust it is.
-pub fn canGrant(app: *App) bool {
-    return canPrompt(app, .may_prompt);
+    return mode == .may_prompt and app_zig.hasConsole(app);
 }
 
 /// isConfirmTrusted reports whether config.toml's `[confirm] trusted` names this
@@ -502,7 +492,13 @@ pub const Plan = struct {
 /// `--trust` strictly weaker than the `y` it stands in for, since that at
 /// least prints the command it is about to run.
 ///
-/// `NIX_E2E_TTY=1` is the test suite's way in - see `app_zig.e2eConsole`.
+/// `--trust` exists to record that a PERSON read something, so it refuses where
+/// nobody can answer (app.canAsk): an agent's shell has no console, which is
+/// already why the gate refuses there instead of prompting into the void. Not
+/// a security boundary - anything running as the user can append to
+/// trusted.toml directly - but a consent boundary: the ordinary way of
+/// granting trust requires the person whose trust it is. The harness's piped
+/// `y` counts (see `app_zig.e2eConsole`).
 pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
     // `--always` is a different GRANT, not a different target, so it is lifted
     // out before the positional count is checked - `nix --trust jpmine --always`
@@ -518,7 +514,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
         return 1;
     }
     const alias = args.items[0];
-    if (!canGrant(app) and !app_zig.e2eConsole(app)) {
+    if (!app_zig.canAsk(app)) {
         try app.err.print("nix: --trust needs a console - it records that a person read this, so a person has to answer.\n", .{});
         try app.err.print("  Run it yourself in a terminal:\n    nix --trust {s}\n", .{alias});
         return 1;
@@ -660,10 +656,6 @@ pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.
 }
 
 // ---- the prompt --------------------------------------------------------------
-
-/// interactive: stdin is a real console, so there is someone who can answer.
-/// Lives in proc with the other console predicates.
-const interactive = proc.interactive;
 
 /// confirm asks on stderr and reads from stdin. The default is NO - anything
 /// that is not an explicit yes declines, EOF included. Both question and

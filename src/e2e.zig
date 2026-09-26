@@ -254,10 +254,22 @@ pub fn main(init: std.process.Init) !void {
         // Repointing an existing alias destroys the only record of where it
         // pointed, so unattended it REFUSES rather than silently overwriting -
         // `o i :` used to cost people the alias.
+        try c.env.put("NIX_E2E_TTY", "0");
         r = try c.run(&.{ "pa", pa2 });
+        try c.env.put("NIX_E2E_TTY", "1");
         var r2 = try c.run(&.{ "pa", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "refusing to repoint") != null and
             pathEql(trim(r2.out), pa), "re-registering elsewhere refuses unattended and keeps the old path", r);
+        // At a console it asks, showing both paths; only an explicit yes moves it.
+        r = try c.runAnswering(&.{ "pa", pa2 }, "n\n");
+        r2 = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "Repoint?") != null and
+            std.mem.indexOf(u8, r.err, "left pointing at") != null and pathEql(trim(r2.out), pa), "a no at the repoint prompt keeps the old path", r);
+        r = try c.runAnswering(&.{ "pa", pa2 }, "y\n");
+        r2 = try c.run(&.{ "pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r2.out), pa2), "a yes at the repoint prompt moves the alias", r);
+        _ = try c.run(&.{ "pa", "--remove" });
+        _ = try c.run(&.{ "pa", pa }); // back where the checks below expect it
         _ = try c.run(&.{ "pa", "--remove" });
         r = try c.run(&.{ "pa", pa2 });
         r2 = try c.run(&.{ "pa", "--resolve" });

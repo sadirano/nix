@@ -101,12 +101,13 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
 /// confirmRepoint asks before an existing alias is moved to a different path,
 /// showing both so the answer is informed by the thing about to be lost.
 ///
-/// Unattended (--no-prompt, or stdin that isn't a console) it REFUSES rather
+/// Unattended (--no-prompt, or nobody to answer on stdin) it REFUSES rather
 /// than proceeding: the whole point is that a silent overwrite is how the path
-/// gets lost. Same discipline as the provenance gate - nothing approves a destructive act on the user's behalf.
+/// gets lost. Same discipline as ensureDir - nothing approves a destructive act
+/// on the user's behalf.
 fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs: []const u8) !bool {
     const old_host = try store.fromSlash(app.arena, old_slashed);
-    if (app.no_prompt or !proc.interactive()) {
+    if (!app_zig.canAsk(app)) {
         try app.err.print(
             "nix: \"{s}\" already points at {s}\n  refusing to repoint it to {s} without asking - run it at a console, or `nix {s} --remove` first\n",
             .{ alias, old_host, new_abs, alias },
@@ -263,7 +264,7 @@ fn pickCandidate(
     // have been offered, act on nothing. The rows go to stdout because they are
     // the answer to the question that was asked; the exit code says no path was
     // resolved.
-    if (app.no_prompt or !proc.interactive()) {
+    if (!app_zig.hasConsole(app)) {
         for (cands) |c| try app.out.print("{s}\n", .{c.display});
         try app.out.flush();
         try app.err.print("nix: segment \"{s}\" has {d} candidates and picking one is interactive; name it inline (`{s}:<value>@<alias>`)\n", .{ cd.segment, cands.len, cd.segment });
