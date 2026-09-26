@@ -107,7 +107,9 @@ test classify {
     try std.testing.expectEqual(Family.goto, classify("code"));
     try std.testing.expectEqual(Family.goto, classify("code.cmd"));
     try std.testing.expectEqual(Family.goto, classify("code.exe"));
-    try std.testing.expectEqual(Family.goto, classify("C:\\Program Files\\code.cmd"));
+    // A backslash is a path separator only on Windows; elsewhere it is a legal
+    // filename byte and basename rightly leaves it alone.
+    if (is_windows) try std.testing.expectEqual(Family.goto, classify("C:\\Program Files\\code.cmd"));
     try std.testing.expectEqual(Family.goto, classify("Cursor.exe"));
     try std.testing.expectEqual(Family.vim, classify("vim"));
     try std.testing.expectEqual(Family.vim, classify("nvim.exe"));

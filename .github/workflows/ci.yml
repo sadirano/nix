@@ -42,3 +42,19 @@ jobs:
       # for the never-exercised POSIX paths.
       - name: CI gate
         run: zig build ci
+
+  # The Windows job cross-compiles for linux but never RUNS anything there, so
+  # a unit test whose fixture only holds on Windows (a `C:\...` path fed to
+  # basename) went red on every other OS without anyone seeing it. This runs
+  # the platform-neutral half of the gate where the fixtures have to be
+  # honest about what they assume. The e2e harness stays Windows-only: its
+  # subject is cmd, UAC and the registry PATH.
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Unit tests
+        run: zig build test

@@ -96,7 +96,9 @@ test "isUncPath / isCmdShell" {
     try std.testing.expect(!isUncPath("C:\\local"));
     try std.testing.expect(!isUncPath("/usr/local"));
     try std.testing.expect(!isUncPath("x"));
-    try std.testing.expect(isCmdShell("C:\\WINDOWS\\system32\\cmd.exe"));
+    // basename splits on `\` only where it is a separator.
+    if (proc.is_windows) try std.testing.expect(isCmdShell("C:\\WINDOWS\\system32\\cmd.exe"));
+    try std.testing.expect(isCmdShell("cmd.exe"));
     try std.testing.expect(isCmdShell("cmd"));
     try std.testing.expect(!isCmdShell("powershell.exe"));
     try std.testing.expect(!isCmdShell("/bin/sh"));
