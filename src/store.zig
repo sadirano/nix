@@ -4,6 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 const util = @import("util.zig");
+const toml_zig = @import("toml.zig");
 
 pub const sep = std.fs.path.sep;
 const is_windows = @import("builtin").os.tag == .windows;
@@ -99,61 +100,55 @@ pub fn lookupAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8,
     return scanForAlias(arena, data, name);
 }
 
-/// scanForAlias finds [target] (case-insensitive)
-/// then its first `path = "..."` before the next section header. Returns a
-/// host-native path (forward slashes converted to the platform separator).
+/// scanForAlias finds [target] (case-insensitive) then its first `path = "..."`
+/// before the next section header. Returns a host-native path (forward
+/// slashes converted to the platform separator).
 ///
 /// Knows nothing about the built-in `.nix` — callers that resolve a name a USER
 /// typed want lookupAlias; this one is the raw aliases.toml question, which is
 /// what --remove needs to keep asking.
 pub fn scanForAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8) !?[]const u8 {
-    var lines = std.mem.splitScalar(u8, data, '\n');
+    var lines = toml_zig.Lines.init(data);
     var in_section = false;
-    while (lines.next()) |raw| {
-        const line = trimLine(raw);
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
+    while (lines.next()) |item| switch (item) {
+        .header => |h| {
             if (in_section) return null;
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            in_section = eqlFoldAscii(line[1..end], name);
-            continue;
-        }
-        if (in_section) {
-            if (try parsePathLine(arena, line)) |v| return v;
-        }
-    }
+            in_section = eqlFoldAscii(h.name, name);
+        },
+        .pair => |kv| if (in_section and eqlFoldAscii(kv.key, "path")) {
+            if (try toml_zig.unquote(arena, kv.raw)) |v| return try fromSlash(arena, v);
+        },
+        else => {},
+    };
     return null;
 }
 
 /// Alias is one entry; path is stored forward-slashed (TOML form).
 pub const Alias = struct { name: []const u8, path: []const u8 };
 
-/// loadAliases parses aliases.toml into a name→path list,
-/// lowercasing names. Single-target `path = "..."` only (matches the fast
-/// path); multi-target `paths = [...]` entries are skipped.
+/// loadAliases parses aliases.toml into a name->path list, lowercasing names.
+/// Single-target `path = "..."` only (matches the fast path); multi-target
+/// `paths = [...]` entries are skipped. Paths keep their storage form.
 pub fn loadAliases(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Alias) {
     var out: std.ArrayList(Alias) = .empty;
-    var lines = std.mem.splitScalar(u8, data, '\n');
+    var lines = toml_zig.Lines.init(data);
     var cur: ?[]const u8 = null;
     var have_path = false;
-    while (lines.next()) |raw| {
-        const line = trimLine(raw);
-        if (line.len == 0 or line[0] == '#') continue;
-        if (line[0] == '[') {
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-            cur = try util.lowerDup(arena, line[1..end]);
+    while (lines.next()) |item| switch (item) {
+        .header => |h| {
+            cur = try util.lowerDup(arena, h.name);
             have_path = false;
-            continue;
-        }
-        if (cur) |name| {
-            if (!have_path) {
-                if (try parsePathRaw(arena, line)) |v| {
-                    try out.append(arena, .{ .name = name, .path = v });
+        },
+        .pair => |kv| if (cur) |name| {
+            if (!have_path and eqlFoldAscii(kv.key, "path")) {
+                if (try toml_zig.unquote(arena, kv.raw)) |v| {
+                    try out.append(arena, .{ .name = name, .path = try arena.dupe(u8, v) });
                     have_path = true;
                 }
             }
-        }
-    }
+        },
+        else => {},
+    };
     return out;
 }
 
@@ -169,34 +164,11 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
         try b.appendSlice(arena, "[");
         try b.appendSlice(arena, a.name);
         try b.appendSlice(arena, "]\npath = ");
-        try appendTomlString(arena, &b, a.path);
+        try toml_zig.appendString(arena, &b, a.path);
         try b.appendSlice(arena, "\n\n");
     }
 
     try util.writeFileAtomic(arena, io, try aliasesPath(arena, home), b.items);
-}
-
-/// appendTomlString emits a TOML string value: a literal single-quoted string
-/// unless the value contains a single quote, in which case
-/// a basic double-quoted string with escapes is used.
-pub fn appendTomlString(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []const u8) !void {
-    if (std.mem.indexOfScalar(u8, s, '\'') == null) {
-        try b.append(arena, '\'');
-        try b.appendSlice(arena, s);
-        try b.append(arena, '\'');
-        return;
-    }
-    try b.append(arena, '"');
-    for (s) |c| {
-        switch (c) {
-            '"', '\\' => {
-                try b.append(arena, '\\');
-                try b.append(arena, c);
-            },
-            else => try b.append(arena, c),
-        }
-    }
-    try b.append(arena, '"');
 }
 
 /// listNames returns lowercase alias names, sorted. Lowercased like
@@ -204,14 +176,11 @@ pub fn appendTomlString(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []co
 /// as the same `acme` every other path reports.
 pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]const u8) {
     var names: std.ArrayList([]const u8) = .empty;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |raw| {
-        const line = trimLine(raw);
-        if (line.len == 0 or line[0] != '[') continue;
-        const end = std.mem.indexOfScalar(u8, line, ']') orelse continue;
-        if (end <= 1) continue;
-        try names.append(arena, try util.lowerDup(arena, line[1..end]));
-    }
+    var lines = toml_zig.Lines.init(data);
+    while (lines.next()) |item| switch (item) {
+        .header => |h| if (h.name.len > 0) try names.append(arena, try util.lowerDup(arena, h.name)),
+        else => {},
+    };
     std.mem.sort([]const u8, names.items, {}, util.lessThanStr);
     return names;
 }
@@ -264,18 +233,6 @@ pub fn toSlash(arena: std.mem.Allocator, p: []const u8) ![]const u8 {
         c.* = '/';
     };
     return out;
-}
-
-pub fn trimLine(line: []const u8) []const u8 {
-    var s = line;
-    while (s.len > 0 and (s[0] == ' ' or s[0] == '\t')) s = s[1..];
-    while (s.len > 0) {
-        const c = s[s.len - 1];
-        if (c == ' ' or c == '\t' or c == '\r') {
-            s = s[0 .. s.len - 1];
-        } else break;
-    }
-    return s;
 }
 
 /// validateAliasName is the REGISTRATION check: it refuses the names nix owns
@@ -346,62 +303,6 @@ pub fn validateAliasPath(path: []const u8) !void {
             else => {},
         }
     }
-}
-
-/// parsePathRaw is parsePathLine but keeps forward slashes (TOML storage form).
-fn parsePathRaw(arena: std.mem.Allocator, line: []const u8) !?[]const u8 {
-    return parsePathInner(arena, line, false);
-}
-
-/// parsePathLine returns a host-native path for a `path = "..."` line.
-pub fn parsePathLine(arena: std.mem.Allocator, line: []const u8) !?[]const u8 {
-    return parsePathInner(arena, line, true);
-}
-
-fn parsePathInner(arena: std.mem.Allocator, line: []const u8, host: bool) !?[]const u8 {
-    const prefix = "path";
-    if (line.len < prefix.len + 3) return null;
-    if (!eqlFoldAscii(line[0..prefix.len], prefix)) return null;
-    var i: usize = prefix.len;
-    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
-    if (i >= line.len or line[i] != '=') return null;
-    i += 1;
-    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
-    if (i >= line.len) return null;
-    const quote = line[i];
-    if (quote != '"' and quote != '\'') return null;
-    i += 1;
-    const start = i;
-    if (quote == '\'') {
-        const end = std.mem.indexOfScalarPos(u8, line, start, '\'') orelse return null;
-        const raw = line[start..end];
-        return if (host) try fromSlash(arena, raw) else try arena.dupe(u8, raw);
-    }
-    var b: std.ArrayList(u8) = .empty;
-    while (i < line.len) : (i += 1) {
-        const c = line[i];
-        if (c == '\\' and i + 1 < line.len) {
-            const next = line[i + 1];
-            switch (next) {
-                '"', '\\' => {
-                    try b.append(arena, next);
-                    i += 1;
-                    continue;
-                },
-                '/' => {
-                    try b.append(arena, '/');
-                    i += 1;
-                    continue;
-                },
-                else => return null,
-            }
-        }
-        if (c == '"') {
-            return if (host) try fromSlash(arena, b.items) else b.items;
-        }
-        try b.append(arena, c);
-    }
-    return null;
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -608,18 +509,6 @@ test "listNames: sorted, skips non-section lines and empty brackets" {
     try std.testing.expectEqualStrings("acme", names.items[0]);
     // Hand-edited mixed-case headers list lowercase, like every other path.
     try std.testing.expectEqualStrings("zeta", names.items[1]);
-}
-
-test "parsePathLine: quote styles and malformed input" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expectEqualStrings(try fromSlash(a, "a/b"), (try parsePathLine(a, "path = 'a/b'")).?);
-    try std.testing.expectEqualStrings(try fromSlash(a, "a/b"), (try parsePathLine(a, "path = \"a/b\"")).?);
-    try std.testing.expectEqualStrings("a\"b", (try parsePathLine(a, "path = \"a\\\"b\"")).?);
-    try std.testing.expect((try parsePathLine(a, "path 'x'")) == null); // no '='
-    try std.testing.expect((try parsePathLine(a, "path = x")) == null); // unquoted
-    try std.testing.expect((try parsePathLine(a, "path = 'unterminated")) == null);
 }
 
 test "eqlFoldAscii: case-insensitive equality and length mismatch" {

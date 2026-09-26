@@ -6,6 +6,7 @@ const std = @import("std");
 const Io = std.Io;
 const eqlFold = @import("util.zig").eqlFoldAscii;
 const centralFile = @import("util.zig").centralFile;
+const toml = @import("toml.zig");
 
 /// One variable, from a `[contexts.vars]` default or produced by a source.
 ///
@@ -141,41 +142,41 @@ pub fn loadSegmentsFile(arena: std.mem.Allocator, io: Io, path: []const u8) !Seg
 /// block so the trust ledger can hash the exact file that asked to run
 /// something. Split out so the array-of-tables and sub-table scoping rules are
 /// testable without touching the filesystem.
+///
+/// Values are read STRICT (toml.unquote): a segment definition is data, and a
+/// line whose string never closes defines nothing.
 pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !SegFile {
     var contexts: std.ArrayList(ContextDef) = .empty;
     var producers: std.ArrayList(ProducerDef) = .empty;
     var cur: ?usize = null;
     var cur_prod: ?usize = null;
     var in_vars = false;
-    var lines = std.mem.splitScalar(u8, data, '\n');
-    while (lines.next()) |l0| {
-        const line = std.mem.trim(u8, l0, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (std.mem.eql(u8, line, "[[contexts]]")) {
-            try contexts.append(arena, .{ .origin = path });
-            cur = contexts.items.len - 1;
-            cur_prod = null;
-            in_vars = false;
-            continue;
-        }
-        if (std.mem.eql(u8, line, "[[producers]]")) {
-            try producers.append(arena, .{ .origin = path });
-            cur_prod = producers.items.len - 1;
-            cur = null;
-            in_vars = false;
-            continue;
-        }
-        if (std.mem.eql(u8, line, "[contexts.vars]")) {
-            in_vars = true;
-            continue;
-        }
-        if (line[0] == '[') {
-            in_vars = false;
-            continue;
-        }
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        const val = parseTomlString(arena, std.mem.trim(u8, line[eq + 1 ..], " \t")) orelse continue;
+    var lines = toml.Lines.init(data);
+    while (lines.next()) |item| {
+        const kv = switch (item) {
+            .header => |h| {
+                if (h.array and std.mem.eql(u8, h.name, "contexts")) {
+                    try contexts.append(arena, .{ .origin = path });
+                    cur = contexts.items.len - 1;
+                    cur_prod = null;
+                    in_vars = false;
+                } else if (h.array and std.mem.eql(u8, h.name, "producers")) {
+                    try producers.append(arena, .{ .origin = path });
+                    cur_prod = producers.items.len - 1;
+                    cur = null;
+                    in_vars = false;
+                } else {
+                    // `[contexts.vars]` opens the static defaults of the block
+                    // above it; any other header only closes them.
+                    in_vars = !h.array and std.mem.eql(u8, h.name, "contexts.vars");
+                }
+                continue;
+            },
+            .pair => |p| p,
+            else => continue,
+        };
+        const key = kv.key;
+        const val = (try toml.unquote(arena, kv.raw)) orelse continue;
         if (cur_prod) |pidx| {
             if (std.mem.eql(u8, key, "name")) {
                 producers.items[pidx].name = val;
@@ -211,33 +212,6 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
 /// lookupProducer finds a producer by name (case-insensitive, like segments).
 pub fn lookupProducer(list: []const ProducerDef, name: []const u8) ?*const ProducerDef {
     for (list) |*p| if (eqlFold(p.name, name)) return p;
-    return null;
-}
-
-fn parseTomlString(arena: std.mem.Allocator, raw: []const u8) ?[]const u8 {
-    if (raw.len < 2) return null;
-    const q = raw[0];
-    if (q != '"' and q != '\'') return null;
-    if (q == '\'') {
-        const end = std.mem.indexOfScalarPos(u8, raw, 1, '\'') orelse return null;
-        return arena.dupe(u8, raw[1..end]) catch null;
-    }
-    var b: std.ArrayList(u8) = .empty;
-    var i: usize = 1;
-    while (i < raw.len) : (i += 1) {
-        const c = raw[i];
-        if (c == '\\' and i + 1 < raw.len) {
-            i += 1;
-            switch (raw[i]) {
-                'n' => b.append(arena, '\n') catch return null,
-                't' => b.append(arena, '\t') catch return null,
-                else => b.append(arena, raw[i]) catch return null,
-            }
-            continue;
-        }
-        if (c == '"') return b.items;
-        b.append(arena, c) catch return null;
-    }
     return null;
 }
 

@@ -1,5 +1,5 @@
 //! Small helpers shared across modules. These were once re-implemented
-//! per-module (lowerDup in five places, parseStringArray in two, …); keeping
+//! per-module (lowerDup in five places, the sort comparator in six, ...); keeping
 //! the single copy here means a fix lands everywhere at once.
 
 const std = @import("std");
@@ -136,49 +136,6 @@ test "eqlPathAscii: separators and case are both ignored" {
     try std.testing.expect(!eqlPathAscii("a/b", "a/bc"));
 }
 
-/// stripQuotes removes one pair of surrounding quotes (single or double), if
-/// present. Escapes are not interpreted — for values that are literal text.
-pub fn stripQuotes(s: []const u8) []const u8 {
-    if (s.len >= 2 and (s[0] == '"' or s[0] == '\'') and s[s.len - 1] == s[0]) return s[1 .. s.len - 1];
-    return s;
-}
-
-/// parseStringArray extracts quoted strings from a TOML inline array body like
-/// `["a", 'b']`. Single- and double-quoted elements; escapes are not
-/// interpreted (the callers' values are literal). Bare tokens are ignored.
-pub fn parseStringArray(arena: std.mem.Allocator, text: []const u8) ![][]const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        const c = text[i];
-        if (c == '"' or c == '\'') {
-            const end = std.mem.indexOfScalarPos(u8, text, i + 1, c) orelse break;
-            try out.append(arena, try arena.dupe(u8, text[i + 1 .. end]));
-            i = end;
-        }
-    }
-    return out.items;
-}
-
-/// gatherArrayBody collects a TOML inline array's text from `val_start` (the
-/// bytes already on the key's own line) across any following lines, up to the
-/// closing `]`, advancing `i` past what it consumed. Comment lines inside are
-/// skipped so their quoted text cannot parse as elements, and a `]` in one
-/// cannot end the array early. Every multi-line array in config.toml goes
-/// through here.
-pub fn gatherArrayBody(arena: std.mem.Allocator, all: []const []const u8, i: *usize, val_start: []const u8) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    try buf.appendSlice(arena, val_start);
-    while (std.mem.indexOfScalar(u8, buf.items, ']') == null and i.* + 1 < all.len) {
-        i.* += 1;
-        const cont = std.mem.trim(u8, all[i.*], " \t\r");
-        if (cont.len > 0 and cont[0] == '#') continue;
-        try buf.append(arena, ' ');
-        try buf.appendSlice(arena, cont);
-    }
-    return buf.items;
-}
-
 /// mkdirAll creates path and any missing parents (os.MkdirAll equivalent).
 pub fn mkdirAll(io: Io, path: []const u8) !void {
     Io.Dir.cwd().createDir(io, path, .default_dir) catch |e| switch (e) {
@@ -230,26 +187,6 @@ test eqlFoldAscii {
     try std.testing.expect(!eqlFoldAscii("ab", "ac"));
 }
 
-test stripQuotes {
-    try std.testing.expectEqualStrings("x", stripQuotes("'x'"));
-    try std.testing.expectEqualStrings("x", stripQuotes("\"x\""));
-    try std.testing.expectEqualStrings("'x\"", stripQuotes("'x\"")); // mismatched: kept
-    try std.testing.expectEqualStrings("bare", stripQuotes("bare"));
-}
-
-test parseStringArray {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const arr = try parseStringArray(a, "[\"a\", 'b', bare, \"c\"]");
-    try std.testing.expectEqual(@as(usize, 3), arr.len);
-    try std.testing.expectEqualStrings("a", arr[0]);
-    try std.testing.expectEqualStrings("b", arr[1]);
-    try std.testing.expectEqualStrings("c", arr[2]);
-    const empty = try parseStringArray(a, "[]");
-    try std.testing.expectEqual(@as(usize, 0), empty.len);
-}
-
 test centralFile {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -265,40 +202,6 @@ test centralFile {
     // which is what segments.zig alone used to get right.
     try std.testing.expectEqualStrings(acts, try centralFile(a, "H", "actions", "ACME"));
     try std.testing.expectEqualStrings(acts, try centralFile(a, "H", "actions", "aCmE"));
-}
-
-test gatherArrayBody {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    // Single-line array: nothing to gather, i is untouched.
-    const lines_one = [_][]const u8{"exclude = [\"a\", \"b\"]"};
-    var idx0: usize = 0;
-    const got0 = try gatherArrayBody(a, &lines_one, &idx0, "[\"a\", \"b\"]");
-    try std.testing.expectEqualStrings("[\"a\", \"b\"]", got0);
-    try std.testing.expectEqual(@as(usize, 0), idx0);
-
-    // Multi-line array with a comment line inside: the comment's own quotes and
-    // bracket must not end the array early or become an element.
-    const lines_multi = [_][]const u8{
-        "exclude = [",
-        "  \"a\",",
-        "  # \"skip]me\"",
-        "  \"b\",",
-        "]",
-    };
-    var idx1: usize = 0;
-    const got1 = try gatherArrayBody(a, &lines_multi, &idx1, "[");
-    try std.testing.expectEqualStrings("[ \"a\", \"b\", ]", got1);
-    try std.testing.expectEqual(@as(usize, 4), idx1); // advanced to the closing line
-
-    // Unterminated array: stops at the end of input rather than looping forever.
-    const lines_open = [_][]const u8{ "exclude = [", "  \"a\"" };
-    var idx2: usize = 0;
-    const got2 = try gatherArrayBody(a, &lines_open, &idx2, "[");
-    try std.testing.expectEqualStrings("[ \"a\"", got2);
-    try std.testing.expectEqual(@as(usize, 1), idx2);
 }
 
 test uniqueTmpName {

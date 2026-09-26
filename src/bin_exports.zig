@@ -29,6 +29,7 @@ const util = @import("util.zig");
 const run = @import("run.zig");
 const provenance = @import("provenance.zig");
 const exports = @import("exports.zig");
+const toml = @import("toml.zig");
 
 const App = app_zig.App;
 const readFileMaybe = app_zig.readFileMaybe;
@@ -750,7 +751,7 @@ fn writeManifest(app: *App, list: []const Installed) !void {
             try std.fmt.allocPrint(app.arena, "{s} {s}", .{ ex.alias, ex.hash })
         else
             ex.alias;
-        try store.appendTomlString(app.arena, &b, val);
+        try toml.appendString(app.arena, &b, val);
         try b.append(app.arena, '\n');
     }
     try util.writeFileAtomic(app.arena, app.io, try manifestPath(app.arena, app.home), b.items);
