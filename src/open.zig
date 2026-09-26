@@ -14,9 +14,8 @@ const resolveEditor = app_zig.resolveEditor;
 const exePath = app_zig.exePath;
 
 /// printProducerRows runs a picker's row producer WITHOUT the picker, writing
-/// its rows to stdout — the `--no-prompt` form of every fzf command, matching
-/// what `--prune` already does under the same flag. Rows keep the
-/// picker's shape, so what prints is exactly what would have been offered to
+/// its rows to stdout — the `--no-prompt` form of every fzf command. Rows keep
+/// the picker's shape, so what prints is exactly what would have been offered to
 /// pick from.
 ///
 /// The producer runs with stdin ignored (runCaptured), so a tool that would

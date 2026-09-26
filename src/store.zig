@@ -106,7 +106,7 @@ pub fn lookupAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8,
 ///
 /// Knows nothing about the built-in `.nix` — callers that resolve a name a USER
 /// typed want lookupAlias; this one is the raw aliases.toml question, which is
-/// what the file-management commands (--prune, --remove) need to keep asking.
+/// what --remove needs to keep asking.
 pub fn scanForAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8) !?[]const u8 {
     var lines = std.mem.splitScalar(u8, data, '\n');
     var in_section = false;
@@ -218,9 +218,8 @@ pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]co
 }
 
 /// loadAliasesWithSelf is loadAliases plus the built-in `.nix`, for commands
-/// that show what can be NAMED (--list, --which). The file-management commands
-/// (--prune, --remove) keep using loadAliases, so a built-in can never become a
-/// prune candidate. A stored entry of the same name collapses into it.
+/// that show what can be NAMED (--list, --which). --remove keeps using
+/// loadAliases, so a built-in can never be removed. A stored entry of the same name collapses into it.
 pub fn loadAliasesWithSelf(arena: std.mem.Allocator, data: []const u8, home: []const u8) !std.ArrayList(Alias) {
     var out = try loadAliases(arena, data);
     var i: usize = 0;
@@ -571,7 +570,7 @@ test "lookupAlias answers for the self alias before aliases.toml, and over it" {
     const stale = "[.nix]\npath = 'D:/old/nix-home'\n";
     try std.testing.expectEqualStrings(home, (try lookupAlias(a, stale, ".nix", home)).?);
     // The raw file question still reports what is actually on disk, which is
-    // what --prune and --remove need to keep seeing.
+    // what --remove needs to keep seeing.
     try std.testing.expect((try scanForAlias(a, stale, ".nix")) != null);
 
     // Everything else routes to the file unchanged.

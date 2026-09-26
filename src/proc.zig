@@ -580,7 +580,7 @@ pub const LineTransform = struct {
 
 /// runFilter pipes `input` into an interactive filter (fzf), inherits stderr
 /// for its TUI, and returns the captured selection plus the filter's exit
-/// code. Used by prune/grep/find/picker.
+/// code. Used by grep/find/picker.
 pub fn runFilter(arena: std.mem.Allocator, io: Io, argv: []const []const u8, input: []const u8, env: ?*const std.process.Environ.Map) !FilterResult {
     // stderr is inherited: fzf draws its TUI there.
     return capture(arena, io, .{ .argv = argv, .env = env, .input = input });

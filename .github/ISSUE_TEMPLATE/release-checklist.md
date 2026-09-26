@@ -79,8 +79,8 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 ## 4. Pickers and the clipboard
 
-- [ ] `o <alias>` with no argument, `nix --prune` and `nix --actions` each
-      open fzf and act on the pick.
+- [ ] `o <alias>` with no argument and `nix --actions` each open fzf and act
+      on the pick.
 - [ ] `f <alias> <pat>` and `s <alias> <pat>` return results and open the picks.
 - [ ] `y <alias>` copies the path; `y <alias> <pat>` puts the real FILES on the
       clipboard (paste into Explorer, not just a text field).

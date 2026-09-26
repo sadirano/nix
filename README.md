@@ -122,7 +122,7 @@ path = "C:/Users/dev/projects/acme"
 
 You can hand-edit the file (`nix --list` and resolve pick up changes immediately) or use `nix <name> <path>` to register and `nix <name> --remove` to forget. Alias lookups are case-insensitive. Names can't contain `/ \ @ + spaces` (each is reserved syntax) or the TOML metacharacters `[ ] = #` and quotes (they'd corrupt the stores).
 
-One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed, pruned, or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
+One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
 
 ### Time per project
 
@@ -737,8 +737,6 @@ Other tools can point at the same file wherever they take custom instructions.
 `nix --secret set|rm|list [NAME]` manages credential values stored securely in the Windows Credential Manager for actions and env to reference as `${secret:NAME}`.
 
 `nix --agent [topic]` prints the full specification and safety tier for an agent (or `<cmd> --agent`; bare `nix --agent` indexes all topics).
-
-`nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh).
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, the per-project `[env]` layers, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 

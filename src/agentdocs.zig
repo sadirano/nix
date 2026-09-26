@@ -425,7 +425,7 @@ pub const specs = [_]Spec{
         \\
         \\`.nix` appears in both and is BUILT IN, marked "(built-in)" in --list:
         \\it always names nix's own home (~/.nix) and is not a line in
-        \\aliases.toml. It cannot be registered, repointed or pruned. Use it to
+        \\aliases.toml. It cannot be registered or repointed. Use it to
         \\reach nix's own files without an absolute path - `e .nix config.toml`,
         \\`g .nix TODO`, or `nix .nix --run <cmd>` to run something at that
         \\directory (which is how a [notify] hook reaches a script in
@@ -849,7 +849,7 @@ pub const specs = [_]Spec{
         .detail =
         \\~/.nix holds aliases.toml (name -> path), config.toml
         \\([shortcuts], [picker], [grep], [notify], [bin]), usage
-        \\(frecency, feeding --prune), segments.toml,
+        \\(per-alias counts for your own reports), segments.toml,
         \\trusted.toml + contexts-cache.toml (context approvals and
         \\their cached results), exports.toml (what --sync-bin installed), env/
         \\(private per-alias environment layers), bin/ (the command wrappers plus

@@ -273,8 +273,8 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
 
 fn dispatch(app: *App, args: [][]const u8) !u8 {
     // Global flags may LEAD the command: setGlobalFlags has already read them
-    // wherever they sit, so skipping them here makes `nix --no-prompt --prune`
-    // the same command as `nix --prune --no-prompt`. Without this the first
+    // wherever they sit, so skipping them here makes `nix --no-prompt --list`
+    // the same command as `nix --list --no-prompt`. Without this the first
     // dashed token is taken for the verb, and the natural spelling (modifier
     // first, the way every other CLI accepts it) died on "unknown flag".
     var rest = args;
@@ -320,7 +320,6 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
             break :blk 0;
         },
         .edit => cmdEdit(app, "", rest),
-        .prune => cmd_registry.cmdPrune(app),
         .doctor => doctor.cmdDoctor(app, rest),
         .contexts => cmdContexts(app),
         .actions => palette.cmdActions(app, rest),
@@ -1208,7 +1207,7 @@ test "setGlobalFlags: stops at the first action flag and at --" {
     try std.testing.expect(!app.json);
 
     // System command tails still count (no action flag involved).
-    setGlobalFlags(&app, &.{ "--prune", "--no-prompt" });
+    setGlobalFlags(&app, &.{ "--list", "--no-prompt" });
     try std.testing.expect(app.no_prompt);
 
     app.no_prompt = false;
