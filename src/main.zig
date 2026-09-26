@@ -48,9 +48,19 @@ const build_version = @import("build_options").version;
 // Local wall-clock build date+time ("YYYY-MM-DD HH:MM:SS"), injected by build.zig.
 const build_date = @import("build_options").build_date;
 
-pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const io = init.io;
+pub fn main(init: std.process.Init.Minimal) !void {
+    // The full std.process.Init builds its environment map on smp_allocator,
+    // whose 64 KB size-class slabs commit ~2.4 MB for ~100 variables - five
+    // times what the rest of a run needs. Everything here lives for the whole
+    // process, so the arena holds the map too.
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const arena = arena_state.allocator();
+    var threaded: Io.Threaded = .init(std.heap.page_allocator, .{
+        .argv0 = .init(init.args),
+        .environ = init.environ,
+    });
+    const io = threaded.io();
+    var environ_map = try std.process.Environ.createMap(init.environ, arena);
 
     // Render our UTF-8 output as-written on the Windows console instead of
     // mojibake under the default OEM code page (no-op elsewhere).
@@ -70,15 +80,15 @@ pub fn main(init: std.process.Init) !void {
     defer out.flush() catch {};
     defer err.flush() catch {};
 
-    const raw_args = try init.minimal.args.toSlice(arena);
-    const home = try store.resolveHome(arena, init.environ_map);
+    const raw_args = try init.args.toSlice(arena);
+    const home = try store.resolveHome(arena, &environ_map);
 
     var app: App = .{
         .arena = arena,
         .io = io,
         .out = out,
         .err = err,
-        .env = init.environ_map,
+        .env = &environ_map,
         .home = home,
         .argv0 = raw_args[0],
         // json/no_prompt are set in run() once the args are in canonical form —
