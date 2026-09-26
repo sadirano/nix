@@ -821,7 +821,10 @@ pub const specs = [_]Spec{
         \\matched name as a variable. `source-template = "/${client=*}/${t=*}"`
         \\lets `t:1@tasks` find tasks/<whichever client>/1 with no script. One
         \\match resolves, several open the same picker, none is an error. It
-        \\runs nothing, so it needs no approval.
+        \\runs nothing, so it needs no approval. A component that is exactly
+        \\`**` matches any number of levels, bounded by the context's `depth`
+        \\(default 4), never descending into a match, and refusing once it has
+        \\opened 5000 folders rather than answering from part of the tree.
         ,
         .agent_use =
         \\`nix <seg>@<alias>` resolves and prints, like any alias. `nix

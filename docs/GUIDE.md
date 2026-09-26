@@ -635,6 +635,11 @@ x t:1@tasks claude           # start an agent there; $client is set to A
 ```
 
 - `*` matches directory names, one level per component (`1-*` works too).
+- `**` matches any number of levels, for clients that nest differently
+  (`tasks/A/1`, `tasks/B/2024/2`): `source-template = "/**/${t=*}"`. It never
+  descends into a match, stops at `depth` levels (default 4; set
+  `depth = "2"` on the context to tighten it), and gives up with a message
+  after opening 5,000 folders rather than hanging on a stray `node_modules`.
 - `${name=*}` captures: the matched name becomes a variable in the shell or
   command, like a context source's output.
 - One match navigates, several open a picker, none is an error naming the
