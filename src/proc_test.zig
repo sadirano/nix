@@ -87,18 +87,3 @@ test "runPipelineFiltered forwards the producer's lines and reports the count" {
     );
     try std.testing.expectEqual(@as(usize, 2), capped.forwarded);
 }
-
-test "runPipelinePrefixed labels each producer's lines with its own prefix" {
-    if (!proc.is_windows) return error.SkipZigTest;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    const producers = [_]proc.PrefixedProducer{
-        .{ .argv = &.{ "cmd", "/c", "echo one" }, .cwd = ".", .prefix = "pa\\" },
-        .{ .argv = &.{ "cmd", "/c", "echo two" }, .cwd = ".", .prefix = "pb\\" },
-    };
-    const res = try proc.runPipelinePrefixed(a, std.testing.io, &producers, &.{ "cmd", "/c", "sort" }, ".", null);
-    try std.testing.expect(std.mem.indexOf(u8, res.output, "pa\\one") != null);
-    try std.testing.expect(std.mem.indexOf(u8, res.output, "pb\\two") != null);
-}

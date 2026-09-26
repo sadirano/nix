@@ -635,7 +635,7 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         const exact = if (std.fs.path.isAbsolute(f)) f else try std.fs.path.join(app.arena, &.{ dir, f });
         if (proc.fileExists(app.io, exact)) return exploreTarget(app, exact);
     }
-    return switch (try findPick(app, &.{.{ .name = alias, .path = dir }}, action_args)) {
+    return switch (try findPick(app, dir, action_args)) {
         .selected => |sel| exploreSelections(app, dir, sel),
         .cancelled => 0,
         .failed => 1,
@@ -681,7 +681,7 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     if (!hasPattern(action_args)) return paste.yankPathText(app, alias, target);
-    return switch (try findPick(app, &.{.{ .name = alias, .path = target }}, action_args)) {
+    return switch (try findPick(app, target, action_args)) {
         .selected => |sel| paste.yankSelectionFiles(app, alias, target, sel),
         .cancelled => 0,
         .failed => 1,

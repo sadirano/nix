@@ -1,6 +1,5 @@
 //! Shared picker-output plumbing: turning fzf selections into opened files.
-//! Group fan-out rows are alias-prefixed (produced and expanded here),
-//! selections open in the editor at the matched line or with the OS default
+//! Selections open in the editor at the matched line or with the OS default
 //! app, and `--preview` renders the picker preview pane.
 
 const std = @import("std");
@@ -9,53 +8,32 @@ const app_zig = @import("app.zig");
 const editor = @import("editor.zig");
 const proc = @import("proc.zig");
 const store = @import("store.zig");
-const resolve = @import("resolve.zig");
 
 const App = app_zig.App;
-const GroupTarget = resolve.GroupTarget;
 const resolveEditor = app_zig.resolveEditor;
 const exePath = app_zig.exePath;
-
-/// prefixedProducers builds one PrefixedProducer per group member: the same
-/// search argv run IN each member dir, rows prefixed `alias\` — so a group row
-/// reads `gw2\src\renderer.ts:604:…` instead of the member's absolute root.
-pub fn prefixedProducers(app: *App, targets: []const GroupTarget, argv: []const []const u8) ![]proc.PrefixedProducer {
-    var prods: std.ArrayList(proc.PrefixedProducer) = .empty;
-    for (targets) |t| try prods.append(app.arena, .{
-        .argv = argv,
-        .cwd = t.path,
-        .prefix = try std.fmt.allocPrint(app.arena, "{s}{c}", .{ t.name, store.sep }),
-    });
-    return prods.items;
-}
 
 /// printProducerRows runs a picker's row producer WITHOUT the picker, writing
 /// its rows to stdout — the `--no-prompt` form of every fzf command, matching
 /// what `--prune` already does under the same flag. Rows keep the
-/// picker's shape (multi-root stays `alias\rel`), so what prints is exactly
-/// what would have been offered to pick from.
+/// picker's shape, so what prints is exactly what would have been offered to
+/// pick from.
 ///
 /// The producer runs with stdin ignored (runCaptured), so a tool that would
 /// prompt gets EOF instead of hanging the caller. Returns 0 when anything
 /// printed, 1 when nothing matched — a search that found nothing is a failed
 /// query, not a failed command, but callers script on the code either way.
-pub fn printProducerRows(app: *App, targets: []const GroupTarget, argv: []const []const u8) !u8 {
+pub fn printProducerRows(app: *App, dir: []const u8, argv: []const []const u8) !u8 {
     var any = false;
-    for (targets) |t| {
-        const res = try proc.runCaptured(app.arena, app.io, argv, t.path, null);
-        var lines = std.mem.splitScalar(u8, res.output, '\n');
-        while (lines.next()) |line0| {
-            const line = std.mem.trimEnd(u8, line0, "\r");
-            if (line.len == 0) continue;
-            // POSIX find emits "./rel"; drop it so rows read like the picker's.
-            const row = if (std.mem.startsWith(u8, line, "./")) line[2..] else line;
-            if (targets.len > 1) {
-                try app.out.print("{s}{c}{s}\n", .{ t.name, store.sep, row });
-            } else {
-                try app.out.print("{s}\n", .{row});
-            }
-            any = true;
-        }
+    const res = try proc.runCaptured(app.arena, app.io, argv, dir, null);
+    var lines = std.mem.splitScalar(u8, res.output, '\n');
+    while (lines.next()) |line0| {
+        const line = std.mem.trimEnd(u8, line0, "\r");
+        if (line.len == 0) continue;
+        // POSIX find emits "./rel"; drop it so rows read like the picker's.
+        const row = if (std.mem.startsWith(u8, line, "./")) line[2..] else line;
+        try app.out.print("{s}\n", .{row});
+        any = true;
     }
     try app.out.flush();
     if (!any) {
@@ -65,48 +43,23 @@ pub fn printProducerRows(app: *App, targets: []const GroupTarget, argv: []const 
     return 0;
 }
 
-/// A picker row, as `g` and `f` emit it and as fzf hands it back:
+/// A grep picker row, as `g` emits it and fzf hands it back:
 ///
-///     [<alias>\]<path>[:<line>[:<text>]]
-///
-/// Two independent optional layers. The `alias\` prefix appears only for a
-/// multi-root (group) search, where one row set spans several directories; the
-/// `:line:text` tail appears only for a grep. Three call sites each used to
-/// re-derive one layer or the other by hand, so a change to the row shape had
-/// to be found in all of them.
+///     <path>[:<line>[:<text>]]
 pub const Row = struct {
-    /// The leading alias component, "" when the row carries none.
-    alias: []const u8,
-    /// The path, with any alias prefix removed. Never empty.
+    /// The path. Never empty.
     path: []const u8,
-    /// Everything after the path, verbatim (":42:  const x = 1"), so a rewritten
-    /// row can be reassembled without re-deriving it.
+    /// Everything after the path, verbatim (":42:  const x = 1").
     tail: []const u8,
 };
 
-/// splitRow parses one picker row. `has_lines` says whether the producer emits
-/// the `:line:text` tail (grep does, find does not) - without it a path
-/// containing a colon would be truncated.
-///
-/// A Windows drive prefix (`C:\`) is part of the path, not a field separator:
-/// group searches emit absolute rows, and splitting on the drive colon would
-/// hand `C` to bat or the editor as the "file".
-pub fn splitRow(row: []const u8, has_lines: bool) Row {
-    var rest = row;
-    var alias: []const u8 = "";
-    // The alias layer, first: an absolute row never carries one, and neither
-    // does a row whose first component has no separator after it.
-    if (!std.fs.path.isAbsolute(rest)) {
-        if (std.mem.indexOfAny(u8, rest, "/\\")) |si| {
-            alias = rest[0..si];
-            rest = rest[si + 1 ..];
-        }
-    }
-    if (!has_lines) return .{ .alias = alias, .path = rest, .tail = "" };
-    const start: usize = if (rest.len >= 3 and std.ascii.isAlphabetic(rest[0]) and rest[1] == ':' and (rest[2] == '\\' or rest[2] == '/')) 2 else 0;
-    const c1 = std.mem.indexOfScalarPos(u8, rest, start, ':') orelse
-        return .{ .alias = alias, .path = rest, .tail = "" };
-    return .{ .alias = alias, .path = rest[0..c1], .tail = rest[c1..] };
+/// splitRow parses one grep row. A Windows drive prefix (`C:\`) is part of the
+/// path, not a field separator: splitting on the drive colon would hand `C` to
+/// bat or the editor as the "file".
+pub fn splitRow(row: []const u8) Row {
+    const start: usize = if (row.len >= 3 and std.ascii.isAlphabetic(row[0]) and row[1] == ':' and (row[2] == '\\' or row[2] == '/')) 2 else 0;
+    const c1 = std.mem.indexOfScalarPos(u8, row, start, ':') orelse return .{ .path = row, .tail = "" };
+    return .{ .path = row[0..c1], .tail = row[c1..] };
 }
 
 /// lineOf reads the line number out of a row's `:line:text` tail, or "" when it
@@ -116,46 +69,6 @@ pub fn lineOf(tail: []const u8) []const u8 {
     const after = tail[1..];
     const c2 = std.mem.indexOfScalar(u8, after, ':') orelse after.len;
     return after[0..c2];
-}
-
-/// expandPrefixedSelection maps multi-root picker rows (`alias\rel[:line:…]`)
-/// back to absolute rows using the resolved group targets. Absolute rows and
-/// rows whose first component isn't a known member pass through unchanged.
-pub fn expandPrefixedSelection(arena: std.mem.Allocator, targets: []const GroupTarget, selection: []const u8) ![]const u8 {
-    var b: std.ArrayList(u8) = .empty;
-    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
-    while (lines.next()) |line0| {
-        const line = std.mem.trimEnd(u8, line0, "\r");
-        if (line.len == 0) continue;
-        var out: []const u8 = line;
-        // Only the alias layer is rewritten; the `:line:text` tail rides along
-        // inside `path` here, since replacing a prefix cannot disturb it.
-        const r = splitRow(line, false);
-        if (r.alias.len > 0) {
-            for (targets) |t| if (store.eqlFoldAscii(t.name, r.alias)) {
-                out = try std.fmt.allocPrint(arena, "{s}{c}{s}", .{ t.path, store.sep, r.path });
-                break;
-            };
-        }
-        if (b.items.len > 0) try b.append(arena, '\n');
-        try b.appendSlice(arena, out);
-    }
-    return b.items;
-}
-
-/// expandAliasRowPath resolves a preview row path that may start with an alias
-/// token (`alias\rel\path`, the multi-root row form). The preview verbs run in
-/// a fresh process without the group's target list, so the alias is resolved
-/// against aliases.toml. A relative path that exists under the cwd (the
-/// single-root row form) is kept as-is and wins over an alias-name collision.
-pub fn expandAliasRowPath(app: *App, file: []const u8) []const u8 {
-    if (std.fs.path.isAbsolute(file)) return file;
-    if (proc.pathExists(app.io, file)) return file;
-    const r = splitRow(file, false);
-    if (r.alias.len == 0) return file;
-    const data = store.readAliasesFile(app.arena, app.io, app.home) catch return file;
-    const root = (store.lookupAlias(app.arena, data, r.alias, app.home) catch null) orelse return file;
-    return std.fs.path.join(app.arena, &.{ root, r.path }) catch file;
 }
 
 /// stripCmdCarets undoes fzf's cmd.exe caret-escaping of the {} substitution:
@@ -183,8 +96,6 @@ pub fn cmdPreview(app: *App, raw: []const u8) !u8 {
         // fzf escapes {} with carets for cmd.exe on Windows; undo that.
         p = try stripCmdCarets(app.arena, raw);
     }
-    // Multi-root rows arrive alias-prefixed (`alias\rel`); rebase them.
-    p = expandAliasRowPath(app, p);
     // Directory? list entries.
     if (Io.Dir.cwd().openDir(app.io, p, .{ .iterate = true })) |dir| {
         var d = dir;
@@ -238,15 +149,10 @@ pub fn absUnder(app: *App, target: []const u8, file: []const u8) ![]const u8 {
 }
 
 /// splitGrepRow splits a grep picker row `file[:line[:text]]` into file and
-/// line. The rows it is handed are already alias-expanded (absolute), so it asks
-/// splitRow for the `:line:text` layer only.
+/// line.
 pub fn splitGrepRow(row: []const u8) struct { file: []const u8, line: []const u8 } {
-    const r = splitRow(row, true);
-    const file = if (r.alias.len > 0)
-        row[0 .. r.alias.len + 1 + r.path.len] // keep an unexpanded prefix intact
-    else
-        r.path;
-    return .{ .file = file, .line = lineOf(r.tail) };
+    const r = splitRow(row);
+    return .{ .file = r.path, .line = lineOf(r.tail) };
 }
 
 /// openSelectionsInEditor opens fzf selections in $EDITOR. grep lines are
@@ -339,62 +245,12 @@ test "stripCmdCarets: unescapes ^X, keeps ^^ as a literal caret" {
     try std.testing.expectEqualStrings("ab", try stripCmdCarets(a, "ab^"));
 }
 
-test "expandPrefixedSelection: alias token rebases onto the member dir" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const targets = [_]GroupTarget{
-        .{ .name = "gw2", .path = "C:\\repo\\gw2" },
-        .{ .name = "web", .path = "D:\\work\\web" },
-    };
-    const sel = "gw2\\src\\x.ts:604:hit\nWEB\\index.html\nC:\\abs\\kept.txt:1:x\nnomember.txt\n";
-    const got = try expandPrefixedSelection(a, &targets, sel);
-    const sep_str = comptime std.fmt.comptimePrint("{c}", .{store.sep});
-    const expected =
-        "C:\\repo\\gw2" ++ sep_str ++ "src\\x.ts:604:hit\n" ++
-        "D:\\work\\web" ++ sep_str ++ "index.html\n" ++
-        "C:\\abs\\kept.txt:1:x\n" ++
-        "nomember.txt";
-    try std.testing.expectEqualStrings(expected, got);
-}
-
-test "splitRow: the alias prefix and the :line tail are independent layers" {
-    // Both layers, the multi-root grep row.
-    const both = splitRow("gw2\\src\\x.ts:604:hit", true);
-    try std.testing.expectEqualStrings("gw2", both.alias);
-    try std.testing.expectEqualStrings("src\\x.ts", both.path);
-    try std.testing.expectEqualStrings(":604:hit", both.tail);
-    try std.testing.expectEqualStrings("604", lineOf(both.tail));
-
-    // Alias only - a find row, where a colon in a filename must NOT be split.
-    const find_row = splitRow("gw2\\odd:name.txt", false);
-    try std.testing.expectEqualStrings("gw2", find_row.alias);
-    try std.testing.expectEqualStrings("odd:name.txt", find_row.path);
-    try std.testing.expectEqualStrings("", find_row.tail);
-
-    // Tail only - an absolute row carries no alias, and the drive colon is part
-    // of the path.
-    const abs = splitRow("C:\\repo\\a.ts:12:x", true);
-    try std.testing.expectEqualStrings("", abs.alias);
-    try std.testing.expectEqualStrings("C:\\repo\\a.ts", abs.path);
-    try std.testing.expectEqualStrings("12", lineOf(abs.tail));
-
-    // Neither: a bare name with no separator has no alias to take.
-    const bare = splitRow("main.zig", true);
-    try std.testing.expectEqualStrings("", bare.alias);
-    try std.testing.expectEqualStrings("main.zig", bare.path);
-    try std.testing.expectEqualStrings("", lineOf(bare.tail));
-
-    // A tail that is only `:line` (no match text) still yields the line.
-    try std.testing.expectEqualStrings("7", lineOf(splitRow("a.txt:7", true).tail));
-}
-
 test "splitGrepRow: drive-letter prefix is part of the file, not a separator" {
-    // Group (multi-root) rows are absolute Windows paths.
+    // Absolute Windows paths keep their drive colon.
     const abs = splitGrepRow("C:\\repo\\src\\main.ts:604:function hitTest() {");
     try std.testing.expectEqualStrings("C:\\repo\\src\\main.ts", abs.file);
     try std.testing.expectEqualStrings("604", abs.line);
-    // Single-alias rows stay cwd-relative.
+    // Rows are usually cwd-relative.
     const rel = splitGrepRow("src/main.ts:12:text");
     try std.testing.expectEqualStrings("src/main.ts", rel.file);
     try std.testing.expectEqualStrings("12", rel.line);

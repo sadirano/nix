@@ -664,9 +664,6 @@ fn normalizeForCompare(arena: std.mem.Allocator, p: []const u8) ![]const u8 {
     return out[0..end];
 }
 
-/// GroupTarget is one resolved, existing member: alias name + host path.
-pub const GroupTarget = struct { name: []const u8, path: []const u8 };
-
 /// rowPath extracts the path from a `name -> path` picker row (after the last
 /// " -> "), falling back to the whole row if the separator is absent.
 pub fn rowPath(row: []const u8) []const u8 {

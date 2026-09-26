@@ -1,5 +1,5 @@
-//! The `f` fuzzy-find command: list files under one alias dir (or across a
-//! group) with es/fd/find, pick in fzf with a preview, and open the picks —
+//! The `f` fuzzy-find command: list files under one alias dir with
+//! es/fd/find, pick in fzf with a preview, and open the picks —
 //! default-app types via the OS handler, everything else in the editor.
 
 const std = @import("std");
@@ -10,13 +10,10 @@ const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
 
 const App = app_zig.App;
-const GroupTarget = resolve.GroupTarget;
 const resolveAliasPath = resolve.resolveAliasPath;
 const fzfEnv = app_zig.fzfEnv;
 const exePath = app_zig.exePath;
 const isGlobalFlag = app_zig.isGlobalFlag;
-const prefixedProducers = open_zig.prefixedProducers;
-const expandPrefixedSelection = open_zig.expandPrefixedSelection;
 const stripCmdCarets = open_zig.stripCmdCarets;
 const opensWithDefaultApp = open_zig.opensWithDefaultApp;
 const absUnder = open_zig.absUnder;
@@ -24,20 +21,14 @@ const openSelectionsInEditor = open_zig.openSelectionsInEditor;
 
 pub fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return findIn(app, &.{.{ .name = alias, .path = target }}, args);
+    return findIn(app, target, args);
 }
 
-/// findIn runs `f` over one or more targets (one alias dir, or a group's
-/// member dirs). fd leads (portable, instant on a subtree); a single-alias
-/// Windows box without fd uses es; POSIX find is the last resort. Multi-root (a
-/// group) runs one producer per member so rows read `alias\rel\path`; the
-/// selection is mapped back to absolute paths before opening.
-pub fn findIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
-    return switch (try findPick(app, targets, args)) {
-        .selected => |sel| blk: {
-            const expanded = if (targets.len > 1) try expandPrefixedSelection(app.arena, targets, sel) else sel;
-            break :blk openFindSelections(app, targets[0].path, expanded);
-        },
+/// findIn runs `f` in one alias dir. fd leads (portable, instant on a
+/// subtree); a Windows box without fd uses es; POSIX find is the last resort.
+pub fn findIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
+    return switch (try findPick(app, dir, args)) {
+        .selected => |sel| openFindSelections(app, dir, sel),
         .cancelled => 0,
         .failed => 1,
         .printed => |c| c,
@@ -45,16 +36,15 @@ pub fn findIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
 }
 
 /// FindPick is the outcome of running the `f` picker: a selection (newline-
-/// separated paths, relative to roots[0] unless absolute), a clean cancel, a
+/// separated paths, relative to the alias dir unless absolute), a clean cancel, a
 /// setup failure (message already printed), or `printed` — the --no-prompt
 /// path, where the rows went to stdout and there is nothing left to act on.
 pub const FindPick = union(enum) { selected: []const u8, cancelled, failed, printed: u8 };
 
-/// findPick runs the fuzzy file picker over one or more targets and returns the
-/// selection without acting on it — shared by `f` (which opens) and `y <alias>
-/// <pat>` (which copies the files to the clipboard). Multi-root rows come back
-/// alias-prefixed (`alias\rel`); callers expand them via expandPrefixedSelection.
-pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !FindPick {
+/// findPick runs the fuzzy file picker in `dir` and returns the selection
+/// without acting on it — shared by `f` (which opens) and `y <alias> <pat>`
+/// (which copies the files to the clipboard).
+pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
     // Under --no-prompt the rows go to stdout, so fzf is not required at all —
     // check for it only on the interactive path.
     if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
@@ -63,7 +53,6 @@ pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !Fi
     }
     const query: []const u8 = if (args.len > 0) args[0] else "";
     const extras = if (args.len > 1) args[1..] else args[0..0];
-    const multi = targets.len > 1;
 
     var prod: std.ArrayList([]const u8) = .empty;
     if (proc.findInPath(app.arena, app.io, app.env, "fd") != null) {
@@ -71,9 +60,8 @@ pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !Fi
         try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (app.no_prompt) "never" else "always" });
         for (extras) |x| try prod.append(app.arena, x);
         if (query.len > 0) try prod.append(app.arena, query);
-        // Rows stay cwd-relative (no path arg): single root runs in the alias
-        // dir; multi root runs one producer per member dir, alias-prefixed.
-    } else if (!multi and proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "es") != null) {
+        // Rows stay cwd-relative (no path arg): the producer runs in the alias dir.
+    } else if (proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "es") != null) {
         try prod.appendSlice(app.arena, &.{ "es", "-path", "./" });
         if (query.len > 0) try prod.append(app.arena, query);
         for (extras) |x| try prod.append(app.arena, x);
@@ -85,14 +73,11 @@ pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !Fi
         }
         for (extras) |x| try prod.append(app.arena, x);
     } else {
-        if (multi)
-            try app.err.writeAll("nix: f on a group needs fd (or POSIX find)\n")
-        else
-            try app.err.writeAll("nix: no file finder found (install fd)\n");
+        try app.err.writeAll("nix: no file finder found (install fd)\n");
         return .failed;
     }
 
-    if (app.no_prompt) return .{ .printed = try open_zig.printProducerRows(app, targets, prod.items) };
+    if (app.no_prompt) return .{ .printed = try open_zig.printProducerRows(app, dir, prod.items) };
 
     const preview = if (proc.is_windows)
         try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})
@@ -105,10 +90,7 @@ pub fn findPick(app: *App, targets: []const GroupTarget, args: [][]const u8) !Fi
     };
 
     try app.out.flush();
-    const res = if (multi)
-        try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, prod.items), &fzf, targets[0].path, fzfEnv(app))
-    else
-        try proc.runPipeline(app.arena, app.io, prod.items, &fzf, targets[0].path, fzfEnv(app));
+    const res = try proc.runPipeline(app.arena, app.io, prod.items, &fzf, dir, fzfEnv(app));
     if (res.code != 0) return .cancelled;
     return .{ .selected = res.output };
 }

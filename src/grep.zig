@@ -1,5 +1,5 @@
 //! The `g` search command: ripgrep (or ripgrep-all with --all) rooted at
-//! one alias dir or fanned across group members, streamed live into fzf, with
+//! one alias dir, streamed live into fzf, with
 //! hits opened in the editor at the line (or the default app for rga document
 //! hits). Also the rga preview verb the picker re-invokes the binary for.
 
@@ -12,15 +12,11 @@ const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
 
 const App = app_zig.App;
-const GroupTarget = resolve.GroupTarget;
 const resolveAliasPath = resolve.resolveAliasPath;
 const fzfEnv = app_zig.fzfEnv;
 const exePath = app_zig.exePath;
 const isGlobalFlag = app_zig.isGlobalFlag;
 const startsWithDash = app_zig.startsWithDash;
-const prefixedProducers = open_zig.prefixedProducers;
-const expandPrefixedSelection = open_zig.expandPrefixedSelection;
-const expandAliasRowPath = open_zig.expandAliasRowPath;
 const stripCmdCarets = open_zig.stripCmdCarets;
 const splitGrepRow = open_zig.splitGrepRow;
 const opensWithDefaultApp = open_zig.opensWithDefaultApp;
@@ -51,16 +47,15 @@ fn relaxNonASCII(arena: std.mem.Allocator, query: []const u8) !?[]const u8 {
 
 pub fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return grepIn(app, &.{.{ .name = alias, .path = target }}, args);
+    return grepIn(app, target, args);
 }
 
-/// grepIn runs `g` over one or more targets (one alias dir, or a group's
-/// member dirs). `--all`/`-a` (or `[grep] all = true` in config) routes to
+/// grepIn runs `g` in one alias dir. `--all`/`-a` (or `[grep] all = true` in config) routes to
 /// ripgrep-all (rga), a fundamentally different search: matches live inside PDFs,
 /// office docs, archives, etc., where line numbers and a bat/editor open make no
 /// sense. So rga gets its own pipeline (grepRga); plain rg keeps grepRg. The
 /// toggle is stripped before the remaining args drive whichever runs.
-pub fn grepIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
+pub fn grepIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     var use_all = cfg.grep_all;
     var filtered: std.ArrayList([]const u8) = .empty;
@@ -71,8 +66,8 @@ pub fn grepIn(app: *App, targets: []const GroupTarget, args: [][]const u8) !u8 {
         }
         try filtered.append(app.arena, a);
     }
-    if (use_all) return grepRga(app, targets, filtered.items);
-    return grepRg(app, targets, filtered.items);
+    if (use_all) return grepRga(app, dir, filtered.items);
+    return grepRg(app, dir, filtered.items);
 }
 
 /// buildSearchArgv assembles the argv prefix shared by grepRg and grepRga: the
@@ -106,7 +101,7 @@ fn requireFzf(app: *App) !bool {
 
 /// grepRg is the classic `g`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
-fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
+fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "rg") == null) {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
@@ -127,23 +122,12 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     var rg = try buildSearchArgv(app, "rg", relaxed, extras);
     if (query.len > 0) try rg.append(app.arena, query);
 
-    if (app.no_prompt) return open_zig.printProducerRows(app, targets, rg.items);
+    if (app.no_prompt) return open_zig.printProducerRows(app, dir, rg.items);
 
-    // Single root: rows are cwd-relative (`file:line:text`), so fzf's `:`-split
-    // fields feed bat directly. Multi root (a group): each member's rg runs IN
-    // the member dir and rows arrive as `alias\rel:line:text` — short, and free
-    // of the drive colon that would shift fzf's fields. The preview goes
-    // through the --rga-preview verb, which rebases the alias token.
-    const multi = targets.len > 1;
-    if (multi and query.len > 0) app.env.put("NIX_RGA_QUERY", query) catch {};
-    const preview: []const u8 = if (multi)
-        try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)})
-    else
-        "bat --style=numbers,header,grid --color=always {1} --highlight-line {2}";
-    const preview_window: []const u8 = if (multi)
-        "up:60%:border-bottom"
-    else
-        "up:60%:border-bottom:+{2}+3/3:~3";
+    // Rows are cwd-relative (`file:line:text`), so fzf's `:`-split fields feed
+    // bat directly.
+    const preview = "bat --style=numbers,header,grid --color=always {1} --highlight-line {2}";
+    const preview_window = "up:60%:border-bottom:+{2}+3/3:~3";
     const fzf = [_][]const u8{
         "fzf",          "--ansi",
         "--multi",      "--delimiter",
@@ -153,17 +137,9 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const cwd = targets[0].path;
-    const res = if (multi)
-        try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, rg.items), &fzf, cwd, fzfEnv(app))
-    else
-        try proc.runPipeline(app.arena, app.io, rg.items, &fzf, cwd, fzfEnv(app));
-    // The preview subprocess was the only reader. Drop it before the editor
-    // spawn below, so the user's editor doesn't inherit a stray search pattern.
-    _ = app.env.orderedRemove("NIX_RGA_QUERY");
+    const res = try proc.runPipeline(app.arena, app.io, rg.items, &fzf, dir, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled / nothing selected
-    const sel = if (multi) try expandPrefixedSelection(app.arena, targets, res.output) else res.output;
-    return openSelectionsInEditor(app, cwd, sel, true);
+    return openSelectionsInEditor(app, dir, res.output, true);
 }
 
 /// grepRga is `g --all`: like grepRg but with ripgrep-all, so each fzf row is
@@ -174,7 +150,7 @@ fn grepRg(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
 /// "line" inside a PDF is really `Page N`, not an editor line — so openRgaSelections
 /// sends default-app files (PDF/docx/…) to the OS handler and only text hits to
 /// the editor at their line.
-fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
+fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env, "rga") == null) {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
@@ -197,14 +173,12 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     try rga.append(app.arena, "-e");
     try rga.append(app.arena, query);
 
-    if (app.no_prompt) return open_zig.printProducerRows(app, targets, rga.items);
+    if (app.no_prompt) return open_zig.printProducerRows(app, dir, rga.items);
 
     // Preview gets the whole highlighted row ({}) and parses file:line itself,
     // via our `--rga-preview` verb. Passing the full row (rather than separate
     // {1}/{2} fields) sidesteps cross-shell field-quoting; the pattern travels in
     // the environment so fzf's preview shell needs no quoting of query text.
-    // Multi root (a group): per-member producers → `alias\rel:line:text` rows,
-    // which the verb rebases and expandPrefixedSelection maps back for opening.
     app.env.put("NIX_RGA_QUERY", query) catch {};
     const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)});
     const fzf = [_][]const u8{
@@ -215,17 +189,11 @@ fn grepRga(app: *App, targets: []const GroupTarget, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const multi = targets.len > 1;
-    const cwd = targets[0].path;
-    const res = if (multi)
-        try proc.runPipelinePrefixed(app.arena, app.io, try prefixedProducers(app, targets, rga.items), &fzf, cwd, fzfEnv(app))
-    else
-        try proc.runPipeline(app.arena, app.io, rga.items, &fzf, cwd, fzfEnv(app));
+    const res = try proc.runPipeline(app.arena, app.io, rga.items, &fzf, dir, fzfEnv(app));
     // Preview-only variable: drop it before anything else is spawned below.
     _ = app.env.orderedRemove("NIX_RGA_QUERY");
     if (res.code != 0) return 0; // cancelled / nothing selected
-    const sel = if (multi) try expandPrefixedSelection(app.arena, targets, res.output) else res.output;
-    return openRgaSelections(app, cwd, sel);
+    return openRgaSelections(app, dir, res.output);
 }
 
 /// openRgaSelections routes rga match rows (`file:line:text`). A file that opens
@@ -310,10 +278,9 @@ pub fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
     // Empty selection (fzf has no current item) -> empty preview.
     if (row.len == 0) return 0;
 
-    // Parse file:line out of file:line:text (drive-letter aware). Multi-root
-    // rows arrive alias-prefixed (`alias\rel`); rebase onto the alias dir.
+    // Parse file:line out of file:line:text (drive-letter aware).
     const fl = splitGrepRow(row);
-    const file = expandAliasRowPath(app, fl.file);
+    const file = fl.file;
     const line = fl.line;
 
     // Tier 1: a directory row -> our custom path preview (dir listing).

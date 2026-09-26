@@ -17,8 +17,7 @@ const App = app_zig.App;
 
 /// notifyEvent fires the on_paste / on_yank result-record hook (when
 /// configured) with a composed outcome message — so a `p`/`y` that scrolled
-/// away has an inbox answer instead of a re-check. `alias` labels the context
-/// (a member name, or a `+group` token for group-wide yanks).
+/// away has an inbox answer instead of a re-check. `alias` labels the context.
 pub fn notifyEvent(app: *App, comptime which: enum { paste, yank }, alias: []const u8, dir: []const u8, message: []const u8) void {
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
     const template = switch (which) {
@@ -195,7 +194,7 @@ pub fn yankSelectionFiles(app: *App, alias: []const u8, target: []const u8, sele
     while (lines.next()) |ln| {
         const s = std.mem.trim(u8, ln, " \t\r");
         if (s.len == 0) continue;
-        // Picker rows are relative to the alias dir (or absolute for a group);
+        // Picker rows are relative to the alias dir;
         // the clipboard needs absolute, host-separator paths.
         const abs = if (std.fs.path.isAbsolute(s)) s else try std.fs.path.join(app.arena, &.{ target, s });
         try paths.append(app.arena, try store.fromSlash(app.arena, abs));
