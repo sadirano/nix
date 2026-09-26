@@ -1526,7 +1526,7 @@ pub fn main(init: std.process.Init) !void {
     // directory walking, so unlike a context source it runs on every platform.
     {
         const wt = join(&c, &.{ pa, "wt" });
-        for ([_][]const u8{ "A/1", "A/3-login", "B/2", "B/30", ".hidden/2" }) |d| try util.mkdirAll(io, join(&c, &.{ wt, d }));
+        for ([_][]const u8{ "A/1", "A/1/attachments/1", "A/3-login", "B/2", "B/30", "C/2025/5", ".hidden/2" }) |d| try util.mkdirAll(io, join(&c, &.{ wt, d }));
         try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }),
             \\[[contexts]]
             \\segment = "t"
@@ -1535,6 +1535,15 @@ pub fn main(init: std.process.Init) !void {
             \\[[contexts]]
             \\segment = "rel"
             \\source-template = "/../*"
+            \\
+            \\[[contexts]]
+            \\segment = "g"
+            \\source-template = "/wt/**/${g=*}"
+            \\
+            \\[[contexts]]
+            \\segment = "g1"
+            \\depth = "1"
+            \\source-template = "/wt/**/${g1=*}"
             \\
         );
         var r = try c.run(&.{ "t:2@pa", "--resolve" });
@@ -1550,6 +1559,12 @@ pub fn main(init: std.process.Init) !void {
         try c.env.put("NIX_E2E_TTY", "1");
         r = try c.run(&.{ "t:9@pa", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no directory") != null, "no match is an error naming the pattern", r);
+        r = try c.run(&.{ "g:5@pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ wt, "C", "2025", "5" })), "`**` finds a folder at any depth", r);
+        r = try c.run(&.{ "g:1@pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ wt, "A", "1" })), "`**` never descends into a match, so a ticket's own subfolder is not a second hit", r);
+        r = try c.run(&.{ "g1:5@pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no directory") != null, "`depth` stops `**` from reaching deeper folders", r);
         r = try c.run(&.{ "rel@pa", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "escaped") != null, "a wildcard pattern cannot search outside its alias", r);
         try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"docs\"\nsource-template = \"/documentation\"\n");

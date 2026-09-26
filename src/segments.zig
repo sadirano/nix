@@ -52,6 +52,9 @@ pub const ContextDef = struct {
     /// the values its `${}` references resolve against. `run` wins if both are
     /// set, so an inline command is never silently ignored.
     uses: []const u8 = "",
+    /// `depth` bounds how many levels a `**` in source-template may descend
+    /// (segwalk.zig). Empty means the default.
+    depth: []const u8 = "",
     /// origin is the file this block was read from — carried so the trust
     /// ledger can hash the exact declaration that asked to run something.
     origin: []const u8 = "",
@@ -204,6 +207,8 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
             contexts.items[idx].cache = val;
         } else if (std.mem.eql(u8, key, "uses")) {
             contexts.items[idx].uses = val;
+        } else if (std.mem.eql(u8, key, "depth")) {
+            contexts.items[idx].depth = val;
         }
     }
     return .{ .contexts = contexts.items, .producers = producers.items };

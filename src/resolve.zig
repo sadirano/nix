@@ -431,7 +431,15 @@ fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: []
     var parts = std.mem.splitScalar(u8, tmpl[1..], '/');
     while (parts.next()) |raw| {
         var comp: segwalk.Comp = undefined;
-        if (segwalk.parseCapture(raw)) |cap| {
+        if (std.mem.eql(u8, raw, "**")) {
+            comp = .{ .text = raw, .wild = true, .globstar = true };
+        } else if (segwalk.parseCapture(raw)) |cap| {
+            // A capture binds ONE folder name; `**` spans several, so there is
+            // nothing single for it to bind.
+            if (std.mem.indexOf(u8, cap.glob, "**") != null) {
+                try app.err.print("nix: segment \"{s}\": `${{{s}={s}}}` cannot capture `**` - it spans several folders\n", .{ cd.segment, cap.name, cap.glob });
+                return error.ContextSourceFailed;
+            }
             // Capturing the segment's own parameter: a typed value is the
             // pattern, so `${t=*}` both finds `t:1` and, with no value, lists
             // every ticket and binds the one you picked.
@@ -451,7 +459,22 @@ fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: []
         try app.err.print("nix: segment \"{s}\": pattern \"{s}\" escaped its alias\n", .{ cd.segment, shown.items });
         return error.ContextSourceFailed;
     }
-    const w = try segwalk.walk(app.arena, app.io, at, comps.items, context.max_candidates);
+    var lim: segwalk.Limits = .{ .cap = context.max_candidates };
+    if (cd.depth.len > 0) {
+        const d = std.fmt.parseInt(usize, cd.depth, 10) catch segwalk.max_depth + 1;
+        if (d > segwalk.max_depth) {
+            try app.err.print("nix: segment \"{s}\": depth = \"{s}\" must be a number from 0 to {d}\n", .{ cd.segment, cd.depth, segwalk.max_depth });
+            return error.ContextSourceFailed;
+        }
+        lim.depth = d;
+    }
+    const w = try segwalk.walk(app.arena, app.io, at, comps.items, lim);
+    // A search the budget cut short is not an answer: a "no match" or a menu
+    // from part of the tree would be wrong while looking complete.
+    if (w.exhausted) {
+        try app.err.print("nix: segment \"{s}\": stopped after opening {d} folders under {s} while matching {s}; narrow the template or lower its `depth`\n", .{ cd.segment, lim.budget, try store.fromSlash(app.arena, at), shown.items });
+        return error.ContextSourceFailed;
+    }
     if (w.matches.len == 0) {
         try app.err.print("nix: segment \"{s}\": no directory under {s} matches {s}\n", .{ cd.segment, try store.fromSlash(app.arena, at), shown.items });
         return error.ContextSourceFailed;

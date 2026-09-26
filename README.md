@@ -282,7 +282,18 @@ o t@tasks                   # no value: every ticket, as a menu
 o t:3*@tasks                # the value is a pattern too
 ```
 
-Each `*` matches directory names one level deep (in a component, so `1-*` works; no `?` and no `**`). `${name=*}` as a whole component is a **capture**: it matches like its pattern and binds what it matched, so the shell `o t:1@tasks` opens also has `client=A` in its environment, exactly like a context source's variables. Capturing the segment's own parameter (`${t=*}`) makes a typed value the pattern and binds the pick when there was none.
+Each `*` matches directory names one level deep (in a component, so `1-*` works; there is no `?`). `${name=*}` as a whole component is a **capture**: it matches like its pattern and binds what it matched, so the shell `o t:1@tasks` opens also has `client=A` in its environment, exactly like a context source's variables. Capturing the segment's own parameter (`${t=*}`) makes a typed value the pattern and binds the pick when there was none.
+
+**When clients don't share one depth**, a component that is exactly `**` matches any number of levels — `tasks/A/1` and `tasks/B/2024/2` alike:
+
+```toml
+[[contexts]]
+segment = "t"
+depth = "4"                           # how far ** may descend (default 4, at most 16)
+source-template = "/**/${t=*}"
+```
+
+`**` is the one form that can wander, so it is fenced three ways. It never descends into a folder that already matched, so a ticket's own `attachments/1` is not a second ticket 1 and a ticket's contents are never read. `depth` bounds how many levels it goes down. And a search that would open more than 5,000 folders stops and says so, instead of offering a menu (or a "no match") drawn from part of the tree. A `*` needs none of this: each one is exactly one level, so a template is as deep as it is written. Loose files cost little either way — nix reads a folder's entries in 64 KB batches and never asks about a file individually — and a value with no `*` in it (`t:1`) is looked up by name, not by reading the folder at all.
 
 The answer follows the same rule a source's menu does: one match navigates, several open the picker (unattended, they print and exit non-zero; name a more specific value or the parent segment), none is an error that names the pattern. Only real directories match — links and junctions are not followed — and `*` never matches a leading `.`, so `.nix` and `.git` never turn up as clients. A `*` that arrives inside a variable's value stays literal, and the pattern is fenced to the alias before anything is listed. Nothing runs, so unlike `run` a wildcard needs no approval.
 

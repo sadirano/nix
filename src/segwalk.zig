@@ -14,8 +14,10 @@
 //!     source-template = "/${client=*}/${t}"
 //!
 //! A `*` inside a component matches directory names (`*` only - no `?`, no
-//! classes, no `**`: one level per component keeps the cost and the result
-//! predictable). `${name=GLOB}` as a whole component is a CAPTURE: it matches
+//! classes), one level per component. A component that is exactly `**`
+//! matches any number of levels, which is the one place a search could wander:
+//! it is bounded by a depth (`depth = N` on the context, default 4), by a
+//! budget of folders opened, and by never descending into a match. `${name=GLOB}` as a whole component is a CAPTURE: it matches
 //! like GLOB and binds what it matched to `name`, which then reaches the child
 //! environment exactly as a context source's variables do - landing in a
 //! ticket also tells the shell which client it belongs to.
@@ -54,6 +56,8 @@ pub const Comp = struct {
     wild: bool = false,
     /// Non-empty for a `${name=GLOB}` component: the variable the match binds.
     capture: []const u8 = "",
+    /// `**`: zero or more directory levels, bounded by Limits.depth.
+    globstar: bool = false,
 };
 
 /// Capture is a `${name=GLOB}` component, parsed.
@@ -113,67 +117,168 @@ pub const Match = struct {
     vars: []Var,
 };
 
-/// Walk is the result of a search: the matches, and whether the cap cut it
-/// short (reported rather than silently shown as the whole answer).
-pub const Walk = struct { matches: []Match, truncated: bool };
+/// Limits bound a search, so a folder added by mistake - a clone with its
+/// `node_modules`, an unpacked archive - costs a message instead of a hang.
+pub const Limits = struct {
+    /// Most matches offered; the menu past that is noise anyway.
+    cap: usize = 200,
+    /// How many levels one `**` may descend. `*` needs no such bound: each one
+    /// is exactly one level, so a template is as deep as it is written.
+    depth: usize = default_depth,
+    /// Most folders opened by one search, across every level and branch.
+    budget: usize = default_budget,
+};
+pub const default_depth: usize = 4;
+pub const max_depth: usize = 16;
+pub const default_budget: usize = 5000;
+
+/// Walk is the result of a search: the matches, and whether a limit cut it
+/// short. Either is reported rather than silently shown as the whole answer.
+pub const Walk = struct { matches: []Match, truncated: bool, exhausted: bool };
 
 /// walk resolves components against the filesystem under `root` (slash form).
-/// A literal component narrows every candidate by name; a wild one lists each
-/// candidate's directory and keeps the entries that match. Candidates are
-/// checked to exist at the end, so a literal after the last wildcard
-/// (`/*/tickets/${t}`) only keeps the clients that actually have that ticket.
-pub fn walk(arena: std.mem.Allocator, io: Io, root: []const u8, comps: []const Comp, cap: usize) !Walk {
-    var cur: std.ArrayList(Match) = .empty;
-    try cur.append(arena, .{ .rel = "", .vars = &.{} });
-    var truncated = false;
-    for (comps) |c| {
-        if (c.text.len == 0) continue; // `//` or a trailing `/`
-        var next: std.ArrayList(Match) = .empty;
-        for (cur.items) |m| {
-            if (!c.wild) {
-                try next.append(arena, .{ .rel = try std.fmt.allocPrint(arena, "{s}/{s}", .{ m.rel, c.text }), .vars = m.vars });
-                continue;
-            }
-            const here = try store.fromSlash(arena, try std.fmt.allocPrint(arena, "{s}{s}", .{ root, m.rel }));
-            var dir = Io.Dir.cwd().openDir(io, here, .{ .iterate = true }) catch continue;
-            defer dir.close(io);
-            var names: std.ArrayList([]const u8) = .empty;
-            var it = dir.iterate();
-            while (it.next(io) catch null) |ent| {
-                if (ent.kind != .directory) continue;
-                if (!globMatch(c.text, ent.name)) continue;
-                try names.append(arena, try arena.dupe(u8, ent.name));
-            }
-            // Directory order is the filesystem's whim; a menu that reshuffles
-            // between runs is one nobody can learn.
-            std.mem.sort([]const u8, names.items, {}, lessFold);
-            for (names.items) |name| {
-                if (next.items.len >= cap) {
-                    truncated = true;
-                    break;
-                }
-                var vars = m.vars;
-                if (c.capture.len > 0) {
-                    const grown = try arena.alloc(Var, m.vars.len + 1);
-                    @memcpy(grown[0..m.vars.len], m.vars);
-                    grown[m.vars.len] = .{ .key = c.capture, .value = name };
-                    vars = grown;
-                }
-                try next.append(arena, .{ .rel = try std.fmt.allocPrint(arena, "{s}/{s}", .{ m.rel, name }), .vars = vars });
-            }
+///
+/// - A literal component narrows by name; whether it exists is settled once,
+///   at the end, so `/*/tickets/${t}` keeps only clients that have the ticket.
+/// - A wild component WITHOUT a `*` in its text (`${t=*}` given `t:1`) is an
+///   exact name: it is opened, never listed, so a client folder full of
+///   unrelated files costs one lookup instead of a read of every entry.
+/// - A `*` component lists the folder and keeps the matching directories.
+/// - `**` matches zero or more levels, up to `depth`, and never descends into
+///   a folder that is already a match: a ticket's own `attachments/1` cannot
+///   turn up as a second ticket 1, and a ticket's contents are never read.
+pub fn walk(arena: std.mem.Allocator, io: Io, root: []const u8, comps: []const Comp, lim: Limits) !Walk {
+    var w: Walker = .{ .arena = arena, .io = io, .root = root, .comps = comps, .lim = lim };
+    w.buf = try arena.alignedAlloc(u8, .of(usize), read_buffer_len);
+    try w.go(0, "", &.{}, 0);
+    std.mem.sort(Match, w.out.items, {}, lessMatch);
+    return .{ .matches = w.out.items, .truncated = w.truncated, .exhausted = w.exhausted };
+}
+
+/// The directory read buffer. Zig's convenience iterator uses 2 KB - roughly
+/// 20 entries per kernel call; 64 KB takes a 10,000-entry folder in about 20
+/// calls instead of 600.
+const read_buffer_len = 64 * 1024;
+
+const Walker = struct {
+    arena: std.mem.Allocator,
+    io: Io,
+    root: []const u8,
+    comps: []const Comp,
+    lim: Limits,
+    buf: []align(@alignOf(usize)) u8 = &.{},
+    out: std.ArrayList(Match) = .empty,
+    opened: usize = 0,
+    truncated: bool = false,
+    exhausted: bool = false,
+
+    fn stopped(w: *Walker) bool {
+        return w.truncated or w.exhausted;
+    }
+
+    fn join(w: *Walker, rel: []const u8, name: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(w.arena, "{s}/{s}", .{ rel, name });
+    }
+
+    fn host(w: *Walker, rel: []const u8) ![]const u8 {
+        return store.fromSlash(w.arena, try std.fmt.allocPrint(w.arena, "{s}{s}", .{ w.root, rel }));
+    }
+
+    /// charge spends one folder of the budget; false once it is gone.
+    fn charge(w: *Walker) bool {
+        if (w.opened >= w.lim.budget) {
+            w.exhausted = true;
+            return false;
         }
-        cur = next;
-        if (cur.items.len == 0) break;
+        w.opened += 1;
+        return true;
     }
-    var out: std.ArrayList(Match) = .empty;
-    for (cur.items) |m| {
-        if (m.rel.len == 0) continue;
-        const abs = try store.fromSlash(arena, try std.fmt.allocPrint(arena, "{s}{s}", .{ root, m.rel }));
-        var d = Io.Dir.cwd().openDir(io, abs, .{}) catch continue;
-        d.close(io);
-        try out.append(arena, m);
+
+    fn isDir(w: *Walker, rel: []const u8) !bool {
+        if (!w.charge()) return false;
+        var d = Io.Dir.cwd().openDir(w.io, try w.host(rel), .{}) catch return false;
+        d.close(w.io);
+        return true;
     }
-    return .{ .matches = out.items, .truncated = truncated };
+
+    fn isMatch(w: *Walker, rel: []const u8) bool {
+        for (w.out.items) |m| if (std.mem.eql(u8, m.rel, rel)) return true;
+        return false;
+    }
+
+    fn bind(w: *Walker, vars: []Var, key: []const u8, value: []const u8) ![]Var {
+        if (key.len == 0) return vars;
+        const grown = try w.arena.alloc(Var, vars.len + 1);
+        @memcpy(grown[0..vars.len], vars);
+        grown[vars.len] = .{ .key = key, .value = value };
+        return grown;
+    }
+
+    /// list returns the directories under `rel` whose names match `pat`, in
+    /// name order - directory order is the filesystem's whim, and a menu that
+    /// reshuffles between runs is one nobody can learn.
+    fn list(w: *Walker, rel: []const u8, pat: []const u8) ![][]const u8 {
+        var names: std.ArrayList([]const u8) = .empty;
+        if (!w.charge()) return names.items;
+        var dir = Io.Dir.cwd().openDir(w.io, try w.host(rel), .{ .iterate = true }) catch return names.items;
+        defer dir.close(w.io);
+        var r: Io.Dir.Reader = .init(dir, w.buf);
+        var batch: [64]Io.Dir.Entry = undefined;
+        while (true) {
+            const n = r.read(w.io, &batch) catch break;
+            for (batch[0..n]) |ent| {
+                if (ent.kind != .directory) continue;
+                if (!globMatch(pat, ent.name)) continue;
+                try names.append(w.arena, try w.arena.dupe(u8, ent.name));
+            }
+            if (n == 0 and r.state == .finished) break;
+        }
+        std.mem.sort([]const u8, names.items, {}, lessFold);
+        return names.items;
+    }
+
+    fn go(w: *Walker, i: usize, rel: []const u8, vars: []Var, used: usize) anyerror!void {
+        if (w.stopped()) return;
+        if (i == w.comps.len) {
+            if (rel.len == 0 or w.isMatch(rel)) return;
+            if (!try w.isDir(rel)) return;
+            if (w.out.items.len >= w.lim.cap) {
+                w.truncated = true;
+                return;
+            }
+            try w.out.append(w.arena, .{ .rel = rel, .vars = vars });
+            return;
+        }
+        const c = w.comps[i];
+        if (c.text.len == 0) return w.go(i + 1, rel, vars, used); // `//` or a trailing `/`
+        if (c.globstar) {
+            // Zero levels first, so every match directly here is known before
+            // descending - that is what lets the descent skip them.
+            try w.go(i + 1, rel, vars, used);
+            if (used >= w.lim.depth) return;
+            for (try w.list(rel, "*")) |name| {
+                const child = try w.join(rel, name);
+                if (w.isMatch(child)) continue;
+                try w.go(i, child, vars, used + 1);
+                if (w.stopped()) return;
+            }
+            return;
+        }
+        if (!c.wild) return w.go(i + 1, try w.join(rel, c.text), vars, used);
+        if (std.mem.indexOfScalar(u8, c.text, '*') == null) {
+            const child = try w.join(rel, c.text);
+            if (!try w.isDir(child)) return;
+            return w.go(i + 1, child, try w.bind(vars, c.capture, c.text), used);
+        }
+        for (try w.list(rel, c.text)) |name| {
+            try w.go(i + 1, try w.join(rel, name), try w.bind(vars, c.capture, name), used);
+            if (w.stopped()) return;
+        }
+    }
+};
+
+fn lessMatch(_: void, a: Match, b: Match) bool {
+    return std.ascii.lessThanIgnoreCase(a.rel, b.rel);
 }
 
 fn lessFold(_: void, a: []const u8, b: []const u8) bool {
