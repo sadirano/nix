@@ -366,7 +366,7 @@ fn evalSegment(
         // asks the source what the options are, and a `run = "tickets ${ticket}"`
         // that refused to expand would make the menu unreachable.
         try high.append(app.arena, .{ .key = param, .value = if (ps.has_value) ps.value else "" });
-        const cands = (try context.run(app, s, cd, alias, dir, ps, high.items, cd.vars.items, run_zig)) orelse
+        const cands = (try context.run(app, s, cd, alias, dir, ps, high.items, cd.vars.items)) orelse
             return error.ContextSourceFailed;
         const produced = (try pickCandidate(app, cd, ps, cands)) orelse return error.ContextSourceFailed;
         lk.produced = produced;

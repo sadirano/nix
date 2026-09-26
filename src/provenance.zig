@@ -19,6 +19,9 @@ const config = @import("config.zig");
 const segments = @import("segments.zig");
 const util = @import("util.zig");
 const refs_zig = @import("refs.zig");
+const resolve = @import("resolve.zig");
+const run_zig = @import("run.zig");
+const env_zig = @import("env.zig");
 
 const App = app_zig.App;
 
@@ -500,7 +503,7 @@ pub const Plan = struct {
 /// least prints the command it is about to run.
 ///
 /// `NIX_E2E_TTY=1` is the test suite's way in - see `app_zig.e2eConsole`.
-pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: anytype, env_zig: anytype) !u8 {
+pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
     // `--always` is a different GRANT, not a different target, so it is lifted
     // out before the positional count is checked - `nix --trust jpmine --always`
     // must not read as the two-argument segment form.
@@ -520,7 +523,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: an
         try app.err.print("  Run it yourself in a terminal:\n    nix --trust {s}\n", .{alias});
         return 1;
     }
-    const dir = (try resolve_zig.resolveAliasPath(app, alias)) orelse return 1;
+    const dir = (try resolve.resolveAliasPath(app, alias)) orelse return 1;
     if (always) return grantStanding(app, alias, dir);
     // Once an alias is standing-trusted there is nothing left to record, and
     // recording per-file rows anyway would leave approvals outliving the grant.
@@ -556,7 +559,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8, resolve_zig: anytype, run_zig: an
             break :blk try context.fromProducer(app.arena, p, &cd);
         } else continue;
 
-        const r = (try context.locate(app, src, dir, run_zig)) orelse continue;
+        const r = (try context.locate(app, src, dir)) orelse continue;
         if (r.implicit_trust) {
             try app.out.print("{s}: already trusted (declared and scripted under {s})\n", .{ cd.segment, app.home });
             continue;
