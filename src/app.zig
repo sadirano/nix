@@ -41,9 +41,6 @@ pub const App = struct {
     /// the resolve and yank paths; navigate refuses it, since `o`'s stdout
     /// feeds the wrapper's cd.
     dialect: ?dialects.Dialect = null,
-    /// --force: go through with an act that would otherwise ask. NOT implied
-    /// by --no-prompt - "don't block me" and "overwrite what I have" differ.
-    force: bool = false,
     /// PATH as the process started, captured *lazily* on first aliasRunEnv use
     /// (the run/navigate paths only) so the resolve hot path does zero extra work.
     /// aliasRunEnv rebuilds from this each call, so scripts dirs never accumulate.

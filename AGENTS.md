@@ -100,7 +100,7 @@ drift. Adding a command means touching them, not just the dispatcher:
 ### The shared seam
 
 `app.zig` holds `App`, the process-wide context handed to every command
-(arena, `Io`, writers, env, home, `--json`/`--no-prompt`/`--force`, plus the
+(arena, `Io`, writers, env, home, `--json`/`--no-prompt`, plus the
 lazily-populated PATH and injected-variable bookkeeping). **Command modules take
 `*App` and import `app.zig`, never `main.zig` and never each other.** `main.zig`
 is the dispatcher; `root.zig` is the library surface (`refAllDecls` compile-checks
@@ -121,7 +121,7 @@ Anything that arrives with a `git clone` - `.nix/actions.toml`, `.nix/scripts/`,
 the first run shows the command and asks, and **without a console it refuses**.
 An agent's shell is such a console-less case, so an action you just wrote will
 not run for you until the user runs `nix --trust <alias>`. That is the gate
-working. `--trust` and `--force` are never yours to add - and `--trust` will
+working. `--trust` is never yours to add - and it will
 not have you either: it is the gate's batch answer, so it prints everything it
 would approve, asks once, and refuses without a console for the same reason
 the gate does.

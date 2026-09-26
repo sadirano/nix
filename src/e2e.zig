@@ -243,18 +243,20 @@ pub fn main(init: std.process.Init) !void {
 
         // Repointing an existing alias destroys the only record of where it
         // pointed, so unattended it REFUSES rather than silently overwriting -
-        // `o i :` used to cost people the alias. --force is the way to mean it.
+        // `o i :` used to cost people the alias.
         r = try c.run(&.{ "pa", pa2 });
         var r2 = try c.run(&.{ "pa", "--resolve" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--force") != null and
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "refusing to repoint") != null and
             pathEql(trim(r2.out), pa), "re-registering elsewhere refuses unattended and keeps the old path", r);
-        r = try c.run(&.{ "--force", "pa", pa2 });
+        _ = try c.run(&.{ "pa", "--remove" });
+        r = try c.run(&.{ "pa", pa2 });
         r2 = try c.run(&.{ "pa", "--resolve" });
-        c.check(r.code == 0 and pathEql(trim(r2.out), pa2), "--force repoints the alias", r2);
+        c.check(r.code == 0 and pathEql(trim(r2.out), pa2), "remove then register repoints unattended", r2);
         // Re-registering the path it ALREADY has is a no-op, and must not nag.
         r = try c.run(&.{ "pa", pa2 });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "--force") == null, "re-registering the same path asks nothing", r);
-        _ = try c.run(&.{ "--force", "pa", pa }); // point it back
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "refusing") == null, "re-registering the same path asks nothing", r);
+        _ = try c.run(&.{ "pa", "--remove" }); // point it back
+        _ = try c.run(&.{ "pa", pa });
 
         // A token that cannot be a path never reaches aliases.toml. `o i :` used
         // to resolve ":" against the cwd, overwrite, save, and only THEN crash

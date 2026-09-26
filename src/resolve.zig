@@ -103,15 +103,13 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
 ///
 /// Unattended (--no-prompt, or stdin that isn't a console) it REFUSES rather
 /// than proceeding: the whole point is that a silent overwrite is how the path
-/// gets lost, and a script that meant it can say --force. Same discipline as the
-/// provenance gate - nothing approves a destructive act on the user's behalf.
+/// gets lost. Same discipline as the provenance gate - nothing approves a destructive act on the user's behalf.
 fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs: []const u8) !bool {
     const old_host = try store.fromSlash(app.arena, old_slashed);
-    if (app.force) return true;
     if (app.no_prompt or !proc.interactive()) {
         try app.err.print(
-            "nix: \"{s}\" already points at {s}\n  refusing to repoint it to {s} without asking - rerun with --force if you meant it\n",
-            .{ alias, old_host, new_abs },
+            "nix: \"{s}\" already points at {s}\n  refusing to repoint it to {s} without asking - run it at a console, or `nix {s} --remove` first\n",
+            .{ alias, old_host, new_abs, alias },
         );
         return false;
     }

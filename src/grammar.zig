@@ -58,7 +58,7 @@ pub const ActionVerb = enum {
 };
 
 /// Process-wide flags any sub-parser silently accepts.
-pub const GlobalFlag = enum { no_prompt, force, json, as };
+pub const GlobalFlag = enum { no_prompt, json, as };
 
 /// internal commands are real and dispatched, but are nix re-invoking itself
 /// (fzf preview panes) rather than anything a user or agent types. They are
@@ -135,21 +135,6 @@ pub const globals = [_]Global{
         .help =
         \\never open a picker or ask; print what it would
         \\have offered and act on nothing
-        ,
-        .spec = "",
-    },
-    .{
-        // `-q` is deliberately NOT a spelling of this: `--doctor -q` is doctor's
-        // own quiet flag and `rg -q` is ripgrep's, so the short form read as
-        // three different things depending on where it landed.
-        .flags = &.{"--force"},
-        .verb = .force,
-        .help =
-        \\go through with an act that would otherwise ask.
-        \\Today: repointing an existing alias, which
-        \\forgets the path it had. NOT implied by
-        \\--no-prompt - "don't block me" and "overwrite
-        \\what I have" are different statements
         ,
         .spec = "",
     },
@@ -401,7 +386,6 @@ test "knows recognizes flags across system, action, and global tables" {
     try std.testing.expect(knows("-l"));
     try std.testing.expect(knows("--grep"));
     try std.testing.expect(knows("-g"));
-    try std.testing.expect(knows("--force"));
     try std.testing.expect(knows("--no-prompt"));
     try std.testing.expect(knows("-j"));
     try std.testing.expect(!knows("--bogus"));

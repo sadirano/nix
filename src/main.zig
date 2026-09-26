@@ -265,7 +265,6 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
         if (!startsWithDash(a)) named_alias = true;
         if (eql(a, "--json") or eql(a, "-j")) app.json = true;
         if (eql(a, "--no-prompt")) app.no_prompt = true;
-        if (eql(a, "--force")) app.force = true;
     }
 }
 

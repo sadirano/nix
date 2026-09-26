@@ -439,8 +439,7 @@ pub const specs = [_]Spec{
         \\Registering a name that ALREADY exists repoints it, which forgets the
         \\path it had. nix asks first and refuses when it cannot (a pipe, an
         \\agent's shell, --no-prompt), so check --list before suggesting a
-        \\registration and pick an unused name. --force overrides the refusal:
-        \\it destroys the old path, so never add it on the user's behalf.
+        \\registration and pick an unused name.
         ,
         .examples = &.{
             "`nix --list` - names and paths",

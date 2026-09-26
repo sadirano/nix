@@ -173,8 +173,7 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   or `.nix/scripts/` inside a project is fine and encouraged. Registering a name that
         \\   already exists REPOINTS it and forgets the path it had, so check
         \\   `nix --list` first and pick an unused name. nix refuses this when it
-        \\   cannot ask (your shell included); `--force` overrides that refusal
-        \\   and is never yours to add.
+        \\   cannot ask (your shell included).
         \\
         \\## Example phrasing
         \\
