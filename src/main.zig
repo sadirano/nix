@@ -106,24 +106,6 @@ pub fn main(init: std.process.Init) !void {
     hold.onSuccess(&app);
 }
 
-/// holdOnSuccess is the opt-in half: an action whose OUTPUT is the point, named
-/// in `[hold] on_success`, gets the window held after it worked. Same gate as
-/// the failure hold, so a shell you already had open is never touched; unlike
-/// it, this one times out, because nothing here has gone wrong.
-fn holdOnSuccess(app: *App) void {
-    if (app.last_action.len == 0) return;
-    if (app.no_prompt or !proc.interactive() or !proc.ownsConsole()) return;
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return;
-    if (!actions.namesAction(cfg.hold_on_success, app.last_alias, app.last_action)) return;
-    if (cfg.hold_seconds == 0) {
-        app.err.writeAll("\n(press a key to close)\n") catch {};
-    } else {
-        app.err.print("\n(closing in {d}s - press a key to close now)\n", .{cfg.hold_seconds}) catch {};
-    }
-    app.err.flush() catch {};
-    proc.waitForKey(app.io, cfg.hold_seconds *| 1000);
-}
-
 /// run dispatches argv and returns a process exit code.
 fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     // argv[0] → multicall action (when invoked under a wrapper name).
@@ -252,7 +234,7 @@ fn leadingActionCall(args: [][]const u8) ?[][]const u8 {
 }
 
 /// setGlobalFlags scans the tokens nix itself consumes for the process-wide
-/// flags (--json/-j, --no-prompt/-q). The scan stops at `--` and at the first
+/// flags (--json/-j, --no-prompt). The scan stops at `--` and at the first
 /// action flag: everything after `--run`/`--grep`/... belongs to that action's
 /// command or pattern and must not flip nix's own switches (`r a build -q`
 /// hands --no-prompt to build; `g a pat --json` hands --json to rg).
