@@ -39,8 +39,12 @@ zig build run -- --list                    # run the freshly built exe
   one push). It runs, in order: `zig fmt --check`, the release-script selftests,
   unit tests, e2e, the portable build, and a linux cross-compile canary. Run it
   before pushing so `fix: zig fmt` never becomes a commit again.
-- `.github/workflows/ci.yml` deliberately has a single `zig build ci` step. If a
-  check moves, build.zig and the workflow move together or it stops being a gate.
+- `.github/workflows/ci.yml`'s Windows job deliberately has a single
+  `zig build ci` step. If a check moves, build.zig and the workflow move together
+  or it stops being a gate. A second, ubuntu job runs `zig build test` and
+  `zig build e2e` where fixtures cannot lean on cmd: checks whose subject is
+  Windows itself skip there as "Windows only" (`c.windowsOnly` in `e2e.zig`)
+  and are counted, never failed.
 
 ### Running a subset of tests
 
