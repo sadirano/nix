@@ -4,7 +4,7 @@ A directory alias manager for the command line. Give a project a short name once
 
 One TOML file holds every alias, one binary serves every command. State lives in `~/.nix` (`aliases.toml`, `config.toml`, usage data, and the segment / action / script files); override the location with `$NIX_HOME`.
 
-New to nix? **[The Guide](docs/GUIDE.md)** walks through every use, from the daily one-letter commands to complete workflows; this README is the reference behind it. A slide-style [product overview (PDF)](docs/nix-product-overview.pdf) summarizes it for a wider audience.
+New to nix? **[The Guide](docs/GUIDE.md)** walks through every use, from the daily one-letter commands to complete workflows; this README is the reference behind it.
 
 ## Demos
 
