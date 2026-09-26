@@ -815,6 +815,13 @@ pub const specs = [_]Spec{
         \\A source may answer with SEVERAL blocks, separated by a `---` line,
         \\one per candidate ("which of my open tickets?"). One block resolves
         \\silently, several open a picker, and `_display` names each row.
+        \\
+        \\A source-template containing `*` SEARCHES instead of naming: each `*`
+        \\matches directory names one level deep, and `${name=*}` binds the
+        \\matched name as a variable. `source-template = "/${client=*}/${t=*}"`
+        \\lets `t:1@tasks` find tasks/<whichever client>/1 with no script. One
+        \\match resolves, several open the same picker, none is an error. It
+        \\runs nothing, so it needs no approval.
         ,
         .agent_use =
         \\`nix <seg>@<alias>` resolves and prints, like any alias. `nix
@@ -824,6 +831,9 @@ pub const specs = [_]Spec{
         \\without picking one, so it prints the rows and exits non-zero in your
         \\shell rather than hanging. Do not retry it: read the rows, then use
         \\the inline form (`nix <seg>:<value>@<alias>`), which never prompts.
+        \\A wildcard segment is the exception: its inline value is a pattern,
+        \\and several directories matching it still print and exit non-zero -
+        \\use a more specific value, or name the parent segment explicitly.
         \\
         \\Do not run `--trust` on the user's behalf - and you cannot: it prints
         \\everything it would approve, asks once, and refuses outright without a

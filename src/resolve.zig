@@ -8,6 +8,7 @@ const app_zig = @import("app.zig");
 const store = @import("store.zig");
 const usage = @import("usage.zig");
 const segments = @import("segments.zig");
+const segwalk = @import("segwalk.zig");
 const context = @import("context.zig");
 const run_zig = @import("run.zig");
 const picker = @import("picker.zig");
@@ -249,16 +250,25 @@ const SegLookup = struct {
 /// anyway, the first is used and the ambiguity is reported rather than hidden -
 /// prompting there would make the deterministic form nondeterministic, and it
 /// is the form agents and scripts are told to use.
+///
+/// A wildcard template's candidates (`from_disk`) are the exception: there the
+/// inline value is often only PART of the question (`t:1*` for every ticket
+/// starting with 1), and "the first directory in name order" is no answer
+/// anyone asked for, so it gets the picker - and, unattended, the same
+/// show-and-refuse - like a segment given no value at all.
+///
+/// Returns the chosen candidate's index.
 fn pickCandidate(
     app: *App,
     cd: *const segments.ContextDef,
     ps: segments.ParsedSegment,
     cands: []segments.Candidate,
-) !?[]segments.Var {
-    if (cands.len == 1) return cands[0].vars;
-    if (ps.has_value) {
+    from_disk: bool,
+) !?usize {
+    if (cands.len == 1) return 0;
+    if (ps.has_value and !from_disk) {
         try app.err.print("nix: segment \"{s}\": {d} candidates matched \"{s}\" - using the first ({s})\n", .{ cd.segment, cands.len, ps.value, cands[0].display });
-        return cands[0].vars;
+        return 0;
     }
     // The show-and-refuse contract every other picker has: print what would
     // have been offered, act on nothing. The rows go to stdout because they are
@@ -267,7 +277,11 @@ fn pickCandidate(
     if (!app_zig.hasConsole(app)) {
         for (cands) |c| try app.out.print("{s}\n", .{c.display});
         try app.out.flush();
-        try app.err.print("nix: segment \"{s}\" has {d} candidates and picking one is interactive; name it inline (`{s}:<value>@<alias>`)\n", .{ cd.segment, cands.len, cd.segment });
+        if (from_disk and ps.has_value) {
+            try app.err.print("nix: segment \"{s}\": {d} directories match \"{s}\" and picking one is interactive; name a more specific value, or the parent segment too\n", .{ cd.segment, cands.len, ps.value });
+        } else {
+            try app.err.print("nix: segment \"{s}\" has {d} candidates and picking one is interactive; name it inline (`{s}:<value>@<alias>`)\n", .{ cd.segment, cands.len, cd.segment });
+        }
         return null;
     }
     if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
@@ -287,8 +301,7 @@ fn pickCandidate(
     try app.out.flush();
     const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, app_zig.fzfEnv(app));
     if (res.code != 0) return null; // cancelled
-    const idx = selectedIndex(res.output, cands.len) orelse return null;
-    return cands[idx].vars;
+    return selectedIndex(res.output, cands.len);
 }
 
 /// selectedIndex reads the hidden key back off the picked row. Null for a
@@ -338,6 +351,7 @@ fn evalSegment(
     ps: segments.ParsedSegment,
     alias: []const u8,
     dir: []const u8,
+    at: []const u8,
 ) ![]const u8 {
     const param = if (cd.param.len > 0) cd.param else cd.segment;
     var lk: SegLookup = .{ .app = app, .cd = cd, .ps = ps, .param = param };
@@ -369,7 +383,8 @@ fn evalSegment(
         try high.append(app.arena, .{ .key = param, .value = if (ps.has_value) ps.value else "" });
         const cands = (try context.run(app, s, cd, alias, dir, ps, high.items, cd.vars.items)) orelse
             return error.ContextSourceFailed;
-        const produced = (try pickCandidate(app, cd, ps, cands)) orelse return error.ContextSourceFailed;
+        const pick = (try pickCandidate(app, cd, ps, cands, false)) orelse return error.ContextSourceFailed;
+        const produced = cands[pick].vars;
         lk.produced = produced;
         var merged: std.ArrayList(segments.Var) = .empty;
         try merged.appendSlice(app.arena, app.ctx_vars);
@@ -377,9 +392,82 @@ fn evalSegment(
         app.ctx_vars = merged.items;
     }
 
+    if (cd.source_template.len > 0 and segwalk.isWild(cd.source_template)) return wildFragment(app, cd, lk, at);
     if (cd.source_template.len > 0) return segments.expandTemplate(app.arena, cd.source_template, lk, SegLookup.get);
     if (ps.has_value) return error.InlineValueNoTemplate;
     return "";
+}
+
+/// WildLookup is SegLookup for a wildcard template, with one difference: the
+/// segment's own parameter is a pattern the person typed, so it may carry a
+/// `*`, and when it was not typed at all it matches everything - `o t@tasks`
+/// asks "which one?", and the disk's answer is the menu.
+const WildLookup = struct {
+    inner: SegLookup,
+    own: bool = false,
+    fn get(self: *WildLookup, name: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, name, self.inner.param)) {
+            self.own = true;
+            if (!self.inner.ps.has_value) return "*";
+        }
+        return self.inner.get(name);
+    }
+};
+
+/// wildFragment resolves a template containing `*` by searching below `at`,
+/// the path the segments to its right already resolved (segwalk.zig has the
+/// rules). The picked directory's captures join app.ctx_vars the way a context
+/// source's variables do, so the shell `o` opens knows the client too.
+fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: []const u8) ![]const u8 {
+    const tmpl = cd.source_template;
+    // A search needs somewhere to start; a suffix template (`_${task}.md`)
+    // appends to a NAME, and there is no directory to list for that.
+    if (!std.mem.startsWith(u8, tmpl, "/")) {
+        try app.err.print("nix: segment \"{s}\": a wildcard source-template must start with `/`\n", .{cd.segment});
+        return error.ContextSourceFailed;
+    }
+    var comps: std.ArrayList(segwalk.Comp) = .empty;
+    var shown: std.ArrayList(u8) = .empty;
+    var parts = std.mem.splitScalar(u8, tmpl[1..], '/');
+    while (parts.next()) |raw| {
+        var comp: segwalk.Comp = undefined;
+        if (segwalk.parseCapture(raw)) |cap| {
+            // Capturing the segment's own parameter: a typed value is the
+            // pattern, so `${t=*}` both finds `t:1` and, with no value, lists
+            // every ticket and binds the one you picked.
+            const own_typed = std.mem.eql(u8, cap.name, lk.param) and lk.ps.has_value;
+            comp = .{ .text = if (own_typed) lk.ps.value else cap.glob, .wild = true, .capture = cap.name };
+        } else {
+            var wl: WildLookup = .{ .inner = lk };
+            const text = try segments.expandTemplate(app.arena, raw, &wl, WildLookup.get);
+            comp = .{ .text = text, .wild = segwalk.isWild(raw) or (wl.own and segwalk.isWild(text)) };
+        }
+        try comps.append(app.arena, comp);
+        try shown.print(app.arena, "/{s}", .{comp.text});
+    }
+    // Guard the pattern BEFORE the walk lists anything: a `..` would otherwise
+    // read directory names outside the alias before the final guard refused.
+    if (!segments.guardFragment(shown.items)) {
+        try app.err.print("nix: segment \"{s}\": pattern \"{s}\" escaped its alias\n", .{ cd.segment, shown.items });
+        return error.ContextSourceFailed;
+    }
+    const w = try segwalk.walk(app.arena, app.io, at, comps.items, context.max_candidates);
+    if (w.matches.len == 0) {
+        try app.err.print("nix: segment \"{s}\": no directory under {s} matches {s}\n", .{ cd.segment, try store.fromSlash(app.arena, at), shown.items });
+        return error.ContextSourceFailed;
+    }
+    if (w.truncated) try app.err.print("nix: segment \"{s}\": more than {d} directories match {s}; showing the first {d}\n", .{ cd.segment, context.max_candidates, shown.items, w.matches.len });
+    const cands = try app.arena.alloc(segments.Candidate, w.matches.len);
+    for (w.matches, cands) |m, *c| c.* = .{ .display = m.rel[1..], .vars = m.vars };
+    const pick = (try pickCandidate(app, cd, lk.ps, cands, true)) orelse return error.ContextSourceFailed;
+    const chosen = w.matches[pick];
+    if (chosen.vars.len > 0) {
+        var merged: std.ArrayList(segments.Var) = .empty;
+        try merged.appendSlice(app.arena, app.ctx_vars);
+        try merged.appendSlice(app.arena, chosen.vars);
+        app.ctx_vars = merged.items;
+    }
+    return chosen.rel;
 }
 
 /// lookupCtx finds a segment's [[contexts]] block across the three files in
@@ -471,7 +559,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
                 return null;
             }
         }
-        const fragment = evalSegment(app, cd.?, producers, ps, parsed.alias, run_dir) catch |e| {
+        const fragment = evalSegment(app, cd.?, producers, ps, parsed.alias, run_dir, target.items) catch |e| {
             // A failed context source has already explained itself in detail
             // (untrusted, missing script, non-zero exit); don't bury that under
             // a second generic line.

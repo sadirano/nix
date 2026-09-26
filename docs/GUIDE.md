@@ -44,10 +44,11 @@ under `[shortcuts]` (see [1.9](#19-rename-the-commands)), substitute yours.
 - [Level 4 - Sub-aliases and computed paths](#level-4---sub-aliases-and-computed-paths)
   - [4.1 Static segments](#41-static-segments)
   - [4.2 Inline values](#42-inline-values)
-  - [4.3 Context sources: a script decides the path](#43-context-sources-a-script-decides-the-path)
-  - [4.4 Menus](#44-menus)
-  - [4.5 Named producers](#45-named-producers)
-  - [4.6 The `shared@` drop](#46-the-shared-drop)
+  - [4.3 Wildcards: the folders decide the path](#43-wildcards-the-folders-decide-the-path)
+  - [4.4 Context sources: a script decides the path](#44-context-sources-a-script-decides-the-path)
+  - [4.5 Menus](#45-menus)
+  - [4.6 Named producers](#46-named-producers)
+  - [4.7 The `shared@` drop](#47-the-shared-drop)
 - [Level 5 - Global commands (`[bin]` exports)](#level-5---global-commands-bin-exports)
 - [Level 6 - Automation and integration](#level-6---automation-and-integration)
   - [6.1 Completion notifications](#61-completion-notifications)
@@ -604,7 +605,46 @@ defaults. So `region=eu o logs@api` can override a default for one command.
 
 Segments nest, innermost first: `o client:bob@projb`.
 
-### 4.3 Context sources: a script decides the path
+### 4.3 Wildcards: the folders decide the path
+
+When the thing you'd look up is already the folder layout - tickets under
+clients, ticket numbers unique - no script is needed. Put `*` in the template:
+
+```toml
+# ~/.nix/segments/tasks.toml
+[[contexts]]
+segment = "client"
+source-template = "/${client}"
+
+[[contexts]]
+segment = "ticket"
+source-template = "/${ticket}"
+
+# the shortcut: find the client by searching
+[[contexts]]
+segment = "t"
+source-template = "/${client=*}/${t=*}"
+```
+
+```powershell
+o ticket:1@client:A@tasks    # explicit, as before
+o t:1@tasks                  # -> tasks\A, client found for you
+o t@tasks                    # every ticket in every client, as a menu
+o t:3*@tasks                 # the typed value is a pattern: 3, 30, 3-login...
+x t:1@tasks claude           # start an agent there; $client is set to A
+```
+
+- `*` matches directory names, one level per component (`1-*` works too).
+- `${name=*}` captures: the matched name becomes a variable in the shell or
+  command, like a context source's output.
+- One match navigates, several open a picker, none is an error naming the
+  pattern. Unattended, several matches print and exit non-zero.
+- Dot-directories (`.nix`, `.git`) never match `*`; links aren't followed; it
+  runs nothing, so it needs no `--trust`.
+
+Reach for a script (next section) only when the answer is *not* on disk.
+
+### 4.4 Context sources: a script decides the path
 
 When the path depends on something you'd have to *look up* - which client owns
 ticket 123, which sprint folder is current - let a script answer:
@@ -635,7 +675,7 @@ The contract: append `KEY=VALUE` lines to the file named by
 commands). Results are cached for `cache` (`"30s"`, `"10m"`, `"2h"`, `"1d"`,
 `"0"`). Full samples: [`assets/samples/context-source/`](../assets/samples/context-source/).
 
-### 4.4 Menus
+### 4.5 Menus
 
 If the script answers with several blocks separated by `---`, the segment
 becomes a picker:
@@ -659,7 +699,7 @@ One block navigates silently, several open the menu, none is an error. Great
 sources: your open tickets, PR worktrees, today's log directories, the
 customers you're on call for.
 
-### 4.5 Named producers
+### 4.6 Named producers
 
 Separate "the lookup" from "the shape of the path", so one script serves many
 projects that lay out their folders differently:
@@ -683,7 +723,7 @@ source-template = "/${client_name}/${task}"   source-template = "/tickets/${task
 The cache is shared - ticket 123 is looked up once, whichever project asks.
 A project file that only `uses` a producer needs no approval.
 
-### 4.6 The `shared@` drop
+### 4.7 The `shared@` drop
 
 Built in for every alias: `shared@acme` is `<acme>/.nix/shared/`, a handoff
 folder between you and your tools/agents. Add `.nix/shared/` to your global
@@ -963,8 +1003,8 @@ With `[notify] on_finish` set, a 3-minute `:check` pings you when it breaks.
 
 ### Workflow C - Ticket-driven work
 
-1. A context source maps a ticket to its client/folder (Level 4.3), with a
-   menu of your open tickets (4.4).
+1. A wildcard segment (Level 4.3) or a context source (4.4) maps a ticket to
+   its client folder; with no value it's a menu of your tickets (4.5).
 2. `o task@work` - pick today's ticket; you land in its folder.
 3. `p task:123@work repro` - screenshots and logs filed as you go.
 4. `g task:123@work "exception" -a` - search the customer's attached PDFs and
@@ -1166,6 +1206,7 @@ SEGMENTS                                        ENV & SECRETS
   o docs@acme            static                   nix acme --env
   o task:123@acme        inline value             nix --secret set|rm|list NAME
   o task@acme            menu from a script       ${secret:NAME} in env.toml / actions
+  o t:1@tasks            wildcard /${client=*}/${t=*}
   o shared@acme          built-in handoff dir
 
 SYSTEM

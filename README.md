@@ -256,6 +256,36 @@ A segment resolves through its `source-template`: a string with `${VAR}` referen
 
 Encountering an unknown segment defines it for you (seeded with a `[[contexts]]` skeleton in the central per-alias file). Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.nix/segments.toml`.
 
+### Wildcard segments — let the directory tree decide the path
+
+Sometimes the answer is already on disk. Tickets live under clients — `tasks/<client>/<ticket>` — and a ticket number is unique on its own, so asking for the client too is asking you to remember something the folders already know. Put a `*` in the template and nix searches instead of naming:
+
+```toml
+# ~/.nix/segments/tasks.toml
+[[contexts]]
+segment = "client"
+source-template = "/${client}"
+
+[[contexts]]
+segment = "ticket"
+source-template = "/${ticket}"
+
+[[contexts]]
+segment = "t"
+source-template = "/${client=*}/${t=*}"
+```
+
+```powershell
+o ticket:1@client:A@tasks   # the explicit form still works
+o t:1@tasks                 # finds tasks/<whichever client>/1
+o t@tasks                   # no value: every ticket, as a menu
+o t:3*@tasks                # the value is a pattern too
+```
+
+Each `*` matches directory names one level deep (in a component, so `1-*` works; no `?` and no `**`). `${name=*}` as a whole component is a **capture**: it matches like its pattern and binds what it matched, so the shell `o t:1@tasks` opens also has `client=A` in its environment, exactly like a context source's variables. Capturing the segment's own parameter (`${t=*}`) makes a typed value the pattern and binds the pick when there was none.
+
+The answer follows the same rule a source's menu does: one match navigates, several open the picker (unattended, they print and exit non-zero; name a more specific value or the parent segment), none is an error that names the pattern. Only real directories match — links and junctions are not followed — and `*` never matches a leading `.`, so `.nix` and `.git` never turn up as clients. A `*` that arrives inside a variable's value stays literal, and the pattern is fenced to the alias before anything is listed. Nothing runs, so unlike `run` a wildcard needs no approval.
+
 ### Context sources (`run`) — let a script decide the path
 
 A context can compute its variables by running a script, so a path can depend on something you would otherwise have to look up and remember:

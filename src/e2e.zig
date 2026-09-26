@@ -1520,6 +1520,41 @@ pub fn main(init: std.process.Init) !void {
         c.check(r3.code != 0 and std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "segments", "pa.toml" }), ""), "nosuch") == null, "an undefined segment is not auto-defined without a console", r3);
     }
 
+    // --- wildcard segments ------------------------------------------------------
+    // The layout is the lookup table: tasks/<client>/<ticket>, ticket numbers
+    // unique, and `t:<n>@` finds the client without being told it. Pure
+    // directory walking, so unlike a context source it runs on every platform.
+    {
+        const wt = join(&c, &.{ pa, "wt" });
+        for ([_][]const u8{ "A/1", "A/3-login", "B/2", "B/30", ".hidden/2" }) |d| try util.mkdirAll(io, join(&c, &.{ wt, d }));
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }),
+            \\[[contexts]]
+            \\segment = "t"
+            \\source-template = "/wt/${client=*}/${t=*}"
+            \\
+            \\[[contexts]]
+            \\segment = "rel"
+            \\source-template = "/../*"
+            \\
+        );
+        var r = try c.run(&.{ "t:2@pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ wt, "B", "2" })), "a wildcard segment finds the one directory that matches", r);
+        r = try c.run(&.{ "t:2@pa", "--run", "sh", "-c", "echo client=$client" });
+        if (@import("builtin").os.tag != .windows) c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "client=B") != null, "a capture reaches the child environment", r);
+        // Unattended, so a menu shows its rows instead of opening fzf.
+        try c.env.put("NIX_E2E_TTY", "0");
+        r = try c.run(&.{ "t:3*@pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "A/3-login") != null and std.mem.indexOf(u8, r.out, "B/30") != null, "several matches print their rows and refuse without a console", r);
+        r = try c.run(&.{ "t@pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "A/1") != null and std.mem.indexOf(u8, r.out, ".hidden") == null, "no value lists every match, and `*` skips dot-directories", r);
+        try c.env.put("NIX_E2E_TTY", "1");
+        r = try c.run(&.{ "t:9@pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no directory") != null, "no match is an error naming the pattern", r);
+        r = try c.run(&.{ "rel@pa", "--resolve" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "escaped") != null, "a wildcard pattern cannot search outside its alias", r);
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"docs\"\nsource-template = \"/documentation\"\n");
+    }
+
     // --- context sources (run + trust + cache) ------------------------------------
     // Declared project-locally, so it must refuse until approved. The script
     // writes to $NIX_CONTEXT_OUT and prints to stdout, proving the noise on
