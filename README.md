@@ -565,7 +565,7 @@ The single pick is unchanged: one action still runs right here, in the foregroun
 
 ### Completion notifications
 
-Long actions launched via `x` finish silently — and `long-cmd && notify` misses the one case that most deserves a notification (failure). Set a `[notify] on_finish` hook in `~/.nix/config.toml` and **every** foreground `:action` reports its outcome through it, single runs and `x +group :build` fan-outs alike:
+Long actions launched via `x` finish silently — and `long-cmd && notify` misses the one case that most deserves a notification (failure). Set a `[notify] on_finish` hook in `~/.nix/config.toml` and **every** foreground `:action` reports its outcome through it:
 
 ```toml
 [notify]

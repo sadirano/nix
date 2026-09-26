@@ -47,7 +47,7 @@ pub const Safety = enum {
 };
 
 /// Spec is one documented topic: a wrapper command, a system flag, or a
-/// concept addressable by name (`nix --agent groups`).
+/// concept addressable by name (`nix --agent segments`).
 pub const Spec = struct {
     /// Shortcut slot ("y") when this topic is a wrapper command, "" otherwise.
     /// Non-empty slots are exactly the rows --help and the AGENTS.md table show.
@@ -85,11 +85,9 @@ pub const Facts = struct {
     missing_tools: []const []const u8 = &.{},
     /// Registered alias count, when the topic is about aliases.
     alias_count: ?usize = null,
-    /// Group names, when the topic is about groups.
-    group_names: []const []const u8 = &.{},
 
     pub fn isEmpty(f: Facts) bool {
-        return f.missing_tools.len == 0 and f.alias_count == null and f.group_names.len == 0;
+        return f.missing_tools.len == 0 and f.alias_count == null;
     }
 };
 
@@ -973,14 +971,6 @@ pub fn renderTopic(arena: std.mem.Allocator, cfg: config.Config, s: *const Spec,
             try b.print(arena, "- `{s}` is NOT on PATH; this command can't fully run until it is\n", .{t});
         }
         if (facts.alias_count) |n| try b.print(arena, "- {d} alias(es) registered (`nix --list-names`)\n", .{n});
-        if (facts.group_names.len > 0) {
-            try b.appendSlice(arena, "- groups: ");
-            for (facts.group_names, 0..) |g, i| {
-                if (i > 0) try b.appendSlice(arena, ", ");
-                try b.print(arena, "+{s}", .{g});
-            }
-            try b.appendSlice(arena, "\n");
-        }
         try b.appendSlice(arena, "\n");
     }
     return b.items;
