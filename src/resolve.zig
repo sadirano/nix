@@ -52,7 +52,7 @@ pub fn pathErrorText(e: anyerror) ?[]const u8 {
 }
 
 /// addAlias registers (or updates) alias→path, creating the directory and
-/// recording usage, and prints onix's exact confirmation (path on stdout,
+/// recording usage, and prints the confirmation (path on stdout,
 /// "registered …" on stderr). Returns the absolute host path. Shared by the
 /// add form and the directory picker.
 pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 {
@@ -406,8 +406,8 @@ fn mergeProducers(app: *App, local: segments.SegFile, central: segments.SegFile,
     return out.items;
 }
 
-/// resolveSegmented resolves `seg@alias` into a host path, mirroring
-/// resolver.resolveSegmented: base alias + per-segment fragment, with
+/// resolveSegmented resolves `seg@alias` into a host path: base alias +
+/// per-segment fragment, with
 /// local→central→global context precedence and auto-define on miss.
 pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
     const parsed = try segments.parseSegmentedAlias(app.arena, input);
@@ -491,7 +491,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
 }
 
 /// autoDefineSegment appends a [[contexts]] entry for an unknown segment to the
-/// central per-alias file (no editor in the loop), mirroring navigate.go.
+/// central per-alias file (no editor in the loop).
 fn autoDefineSegment(app: *App, alias: []const u8, ps: segments.ParsedSegment) !void {
     try store.validateAliasName(ps.name); // same rules as segment names
     const template = if (ps.has_value)

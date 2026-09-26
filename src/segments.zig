@@ -1,4 +1,4 @@
-//! Segmented-alias support, mirroring internal/segments: parse `seg@alias`,
+//! Segmented-alias support: parse `seg@alias`,
 //! read [[contexts]] files, expand source-templates, and guard the result
 //! against escaping the alias directory.
 

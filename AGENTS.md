@@ -133,8 +133,8 @@ every command enters through. `run.zig` owns `aliasRunEnv`, the single choke
 point where env layers, context variables, `NIX_ALIAS`/`NIX_ALIAS_PATH` and the
 scripts-dir PATH prepend are injected - and where each is removed before the next
 injection so one run in a chain cannot leak its environment into the next.
-`store.zig` keeps `aliases.toml` byte-for-byte compatible with the older Go
-`onix`; actions and env live in their own files rather than polluting it.
+`store.zig` owns `aliases.toml`, which holds nothing but `[name]` tables with a
+single `path`; actions and env live in their own files rather than polluting it.
 
 ## Conventions
 

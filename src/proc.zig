@@ -1,4 +1,5 @@
-//! Process spawning helpers, mirroring exec.go / explorer_windows.go.
+//! Process spawning helpers: the console predicates, the spawn/capture
+//! primitives, and the Windows-only launches (new console, elevation).
 
 const std = @import("std");
 const interrupt = @import("interrupt.zig");
@@ -683,7 +684,7 @@ pub fn probeOutput(arena: std.mem.Allocator, io: Io, argv: []const []const u8, c
 }
 
 /// runPipeline streams a producer's stdout into fzf's stdin chunk-by-chunk so
-/// fzf renders matches AS they arrive (live, like onix's `rg | fzf`), and
+/// fzf renders matches AS they arrive (live, like a shell's `rg | fzf`), and
 /// returns the selection + fzf's exit code.
 ///
 /// We can't hand the producer's pipe-read handle to fzf directly as its stdin

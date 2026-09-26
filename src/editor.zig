@@ -1,4 +1,4 @@
-//! Editor dispatch, mirroring editor.go: translate "open file at line"
+//! Editor dispatch: translate "open file at line"
 //! requests into the argv each editor family understands.
 
 const std = @import("std");

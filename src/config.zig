@@ -1,4 +1,4 @@
-//! Config + picker-exclusion handling, mirroring internal/config. Provides the
+//! Config + picker-exclusion handling. Provides the
 //! default exclusion fragments, a focused reader for config.toml's [picker]
 //! arrays, and the composed exclusion list the picker applies.
 

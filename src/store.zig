@@ -1,6 +1,5 @@
-//! Alias store: byte-level reading and writing of ~/.nix/aliases.toml,
-//! plus home resolution and path helpers. Mirrors internal/store + internal/
-//! resolver (fast path) and paths.go from the Go onix.
+//! Alias store: reading and writing ~/.nix/aliases.toml, plus home
+//! resolution and path helpers.
 
 const std = @import("std");
 const Io = std.Io;
@@ -100,7 +99,7 @@ pub fn lookupAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8,
     return scanForAlias(arena, data, name);
 }
 
-/// scanForAlias mirrors resolver.ScanForAlias: find [target] (case-insensitive)
+/// scanForAlias finds [target] (case-insensitive)
 /// then its first `path = "..."` before the next section header. Returns a
 /// host-native path (forward slashes converted to the platform separator).
 ///
@@ -129,7 +128,7 @@ pub fn scanForAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8
 /// Alias is one entry; path is stored forward-slashed (TOML form).
 pub const Alias = struct { name: []const u8, path: []const u8 };
 
-/// loadAliases parses the simple onix-written TOML into a name→path list,
+/// loadAliases parses aliases.toml into a name→path list,
 /// lowercasing names. Single-target `path = "..."` only (matches the fast
 /// path); multi-target `paths = [...]` entries are skipped.
 pub fn loadAliases(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Alias) {
@@ -158,7 +157,7 @@ pub fn loadAliases(arena: std.mem.Allocator, data: []const u8) !std.ArrayList(Al
     return out;
 }
 
-/// saveAliases writes the store back in onix's exact format: header comment,
+/// saveAliases writes the store back in its one format: header comment,
 /// blank line, then sorted [name] tables with `path = 'value'`. Atomic via
 /// temp + rename.
 pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: []Alias) !void {
@@ -178,7 +177,7 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
 }
 
 /// appendTomlString emits a TOML string value: a literal single-quoted string
-/// (go-toml's default) unless the value contains a single quote, in which case
+/// unless the value contains a single quote, in which case
 /// a basic double-quoted string with escapes is used.
 pub fn appendTomlString(arena: std.mem.Allocator, b: *std.ArrayList(u8), s: []const u8) !void {
     if (std.mem.indexOfScalar(u8, s, '\'') == null) {
@@ -279,9 +278,9 @@ pub fn trimLine(line: []const u8) []const u8 {
     return s;
 }
 
-/// validateAliasName mirrors store.validateName for aliases. Refuses the names
-/// nix owns, so it is the REGISTRATION check: `.nix` and `_default` are fine
-/// to REFER to and never fine to register.
+/// validateAliasName is the REGISTRATION check: it refuses the names nix owns
+/// (`.nix` and `_default` are fine to REFER to and never fine to register) and
+/// the characters that would break the line-based store.
 pub fn validateAliasName(name: []const u8) !void {
     const t = std.mem.trim(u8, name, " \t\r\n");
     if (t.len == 0) return error.EmptyName;
@@ -414,7 +413,7 @@ test "scanForAlias: basic match returns host path" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const toml =
-        \\# onix aliases
+        \\# nix aliases
         \\
         \\[acme]
         \\path = 'C:/proj/acme'

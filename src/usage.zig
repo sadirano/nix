@@ -1,4 +1,4 @@
-//! Per-alias frecency tracking, mirroring internal/usage. One line per alias:
+//! Per-alias frecency tracking. One line per alias:
 //! "<name> <count> <last-unix>". Best-effort — callers swallow errors.
 
 const std = @import("std");

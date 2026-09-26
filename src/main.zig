@@ -632,7 +632,7 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 // selected match — also the window we trim rga's output to.
 
 /// navigate resolves the alias and opens a fresh interactive shell rooted in
-/// the target dir. A child can't relocate its parent shell, so onix-as-an-exe
+/// the target dir. A child can't relocate its parent shell, so nix
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
 fn navigate(app: *App, alias: []const u8) !u8 {
     // `o` is the one path that refuses --as. Its output is consumed by the
@@ -917,7 +917,7 @@ fn printUsage(app: *App) !void {
     const cfg = app_zig.loadConfig(app) catch config.Config{};
 
     try w.writeAll(
-        \\nix - fast directory alias resolver (Zig port of onix)
+        \\nix - fast directory alias resolver
         \\
         \\USAGE
         \\  nix <alias>                 resolve an alias to its absolute path

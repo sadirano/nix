@@ -1,6 +1,6 @@
-//! System clipboard write, mirroring copyToClipboard (atotto/clipboard).
-//! Windows uses the Win32 clipboard API directly (CF_UNICODETEXT); other
-//! platforms shell out to xclip/xsel/wl-copy like atotto does.
+//! System clipboard access. Windows uses the Win32 clipboard API directly
+//! (CF_UNICODETEXT, CF_HDROP, CF_DIB); other platforms shell out to
+//! xclip/xsel/wl-copy.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -62,8 +62,8 @@ const GMEM_MOVEABLE: UINT = 0x0002;
 // user32, which a console app does NOT otherwise load. Importing them
 // statically would force user32.dll (+ gdi32 …) to load on EVERY invocation,
 // adding ~2ms to the resolve hot path. So we load user32 lazily via
-// LoadLibraryA/GetProcAddress (both kernel32) only when --yank/--paste runs —
-// the same trade-off onix makes with syscall.NewLazyDLL.
+// LoadLibraryA/GetProcAddress (both kernel32) only when --yank/--paste runs
+// (secret.zig and winpath.zig make the same trade-off).
 extern "kernel32" fn GlobalAlloc(uFlags: UINT, dwBytes: usize) callconv(.winapi) ?HANDLE;
 extern "kernel32" fn GlobalLock(hMem: HANDLE) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn GlobalUnlock(hMem: HANDLE) callconv(.winapi) BOOL;
@@ -88,7 +88,7 @@ fn proc(comptime T: type, mod: HANDLE, name: [*:0]const u8) !T {
     return @ptrCast(@alignCast(p));
 }
 
-/// openClipboardRetry mirrors onix: the clipboard is a global mutex, so another
+/// openClipboardRetry: the clipboard is a global mutex, so another
 /// process holding it makes OpenClipboard fail transiently — retry briefly.
 fn openClipboardRetry(open: OpenClipboardFn, io: Io) bool {
     var i: usize = 0;

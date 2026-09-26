@@ -173,8 +173,9 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
 }
 
 /// installExeWrappers makes nix available under each command name in binDir by
-/// copying the canonical nix exe to bin/nix.exe and to each wrapper name. (onix
-/// hardlinks; nix copies — simpler, functionally equivalent, just more disk.)
+/// copying the canonical nix exe to bin/nix.exe and to each wrapper name.
+/// Copies rather than hardlinks: simpler, and a wrapper keeps working while
+/// the canonical exe is being replaced.
 /// A wrapper backing a live session is replaced via rename-aside (see
 /// writeExeAtomic). Returns the names whose wrapper STILL could not be
 /// replaced AND whose on-disk copy differs from the new binary — those keep

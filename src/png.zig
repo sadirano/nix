@@ -1,6 +1,6 @@
 //! Minimal clipboard-image support: decode a Windows CF_DIB (BITMAPINFOHEADER
-//! bitmap) and re-encode it as PNG, mirroring what golang.design/x/clipboard
-//! does for onix's `--paste` of a screenshot. Handles the common screenshot
+//! bitmap) and re-encode it as PNG, for `--paste` of a screenshot. Handles the
+//! common screenshot
 //! formats (24- and 32-bit, BI_RGB or BI_BITFIELDS); other depths return null.
 //!
 //! The PNG uses uncompressed ("stored") DEFLATE blocks — a valid zlib stream
