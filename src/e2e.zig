@@ -1125,7 +1125,6 @@ pub fn main(init: std.process.Init) !void {
             \\[actions]
             \\hello = "echo from-project"
             \\lint = "echo from-default-shell"
-            \\quoted = 'echo "rec  q"'
             \\[bash]
             \\lint = 'x="a  b"; printf "%s|" "$x" "$NIX_ALIAS" 100%; echo done'
             \\bad = "exit 7"
@@ -1139,14 +1138,7 @@ pub fn main(init: std.process.Init) !void {
             c.check(std.mem.indexOf(u8, r.out, "from-default-shell") == null, "a [bash] entry overrides the same name in [actions]", r);
             r = try c.run(&.{ "pa", "--run", ":bad" });
             c.check(r.code == 7, "a [bash] action's exit code passes through", r);
-            r = try c.run(&.{ "pa", "--log", "--run", ":lint" });
-            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "a  b|pa|100%|done") != null, "a [bash] action can be recorded", r);
-        } else for ([_][]const u8{ "a [bash] action runs in bash", "a [bash] entry overrides [actions]", "a [bash] exit code passes through", "a [bash] action can be recorded" }) |n| c.skip(n, "bash");
-        {
-            const r = try c.run(&.{ "pa", "--log", "--run", ":quoted" });
-            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "rec  q") != null and
-                std.mem.indexOf(u8, r.out, "\\\"") == null, "a recorded action keeps its double quotes", r);
-        }
+        } else for ([_][]const u8{ "a [bash] action runs in bash", "a [bash] entry overrides [actions]", "a [bash] exit code passes through" }) |n| c.skip(n, "bash");
         if (c.has("pwsh")) {
             const r = try c.run(&.{ "pa", "--run", ":inspect" });
             c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ps-pa") != null, "a [pwsh] action runs in pwsh", r);
@@ -1921,76 +1913,6 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--init"});
         c.check(std.mem.indexOf(u8, r.err, "NOT added to your user PATH") != null and
             std.mem.indexOf(u8, r.err, "to your user PATH (new shells") == null, "--init under $NIX_HOME refuses to touch the user PATH", r);
-    }
-
-    // --- flight recorder (--log / --logs, issue #26) ------------------------------------
-    {
-        const pr = join(&c, &.{ root, "proj", "pr" });
-        util.mkdirAll(io, pr) catch {};
-        _ = try c.run(&.{ "pr", pr });
-        try writeActions(&c, "pr", pr,
-            \\[actions]
-            \\speak = "echo recorded-line"
-            \\fails = "exit 4"
-            \\
-        );
-
-        // Off by default: recording costs the child its colour, so it is a
-        // choice rather than something that starts happening to everyone.
-        var r = try c.run(&.{ "pr", "--run", ":speak" });
-        const log_dir = join(&c, &.{ home, "logs", "pr" });
-        c.check(r.code == 0 and !proc.pathExists(io, log_dir), "an action is not recorded by default", r);
-
-        // --log records one run, and the output still reaches the terminal:
-        // a recorder that swallowed the live output would trade the problem it
-        // solves for a worse one.
-        r = try c.run(&.{ "pr", "--log", "--run", ":speak" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "recorded-line") != null, "a recorded run still prints to the terminal", r);
-        c.check(proc.pathExists(io, log_dir), "--log creates the alias's log directory", r);
-
-        r = try c.run(&.{ "--no-prompt", "--logs", "pr" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "speak") != null and
-            std.mem.indexOf(u8, r.out, "EXIT") != null, "--logs lists the recording", r);
-
-        // The transcript itself: header naming the command, the output, and a
-        // footer carrying the exit code `--logs` reads back.
-        var found: []const u8 = "";
-        {
-            var d = try Io.Dir.cwd().openDir(io, log_dir, .{ .iterate = true });
-            defer d.close(io);
-            var it = d.iterate();
-            while (try it.next(io)) |ent| {
-                if (ent.kind == .file) found = join(&c, &.{ log_dir, try arena.dupe(u8, ent.name) });
-            }
-        }
-        const body = readFileOr(&c, found, "");
-        c.check(std.mem.indexOf(u8, body, "pr :speak") != null and
-            std.mem.indexOf(u8, body, "recorded-line") != null and
-            std.mem.indexOf(u8, body, "# exit 0") != null, "the transcript carries header, output and footer", null);
-
-        // A failure records its code - the case the whole feature exists for.
-        r = try c.run(&.{ "pr", "--log", "--run", ":fails" });
-        c.check(r.code == 4, "a recorded failure keeps its exit code", r);
-        r = try c.run(&.{ "--no-prompt", "--logs", "pr" });
-        c.check(std.mem.indexOf(u8, r.out, "fails") != null and std.mem.indexOf(u8, r.out, "4") != null, "--logs shows the failing run's exit code", r);
-
-        // Config default on, and --no-log overriding it for one run.
-        const cfgp = join(&c, &.{ home, "config.toml" });
-        try writeFile(&c, cfgp, "[log]\nactions = true\nkeep = 2\n");
-        _ = try c.run(&.{ "pr", "--run", ":speak" });
-        r = try c.run(&.{ "--no-prompt", "--logs", "pr" });
-        const before_no_log = std.mem.count(u8, r.out, "speak");
-        _ = try c.run(&.{ "pr", "--no-log", "--run", ":speak" });
-        r = try c.run(&.{ "--no-prompt", "--logs", "pr" });
-        c.check(std.mem.count(u8, r.out, "speak") == before_no_log, "--no-log skips the run the config would have recorded", r);
-
-        // Retention is per (alias, action): keep = 2 caps `speak` without
-        // touching the `fails` recording beside it.
-        for (0..3) |_| _ = try c.run(&.{ "pr", "--run", ":speak" });
-        r = try c.run(&.{ "--no-prompt", "--logs", "pr" });
-        c.check(std.mem.count(u8, r.out, "speak") <= 2, "keep-N prunes the action's own recordings", r);
-        c.check(std.mem.indexOf(u8, r.out, "fails") != null, "one action's retention never evicts another's", r);
-        Io.Dir.cwd().deleteFile(io, cfgp) catch {};
     }
 
     // --- time ledger (--time, issue #20) -----------------------------------------------

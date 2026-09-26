@@ -628,52 +628,6 @@ pub fn runCaptured(arena: std.mem.Allocator, io: Io, argv: []const []const u8, c
     });
 }
 
-/// runShellTee is runShellInherit with the child's output relayed to both this
-/// console and `sink` — the flight recorder's spawn (logs.zig).
-///
-/// stdout and stderr share one pipe, merged by the shell: reassembling two
-/// pipes afterwards cannot reproduce the order the child wrote in. The cost is
-/// that the child sees a pipe, so tty-detecting tools drop their colour; that
-/// is why recording is opt-in.
-pub fn runShellTee(
-    arena: std.mem.Allocator,
-    io: Io,
-    command: []const u8,
-    cwd: []const u8,
-    env: *std.process.Environ.Map,
-    out: *Io.Writer,
-    sink: *Io.File,
-) !u8 {
-    // `2>&1` rather than the spawn options: std's StdIo cannot point stderr at
-    // stdout's pipe. On Windows the command reaches cmd through a variable it
-    // expands, because std's argv escaping would turn every `"` into a `\"`
-    // that cmd does not read back (see runShellInherit).
-    if (is_windows) try env.put("NIX_RECORDED_COMMAND", command);
-    const merged = if (is_windows) "%NIX_RECORDED_COMMAND% 2>&1" else try std.fmt.allocPrint(arena, "{s} 2>&1", .{command});
-    const argv: []const []const u8 = if (is_windows) &.{ env.get("COMSPEC") orelse "cmd.exe", "/c", merged } else &.{ "/bin/sh", "-c", merged };
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .cwd = .{ .path = cwd },
-        .stdin = .inherit,
-        .stdout = .pipe,
-        .stderr = .inherit, // nothing arrives here; the shell already merged it
-        .environ_map = env,
-    });
-    var buf: [4096]u8 = undefined;
-    var r = child.stdout.?.reader(io, &buf);
-    while (true) {
-        const n = r.interface.readSliceShort(&buf) catch break;
-        if (n == 0) break;
-        // Console first: the live output must not wait on the log write.
-        out.writeAll(buf[0..n]) catch {};
-        out.flush() catch {};
-        // A failing log write never takes the run down with it.
-        sink.writeStreamingAll(io, buf[0..n]) catch {};
-    }
-    const term = try child.wait(io);
-    return exitCode(term);
-}
-
 /// LineSink is forEachLine's consumer: called once per stdout line (newline
 /// stripped, trailing CR trimmed). The slice is only valid during the call —
 /// dupe anything kept.

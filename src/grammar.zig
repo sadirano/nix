@@ -32,7 +32,6 @@ pub const SystemVerb = enum {
     contexts,
     actions,
     notes,
-    log_list,
     time,
     init,
     sync,
@@ -69,7 +68,7 @@ pub const ActionVerb = enum {
 };
 
 /// Process-wide flags any sub-parser silently accepts.
-pub const GlobalFlag = enum { no_prompt, force, json, as, log, no_log };
+pub const GlobalFlag = enum { no_prompt, force, json, as };
 
 /// internal commands are real and dispatched, but are nix re-invoking itself
 /// (fzf preview panes) rather than anything a user or agent types. They are
@@ -115,7 +114,6 @@ pub const system = [_]System{
     .{ .flags = &.{ "--actions", "-A" }, .verb = .actions, .args = "[pat]", .help = "every alias's actions in one picker; Enter runs the pick", .spec = "--actions" },
     .{ .flags = &.{ "--notes", "-N" }, .verb = .notes, .args = "[pat]", .help = "search every alias's notes in one view", .spec = "notes" },
     .{ .flags = &.{ "--contexts", "-c" }, .verb = .contexts, .help = "list global @-segment contexts", .spec = "segments" },
-    .{ .flags = &.{"--logs"}, .verb = .log_list, .args = "[alias]", .help = "browse recorded action output (~/.nix/logs)", .spec = "--logs" },
     .{ .flags = &.{ "--time", "-T" }, .verb = .time, .args = "[alias]", .help = "time per alias this week (--day, --all widen it)", .spec = "--time" },
     .{ .flags = &.{ "--init", "-I" }, .verb = .init, .help = "set up ~/.nix, wrappers, and PATH", .spec = "" },
     .{ .flags = &.{ "--sync", "-S" }, .verb = .sync, .help = "regenerate wrappers and generated files", .spec = "" },
@@ -172,16 +170,6 @@ pub const globals = [_]Global{
         .spec = "",
     },
     .{ .flags = &.{ "--json", "-j" }, .verb = .json, .help = "machine-readable output where a command has it", .spec = "" },
-    .{
-        .flags = &.{"--log"},
-        .verb = .log,
-        .help =
-        \\record this action's output to ~/.nix/logs,
-        \\whatever [log] actions says (named actions only)
-        ,
-        .spec = "--logs",
-    },
-    .{ .flags = &.{"--no-log"}, .verb = .no_log, .help = "do not record this run, whatever [log] actions says", .spec = "--logs" },
     .{
         // The only global that takes a VALUE. run() lifts the pair out of argv
         // before any sub-parser sees it, precisely because the shared

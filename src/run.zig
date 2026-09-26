@@ -10,7 +10,6 @@ const store = @import("store.zig");
 const actions = @import("actions.zig");
 const resolve = @import("resolve.zig");
 const config = @import("config.zig");
-const logs = @import("logs.zig");
 const notify = @import("notify.zig");
 const timelog = @import("timelog.zig");
 const secret = @import("secret.zig");
@@ -126,12 +125,6 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
             return 1;
         };
         return 0;
-    }
-    // Not recorded: a literal command is an argv with no shell to merge its
-    // streams (see runShellTee). Say so rather than ignoring the flag.
-    if (app.log == true) {
-        try app.err.writeAll("nix: --log records named actions; a literal command is not recorded yet\n");
-        try app.err.writeAll("  wrap it in an action (`x <alias> :` to see them) and --log will record it\n");
     }
     // The other foreground boundary the time ledger records: a literal command
     // is spawned as an argv here rather than through runShellString, so the
@@ -662,36 +655,12 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
         app.last_action = name;
     }
     // Ctrl-C is intercepted for exactly the length of the child's run, so that
-    // an abandoned build still writes its ledger line, its footer and its
+    // an abandoned build still writes its ledger line and its
     // notification instead of taking nix down mid-sentence. Disarmed on the way
     // out, including the error paths - outside this window Ctrl-C keeps meaning
     // "stop now", which is what it should mean at a picker or a prompt.
     interrupt.arm();
     defer interrupt.disarm();
-    if (try openRecording(app, alias, name, command)) |rec| {
-        var file = rec.file;
-        // Footer written while the handle is open: Io.File exposes no
-        // seek-to-end to append with later.
-        const t0 = Io.Clock.awake.now(app.io).nanoseconds;
-        // A recorded run reaches the child over a pipe, so an interrupt ends it
-        // by closing that pipe rather than through the wait - the read loop
-        // just finishes early. The exit code is restated here for the same
-        // reason it is in the inherited path: "interrupted" is not the same
-        // answer as whatever the dying child last managed to return.
-        const raw = proc.runShellTee(app.arena, app.io, cmd, dir, env, app.out, &file) catch |e| {
-            file.close(app.io);
-            try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
-            return 1;
-        };
-        const code = if (interrupt.fired()) interrupt.code else raw;
-        const ms = elapsedMs(app.io, t0);
-        const foot = try logs.footer(app.arena, code, try notify.fmtDuration(app.arena, ms));
-        file.writeStreamingAll(app.io, foot) catch {};
-        file.close(app.io);
-        app.log_path = rec.path;
-        span.finish(app, alias, kind);
-        return code;
-    }
     const code = proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
         try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
         return 1;
@@ -702,7 +671,7 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
 
 /// inShell turns a `[bash]` or `[pwsh]` action into a platform-shell command
 /// line that starts that shell, so it takes every path a default action does -
-/// foreground, recorded, `--outside`, elevated. A `sudo` marker stays in front.
+/// foreground, `--outside`, elevated. A `sudo` marker stays in front.
 ///
 /// The script travels base64-encoded: it crosses cmd's parser and then the
 /// shell's argv parsing, and no quoting survives both. pwsh decodes it natively
@@ -732,38 +701,6 @@ fn inShell(app: *App, shell: actions.Shell, command: []const u8) !?[]const u8 {
         try std.fmt.allocPrint(app.arena, "{s}{s} -NoProfile -EncodedCommand {s}", .{ sudo, lead, b64 })
     else
         try std.fmt.allocPrint(app.arena, "{s}{s} -c {c}IFS=; set -f; eval $(base64 -d <<<{s}){c}", .{ sudo, lead, q, b64, q });
-}
-
-/// recording is whether this run is recorded: the per-invocation flag if given,
-/// else `[log] actions`, which applies to named actions only.
-fn recording(app: *App, cfg: config.Config, name: []const u8) bool {
-    if (app.log) |want| return want;
-    return cfg.log_actions and name.len > 0;
-}
-
-const Recording = struct { file: Io.File, path: []const u8 };
-
-/// openRecording creates the transcript and writes its header. null when the
-/// run is not recorded, or the log could not be opened - never a hard failure.
-fn openRecording(app: *App, alias: []const u8, name: []const u8, raw_command: []const u8) !?Recording {
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
-    if (!recording(app, cfg, name)) return null;
-    const dir_path = try logs.dirFor(app.arena, app.home, alias);
-    store.mkdirAll(app.io, dir_path) catch {};
-    const ts = try logs.timestamp(app.arena, app.io);
-    const path = try std.fs.path.join(app.arena, &.{ dir_path, try logs.fileName(app.arena, name, ts) });
-    const file = Io.Dir.cwd().createFile(app.io, path, .{}) catch |e| {
-        try app.err.print("nix: could not record to {s} ({s}) - running unrecorded\n", .{ path, @errorName(e) });
-        return null;
-    };
-    // The RAW command, never the secret-expanded one: the same rule that keeps
-    // ${secret:NAME} out of every listing.
-    const head = try logs.header(app.arena, alias, name, raw_command, try logs.humanTime(app.arena, app.io));
-    var f = file;
-    f.writeStreamingAll(app.io, head) catch {};
-    const keep = if (cfg.log_keep > 0) cfg.log_keep else logs.default_keep;
-    logs.prune(app.arena, app.io, dir_path, name, keep) catch {};
-    return .{ .file = f, .path = path };
 }
 
 /// startWindowed launches a command in a shell of its OWN - a new console
@@ -928,8 +865,8 @@ pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: [
 /// window under a token we do not own, so there is no finish here to time.
 ///
 /// `[notify] on_finish_skip` and `on_finish_min_ms` decide whether the hook
-/// actually fires (notify.silenced): the action still runs, is still timed and
-/// still recorded, it just goes unannounced.
+/// actually fires (notify.silenced): the action still runs and is still timed,
+/// it just goes unannounced.
 pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool, shell: actions.Shell) !u8 {
     if (outside or stripSudo(command) != null) return runShellString(app, command, alias, dir, name, true, shell);
     const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
@@ -956,17 +893,11 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
         .{ .k = "{duration}", .v = duration },
         .{ .k = "{level}", .v = if (ok) "info" else "warn" },
         .{ .k = "{message}", .v = message },
-        // Empty when this run was not recorded, which is what makes {log} safe
-        // to leave in a hook template unconditionally - the failure toast
-        // carries the path to the why when there is one, and says nothing extra
-        // when there is not.
-        .{ .k = "{log}", .v = app.log_path },
     };
     const env_extra = [_]notify.Pair{
         .{ .k = "NIX_ACTION", .v = name },
         .{ .k = "NIX_ACTION_EXIT", .v = exit_str },
         .{ .k = "NIX_ACTION_DURATION_MS", .v = ms_str },
-        .{ .k = "NIX_ACTION_LOG", .v = app.log_path },
     };
     notify.fire(app, cfg.notify_on_finish, dir, &pairs, &env_extra) catch |e| {
         try app.err.print("nix: notify hook: {s}\n", .{@errorName(e)});

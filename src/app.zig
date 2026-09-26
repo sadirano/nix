@@ -33,13 +33,6 @@ pub const App = struct {
     exe_path: ?[]const u8 = null,
     json: bool,
     no_prompt: bool,
-    /// `--log` / `--no-log`. null = follow `[log] actions`; "not asked" and
-    /// "asked for off" differ, hence the tri-state.
-    log: ?bool = null,
-    /// Path of the recording the last foreground run wrote, for the {log}
-    /// notify placeholder. Empty when the run was not recorded, which is what
-    /// makes the placeholder safe to leave in a hook template unconditionally.
-    log_path: []const u8 = "",
     /// The last foreground named action, for the success hold at nix's single
     /// exit point. Empty when nothing named ran.
     last_alias: []const u8 = "",
