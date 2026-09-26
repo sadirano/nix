@@ -73,6 +73,10 @@ pub const project_template =
     \\# command to place them somewhere other than the end.
     \\# test = "zig build test"
     \\
+    \\# A value starting with :name is that action, the rest its arguments -
+    \\# write a long prefix once. A .ps1 in .nix/scripts runs by bare name.
+    \\# list = ":run list"
+    \\
     \\# Use shell-specific sections when a command needs another syntax/runtime.
     \\# A matching name in [bash] or [pwsh] overrides [actions] in this file.
     \\# [bash]

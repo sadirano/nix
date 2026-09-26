@@ -17,6 +17,7 @@ const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
 const env_zig = @import("env.zig");
 const interrupt = @import("interrupt.zig");
+const compose = @import("compose.zig");
 
 const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
@@ -284,11 +285,6 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
 /// one that runs. An empty `dir` marks a machine-wide export: it reads the
 /// machine-wide file alone and never the current directory's project actions.
 pub fn resolveExportAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
-    if (dir.len == 0) {
-        for (try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home))) |a| if (store.eqlFoldAscii(a.name, name))
-            return .{ .command = a.command, .from_project = false, .shell = a.shell };
-        return null;
-    }
     return resolveAction(app, alias, dir, name);
 }
 
@@ -346,6 +342,9 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
             try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `x {s} :`)\n", .{ alias, name, alias });
             return 1;
         };
+        if (try shorterForm(app, alias, dir, name, r.written)) |hint| {
+            try app.err.print("nix: shorter: {s}\n", .{hint});
+        }
         const cmd = try applyArgs(app.arena, r.command, call.args);
         // Gated per link, not once for the chain: each link is its own command,
         // and an elevated one asks again even if an earlier link just did.
@@ -508,16 +507,133 @@ pub const Resolved = struct {
     command: []const u8,
     from_project: bool,
     shell: actions.Shell = .default,
+    /// The value as the file spells it, before references and script names
+    /// were expanded - what the long-form hint reads.
+    written: []const u8 = "",
 };
 
 /// resolveAction looks up a named action for an alias: project-local
 /// `<dir>/.nix/actions.toml` first (wins), then central
 /// `~/.nix/actions/<alias>.toml`, then the machine-wide
 /// `~/.nix/actions/_default.toml`. Returns null if absent.
+///
+/// The command comes back expanded (see expandAction), so every caller - the
+/// gate included - sees what will actually run.
 pub fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
+    const raw = (try lookupRaw(app, alias, dir, name)) orelse return null;
+    return try expandAction(app, alias, dir, raw, 0);
+}
+
+/// expandedCommand is one project action's command as the gate will see it,
+/// for the places that approve or audit a whole file at once. A reference that
+/// cannot expand is null: it cannot run, so there is nothing to approve.
+pub fn expandedCommand(app: *App, alias: []const u8, dir: []const u8, a: actions.Action) ?[]const u8 {
+    const r = expandAction(app, alias, dir, .{ .action = a, .from_project = true }, 0) catch return null;
+    return r.command;
+}
+
+const Raw = struct { action: actions.Action, from_project: bool };
+
+/// An empty `dir` is the machine-wide file alone, as resolveExportAction means
+/// it: there is no alias dir, and the cwd's project actions are not consulted.
+fn lookupRaw(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Raw {
+    if (dir.len == 0) {
+        for (try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home))) |a| if (store.eqlFoldAscii(a.name, name))
+            return .{ .action = a, .from_project = false };
+        return null;
+    }
     for (try actionPaths(app, alias, dir), 0..) |p, i| {
         for (try actions.loadFile(app.arena, app.io, p)) |a| if (store.eqlFoldAscii(a.name, name))
-            return .{ .command = a.command, .from_project = i == 0, .shell = a.shell };
+            return .{ .action = a, .from_project = i == 0 };
+    }
+    return null;
+}
+
+/// expandAction turns a `:name` value into the command it stands for, looked
+/// up in the same alias, and a leading `.ps1` script name into its PowerShell
+/// invocation. A reference to a project action is a project action: from_project
+/// is set if any link came from the repo, so the gate asks for all of it.
+fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, depth: u8) !Resolved {
+    const a = raw.action;
+    const refs = (try compose.parseRefs(app.arena, a.command)) orelse return .{
+        .command = try scriptForm(app, dir, a.command, a.shell),
+        .from_project = raw.from_project,
+        .shell = a.shell,
+        .written = a.command,
+    };
+    if (depth >= compose.max_depth) {
+        try app.err.print("nix: :{s} leads back to itself through other actions - stopping\n", .{a.name});
+        return error.BadActionReference;
+    }
+    if (refs.names.len > 1 and refs.tail.len > 0) {
+        try app.err.print("nix: :{s} chains actions and passes them words too - arguments go to a single action, not a chain of them\n", .{a.name});
+        return error.BadActionReference;
+    }
+    var parts: std.ArrayList([]const u8) = .empty;
+    var from_project = raw.from_project;
+    for (refs.names) |ref| {
+        const hit = (try lookupRaw(app, alias, dir, ref)) orelse {
+            try app.err.print("nix: :{s} refers to :{s}, which is not an action of {s}\n", .{ a.name, ref, alias });
+            return error.BadActionReference;
+        };
+        // Each shell gets its command as a script of its own, so text meant for
+        // one cannot be spliced into another's.
+        if (hit.action.shell != a.shell) {
+            try app.err.print("nix: :{s} and :{s} run in different shells - an action can only refer to one declared in the same table\n", .{ a.name, ref });
+            return error.BadActionReference;
+        }
+        const sub = try expandAction(app, alias, dir, hit, depth + 1);
+        from_project = from_project or sub.from_project;
+        try parts.append(app.arena, sub.command);
+    }
+    const command = if (parts.items.len == 1)
+        try compose.splice(app.arena, parts.items[0], refs.tail)
+    else
+        try std.mem.join(app.arena, " && ", parts.items);
+    return .{ .command = command, .from_project = from_project, .shell = a.shell, .written = a.command };
+}
+
+/// scriptForm lets an action open with a `.ps1` from the scripts dirs by bare
+/// name, as `x <alias> <script>` already could. cmd reaches a `.cmd`, `.bat`
+/// or `.exe` there through the PATH aliasRunEnv sets up, but not a `.ps1`,
+/// which is why every such action used to spell out the PowerShell line.
+///
+/// A project script is written RELATIVE to the alias dir, the way a hand-written
+/// line would name it, so the gate still counts it among the files it hashes.
+fn scriptForm(app: *App, dir: []const u8, command: []const u8, shell: actions.Shell) ![]const u8 {
+    if (!proc.is_windows or shell != .default) return command;
+    const body = stripSudo(command) orelse command;
+    const t = std.mem.trimStart(u8, body, " \t");
+    const end = std.mem.indexOfAny(u8, t, " \t") orelse t.len;
+    const path = resolveScript(app, dir, t[0..end]) orelse return command;
+    if (!std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".ps1")) return command;
+    const rel = if (dir.len > 0 and path.len > dir.len + 1 and std.mem.startsWith(u8, path, dir) and (path[dir.len] == '\\' or path[dir.len] == '/'))
+        path[dir.len + 1 ..]
+    else
+        path;
+    const shown = if (std.mem.indexOfScalar(u8, rel, ' ') != null) try std.fmt.allocPrint(app.arena, "\"{s}\"", .{rel}) else rel;
+    const sudo = if (body.ptr != command.ptr) "sudo " else "";
+    return std.fmt.allocPrint(app.arena, "{s}{s} -NoProfile -ExecutionPolicy Bypass -File {s}{s}", .{ sudo, proc.psShell(app.arena, app.io, app.env), shown, t[end..] });
+}
+
+/// shorterForm says how an action could be written with less, or null when
+/// it already is as short as nix can make it: a `.ps1` spelled through
+/// PowerShell, a command that restates a sibling's, or `x <alias>` calling back
+/// into its own alias. Shown before the action runs and by `nix --doctor`.
+pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const u8, written: []const u8) !?[]const u8 {
+    const v = std.mem.trim(u8, written, " \t");
+    if (v.len == 0 or v[0] == ':') return null;
+    if (compose.longPs1(v)) |hit| {
+        if (resolveScript(app, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
+            return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a script in .nix/scripts runs by bare name)", .{ name, hit.stem, if (hit.rest.len > 0) " " else "", hit.rest });
+        };
+    }
+    const siblings = mergedActions(app, alias, dir, false) catch &.{};
+    if (compose.sharedStart(name, v, siblings)) |s| {
+        return try std.fmt.allocPrint(app.arena, "{s} = \":{s}{s}{s}\" (it repeats :{s})", .{ name, s.name, if (s.rest.len > 0) " " else "", s.rest, s.name });
+    }
+    if (compose.selfCall(alias, v)) |n| {
+        return try std.fmt.allocPrint(app.arena, "{s}: reach :{s} as `:{s}` rather than `x {s} :{s}`, which starts a second nix", .{ name, n, n, alias, n });
     }
     return null;
 }

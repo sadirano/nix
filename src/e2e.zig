@@ -587,6 +587,40 @@ pub fn main(init: std.process.Init) !void {
                 std.mem.indexOf(u8, r.out, "\\\"") == null, "a command's own quotes are not mangled", r);
         }
 
+        // An action can be written as another one: `:name` plus its words.
+        try writeActions(&c, "pa", pa, "[actions]\n" ++
+            "one = \"echo one\"\n" ++
+            "two = \"echo two\"\n" ++
+            "base = \"echo a-long-prefix {args}\"\n" ++
+            "list = \":base list\"\n" ++
+            "both = \":one :two\"\n" ++
+            "copy = \"echo a-long-prefix more\"\n" ++
+            "gone = \":nope\"\n" ++
+            "l1 = \":l2\"\n" ++
+            "l2 = \":l1\"\n");
+        r = try c.run(&.{ "pa", "--run", ":list", "--", "X" });
+        c.check(r.code == 0 and hasLineFold(r.out, "a-long-prefix list X"), "a :name value runs that action with its words, then the caller's", r);
+        r = try c.run(&.{ "pa", "--run", ":both" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one") and hasLineFold(r.out, "two"), "a value of several :names runs them in order", r);
+        r = try c.run(&.{ "pa", "--run", ":gone" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not an action") != null, "a reference to a missing action is refused", r);
+        r = try c.run(&.{ "pa", "--run", ":l1" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "leads back") != null, "a reference loop is refused, not followed", r);
+        r = try c.run(&.{ "pa", "--run", ":copy" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "copy = \":base more\"") != null, "an action restating a sibling is told the shorter form", r);
+
+        // A .ps1 in .nix/scripts is reached by bare name, as `x <alias> <script>` does.
+        if (c.windowsOnly("a .ps1 script runs by bare name inside an action")) {
+            try writeFile(&c, join(&c, &.{ pa, ".nix", "scripts", "greet.ps1" }), "Write-Output \"greet $args\"\n");
+            try writeActions(&c, "pa", pa, "[actions]\n" ++
+                "greet = \"greet there\"\n" ++
+                "long = \"powershell -NoProfile -ExecutionPolicy Bypass -File .nix/scripts/greet.ps1 there\"\n");
+            r = try c.run(&.{ "pa", "--run", ":greet" });
+            c.check(r.code == 0 and hasLineFold(r.out, "greet there"), "a .ps1 script runs by bare name inside an action", r);
+            r = try c.run(&.{ "pa", "--run", ":long" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "long = \"greet there\"") != null, "the PowerShell long form is told the bare name", r);
+        }
+
         // Put back what the blocks after this one expect to find.
         try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\n");
     }

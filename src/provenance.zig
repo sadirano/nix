@@ -363,7 +363,10 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
             // collapse to one row on their own, since the hash is the same.
             var named_file = false;
             for (try actions.parse(app.arena, body)) |a| {
-                const record = (try recordForCommand(app, dir, true, a.name, a.command)) orelse continue;
+                // What the gate will be asked about is the expanded command, so
+                // that is what gets approved - and what the user reads here.
+                const command = run_zig.expandedCommand(app, alias, dir, a) orelse continue;
+                const record = (try recordForCommand(app, dir, true, a.name, command)) orelse continue;
                 if (context.isTrusted(app, record)) continue;
                 if (!named_file) {
                     try plan.line(app.arena, "  actions  {s}\n", .{path});
@@ -371,8 +374,8 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 }
                 // The command, not just the action's name: the name is what the
                 // user chose, the command is what a clone chose for them.
-                try plan.line(app.arena, "    :{s: <9}{s}\n", .{ a.name, a.command });
-                const refs = try refs_zig.referencedFiles(app, dir, a.command);
+                try plan.line(app.arena, "    :{s: <9}{s}\n", .{ a.name, command });
+                const refs = try refs_zig.referencedFiles(app, dir, command);
                 for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
                 try plan.add(app.arena, .{
                     .record = record,
@@ -385,7 +388,8 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 // Name the scripts too - "approved" should say how far it reached.
                 var seen: std.ArrayList([]const u8) = .empty;
                 for (try actions.parse(app.arena, body)) |a| {
-                    for (try refs_zig.referencedFiles(app, dir, a.command)) |f| {
+                    const command = run_zig.expandedCommand(app, alias, dir, a) orelse continue;
+                    for (try refs_zig.referencedFiles(app, dir, command)) |f| {
                         if (refs_zig.containsFold(seen.items, f)) continue;
                         try seen.append(app.arena, f);
                         try plan.wrote(app.arena, "{s}:   including {s}\n", .{ alias, f });
@@ -429,7 +433,8 @@ pub fn unapproved(app: *App, alias: []const u8, dir: []const u8) bool {
     if (context.standing(app, alias)) return false;
     const body = app_zig.readFileMaybe(app, path) orelse return false;
     for (actions.parse(app.arena, body) catch return false) |a| {
-        const record = (recordForCommand(app, dir, true, a.name, a.command) catch continue) orelse continue;
+        const command = run_zig.expandedCommand(app, alias, dir, a) orelse continue;
+        const record = (recordForCommand(app, dir, true, a.name, command) catch continue) orelse continue;
         if (!context.isTrusted(app, record)) return true;
     }
     return false;

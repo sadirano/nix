@@ -356,8 +356,23 @@ cleanly. Chains take no arguments (which step would get them?); for a chain
 you run often, make it an action of its own:
 
 ```toml
-release = "zig build ci && zig build deploy"
+release = ":ci :deploy"
 ```
+
+A value starting with `:name` is that action, looked up in the same alias.
+With one name, the rest of the line is its arguments, so a shared prefix is
+written once:
+
+```toml
+run  = "zig build run -Doptimize=ReleaseFast -- {args}"
+list = ":run list"
+stop = ":run stop"
+```
+
+A `.ps1` in `.nix/scripts` can start an action by bare name too
+(`shelf-stop = "shelf -Stop {args}"`). When an action spells out what a
+reference or a bare name would say, running it prints `nix: shorter: ...`, and
+`nix --doctor` lists every one of them.
 
 ### 2.5 Detached windows: `-o`
 

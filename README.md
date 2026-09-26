@@ -457,6 +457,19 @@ Words are re-quoted as they were typed: `x acme :commit -- -m "two words"` reach
 
 **Chains** run several actions in order, in this terminal, stopping at the first failure — the `&&` you would otherwise have typed, without naming the alias twice. Each link runs exactly as it would alone, under a `==> acme :test` header so the transcript can be read back. Arguments are refused for a chain (`x acme :build :test -- --release` has no honest answer to *which* action gets the flag): name one action, or pass none.
 
+**References** let an action be written as another one, so a long prefix is spelled once. A value starting with `:name` runs that action of the same alias, with the rest of the line as its arguments; several names make a chain:
+
+```toml
+[actions]
+run   = "zig build run -Doptimize=ReleaseFast -- {args}"
+list  = ":run list"            # zig build run -Doptimize=ReleaseFast -- list
+quota = ":run quota {args}"    # your own arguments still land at {args}
+ship  = ":close :deploy"       # both, in order, stopping at the first failure
+close = "stop-server"          # a .ps1 in .nix/scripts runs by bare name
+```
+
+A `.ps1` in `.nix/scripts` or `~/.nix/scripts` can open an action by bare name, like a `.cmd` already could; nix supplies the `powershell -NoProfile -ExecutionPolicy Bypass -File` line. A missing target or a loop is refused before anything runs, and the approval gate sees the expanded command, so editing `:run` re-arms every action that uses it. When an action is longer than it needs to be (the PowerShell line spelled out, a sibling's command restated, `x <same alias> :name`), a run prints `nix: shorter: ...` with the short form, and `nix --doctor` lists every such action on the machine.
+
 Actions resolve from three places, most specific winning: `<alias-dir>/.nix/actions.toml` (travels with the repo) overrides `~/.nix/actions/<alias>.toml` (private, per-machine), which overrides `~/.nix/actions/_default.toml` — **machine-wide defaults** for personal cross-project actions (`claude`, `git status`, …) defined once and available via `x <any-alias> :<name>` without leaking into committed repos (`_default` is reserved; it can't be registered as an alias). A leading `:` is what marks a saved action — without it, `x <alias> <cmd>` still runs `<cmd>` literally. With no alias at all, `x :<name>` runs the machine-wide action in the current directory; when `_default.toml` has no such name and you're standing inside an alias, that alias's own `:<name>` runs instead, exactly as if you had typed `x <alias> :<name>`. A name defined machine-wide always means the machine-wide command. `e :` opens that machine-wide file (`e :<name>` opens it at that action's line, seeding a stub if the name is new); `e <alias> :` opens the project's.
 
 ### Actions that need administrator rights

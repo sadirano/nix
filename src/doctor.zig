@@ -16,6 +16,7 @@ const util = @import("util.zig");
 const provenance = @import("provenance.zig");
 const context = @import("context.zig");
 const env_zig = @import("env.zig");
+const run_zig = @import("run.zig");
 
 // Version baked by build.zig (git describe).
 const build_version = @import("build_options").version;
@@ -502,6 +503,26 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
                 .note => .note,
             }, f.label, f.detail);
         }
+    }
+
+    try d.section("Actions  (forms nix can shorten)");
+    {
+        // The same check a run prints before it starts, over every alias at
+        // once, so a whole file can be fixed in one pass instead of one run at
+        // a time.
+        const adata = store.readAliasesFile(app.arena, app.io, app.home) catch "";
+        var any = false;
+        if (store.loadAliases(app.arena, adata)) |al| {
+            for (al.items) |a| {
+                for (run_zig.mergedActions(app, a.name, a.path, false) catch &.{}) |act| {
+                    if (try run_zig.shorterForm(app, a.name, a.path, act.name, act.command)) |hint| {
+                        try d.row(.warn, a.name, hint);
+                        any = true;
+                    }
+                }
+            }
+        } else |_| {}
+        if (!any) try d.row(.ok, "actions", "none - every action is as short as nix can make it");
     }
 
     if (json) try renderJson(app, &d) else try renderHuman(app, &d, quiet);
