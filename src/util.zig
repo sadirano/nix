@@ -60,9 +60,8 @@ pub fn centralFile(arena: std.mem.Allocator, home: []const u8, feature: []const 
 }
 
 /// sortByName sorts items ascending by their `name` field's byte order - the
-/// one-key sort that cmd_groups' Group listing, cmd_registry's Alias listing
-/// (twice), groups.zig's own Group save/round-trip, store.saveAliases and
-/// usage.save each wrote as their own anonymous-struct comparator. Works for
+/// one-key sort that cmd_registry's Alias listing (twice), store.saveAliases
+/// and usage.save each wrote as their own anonymous-struct comparator. Works for
 /// any T with a `name: []const u8` field.
 pub fn sortByName(comptime T: type, items: []T) void {
     std.mem.sort(T, items, {}, struct {
@@ -95,7 +94,7 @@ pub fn eqlPathAscii(a: []const u8, b: []const u8) bool {
 /// aliasRunEnv rebuilds PATH each call to put the scripts dirs in front, and
 /// proc.runShellInherit reads COMSPEC to pick the shell - a value set here
 /// would be clobbered on one path and honoured on another, which is worse than
-/// either - a context PATH also gets REMOVED as stale on the next group member,
+/// either - a context PATH also gets REMOVED as stale on the next run of a chain,
 /// leaving that child with no PATH at all. The `NIX_` prefix is nix's own protocol with the child (NIX_ALIAS,
 /// NIX_CONTEXT_OUT, ...); redefining those is talking back over the input
 /// channel.
@@ -165,9 +164,8 @@ pub fn parseStringArray(arena: std.mem.Allocator, text: []const u8) ![][]const u
 /// bytes already on the key's own line) across any following lines, up to the
 /// closing `]`, advancing `i` past what it consumed. Comment lines inside are
 /// skipped so their quoted text cannot parse as elements, and a `]` in one
-/// cannot end the array early. Every multi-line array in config.toml and
-/// groups.toml goes through here - it was two copies of the same loop before
-/// they did.
+/// cannot end the array early. Every multi-line array in config.toml goes
+/// through here.
 pub fn gatherArrayBody(arena: std.mem.Allocator, all: []const []const u8, i: *usize, val_start: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, val_start);

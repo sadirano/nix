@@ -439,8 +439,8 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.
     if ((try env_zig.inject(app, alias, dir, mode)) == null) return null;
     // Context-source variables (context.zig). Names are arbitrary, so unlike
     // PATH they can't be rebuilt from an original — restore what the previous
-    // call injected first, or a group fan-out would carry one member's context
-    // into the next. Restore rather than remove: the name may have been the
+    // call injected first, or a chain would carry one run's context into the
+    // next. Restore rather than remove: the name may have been the
     // user's own before a context source answered with it.
     try app_zig.restoreVars(app, app.ctx_injected);
     var injected: std.ArrayList(app_zig.SavedVar) = .empty;

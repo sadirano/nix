@@ -179,8 +179,7 @@ pub fn parseDuration(s: []const u8) ?u64 {
 
 /// splitRunLine tokenizes a run template on whitespace, honouring double quotes
 /// so `lookup --db "C:\Program Files\t.db" ${task}` stays three tokens. Splitting
-/// happens BEFORE `${}` expansion (same order as nav.buildTerminalArgv's `{dir}`)
-/// so a variable whose value contains spaces stays a single argument and can
+/// happens BEFORE `${}` expansion so a variable whose value contains spaces stays a single argument and can
 /// never inject extra arguments into the command.
 pub fn splitRunLine(arena: std.mem.Allocator, line: []const u8) ![][]const u8 {
     var out: std.ArrayList([]const u8) = .empty;
@@ -404,9 +403,9 @@ pub fn locate(app: *App, src: Source, dir: []const u8, run_zig: anytype) !?Locat
     };
 }
 
-/// expandArgv builds the command line. Tokens are split BEFORE `${}` expands
-/// (same order as nav.buildTerminalArgv's `{dir}`), so a value containing
-/// spaces stays one argument and can never inject extra ones.
+/// expandArgv builds the command line. Tokens are split BEFORE `${}` expands,
+/// so a value containing spaces stays one argument and can never inject extra
+/// ones.
 fn expandArgv(app: *App, src: Source, script: []const u8, high: []const Var, low: []const Var) !?[][]const u8 {
     const tokens = try splitRunLine(app.arena, src.run);
     var argv = try app.arena.alloc([]const u8, tokens.len);

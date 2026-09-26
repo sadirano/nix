@@ -15,7 +15,6 @@ const bin_exports = @import("bin_exports.zig");
 const util = @import("util.zig");
 const provenance = @import("provenance.zig");
 const context = @import("context.zig");
-const groups = @import("groups.zig");
 const env_zig = @import("env.zig");
 
 // Version baked by build.zig (git describe).
@@ -365,13 +364,6 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
                 }));
                 try d.cont(try std.fmt.allocPrint(app.arena, "the KEY is the builtin slot, the VALUE the new name: {s}", .{try config.slotList(app.arena)}));
             }
-        }
-        if (cfg.nav_terminal.len > 0) {
-            try d.row(.ok, "nav terminal", cfg.nav_terminal);
-        } else if (proc.is_windows) {
-            try d.row(.note, "nav terminal", "unset - `o +group` extras use `wt -d`, else `start`");
-        } else {
-            try d.row(.note, "nav terminal", "unset - set [nav] terminal for `o +group` extra windows");
         }
         {
             const hooks = [_]struct { key: []const u8, template: []const u8 }{

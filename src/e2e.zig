@@ -1,6 +1,6 @@
 //! End-to-end harness: drives the real nix exe as a child process against a
 //! scratch NIX_HOME. Covers the
-//! dispatch/IO seam the unit tests can't reach: add/resolve/remove, groups,
+//! dispatch/IO seam the unit tests can't reach: add/resolve/remove,
 //! actions, segments, export→import, and the read-only --resolve guarantee.
 //! Interactive paths (fzf pickers, navigation subshells), --init (it edits
 //! the real user PATH), and --secret (it edits the real Windows Credential
@@ -363,16 +363,6 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "--no-prompt", "--which", under });
         c.check(r.code == 0 and std.mem.eql(u8, trim(r.out), "inner"), "a deeper registered alias still wins over .nix", r);
         _ = try c.run(&.{ "inner", "--remove" });
-
-        // It is allowed in a group and resolves like any member - a reference,
-        // not a registration, so the reserved name is fine here.
-        r = try c.run(&.{".nix+cfg"});
-        c.check(r.code == 0, ".nix can be added to a group", r);
-        r = try c.run(&.{ "+cfg", "--list" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ".nix") != null and std.mem.indexOf(u8, r.out, "(unregistered)") == null, ".nix is a usable group member", r);
-        r = try c.run(&.{ "+cfg", "--resolve" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, home) != null, "a group fans out to .nix's real path", r);
-        _ = try c.run(&.{ "+cfg", "--remove" });
     }
 
     // --- which (reverse lookup) ----------------------------------------------
@@ -399,59 +389,14 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0, "bare --which uses the cwd", r);
     }
 
-    // --- groups ---------------------------------------------------------------
-    {
-        var r = try c.run(&.{"pa+work"});
-        c.check(r.code == 0, "member+group adds a member (creates the group)", r);
-        _ = try c.run(&.{"pb+work"});
-
-        r = try c.run(&.{ "+work", "--list" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa") != null and std.mem.indexOf(u8, r.out, "pb") != null, "+group --list shows both members", r);
-
-        r = try c.run(&.{ "+work", "--resolve" });
-        c.check(r.code == 0 and hasLine(r.out, pa) and hasLine(r.out, pb), "+group --resolve prints every member path", r);
-
-        // Adding an unregistered member picker-routes; --no-prompt (no picker)
-        // must error without recording a dead member.
-        r = try c.run(&.{ "ghost+work", "--no-prompt" });
-        const gl = try c.run(&.{ "+work", "--list" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "unknown alias") != null and !hasRow(gl.out, "ghost"), "--no-prompt add of an unregistered member errors, records nothing", r);
-
-        // Nested groups: hand-edit groups.toml (a documented, supported format).
-        const gpath = join(&c, &.{ home, "groups.toml" });
-        const gdata = readFileOr(&c, gpath, "");
-        try writeFile(&c, gpath, try std.fmt.allocPrint(arena, "{s}\nall = [\"+work\", \"pa\"]\n", .{trim(gdata)}));
-        r = try c.run(&.{ "+all", "--resolve" });
-        c.check(r.code == 0 and hasLine(r.out, pa) and hasLine(r.out, pb), "nested +group expands recursively", r);
-
-        r = try c.run(&.{"--groups"});
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "work") != null and std.mem.indexOf(u8, r.out, "all") != null, "--groups lists all groups", r);
-    }
-
-    // --- group usage (usage is charged to +group, never fanned to members) ----
+    // --- usage ---------------------------------------------------------------
     {
         const upath = join(&c, &.{ home, "usage" });
-        // Age pa's entry far past the debounce window, so a member bump WOULD
-        // land if group resolution still recorded members.
+        // Age pa's entry far past the debounce window, so the bump lands.
         try writeFile(&c, upath, "pa 5 1000\n");
-        var r = try c.run(&.{ "+work", "--resolve" });
-        const udata = readFileOr(&c, upath, "");
-        c.check(r.code == 0 and hasLine(udata, "pa 5 1000"), "group use does not bump member usage", r);
-        c.check(hasRow(udata, "+work"), "group use records the +group key", r);
-
-        // Individual use still counts: same aged entry, direct resolve bumps it.
-        r = try c.run(&.{ "pa", "--resolve" });
+        const r = try c.run(&.{ "pa", "--resolve" });
         const udata2 = readFileOr(&c, upath, "");
-        c.check(r.code == 0 and std.mem.indexOf(u8, udata2, "pa 6 ") != null, "individual use still bumps the alias", r);
-
-        // Prune protection: only +work has recent usage, yet its members rank
-        // as protected — inherited recency with a (via +work) marker.
-        const now_s = @divTrunc(Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s);
-        try writeFile(&c, upath, try std.fmt.allocPrint(arena, "+work 1 {d}\n", .{now_s}));
-        r = try c.run(&.{ "--prune", "--no-prompt" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "(via +work)") != null and
-            std.mem.indexOf(u8, r.out, "today") != null, "prune ranks members by inherited group recency", r);
-        c.check(std.mem.indexOf(u8, r.out, "never") == null, "no +work member ranks as never-used", r);
+        c.check(r.code == 0 and std.mem.indexOf(u8, udata2, "pa 6 ") != null, "a resolve bumps the alias's usage", r);
     }
 
     // --- actions ---------------------------------------------------------------
@@ -887,33 +832,6 @@ pub fn main(init: std.process.Init) !void {
             std.mem.indexOf(u8, r.out, "NIX_ALIAS") != null and
             std.mem.indexOf(u8, r.out, "1BAD") != null, "reserved and malformed names are refused", r);
 
-        // Group fan-out: each member gets its OWN environment. Without the
-        // removal discipline, pe's variables would still be set for pf.
-        try writeFile(&c, join(&c, &.{ home, "env", "pf.toml" }), "[env]\nREGION = \"us-east-1\"\n");
-        _ = try c.run(&.{ "pe+envg", "--no-prompt" });
-        _ = try c.run(&.{ "pf+envg", "--no-prompt" });
-        // A literal command, so this exercises the group fan-out's own env call
-        // site rather than the action path already covered above.
-        const fan = if (proc.is_windows)
-            [_][]const u8{ "+envg", "--run", "cmd", "/c", "echo url=[%DATABASE_URL%]" }
-        else
-            [_][]const u8{ "+envg", "--run", "sh", "-c", "echo url=[$DATABASE_URL]" };
-        r = try c.run(&fan);
-        const first = std.mem.indexOf(u8, r.out, "from-central");
-        const second = if (first) |i| std.mem.indexOfPos(u8, r.out, i + 1, "from-central") else null;
-        c.check(first != null and second == null, "a group member's env doesn't leak into the next", r);
-
-        // ...and the member that does NOT override it sees the AMBIENT value,
-        // not an empty one. Undoing an injection is a restore, never a plain
-        // remove: pe overrides DATABASE_URL, and a remove would have deleted
-        // the variable the user exported for every member after it.
-        try c.env.put("DATABASE_URL", "from-ambient");
-        r = try c.run(&fan);
-        try c.env.put("DATABASE_URL", "");
-        const over = std.mem.indexOf(u8, r.out, "from-central");
-        const back = std.mem.indexOf(u8, r.out, "from-ambient");
-        c.check(over != null and back != null and back.? > over.?, "the ambient value returns for the next member", r);
-
         // Leave nothing behind: later sections run these aliases too.
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "pe.toml" })) catch {};
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "pf.toml" })) catch {};
@@ -1089,9 +1007,6 @@ pub fn main(init: std.process.Init) !void {
             try c.run(&.{ "pa", "--run", "sh", "-c", "echo literal" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "literal") != null and
             std.mem.indexOf(u8, r.out, "notified=") == null, "a literal command does not fire the hook", r);
-
-        r = try c.run(&.{ "+work", "--run", ":hello" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "notified=pa,hello,ok,0") != null, "a group :action fan-out notifies per member", r);
 
         // Bare `y` records what it copied. The copy goes to $NIX_CLIPBOARD_FILE,
         // so the hook fires on a real write without the suite costing whoever
@@ -1350,15 +1265,6 @@ pub fn main(init: std.process.Init) !void {
         const real_exe = c.exe;
         const exe_bytes = try Io.Dir.cwd().readFileAlloc(io, real_exe, arena, .unlimited);
 
-        // A malformed group token through the `o` wrapper errors cleanly
-        // instead of routing into the unknown-alias picker.
-        const o_exe = join(&c, &.{ root, "o.exe" });
-        try writeFile(&c, o_exe, exe_bytes);
-        c.exe = o_exe;
-        var r = try c.run(&.{"pa+"});
-        c.exe = real_exe;
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "invalid group token") != null, "o with a malformed group token errors, no picker", r);
-
         // `e :<name>` EDITS the action rather than running it - `u <name>` for
         // actions. A one-line .cmd stands in for the editor: it echoes the argv
         // it was handed and exits, where the default notepad would block CI on
@@ -1372,7 +1278,7 @@ pub fn main(init: std.process.Init) !void {
         const def_actions = join(&c, &.{ home, "actions", "_default.toml" });
         const before = readFileOr(&c, def_actions, "");
         c.exe = e_exe;
-        r = try c.run(&.{":brandnew"});
+        var r = try c.run(&.{":brandnew"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "added a stub") != null and
             std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), "brandnew") != null, "`e :name` seeds a stub for a new action", r);
         // …and opens AT the declaration: naming an action says which line you
@@ -1670,34 +1576,8 @@ pub fn main(init: std.process.Init) !void {
 
     // --- removals -------------------------------------------------------------------
     {
-        var r = try c.run(&.{ "pa+work", "--remove" });
-        const l = try c.run(&.{ "+work", "--list" });
-        c.check(r.code == 0 and !hasRow(l.out, "pa") and hasRow(l.out, "pb"), "member --remove drops it from the group", l);
-
-        r = try c.run(&.{ "+work", "--remove" });
-        const g = try c.run(&.{"--groups"});
-        c.check(r.code == 0 and !hasRow(g.out, "work"), "+group --remove deletes the group", g);
-        const upath = join(&c, &.{ home, "usage" });
-        c.check(!hasRow(readFileOr(&c, upath, ""), "+work"), "+group --remove drops its usage line", r);
-
-        // `all` still references the deleted `+work`: the dead-subgroup policy
-        // skips it with a note naming the missing group, and the surviving
-        // direct member (`pa`) still resolves.
-        const dg = try c.run(&.{ "+all", "--resolve" });
-        c.check(dg.code == 0 and hasLine(dg.out, pa) and
-            std.mem.indexOf(u8, dg.err, "skipping unknown group \"+work\"") != null and
-            std.mem.indexOf(u8, dg.err, "\"+all\"") != null, "a dangling nested group is skipped with a note", dg);
-
-        _ = try c.run(&.{"pb+work2"});
-        // Seed a usage line for +work2 (adding members records nothing), so the
-        // cascade's emptied-group cleanup has something to drop.
-        try writeFile(&c, upath, try std.fmt.allocPrint(arena, "{s}+work2 3 123\n", .{readFileOr(&c, upath, "")}));
-        r = try c.run(&.{ "pb", "--remove" });
-        const g2 = try c.run(&.{"--groups"});
-        c.check(r.code == 0 and !hasRow(g2.out, "work2"), "alias --remove cascades; an emptied group is dropped", g2);
-        c.check(!hasRow(readFileOr(&c, upath, ""), "+work2"), "the cascade drops the emptied group's usage line", r);
-
-        r = try c.run(&.{ "pb", "--resolve" });
+        _ = try c.run(&.{ "pb", "--remove" });
+        const r = try c.run(&.{ "pb", "--resolve" });
         c.check(r.code != 0, "a removed alias no longer resolves", r);
     }
 
@@ -1752,20 +1632,6 @@ pub fn main(init: std.process.Init) !void {
             c.skip("--no-prompt --grep prints uncoloured file:line:text", "rg");
             c.skip("--no-prompt --grep reports no matches with exit 1", "rg");
         }
-
-        // Picking a paste destination has no non-interactive equivalent, so the
-        // group form refuses rather than guessing a member. Build a fresh group
-        // here: earlier sections leave +work's existence up in the air.
-        // Re-register both first: an unregistered member would picker-route the
-        // add. --no-prompt keeps that impossible even if this drifts again.
-        util.mkdirAll(io, pa) catch {};
-        _ = try c.run(&.{ "pa", pa });
-        util.mkdirAll(io, pb) catch {};
-        _ = try c.run(&.{ "pb", pb });
-        _ = try c.run(&.{ "pa+np", "--no-prompt" });
-        _ = try c.run(&.{ "pb+np", "--no-prompt" });
-        const r2 = try c.run(&.{ "+np", "--no-prompt", "--paste" });
-        c.check(r2.code != 0 and std.mem.indexOf(u8, r2.err, "one destination") != null, "p +group refuses under --no-prompt", r2);
     }
 
     // --- $NIX_HOME never touches the machine's persistent PATH --------------------------

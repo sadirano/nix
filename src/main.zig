@@ -13,7 +13,6 @@ const segments = @import("segments.zig");
 const snippet = @import("snippet.zig");
 const agents = @import("agents.zig");
 const agentdocs = @import("agentdocs.zig");
-const groups = @import("groups.zig");
 const actions = @import("actions.zig");
 const winpath = @import("winpath.zig");
 const util = @import("util.zig");
@@ -30,7 +29,6 @@ const grep = @import("grep.zig");
 const find = @import("find.zig");
 const run_zig = @import("run.zig");
 const nav = @import("nav.zig");
-const cmd_groups = @import("cmd_groups.zig");
 const paste = @import("paste.zig");
 const bin_exports = @import("bin_exports.zig");
 const exports = @import("exports.zig");
@@ -273,17 +271,6 @@ fn setGlobalFlags(app: *App, args: []const []const u8) void {
 
 // ---- grammar ----------------------------------------------------------------
 
-/// parseGroupToken parses a `+`-bearing token, printing nix's own "invalid
-/// group token" diagnostic and returning null on error - the shared failure
-/// path between dispatch() (an alias/group position) and navigate() (an `o`
-/// target), which used to print the same message from two copies of this catch.
-fn parseGroupToken(app: *App, token: []const u8) !?groups.Ref {
-    return groups.parseRef(token) catch |e| {
-        try app.err.print("nix: invalid group token \"{s}\" ({s})\n", .{ token, @errorName(e) });
-        return null;
-    };
-}
-
 fn dispatch(app: *App, args: [][]const u8) !u8 {
     // Global flags may LEAD the command: setGlobalFlags has already read them
     // wherever they sit, so skipping them here makes `nix --no-prompt --prune`
@@ -300,14 +287,16 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
     if (startsWithDash(first)) {
         return dispatchSystem(app, first, rest[1..]);
     }
-    // Group grammar (`+group …` / `member+group …`) — `+` is reserved in names,
-    // so any `+` in the first token means a group operation, not an alias.
-    switch ((try parseGroupToken(app, first)) orelse return 1) {
-        .none => {},
-        .reference => |g| return dispatchGroupRef(app, g, rest[1..]),
-        .add => |ad| return dispatchGroupAdd(app, ad.member, ad.group, rest[1..]),
-    }
+    if (try refuseGroupToken(app, first)) return 1;
     return dispatchAlias(app, first, rest[1..]);
+}
+
+/// refuseGroupToken answers a `+` token - the removed group syntax - with what
+/// happened to it, instead of an "unknown alias" that sends people hunting.
+fn refuseGroupToken(app: *App, token: []const u8) !bool {
+    if (std.mem.indexOfScalar(u8, token, '+') == null) return false;
+    try app.err.print("nix: \"{s}\": groups (+name) were removed - name each alias directly\n", .{token});
+    return true;
 }
 
 // The switch below is exhaustive over grammar.SystemVerb with no else branch:
@@ -333,7 +322,6 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .edit => cmdEdit(app, "", rest),
         .prune => cmd_registry.cmdPrune(app),
         .doctor => doctor.cmdDoctor(app, rest),
-        .groups => cmdGroups(app),
         .contexts => cmdContexts(app),
         .actions => palette.cmdActions(app, rest),
         .sync => init_zig.cmdSync(app),
@@ -462,8 +450,6 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     return cmdResolve(app, alias);
 }
 
-// ---- groups ---------------------------------------------------
-
 // Short names for the handlers main dispatches to. Only what main.zig itself
 // calls belongs here: a re-export nothing below uses is dead weight that reads
 // like a seam between the modules when there isn't one.
@@ -485,10 +471,6 @@ const cmdFind = find.cmdFind;
 const findPick = find.findPick;
 const cmdRun = run_zig.cmdRun;
 const enterDir = nav.enterDir;
-const navigateGroup = nav.navigateGroup;
-const cmdGroups = cmd_groups.cmdGroups;
-const dispatchGroupRef = cmd_groups.dispatchGroupRef;
-const dispatchGroupAdd = cmd_groups.dispatchGroupAdd;
 
 // ---- Tier 1 commands --------------------------------------------------------
 
@@ -667,7 +649,6 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// navigate resolves the alias and opens a fresh interactive shell rooted in
 /// the target dir. A child can't relocate its parent shell, so onix-as-an-exe
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
-/// A `+group` token routes to navigateGroup; `member+group` adds then navigates.
 fn navigate(app: *App, alias: []const u8) !u8 {
     // `o` is the one path that refuses --as. Its output is consumed by the
     // wrapper to cd, so a translated path would not be a differently-spelled
@@ -678,20 +659,7 @@ fn navigate(app: *App, alias: []const u8) !u8 {
         try app.err.print("  to get the spelling: nix {s} --as {s}   (or `y {s} --as {s}` to copy it)\n", .{ alias, @tagName(d), alias, @tagName(d) });
         return 1;
     }
-    // A malformed group token (`pa+`, `+`) must error here like it does in
-    // dispatch — swallowing it as .none would send the user through the
-    // unknown-alias picker only to fail on the name validation at the end.
-    switch ((try parseGroupToken(app, alias)) orelse return 1) {
-        .none => {},
-        .reference => |g| return navigateGroup(app, g),
-        .add => |ad| {
-            // `o pa+group`: register the membership (idempotent), then navigate
-            // the group — parallels `o <alias> <path>` = register + navigate.
-            const code = try dispatchGroupAdd(app, ad.member, ad.group, &.{});
-            if (code != 0) return code;
-            return navigateGroup(app, ad.group);
-        },
-    }
+    if (try refuseGroupToken(app, alias)) return 1;
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
     return enterDir(app, alias, dir);
 }
@@ -955,14 +923,6 @@ fn agentFacts(app: *App, spec: *const agentdocs.Spec) !agentdocs.Facts {
             facts.alias_count = al.items.len;
         } else |_| {}
     }
-    if (eql(spec.topic, "groups")) {
-        const data = groups.readGroupsFile(app.arena, app.io, app.home) catch "";
-        if (groups.loadGroups(app.arena, data)) |gs| {
-            var names: std.ArrayList([]const u8) = .empty;
-            for (gs.items) |g| try names.append(app.arena, g.name);
-            facts.group_names = names.items;
-        } else |_| {}
-    }
     return facts;
 }
 
@@ -1020,16 +980,6 @@ fn printUsage(app: *App) !void {
 
     try w.writeAll(
         \\
-        \\GROUPS  (multi-alias sets in ~/.nix/groups.toml)
-        \\  nix <member>+<group>        add an alias to a group (creates it)
-        \\  nix <member>+<group> --rm   remove a member
-        \\  nix +<group> [--list]       list a group's members
-        \\  nix +<group> --remove       delete the group
-        \\  o  +<group>                 pick members (fzf): first cd's here, rest open windows
-        \\  g/f/x +<group> ...          search / run across every member
-        \\  s/y +<group> [pat]          open / copy member dirs; with a pattern, pick files
-        \\  p  +<group> [name]          pick ONE member, paste the clipboard there
-        \\
         \\GLOBAL FLAGS  (accepted by every command, before or after the verb)
         \\
     );
@@ -1085,7 +1035,6 @@ test {
     _ = config;
     _ = segments;
     _ = snippet;
-    _ = groups;
     _ = actions;
     _ = winpath;
     _ = util;
@@ -1101,7 +1050,6 @@ test {
     _ = find;
     _ = run_zig;
     _ = nav;
-    _ = cmd_groups;
     _ = bin_exports;
     _ = agentdocs;
     _ = env_zig;

@@ -40,7 +40,7 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       `nix --sync`); existing aliases, groups, actions, `[shortcuts]`,
       notes and `[bin]` exports all still resolve.
 - [ ] Any upgrade step this release needs from an older version is written
-      down for the release notes (section 12).
+      down for the release notes (section 11).
 
 ## 2. `--init`, PATH and the registry
 
@@ -79,8 +79,8 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 ## 4. Pickers and the clipboard
 
-- [ ] `o <alias>` with no argument, `o +<group>`, `nix --prune` and
-      `nix --actions` each open fzf and act on the pick.
+- [ ] `o <alias>` with no argument, `nix --prune` and `nix --actions` each
+      open fzf and act on the pick.
 - [ ] `f <alias> <pat>` and `s <alias> <pat>` return results and open the picks.
 - [ ] `y <alias>` copies the path; `y <alias> <pat>` puts the real FILES on the
       clipboard (paste into Explorer, not just a text field).
@@ -88,38 +88,7 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 - [ ] With Everything running, doctor's `es` probe passes; stop Everything and
       it reports the fallback instead of passing falsely.
 
-## 5. Groups
-
-- [ ] `x +<group> <cmd>` fans out in each member dir, labelled per member.
-      Setup: `nix a+demo` then `nix b+demo` (the MEMBER goes before the `+`,
-      the group after); `nix +demo --list` confirms both. `x +demo cmd /c cd`
-      must print one labelled block per member, each showing that member's
-      OWN directory. Count the blocks against `--list` rather than just
-      checking output appeared - the failure being guarded is a fan-out that
-      silently visits fewer directories than the group has members.
-- [ ] `s`/`y` `+<group> <pat>` show `alias\rel` rows; picks open or copy.
-      The `alias\rel` prefix is the point: without it, two members holding a
-      file with the same relative name are indistinguishable in the picker.
-- [ ] `p +<group>` pastes into the picked member. `p` is a deliberate
-      exception that picks ONE destination instead of fanning out, so confirm
-      it wrote to exactly one member and not to every one of them.
-- [ ] 🧪 A malformed group token errors and does **not** fall through to a
-      picker. Run on a REAL console - an agent shell refuses pickers anyway, so
-      failing there proves nothing. Each exits non-zero, prints the message
-      below, and opens NO picker:
-      - `o +` / `y pa+` -> `nix: invalid group token "..." (EmptyGroupName)`
-      - `x +nosuch echo hi` -> `nix: unknown group "+nosuch"`
-
-      The failure being guarded: an unknown PLAIN alias deliberately hands off
-      to the directory picker to register it on the fly (resolve.zig). A bad
-      `+token` treated as an ordinary alias name lands in that same path, so
-      instead of an error you get a menu offering to register `+` as an alias -
-      and in `x +<group> <cmd>` a fan-out could quietly run the command
-      somewhere it was never aimed at. Control: `o nosuchalias` SHOULD open the
-      picker. If all three print `unknown alias`, the group namespace is not
-      failing closed.
-
-## 6. Actions, provenance and secrets
+## 5. Actions, provenance and secrets
 
 - [ ] 🧪 A freshly cloned project's `.nix/actions.toml` asks before its first
       run, and refuses (does not hang) with no console. Two halves, both
@@ -155,7 +124,7 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       output, nor the action's log, nor Task Manager's command-line column
       for the elevated process.
 
-## 7. Per-project environment
+## 6. Per-project environment
 
 - [ ] ⚠️ `.nix/env.toml` variables reach a real `x` command, and `nix <alias>
       --env` shows their provenance. `x <alias> cmd /c "echo %MYVAR%"` prints
@@ -166,46 +135,8 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       NOT refuse - it runs WITHOUT that layer and says so once. So "the
       command worked" is not evidence the file applied; read `--env`, or
       check the variable itself.
-- [ ] Variables do not leak between members of a group fan-out. run.zig
-      removes each layer before injecting the next, and this is the only
-      place that is observable - a leak hands one project's credentials to
-      the next member.
 
-      ```powershell
-      $root = "$env:TEMP\env-check"
-      Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
-      $a = "$root\home\proja"; $b = "$root\home\projb"
-      New-Item -ItemType Directory -Force "$a\.nix","$b\.nix" | Out-Null
-      $env:NIX_HOME = "$root\home"
-      nix proja $a
-      nix projb $b
-      # ONLY proja declares it
-      Set-Content "$a\.nix\env.toml" "[env]`nLEAKVAR = `"from-proja`""
-      nix proja+grp
-      nix projb+grp
-      nix +grp --run cmd /c "echo LEAKVAR=%LEAKVAR%"
-      ```
-
-      Expected - the value in exactly ONE block, and UNSET (not merely a
-      different value) in the other:
-
-      ```
-      == proja  (...\proja) ==
-      LEAKVAR=from-proja
-      == projb  (...\projb) ==
-      LEAKVAR=%LEAKVAR%
-      ```
-
-      An unexpanded `%LEAKVAR%` is cmd echoing a variable that does not
-      exist, which is the proof wanted: absent, not overwritten.
-
-      Sanity-check first that the layer injected at all - `nix proja --run
-      cmd /c "echo %LEAKVAR%"` must print the value. If it prints `%LEAKVAR%`
-      the env file was never applied (unapproved env.toml runs WITHOUT the
-      layer rather than refusing), and the fan-out proves nothing: both
-      blocks would look clean for the wrong reason.
-
-## 8. `[bin]` exports
+## 7. `[bin]` exports
 
 - [ ] `nix --sync-bin` installs a project's export into `~/.nix/bin`; the name
       runs from any directory. Declare `[bin] mytool = "zig-out/bin/x.exe"`,
@@ -221,7 +152,7 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       the drift instead of passing. Guards a wrapper left on PATH that
       nothing in the repo declares any more.
 
-## 9. `[notify]` hooks
+## 8. `[notify]` hooks
 
 - [ ] `on_finish`, `on_paste` and `on_yank` fire against the real notifier, with
       quoting intact. Quoting is the whole risk: the hook is spawned directly
@@ -231,14 +162,14 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       three triggers - a long `x` finishing, a `p`, and a `y` - and confirm
       on_finish also fires for a FAILING command, not only a successful one.
 
-## 10. Doctor on the real machine
+## 9. Doctor on the real machine
 
 - [ ] ⚠️ `nix --doctor` is green; `-q` shows only problems; `--json` parses.
       Against the REAL store, not a scratch one - the point of this step is
       your actual machine's tools and config. Pipe the JSON through a parser
       instead of eyeballing it: `nix --doctor --json | ConvertFrom-Json`.
 
-## 11. Backup and rollback
+## 10. Backup and rollback
 
 - [ ] ⚠️ Take a full snapshot backup (`backup-snapshot`) against the real store.
       This is the rollback artifact for this release, so take it BEFORE anything
@@ -247,7 +178,7 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 - [ ] 🧪 Verify snapshot integrity with `backup-check`. Confirm bundles, loose
       stores, and hashed files are intact.
 
-## 12. Release hygiene
+## 11. Release hygiene
 
 - [ ] Release CI is green on the candidate tag.
 - [ ] The pre-release is marked **Pre-release** on GitHub and is not "Latest"
@@ -264,7 +195,7 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
      describe. Do not move this marker upward: anything above it is what the
      gate actually enforces. -->
 
-## 13. Promote (post-publish, not gated)
+## 12. Promote (post-publish, not gated)
 
 - [ ] `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z` (the same commit
       as the candidate unless fixes landed - if they did, cut a new pre and

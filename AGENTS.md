@@ -128,13 +128,13 @@ the gate does.
 
 ### Other load-bearing modules
 
-`resolve.zig` (alias -> path, `@`-segments, `+` group expansion) is the hot path
+`resolve.zig` (alias -> path, `@`-segments) is the hot path
 every command enters through. `run.zig` owns `aliasRunEnv`, the single choke
 point where env layers, context variables, `NIX_ALIAS`/`NIX_ALIAS_PATH` and the
 scripts-dir PATH prepend are injected - and where each is removed before the next
-injection so a group fan-out cannot leak one member's environment into the next.
+injection so one run in a chain cannot leak its environment into the next.
 `store.zig` keeps `aliases.toml` byte-for-byte compatible with the older Go
-`onix`; groups, actions and env live in their own files rather than polluting it.
+`onix`; actions and env live in their own files rather than polluting it.
 
 ## Conventions
 

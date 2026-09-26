@@ -67,9 +67,8 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\
         \\{[table]s}
         \\Extras: `{[x]s} <alias> :<name>` runs a saved action (`{[x]s} <alias> :` lists
-        \\them); `{[o]s} docs@acme` resolves a sub-alias segment; `+group` fans a command
-        \\across a set of aliases (`{[x]s} +work git pull`); `nix <name> <path>` registers
-        \\a new alias.
+        \\them); `{[o]s} docs@acme` resolves a sub-alias segment; `nix <name> <path>`
+        \\registers a new alias.
         \\
         \\**`shared@<alias>` is the project's handoff drop** - built in, resolving to
         \\`<alias-dir>/.nix/shared/`. When the user says another agent left something
@@ -167,10 +166,9 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   non-interactive shell. With `--no-prompt` they print what they would have
         \\   offered and act on nothing: `nix <alias> --no-prompt --grep <pat>`,
         \\   `nix <alias> --no-prompt --find <pat>`. The flag goes BEFORE the action
-        \\   flag - everything after it belongs to the search tool. `{[o]s} +group` and
-        \\   `{[p]s} +group` have no non-interactive form and refuse to run.
+        \\   flag - everything after it belongs to the search tool.
         \\6. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
-        \\   contents (`aliases.toml`, `groups.toml`, `usage`, ...) unless explicitly
+        \\   contents (`aliases.toml`, `usage`, ...) unless explicitly
         \\   asked; adding a project-local `.nix/actions.toml`, `.nix/env.toml`
         \\   or `.nix/scripts/` inside a project is fine and encouraged. Registering a name that
         \\   already exists REPOINTS it and forgets the path it had, so check
@@ -192,7 +190,6 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         .e = config.shortcutFor(cfg, "e"),
         .s = config.shortcutFor(cfg, "s"),
         .y = config.shortcutFor(cfg, "y"),
-        .p = config.shortcutFor(cfg, "p"),
         .x = config.shortcutFor(cfg, "x"),
         .g = config.shortcutFor(cfg, "g"),
         .f = config.shortcutFor(cfg, "f"),

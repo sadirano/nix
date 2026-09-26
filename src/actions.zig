@@ -1,6 +1,5 @@
 //! Per-alias named actions: a small `[actions]` TOML table mapping
-//! action names to shell-command strings, run as `r <alias> :<name>` (and across
-//! a group with `r +<group> :<name>`). Loaded from three places — project-local
+//! action names to shell-command strings, run as `r <alias> :<name>`. Loaded from three places — project-local
 //! `<alias-dir>/.nix/actions.toml` (travels with the repo) overriding central
 //! `~/.nix/actions/<alias>.toml` (private) overriding machine-wide
 //! `~/.nix/actions/_default.toml` (personal actions available from any alias;

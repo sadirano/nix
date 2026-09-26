@@ -52,8 +52,8 @@ pub const App = struct {
     /// aliasRunEnv. Empty for every non-segmented target.
     ctx_vars: []const segments.Var = &.{},
     /// Names aliasRunEnv injected from ctx_vars last call, removed before the
-    /// next injection so a group fan-out never leaks one member's context into
-    /// the next (the same discipline PATH gets via orig_path).
+    /// next injection so one run in a chain never leaks its context into the
+    /// next (the same discipline PATH gets via orig_path).
     ctx_injected: []const SavedVar = &.{},
     /// What env.zig contributed last call, and the names to remove before the
     /// next - the same leak discipline as ctx_vars/ctx_injected.
@@ -132,9 +132,9 @@ pub fn e2eConsole(app: *App) bool {
 pub const isGlobalFlag = grammar.isGlobal;
 
 /// hasPattern reports whether args carries a real positional rather than only
-/// global flags - the "was a pattern typed" check `s`/`y` make, for one alias
-/// or fanned out across a `+group`, before choosing between their bare form
-/// (every target, or the alias dir) and the picker form (one filtered pick).
+/// global flags - the "was a pattern typed" check `s`/`y` make before choosing
+/// between their bare form (the alias dir) and the picker form (one filtered
+/// pick).
 pub fn hasPattern(args: []const []const u8) bool {
     for (args) |a| if (!isGlobalFlag(a)) return true;
     return false;

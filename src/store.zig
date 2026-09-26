@@ -309,8 +309,8 @@ pub fn validateAliasName(name: []const u8) !void {
     for (name) |c| {
         if (c == '/' or c == '\\') return error.PathSeparatorInName;
         if (c == '@') return error.AtInName;
-        // `+` is the group sigil (`pa+projects`); reserve it like `@` so member
-        // names can never be confused with the member+group split. See groups.zig.
+        // `+` stays reserved: it was the group sigil, and existing configs may
+        // still hold `pa+projects`-style tokens that must not become names.
         if (c == '+') return error.PlusInName;
         // `:` is the action sigil, and a LEADING one names an action to run in
         // the current directory (`r :deploy`, main.zig). Reserve it like `@` and
@@ -324,8 +324,7 @@ pub fn validateAliasName(name: []const u8) !void {
         if (c < ' ' or c == 0x7f) return error.ControlInName;
         // TOML metacharacters corrupt the stores' line-based round-trip: `]`
         // ends the [name] section header early, a leading `#` comments out a
-        // groups.toml line, `=` splits a group key wrong, quotes derail the
-        // member strings. Reject them all rather than special-case per file.
+        // line, `=` splits a key wrong, quotes derail quoted strings. Reject them all rather than special-case per file.
         switch (c) {
             '[', ']', '=', '#', '"', '\'' => return error.TomlMetaInName,
             else => {},
@@ -530,9 +529,9 @@ test "validateAliasName: rejects separators, @, spaces, control chars, empty" {
     try std.testing.expectError(error.ControlInName, validateAliasName("a\tb"));
     try std.testing.expectError(error.ReservedName, validateAliasName("_default"));
     try std.testing.expectError(error.ReservedName, validateAliasName("_DEFAULT"));
-    // TOML metacharacters would corrupt aliases.toml/groups.toml round-trips:
+    // TOML metacharacters would corrupt the aliases.toml round-trip:
     // `[a]b]` reads back as `a`, `#work` becomes a comment, `=`/quotes split
-    // or truncate group lines.
+    // or truncate lines.
     try std.testing.expectError(error.TomlMetaInName, validateAliasName("a]b"));
     try std.testing.expectError(error.TomlMetaInName, validateAliasName("a[b"));
     try std.testing.expectError(error.TomlMetaInName, validateAliasName("a=b"));

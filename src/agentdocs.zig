@@ -109,8 +109,7 @@ pub const specs = [_]Spec{
         \\dir. `o <alias> <path>` registers the alias to that path first (asking
         \\before creating a directory that does not exist, and refusing without a
         \\console) and then lands there. `o <seg>@<alias>` navigates to a
-        \\sub-alias segment; `o +<group>` opens an fzf multi-select where the
-        \\first pick keeps the current shell and the rest open new terminals.
+        \\sub-alias segment.
         \\
         \\An unknown alias routes to a directory picker that REGISTERS it - `o` is
         \\how aliases get created, not just used.
@@ -154,8 +153,6 @@ pub const specs = [_]Spec{
         \\the one place a listing writes anything, and the reason
         \\`${cmd:o} <alias> :` / `${cmd:x} <alias> :` are the read-only forms of
         \\the same question.
-        \\
-        \\`e` is deliberately single-alias: it does not fan out over a +group.
         ,
         .agent_use =
         \\Don't run it - it spawns a GUI window and takes the user's focus, and
@@ -240,8 +237,7 @@ pub const specs = [_]Spec{
         .detail =
         \\Writes whatever the clipboard holds into the alias dir: text becomes a
         \\.md file, an image becomes a .png, and copied FILES are copied in as
-        \\files. An optional name sets the basename. `p +<group>` picks ONE
-        \\member as the destination - a paste has exactly one target.
+        \\files. An optional name sets the basename.
         ,
         .agent_use =
         \\Don't run it. It materializes files from state you can't inspect, into
@@ -277,7 +273,7 @@ pub const specs = [_]Spec{
         \\can answer it and prints the table when nobody can (your shell
         \\included, so it is safe to run). A bare name matching a file in
         \\.nix/scripts/ runs that script. The child gets $NIX_ALIAS and
-        \\$NIX_ALIAS_PATH. `${cmd:x} +<group> <cmd>` fans the command across members.
+        \\$NIX_ALIAS_PATH.
         \\
         \\Actions take arguments (`--run :test -- --json`, appended to the
         \\command or substituted into its {args}) and chain in order, stopping at
@@ -308,10 +304,9 @@ pub const specs = [_]Spec{
         .examples = &.{
             "`${cmd:x} acme git status` - run at the project dir",
             "`${cmd:x} acme :deploy` - run a saved action",
-            "`${cmd:x} +work git pull` - across every member of a group",
             "`nix acme --run zig build test` - the canonical form",
         },
-        .see_also = &.{ "actions", "groups" },
+        .see_also = &.{"actions"},
     },
     .{
         .slot = "g",
@@ -325,8 +320,6 @@ pub const specs = [_]Spec{
         \\Streams ripgrep into fzf over `file:line:text` rows with a bat preview,
         \\and opens the picks in the editor at the matched line. `--all` searches
         \\via ripgrep-all instead, reaching inside PDFs, office docs and archives.
-        \\`${cmd:g} +<group> <pat>` searches every member in one picker, rows prefixed
-        \\by alias.
         \\
         \\Search flags pass through to ripgrep: `nix acme --grep TODO -t zig`.
         ,
@@ -346,7 +339,7 @@ pub const specs = [_]Spec{
             "`nix acme --no-prompt --grep TODO` - print matches, open nothing",
             "`nix acme --no-prompt --grep TODO -t zig` - ripgrep flags pass through",
         },
-        .see_also = &.{ "f", "groups" },
+        .see_also = &.{"f"},
     },
     .{
         .slot = "f",
@@ -360,13 +353,12 @@ pub const specs = [_]Spec{
         \\Lists files under the alias dir (fd, else Everything's es on Windows,
         \\else POSIX find), picks in fzf with a preview, and opens the picks -
         \\default-app types via the OS handler, everything else in the editor.
-        \\`${cmd:f} +<group>` spans members, rows prefixed by alias.
         ,
         .agent_use =
         \\The plain form blocks on fzf. The safe form prints the matching paths
         \\and opens nothing.
         \\
-        \\Paths print relative to the alias dir (and `alias\\rel` for a group),
+        \\Paths print relative to the alias dir,
         \\matching what the picker would show - join them onto `nix <alias>` when
         \\you need absolute paths.
         ,
@@ -802,40 +794,6 @@ pub const specs = [_]Spec{
         .see_also = &.{ "actions", "--secret", "x" },
     },
     .{
-        .topic = "groups",
-        .summary = "multi-alias sets (+group) for fan-out",
-        .safety = .safe,
-        .detail =
-        \\A group is a named set of aliases in ~/.nix/groups.toml, written with a
-        \\leading `+`. Members are alias NAMES resolved on use, so a group
-        \\follows its members when they move.
-        \\
-        \\    nix <member>+<group>        add a member (creates the group)
-        \\    nix +<group> --list         list members
-        \\    nix +<group> --remove       delete the group
-        \\
-        \\Commands fan out over a group: `${cmd:x} +work git pull` runs everywhere,
-        \\`${cmd:g} +work TODO` searches every member in one picker. Two deliberate
-        \\exceptions: `e` stays single-alias, and `p +group` picks ONE
-        \\destination.
-        ,
-        .agent_use =
-        \\`nix --groups` lists groups; `nix +<group> --list` lists one group's
-        \\members. Fan-out through `--run` is safe and is the good reason to
-        \\reach for a group: one call to update or check every repo in a set.
-        \\
-        \\Group forms that open a picker (`o +group`, `p +group`) have no useful
-        \\non-interactive behaviour and refuse to run under --no-prompt.
-        ,
-        .suggest = "For work spanning several repos: `${cmd:x} +work git pull`.",
-        .examples = &.{
-            "`nix --groups` - list groups",
-            "`nix acme+work` - add acme to +work",
-            "`${cmd:x} +work git status` - fan out a command",
-        },
-        .see_also = &.{ "x", "g" },
-    },
-    .{
         .topic = "segments",
         .summary = "sub-alias paths (<seg>@<alias>) and context sources",
         .safety = .safe,
@@ -889,8 +847,8 @@ pub const specs = [_]Spec{
         .summary = "what nix keeps in ~/.nix, and what not to touch",
         .safety = .safe,
         .detail =
-        \\~/.nix holds aliases.toml (name -> path), groups.toml, config.toml
-        \\([shortcuts], [picker], [grep], [nav], [notify], [bin]), usage
+        \\~/.nix holds aliases.toml (name -> path), config.toml
+        \\([shortcuts], [picker], [grep], [notify], [bin]), usage
         \\(frecency, feeding --prune), segments.toml,
         \\trusted.toml + contexts-cache.toml (context approvals and
         \\their cached results), exports.toml (what --sync-bin installed), env/

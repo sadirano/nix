@@ -20,7 +20,7 @@ pub const Pair = struct { k: []const u8, v: []const u8 };
 
 /// fire tokenizes `template`, expands `pairs` per token, and runs the result in
 /// `dir` with the current env plus `env_extra` on a private copy (so nothing
-/// leaks into later spawns). Like `[nav] terminal`, the command spawns directly
+/// leaks into later spawns). The command spawns directly
 /// — NOT through cmd/sh: cmd.exe can't round-trip embedded quotes (its quote
 /// rules disagree with the MSVC escaping the spawn applies), and a multi-word
 /// {message} must survive as one argument. Expansion is per token, so a bare

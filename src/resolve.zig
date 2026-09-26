@@ -1,6 +1,6 @@
 //! Alias resolution: the shared alias->path entry point every command uses
 //! (including the unknown-alias picker handoff and registration), the
-//! @-segment evaluator, and group-target expansion for the + fan-out forms.
+//! @-segment evaluator.
 
 const std = @import("std");
 const Io = std.Io;
@@ -10,7 +10,6 @@ const usage = @import("usage.zig");
 const segments = @import("segments.zig");
 const context = @import("context.zig");
 const run_zig = @import("run.zig");
-const groups = @import("groups.zig");
 const picker = @import("picker.zig");
 const proc = @import("proc.zig");
 const util = @import("util.zig");
@@ -29,7 +28,7 @@ pub fn nameErrorText(e: anyerror) ?[]const u8 {
         error.EmptyName => "the name is empty",
         error.PathSeparatorInName => "names can't contain / or \\",
         error.AtInName => "names can't contain @ (the segment sigil)",
-        error.PlusInName => "names can't contain + (the group sigil)",
+        error.PlusInName => "names can't contain +",
         error.ColonInName => "names can't contain : (the action sigil)",
         error.SpaceInName => "names can't contain spaces",
         error.ControlInName => "names can't contain control characters",
@@ -668,57 +667,6 @@ fn normalizeForCompare(arena: std.mem.Allocator, p: []const u8) ![]const u8 {
 /// GroupTarget is one resolved, existing member: alias name + host path.
 pub const GroupTarget = struct { name: []const u8, path: []const u8 };
 
-/// resolveGroupTargets expands a group to its existing alias members as
-/// (name, host-path) pairs — creating each dir (unless `create_dirs` is false:
-/// the read-only `--resolve` form must not materialize directories) — applying
-/// the dead-member policy: a member alias that's no longer registered is
-/// skipped with a note, as is a `+sub` member whose group was deleted. Usage is
-/// recorded once against the group itself (a `+name` key in ~/.nix/usage);
-/// members are NOT bumped — an alias's own frecency moves only when it is used
-/// individually. Returns null (after a message) on unknown group / cycle /
-/// depth, or when no member resolves.
-pub fn resolveGroupTargets(app: *App, group: []const u8, create_dirs: bool) !?[]GroupTarget {
-    const gdata = try groups.readGroupsFile(app.arena, app.io, app.home);
-    const gs = try groups.loadGroups(app.arena, gdata);
-    var skipped: std.ArrayList(groups.SkippedRef) = .empty;
-    const names = groups.expandMembers(app.arena, gs.items, group, &skipped) catch |e| {
-        switch (e) {
-            error.UnknownGroup => try app.err.print("nix: unknown group \"+{s}\"\n", .{group}),
-            error.GroupCycle => try app.err.print("nix: group \"+{s}\" has a cycle\n", .{group}),
-            error.GroupTooDeep => try app.err.print("nix: group \"+{s}\" nests too deeply\n", .{group}),
-            else => return e,
-        }
-        return null;
-    };
-    for (skipped.items) |s| {
-        try app.err.print("nix: skipping unknown group \"+{s}\" (referenced by \"+{s}\")\n", .{ s.group, s.referenced_by });
-    }
-    const adata = try store.readAliasesFile(app.arena, app.io, app.home);
-    var out: std.ArrayList(GroupTarget) = .empty;
-    for (names) |n| {
-        if (try store.lookupAlias(app.arena, adata, n, app.home)) |p| {
-            if (create_dirs and !try ensureDir(app, p, try std.fmt.allocPrint(app.arena, "\"{s}\" points at ", .{n}))) {
-                try app.err.print("nix: group \"+{s}\": skipping \"{s}\"\n", .{ group, n });
-                continue;
-            }
-            try out.append(app.arena, .{ .name = n, .path = p });
-        } else {
-            try app.err.print("nix: group \"+{s}\": skipping dead member \"{s}\" (no such alias)\n", .{ group, n });
-        }
-    }
-    if (out.items.len == 0) {
-        try app.err.print("nix: group \"+{s}\" has no resolvable members\n", .{group});
-        return null;
-    }
-    // Charge the use to the group itself, never the members: a fan-out
-    // shouldn't drown each alias's individual frecency signal. Deliberately
-    // uncounted: failed resolutions (returned null above), `+g --list` (it
-    // doesn't come through here), and the single member `p +group` picks —
-    // that pick still only records the group.
-    usage.record(app.arena, app.io, app.home, try std.fmt.allocPrint(app.arena, "+{s}", .{group})) catch {};
-    return out.items;
-}
-
 /// rowPath extracts the path from a `name -> path` picker row (after the last
 /// " -> "), falling back to the whole row if the separator is absent.
 pub fn rowPath(row: []const u8) []const u8 {
@@ -804,7 +752,7 @@ test "nameErrorText and pathErrorText explain validation failures" {
     try std.testing.expectEqualStrings("the name is empty", nameErrorText(error.EmptyName).?);
     try std.testing.expectEqualStrings("names can't contain / or \\", nameErrorText(error.PathSeparatorInName).?);
     try std.testing.expectEqualStrings("names can't contain @ (the segment sigil)", nameErrorText(error.AtInName).?);
-    try std.testing.expectEqualStrings("names can't contain + (the group sigil)", nameErrorText(error.PlusInName).?);
+    try std.testing.expectEqualStrings("names can't contain +", nameErrorText(error.PlusInName).?);
     try std.testing.expectEqualStrings("names can't contain : (the action sigil)", nameErrorText(error.ColonInName).?);
     try std.testing.expectEqualStrings("names can't contain spaces", nameErrorText(error.SpaceInName).?);
     try std.testing.expectEqualStrings("names can't contain control characters", nameErrorText(error.ControlInName).?);

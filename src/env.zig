@@ -282,9 +282,9 @@ pub const Mode = enum { run, navigate };
 ///
 /// Injected names are recorded on the App and RESTORED on the next call - put
 /// back to whatever was under them, or removed if nothing was. Without the undo
-/// a group fan-out would carry one member's DATABASE_URL into the next; without
-/// it being a restore, an ambient DATABASE_URL the user exported would be gone
-/// from every member after the one that overrode it.
+/// a chain would carry one run's DATABASE_URL into the next; without it being a
+/// restore, an ambient DATABASE_URL the user exported would be gone from every
+/// run after the one that overrode it.
 pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode) !?[]const app_zig.EnvVar {
     try app_zig.restoreVars(app, app.env_injected);
     app.env_injected = &.{};

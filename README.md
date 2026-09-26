@@ -2,7 +2,7 @@
 
 A directory alias manager for the command line. Give a project a short name once, then jump to it, search it, run commands in it, or move files in and out of it from any prompt — `o acme` and your shell is at the project root.
 
-One TOML file holds every alias, one binary serves every command. State lives in `~/.nix` (`aliases.toml`, `groups.toml`, `config.toml`, usage data, and the segment / action / script files); override the location with `$NIX_HOME`.
+One TOML file holds every alias, one binary serves every command. State lives in `~/.nix` (`aliases.toml`, `config.toml`, usage data, and the segment / action / script files); override the location with `$NIX_HOME`.
 
 ## Demos
 
@@ -122,7 +122,7 @@ path = "C:/Users/dev/projects/acme"
 
 You can hand-edit the file (`nix --list` and resolve pick up changes immediately) or use `nix <name> <path>` to register and `nix <name> --remove` to forget. Alias lookups are case-insensitive. Names can't contain `/ \ @ + spaces` (each is reserved syntax) or the TOML metacharacters `[ ] = #` and quotes (they'd corrupt the stores).
 
-One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed, pruned, or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does, including as a `+group` member. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
+One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed, pruned, or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
 
 ### Time per project
 
@@ -347,44 +347,6 @@ nix --trust project             # approve every source for the alias
 
 The approval covers the exact bytes of **both** the declaring file and the script, so a later pull that rewrites either one asks again. Contexts whose declaration *and* script both live under `~/.nix` are yours already and need no approval.
 
-## Groups (`+` multi-alias)
-
-A **group** is a named set of aliases, kept in `~/.nix/groups.toml`. Use it to jump to several projects at once, or to fan a search/run/yank across all of them. Groups are referenced with the `+` sigil — and because of that, `+` is not allowed in alias names.
-
-```powershell
-o pa+work                # add alias `pa` to group `work` (creates it), then navigate
-o +work                  # pick members in fzf: the first selection cd's the current
-                         #   shell, each additional selection opens a new terminal
-g +work TODO            # ripgrep across every member's dir, into one fzf picker
-                         #   rows read `member\rel\path`, not the absolute root
-f +work config          # fuzzy-find files across every member
-x  +work git pull        # run a command in each member dir (per-dir header)
-s  +work                 # open every member dir in the file manager
-s  +work invoice         # pick files across every member → open with default apps
-y  +work                 # copy every member path to the clipboard
-y  +work invoice         # pick files across every member → copy the FILES
-p  +work                 # pick ONE member (fzf) → paste the clipboard there
-nix +work --resolve      # print every member path, one per line
-nix --groups             # list all groups
-nix +work --list         # list a group's members (each resolved to its path)
-nix pa+work --remove     # drop a member
-nix +work --remove       # delete the group
-```
-
-Members are **alias names**, resolved on use — move an alias and its groups follow; a member whose alias was removed is skipped with a note (and `nix <alias> --remove` strips it from every group). A group may contain another group as a `+other` member, expanded recursively (cycles and runaway nesting are guarded). The file is flat and hand-editable:
-
-```toml
-work = ["pa", "pb"]
-all  = ["+work", "pc"]   # nested
-```
-
-When `o +group` opens more than one selection, the **first** keeps the current shell and the rest each launch a new terminal via `[nav] terminal` in `config.toml` — a command template with a `{dir}` placeholder. On Windows this defaults to `wt -d {dir}` (falling back to a `start` console window); elsewhere set it explicitly:
-
-```toml
-[nav]
-terminal = "wezterm start --cwd {dir}"
-```
-
 ## Per-alias actions
 
 Save named commands per alias and run them from anywhere with `x <alias> :<name>` — like `package.json` scripts, but language-agnostic. Actions are plain shell strings (so `&&`, pipes, and redirects work), run in the alias directory.
@@ -438,7 +400,6 @@ x acme :                  # pick from acme's actions (o acme : asks the same)
 x acme -o :serve          # start it in a window of its own and come straight back
 x acme :test -- --json    # pass arguments through to the command
 x acme :build :test       # a chain: in order, stopping at the first failure
-x +work :test             # run each member's own `test` action (members without it are skipped)
 ```
 
 **Arguments** are appended to the command, so `x acme :test -- --json` runs `zig build test --json`. The `--` is optional; it's there for when the argument would otherwise look like one of nix's own flags. If the command contains `{args}`, the arguments are substituted there instead of appended — for the ones whose arguments belong in the middle:
@@ -496,7 +457,7 @@ The list lives in `config.toml`, not in an actions file, and that is deliberate:
 
 #### Missing directories: `[confirm] create_dirs`
 
-When a path nix is about to use does not exist (registering `nix acme C:\new`, an alias whose folder was moved, a `seg@alias`, a group member), it asks `Create it? [Y/n]`; Enter creates it. Without a console (an agent's shell, a script, `--no-prompt`) it refuses and creates nothing, so a typo cannot quietly become an empty folder that the next write lands in. If you never want the question yourself:
+When a path nix is about to use does not exist (registering `nix acme C:\new`, an alias whose folder was moved, a `seg@alias`), it asks `Create it? [Y/n]`; Enter creates it. Without a console (an agent's shell, a script, `--no-prompt`) it refuses and creates nothing, so a typo cannot quietly become an empty folder that the next write lands in. If you never want the question yourself:
 
 ```toml
 [confirm]
@@ -634,7 +595,7 @@ on_yank  = 'hoot send "{message}" --tag {alias}'   # yanked path C:/work/acme ·
 
 They fire only on success (a failed `p`/`y` already has your eyes on it) with `{alias}`, `{message}`, `{status}` (`ok`), and `{level}` (`info`) — quiet log entries, never toasts, made to be read back later from the notifier's inbox.
 
-For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `x acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). It fans out too: `x +work build` runs each member's own script. Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
+For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `x acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
 
 ## Per-project environment (`.nix/env.toml`)
 
@@ -648,7 +609,7 @@ API_BASE     = "https://staging.internal"
 ACME_TOKEN   = "${secret:acme-api}"
 ```
 
-Every `x acme <cmd>`, every `x acme :action`, every `x +work <cmd>` fan-out, and every `o acme` session gets them. Nothing to source, nothing to remember, and no `.env` file the repo has to gitignore.
+Every `x acme <cmd>`, every `x acme :action`, and every `o acme` session gets them. Nothing to source, nothing to remember, and no `.env` file the repo has to gitignore.
 
 **The private layer wins.** `~/.nix/env/<alias>.toml` has the same `[env]` shape and overrides the committed file per key — deliberately the opposite of the actions rule. The committed file is the project's *defaults*, the thing that should work for everyone who clones it; the central file is the only place your machine's real database can go without dirtying the repo:
 
@@ -777,11 +738,11 @@ Other tools can point at the same file wherever they take custom instructions.
 
 `nix --agent [topic]` prints the full specification and safety tier for an agent (or `<cmd> --agent`; bare `nix --agent` indexes all topics).
 
-`nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh). Group fan-outs are charged to the group itself — a `+name` key in the same file — never to the members, so an alias's own frecency only moves when you use it directly. Prune still won't ambush you: members of a recently used group inherit its recency in the ranking, marked `(via +group)`, so an alias you only ever reach through `x +work …` doesn't rank as never-used.
+`nix --prune` cleans a crusty alias list: an fzf multi-select of every alias ranked prune-first — dead targets (directory gone), then never-used, then least-recently used. Tab marks, Enter removes the marked aliases, Esc cancels; `--no-prompt` just prints the ranking. The ranking comes from `~/.nix/usage`, a small file the resolve paths maintain automatically (debounced to at most one write per alias per hour; delete it any time to start fresh).
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, the per-project `[env]` layers, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
-`nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no usage recording, no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `x <alias> <cmd>`, a `:action`, group fan-outs — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
+`nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no usage recording, no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `x <alias> <cmd>`, a `:action` — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
 
 ## License
 

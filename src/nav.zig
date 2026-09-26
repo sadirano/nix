@@ -1,7 +1,5 @@
 //! Navigation mechanics: stacking an interactive subshell in a target dir
-//! (with the project's .nix/scripts scoped onto PATH), and the group form —
-//! fzf multi-select where the first pick keeps the current shell and each
-//! additional one opens a new terminal via [nav] terminal.
+//! (with the project's .nix/scripts scoped onto PATH).
 
 const std = @import("std");
 const Io = std.Io;
@@ -14,13 +12,12 @@ const timelog = @import("timelog.zig");
 
 const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
-const resolveGroupTargets = resolve.resolveGroupTargets;
 const rowPath = resolve.rowPath;
 const rowName = resolve.rowName;
 const aliasRunEnv = run_zig.aliasRunEnv;
 
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the
-/// single-target navigation primitive shared by alias and group navigation. The
+/// navigation primitive. The
 /// shell gets the alias's `.nix/scripts` on PATH (scoped to the subshell), so
 /// inside an `o <alias>` session the project's own `build`/`clean`/… just work,
 /// plus NIX_ALIAS/NIX_ALIAS_PATH so anything started from the session (prompts,
@@ -77,93 +74,6 @@ pub fn isCmdShell(shell: []const u8) bool {
     return std.ascii.eqlIgnoreCase(base, "cmd.exe") or std.ascii.eqlIgnoreCase(base, "cmd");
 }
 
-/// navigateGroup handles `o +group`: resolve the members, and with more than one,
-/// present an fzf multi-select (rows `name -> path`). The topmost selected row
-/// takes the current shell (a subshell stacked there); each additional selection
-/// opens a new terminal via launchTerminal. A single live member just navigates.
-pub fn navigateGroup(app: *App, group: []const u8) !u8 {
-    const targets = (try resolveGroupTargets(app, group, true)) orelse return 1;
-    if (targets.len == 1) return enterDir(app, targets[0].name, targets[0].path);
-    // Navigation has no non-interactive form: picking is the whole command, and
-    // "cd to all of them" isn't a thing. A single-member group above needs no
-    // pick, so it still navigates under --no-prompt.
-    if (app.no_prompt) {
-        try app.err.print("nix: +{s} has {d} members and picking one is interactive; resolve a member instead (`nix <member>`)\n", .{ group, targets.len });
-        return 1;
-    }
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
-        try app.err.print("nix: install fzf to pick among +{s}'s members (or `o <member>`)\n", .{group});
-        return 1;
-    }
-    var input: std.ArrayList(u8) = .empty;
-    for (targets) |t| try input.print(app.arena, "{s} -> {s}\n", .{ t.name, t.path });
-    const fzf_argv = [_][]const u8{ "fzf", "--multi", "--prompt", "go> " };
-    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
-    if (res.code != 0) return 0; // cancelled
-    const sel = std.mem.trim(u8, res.output, " \t\r\n");
-    if (sel.len == 0) return 0;
-
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
-    var first_name: []const u8 = "";
-    var first_path: ?[]const u8 = null;
-    var lines = std.mem.splitScalar(u8, sel, '\n');
-    while (lines.next()) |ln| {
-        const row = std.mem.trim(u8, ln, " \t\r");
-        if (row.len == 0) continue;
-        const path = rowPath(row);
-        if (first_path == null) {
-            first_name = rowName(row); // topmost selection → current shell (entered last)
-            first_path = path;
-        } else if (!launchTerminal(app, cfg, path)) {
-            try app.err.print("nix: could not open a new terminal for {s} (set [nav] terminal)\n", .{path});
-        }
-    }
-    // Enter the first selection in THIS shell last: it blocks (stacks a subshell),
-    // so the extra terminals must already have been launched above.
-    if (first_path) |p| return enterDir(app, first_name, p);
-    return 0;
-}
-
-/// buildTerminalArgv splits a `[nav] terminal` template into argv, substituting
-/// `{dir}` in each token. Tokens split on whitespace, so `{dir}` should be its
-/// own token (or embedded, e.g. `--cwd={dir}`); a dir with spaces stays one arg.
-pub fn buildTerminalArgv(arena: std.mem.Allocator, template: []const u8, dir: []const u8) ![]const []const u8 {
-    var argv: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.tokenizeAny(u8, template, " \t");
-    while (it.next()) |tok| {
-        if (std.mem.indexOf(u8, tok, "{dir}") != null) {
-            try argv.append(arena, try std.mem.replaceOwned(u8, arena, tok, "{dir}", dir));
-        } else {
-            try argv.append(arena, tok);
-        }
-    }
-    if (argv.items.len == 0) return error.EmptyTerminalTemplate;
-    return argv.items;
-}
-
-/// launchTerminal opens a new terminal rooted at `dir` (the extra selections of a
-/// group navigation). Uses `[nav] terminal` if set; else per-OS defaults: Windows
-/// tries `wt -d <dir>` then `start` a console window; Unix requires the config (no
-/// probing). Returns false if nothing could be launched (caller notes it).
-pub fn launchTerminal(app: *App, cfg: config.Config, dir: []const u8) bool {
-    if (cfg.nav_terminal.len > 0) {
-        const argv = buildTerminalArgv(app.arena, cfg.nav_terminal, dir) catch return false;
-        proc.runDetached(app.io, argv, dir, false) catch return false;
-        return true;
-    }
-    if (proc.is_windows) {
-        if (proc.findInPath(app.arena, app.io, app.env, "wt") != null) {
-            proc.runDetached(app.io, &.{ "wt", "-d", dir }, null, false) catch return false;
-            return true;
-        }
-        const comspec = app.env.get("COMSPEC") orelse "cmd.exe";
-        // `cmd /c start "" /D <dir> <shell>` opens a fresh console window there.
-        proc.runDetached(app.io, &.{ "cmd.exe", "/c", "start", "", "/D", dir, comspec }, null, false) catch return false;
-        return true;
-    }
-    return false; // Unix: no [nav] terminal configured → can't open extras
-}
-
 /// trimmedEnv reads an environment variable and treats a blank (or
 /// whitespace-only) value the same as an unset one.
 fn trimmedEnv(app: *App, name: []const u8) ?[]const u8 {
@@ -178,22 +88,6 @@ pub fn interactiveShell(app: *App) []const u8 {
     if (trimmedEnv(app, "NIX_SHELL")) |s| return s;
     if (proc.is_windows) return trimmedEnv(app, "COMSPEC") orelse "cmd.exe";
     return trimmedEnv(app, "SHELL") orelse "/bin/sh";
-}
-
-test "buildTerminalArgv: {dir} substitution, tokenization, spaces in dir" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expectEqualDeep(
-        @as([]const []const u8, &.{ "wt", "-d", "C:/work/proj" }),
-        try buildTerminalArgv(a, "wt -d {dir}", "C:/work/proj"),
-    );
-    // {dir} embedded in a token; a dir with spaces stays a single arg.
-    try std.testing.expectEqualDeep(
-        @as([]const []const u8, &.{ "term", "--cwd=/x y", "--new" }),
-        try buildTerminalArgv(a, "term --cwd={dir} --new", "/x y"),
-    );
-    try std.testing.expectError(error.EmptyTerminalTemplate, buildTerminalArgv(a, "   ", "/x"));
 }
 
 test "isUncPath / isCmdShell" {

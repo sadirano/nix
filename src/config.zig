@@ -34,11 +34,6 @@ pub const Config = struct {
     /// [grep] all = true makes `g` search with ripgrep-all (rga) by default,
     /// as if `--all` were always passed. The per-search flag still works too.
     grep_all: bool = false,
-    /// [nav] terminal: command template (with a `{dir}` placeholder) used to open
-    /// a new terminal at a dir — the extra selections when navigating a group
-    /// (`o +group`). Empty → per-OS defaults on Windows (wt/start), required on
-    /// Unix (no probing).
-    nav_terminal: []const u8 = "",
     /// [shells] executable overrides. Empty uses the conventional command name.
     shell_bash: []const u8 = "",
     shell_pwsh: []const u8 = "",
@@ -240,7 +235,7 @@ fn configPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 }
 
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
-/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted/create_dirs, [trust] always and
+/// [grep] all, [notify] hooks, [confirm] trusted/create_dirs, [trust] always and
 /// [bin] foreign. Unknown sections are ignored. A missing file yields the
 /// zero Config.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
@@ -302,11 +297,6 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
                 const v = stripQuotes(val_start);
                 if (std.ascii.eqlIgnoreCase(v, "purge")) cfg.bin_foreign = .purge else cfg.bin_foreign = .warn;
             }
-            continue;
-        }
-        if (std.mem.eql(u8, section, "nav")) {
-            // value is a command template; may contain spaces (wt -d {dir}).
-            if (std.mem.eql(u8, key, "terminal")) cfg.nav_terminal = try arena.dupe(u8, stripQuotes(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "shells")) {
