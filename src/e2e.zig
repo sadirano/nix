@@ -1735,9 +1735,19 @@ pub fn main(init: std.process.Init) !void {
             \\
         );
         const r = try c.run(&.{ "pt", "--run", ":wait" });
-        const line = trim(readFileOr(&c, ledger, ""));
-        c.check(r.code == 0 and std.mem.startsWith(u8, line, "pt ") and
-            std.mem.endsWith(u8, line, " action"), "a finished action writes one ledger line, tagged action", r);
+        // pt's line, wherever it sits: on a slow runner an EARLIER alias's
+        // action can cross the one-second line too and write a line of its own
+        // above this one, which is that alias's business and not a failure here.
+        var pt_lines: usize = 0;
+        var tagged = false;
+        var it = std.mem.splitScalar(u8, readFileOr(&c, ledger, ""), '\n');
+        while (it.next()) |l0| {
+            const l = trim(l0);
+            if (!std.mem.startsWith(u8, l, "pt ")) continue;
+            pt_lines += 1;
+            tagged = std.mem.endsWith(u8, l, " action");
+        }
+        c.check(r.code == 0 and pt_lines == 1 and tagged, "a finished action writes one ledger line, tagged action", r);
 
         // Detached runs are inherently untimeable - nix returns as soon as the
         // child is started, so there is no finish to observe. Checked on the
