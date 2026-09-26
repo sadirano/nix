@@ -758,10 +758,12 @@ fn writeManifest(app: *App, list: []const Installed) !void {
 
 /// writeReplaceAtomic is the exe-safe atomic write: temp + rename, temp cleaned
 /// on a rename refused by a running (locked) destination. Mirrors snippet.zig's
-/// wrapper install.
+/// wrapper install. Written executable: everything installed here is meant to
+/// be run, and off Windows a copy of nix under a `[bin]` name with 0o666
+/// answers every invocation with AccessDenied.
 fn writeReplaceAtomic(app: *App, dst: []const u8, data: []const u8) !void {
     const tmp = try util.uniqueTmpName(app.arena, app.io, dst);
-    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = tmp, .data = data });
+    try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = tmp, .data = data, .flags = .{ .permissions = .executable_file } });
     Io.Dir.cwd().rename(tmp, Io.Dir.cwd(), dst, app.io) catch |e| {
         Io.Dir.cwd().deleteFile(app.io, tmp) catch {};
         return e;
