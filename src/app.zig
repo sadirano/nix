@@ -10,6 +10,7 @@ const segments = @import("segments.zig");
 const dialects = @import("dialects.zig");
 const grammar = @import("grammar.zig");
 const editor = @import("editor.zig");
+const config = @import("config.zig");
 
 pub const fzf_tokyonight_theme =
     "--color=fg:#c0caf5,bg:-1,hl:#2ac3de,fg+:#c0caf5,bg+:#283457 " ++
@@ -65,7 +66,32 @@ pub const App = struct {
     /// unapproved project layer, a refused name). A chain injects once per link,
     /// and the same note three times reads as three separate problems.
     env_noted: bool = false,
+    /// config.toml, parsed once per process on first use (see loadConfig).
+    config: ?config.Config = null,
 };
+
+/// loadConfig is config.loadConfig for this process: read and parsed on the
+/// first call, then served from App. Twenty-odd call sites used to re-read the
+/// file on every decision - one gated chain link parsed it five times (the
+/// gate, the env layers, the elevated exemption, the shell table, the notify
+/// hook) - for a file nothing writes mid-process except `--trust --always`,
+/// which calls forgetConfig after it does.
+///
+/// Only a SUCCESSFUL parse is cached. A read that fails keeps failing on every
+/// call, so each site's own answer to that ("not listed", "defaults", refuse)
+/// stays exactly what it was.
+pub fn loadConfig(app: *App) !config.Config {
+    if (app.config) |c| return c;
+    const c = try config.loadConfig(app.arena, app.io, app.home);
+    app.config = c;
+    return c;
+}
+
+/// forgetConfig drops the cached parse, for the one path that writes the file
+/// and may read it again in the same process.
+pub fn forgetConfig(app: *App) void {
+    app.config = null;
+}
 
 /// One variable the per-project environment set. `from_secret` travels with it
 /// because the elevated path writes variables onto a command line, where a

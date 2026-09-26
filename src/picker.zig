@@ -258,7 +258,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
         try app.err.print("nix: unknown alias \"{s}\" (install fzf for the picker, or register it: nix {s} <path>)\n", .{ name, name });
         return null;
     }
-    const cfg = try config.loadConfig(app.arena, app.io, app.home);
+    const cfg = try app_zig.loadConfig(app);
     const excludes = try config.pickerExcludes(app.arena, cfg);
 
     const preview = if (proc.is_windows)

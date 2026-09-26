@@ -208,7 +208,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     }
 
     var d = Doc{ .app = app };
-    const cfg = try config.loadConfig(app.arena, app.io, app.home);
+    const cfg = try app_zig.loadConfig(app);
 
     try d.section("Build");
     try d.row(.info, "binary", exePath(app));

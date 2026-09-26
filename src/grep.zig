@@ -56,7 +56,7 @@ pub fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
 /// sense. So rga gets its own pipeline (grepRga); plain rg keeps grepRg. The
 /// toggle is stripped before the remaining args drive whichever runs.
 pub fn grepIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     var use_all = cfg.grep_all;
     var filtered: std.ArrayList([]const u8) = .empty;
     for (args) |a| {

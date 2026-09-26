@@ -144,7 +144,7 @@ pub fn cmdSync(app: *App) !u8 {
 /// Sync's exit stays 0. The wrappers really were regenerated, and a config
 /// line that does nothing is not a failure to do the thing that was asked.
 fn warnUnknownShortcuts(app: *App) !void {
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return;
+    const cfg = app_zig.loadConfig(app) catch return;
     const unknown = try config.unknownShortcutSlots(app.arena, cfg);
     if (unknown.len == 0) return;
     for (unknown) |k| {
@@ -231,7 +231,7 @@ pub fn cmdInit(app: *App) !u8 {
         // PowerShell resolves aliases before PATH exes, and `r` is a built-in
         // alias (Invoke-History). The run slot is `x` for exactly that reason,
         // so the warning only applies when [shortcuts] brings `r` back.
-        const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+        const cfg = app_zig.loadConfig(app) catch config.Config{};
         if (util.containsFold(try config.resolvedShortcutNames(app.arena, cfg), "r")) {
             try app.err.writeAll("PowerShell users: the built-in `r` alias shadows r.exe - add to $PROFILE:  Remove-Item Alias:r -Force\n");
         }

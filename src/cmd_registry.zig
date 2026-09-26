@@ -42,7 +42,7 @@ pub fn cmdAdd(app: *App, alias: []const u8, raw_path: []const u8) !u8 {
             // The overwhelmingly common way to type a non-path here is to mean
             // something else entirely, so name the thing they probably wanted.
             if (eql(raw_path, ":")) {
-                const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+                const cfg = app_zig.loadConfig(app) catch config.Config{};
                 try app.err.print("  to see what \"{s}\" can run, use `{s} {s} :`\n", .{ alias, config.shortcutFor(cfg, "x"), alias });
             }
         } else if (e == error.Cancelled) {

@@ -19,7 +19,7 @@ const App = app_zig.App;
 /// configured) with a composed outcome message — so a `p`/`y` that scrolled
 /// away has an inbox answer instead of a re-check. `alias` labels the context.
 pub fn notifyEvent(app: *App, comptime which: enum { paste, yank }, alias: []const u8, dir: []const u8, message: []const u8) void {
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     const template = switch (which) {
         .paste => cfg.notify_on_paste,
         .yank => cfg.notify_on_yank,

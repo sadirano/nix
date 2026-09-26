@@ -135,7 +135,7 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         var lb: [64]u8 = undefined;
         const base = wrapperName(argv0, &lb) orelse break :blk null;
         if (eql(base, "nix")) break :blk null;
-        const cfg = config.loadConfig(app.arena, app.io, app.home) catch break :blk null;
+        const cfg = app_zig.loadConfig(app) catch break :blk null;
         if (renamedMulticallAction(cfg, argv0)) |a| break :blk a;
         // Still nothing: the name may be a `[bin]` action export, a copy of nix
         // installed under a name of the user's choosing. This is the LAST thing
@@ -864,7 +864,7 @@ const systemVerb = grammar.systemVerb;
 /// arrives here already rewritten to its slot by desugarMultiCall.
 fn cmdAgent(app: *App, rest: [][]const u8) !u8 {
     // Best-effort: specs name this machine's renamed commands; defaults on error.
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     var topic: ?[]const u8 = null;
     for (rest) |a| {
         if (isGlobalFlag(a)) continue;
@@ -914,7 +914,7 @@ fn agentFacts(app: *App, spec: *const agentdocs.Spec) !agentdocs.Facts {
 fn printUsage(app: *App) !void {
     const w = app.out;
     // Best-effort: reflect the user's renamed shortcuts; defaults on any error.
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
 
     try w.writeAll(
         \\nix - fast directory alias resolver (Zig port of onix)

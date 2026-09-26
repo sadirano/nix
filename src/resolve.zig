@@ -138,7 +138,7 @@ pub fn ensureDir(app: *App, path: []const u8, subject: []const u8) !bool {
         );
         return false;
     }
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     if (cfg.confirm_create_dirs) {
         // Default yes: at a console a new directory is usually what was meant.
         // The guard that matters is the refusal above.
