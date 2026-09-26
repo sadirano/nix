@@ -389,7 +389,8 @@ fn evalSegment(
 fn lookupCtx(sf_local: segments.SegFile, sf_central: segments.SegFile, sf_global: segments.SegFile, name: []const u8) ?*const segments.ContextDef {
     return segments.lookupContext(sf_local.contexts, name) orelse
         segments.lookupContext(sf_central.contexts, name) orelse
-        segments.lookupGlobalContext(sf_global.contexts, name);
+        segments.lookupGlobalContext(sf_global.contexts, name) orelse
+        segments.lookupGlobalContext(&segments.builtin_contexts, name);
 }
 
 /// mergeProducers flattens the three segment files' `[[producers]]` blocks by

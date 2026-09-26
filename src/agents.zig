@@ -71,6 +71,13 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\across a set of aliases (`{[x]s} +work git pull`); `nix <name> <path>` registers
         \\a new alias.
         \\
+        \\**`shared@<alias>` is the project's handoff drop** - built in, resolving to
+        \\`<alias-dir>/.nix/shared/`. When the user says another agent left something
+        \\in "the shared", or you must leave something for the next agent, resolve it
+        \\with `nix shared@<alias>` rather than searching the disk for a "shared"
+        \\directory. Keep it out of version control: briefs and handoffs are not
+        \\project source.
+        \\
         \\`{[q]s}` is the exception to everything below: it closes the shell it
         \\runs in, so running it yourself ends your own session mid-task. Suggest
         \\it, never call it.

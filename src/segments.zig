@@ -250,6 +250,13 @@ pub fn lookupContext(contexts: []const ContextDef, name: []const u8) ?*const Con
     return null;
 }
 
+/// builtin_contexts answer after every segments file, so any file may redefine
+/// them. `shared@<alias>` is the project's `.nix/shared/` - the drop where
+/// agents and the user leave handoffs for each other.
+pub const builtin_contexts = [_]ContextDef{
+    .{ .segment = "shared", .scope = "global", .source_template = "/.nix/shared" },
+};
+
 pub fn lookupGlobalContext(contexts: []const ContextDef, name: []const u8) ?*const ContextDef {
     for (contexts) |*cd| {
         if (eqlFold(cd.segment, name) and eqlFold(cd.scope, "global")) return cd;

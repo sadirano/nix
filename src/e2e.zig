@@ -1672,6 +1672,13 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and pathEql(trim(r.out), expected), "@-segment resolves through its template", r);
         c.check(!proc.pathExists(io, expected), "segmented --resolve does not create the directory", r);
 
+        // shared@ needs no config, and a segments file may still redefine it.
+        const sr = try c.run(&.{ "shared@pa", "--resolve" });
+        c.check(sr.code == 0 and pathEql(trim(sr.out), join(&c, &.{ pa, ".nix", "shared" })), "shared@ is built in", sr);
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"docs\"\nsource-template = \"/documentation\"\n[[contexts]]\nsegment = \"shared\"\nsource-template = \"/handoff\"\n");
+        const so = try c.run(&.{ "shared@pa", "--resolve" });
+        c.check(so.code == 0 and pathEql(trim(so.out), join(&c, &.{ pa, "handoff" })), "a segments file overrides the built-in shared@", so);
+
         // Defining a segment writes config, so an agent's probe must not leave
         // a definition behind for a name nobody authored.
         try c.env.put("NIX_E2E_TTY", "0");

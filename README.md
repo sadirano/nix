@@ -245,6 +245,8 @@ Append subdirectory shortcuts to any alias with `@`. Each segment is defined as 
 2. **Per-alias, central:** `~/.nix/segments/<alias>.toml`
 3. **Global:** `~/.nix/segments.toml` — but only entries marked `scope = "global"` are visible here.
 
+One segment is built in and answers after all three: **`shared@<alias>`** is `<alias-path>/.nix/shared/`, the drop where you and your agents leave handoffs for each other. Keep it out of git (`.nix/shared/` in a global gitignore covers every repo); define a `shared` segment in any of the three files to point it elsewhere.
+
 ```powershell
 o docs@acme              # cd into <acme-path>/documentation
 e src@acme               # editor at <acme-path>/source
