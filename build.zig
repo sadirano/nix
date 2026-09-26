@@ -22,7 +22,17 @@ pub fn build(b: *std.Build) void {
         "baked-date",
         "Bake the real build timestamp into --version (default: true for release builds, false for Debug)",
     ) orelse (optimize != .Debug);
-    build_options.addOption([]const u8, "build_date", if (baked_date) buildDate(b) else "dev");
+    const build_date_str = if (baked_date) buildDate(b) else "dev";
+    build_options.addOption([]const u8, "build_date", build_date_str);
+    // The e2e harness's console hook (NIX_E2E_TTY, app.e2eConsole) is compiled
+    // OUT of every binary except the one built for the harness below. A hook
+    // that turns a piped stdin into "there is a person here" must not ship: it
+    // would let any shell answer the consent prompts by setting a variable.
+    build_options.addOption(bool, "e2e_hooks", false);
+    const e2e_options = b.addOptions();
+    e2e_options.addOption([]const u8, "version", version);
+    e2e_options.addOption([]const u8, "build_date", build_date_str);
+    e2e_options.addOption(bool, "e2e_hooks", true);
 
     // Library module: the tool's subsystems (store/groups/…), importable as
     // `nix` by a dependent package. The exe does NOT import it — main.zig
@@ -74,8 +84,21 @@ pub fn build(b: *std.Build) void {
     const deploy_step = b.step("deploy", "Build, then sync the binary + wrappers into ~/.nix/bin");
     deploy_step.dependOn(&deploy_cmd.step);
 
-    // `zig build e2e` builds the harness and runs it against the freshly
-    // built exe: real child processes, a scratch NIX_HOME, no interactivity.
+    // `zig build e2e` builds the harness and runs it against a nix built WITH
+    // the harness hook (the same sources, one options flag apart): real child
+    // processes, a scratch NIX_HOME, no interactivity. `zig build` alone still
+    // produces only the hook-free exe.
+    const e2e_nix = b.addExecutable(.{
+        .name = "nix-e2e",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = e2e_options.createModule() },
+            },
+        }),
+    });
     const e2e = b.addExecutable(.{
         .name = "e2e",
         .root_module = b.createModule(.{
@@ -85,7 +108,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const e2e_cmd = b.addRunArtifact(e2e);
-    e2e_cmd.addArtifactArg(exe);
+    e2e_cmd.addArtifactArg(e2e_nix);
     // The harness's value is the child-process run, which the cache can't see.
     e2e_cmd.has_side_effects = true;
     const e2e_step = b.step("e2e", "Run the end-to-end harness against the built exe");
