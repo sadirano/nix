@@ -112,10 +112,6 @@ pub const Config = struct {
     /// [hold] seconds: how long a held window waits before closing itself. Any
     /// key ends it early. 0 waits for a key with no timeout.
     hold_seconds: u32 = 5,
-    /// [watch] exclude: extra paths `r --watch` ignores, ADDED to watch's own
-    /// defaults (never replacing them - the defaults are what stops a run's own
-    /// output from triggering the next run). See watch.excludeDefaults.
-    watch_exclude: []const []const u8 = &.{},
 };
 
 /// builtinShortcuts is the default slot→name map (identity).
@@ -244,8 +240,8 @@ fn configPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 }
 
 /// loadConfig reads config.toml: the [picker] arrays, [shortcuts] overrides,
-/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted/create_dirs, [trust] always, [bin] foreign,
-/// and [watch] exclude. Unknown sections are ignored. A missing file yields the
+/// [grep] all, [nav] terminal, [notify] hooks, [confirm] trusted/create_dirs, [trust] always and
+/// [bin] foreign. Unknown sections are ignored. A missing file yields the
 /// zero Config.
 pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
     const p = try configPath(arena, home);
@@ -349,14 +345,6 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         if (std.mem.eql(u8, section, "trust")) {
             if (std.mem.eql(u8, key, "always")) {
                 cfg.trust_always = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
-            }
-            continue;
-        }
-        if (std.mem.eql(u8, section, "watch")) {
-            // Additions to watch's ignore defaults, never a replacement - see
-            // Config.watch_exclude.
-            if (std.mem.eql(u8, key, "exclude")) {
-                cfg.watch_exclude = try parseStringArray(arena, try util.gatherArrayBody(arena, all.items, &i, val_start));
             }
             continue;
         }
@@ -669,9 +657,9 @@ test renderTrustAlways {
     try std.testing.expectEqualStrings("[trust]\nalways = [\"jpmine\", \"jap\"]\n[grep]\nall = true\n", flat);
 
     // An `always` key outside [trust] belongs to somebody else; leave it alone.
-    const other = "[watch]\nalways = [\"x\"]\n";
+    const other = "[grep]\nalways = [\"x\"]\n";
     const safe = (try renderTrustAlways(a, other, &.{"jpmine"})).?;
-    try std.testing.expect(std.mem.indexOf(u8, safe, "[watch]\nalways = [\"x\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, safe, "[grep]\nalways = [\"x\"]") != null);
 
     // Identical result means there is nothing to write.
     try std.testing.expectEqual(@as(?[]const u8, null), try renderTrustAlways(a, "[trust]\nalways = [\"jpmine\"]\n", &.{"jpmine"}));

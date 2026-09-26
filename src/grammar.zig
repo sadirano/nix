@@ -202,13 +202,12 @@ pub const Scoped = struct {
     implies: ActionVerb,
 };
 pub const scoped = [_]Scoped{
-    .{ .flag = "--watch", .form = "x <alias> --watch <cmd>", .implies = .run },
     .{ .flag = "--outside", .form = "x <alias> --outside <cmd>", .implies = .run },
     .{ .flag = "--all", .form = "g <alias> <pat> --all", .implies = .grep },
 };
 
 /// impliedAction resolves a sub-command flag typed where no action was named.
-/// `nix acme --watch <cmd>` has one possible reading, so it gets it rather
+/// `nix acme --outside <cmd>` has one possible reading, so it gets it rather
 /// than an error naming the spelling it should have used.
 ///
 /// NOT fuzzy matching: nothing is being guessed. The token is in the table or
@@ -324,7 +323,7 @@ test "every flag resolves to its verb, unknown flags to null" {
     try std.testing.expect(knows("--list"));
     try std.testing.expect(knows("--grep"));
     try std.testing.expect(knows("--no-prompt"));
-    try std.testing.expect(knows("--watch"));
+    try std.testing.expect(knows("--outside"));
     try std.testing.expect(!knows("--bogus"));
 }
 
@@ -368,7 +367,7 @@ test "public rows carry help text, internal ones are excluded from it" {
 }
 
 test "impliedAction resolves a scoped flag to its owner, and nothing else" {
-    try std.testing.expectEqual(ActionVerb.run, impliedAction("--watch").?);
+    try std.testing.expectEqual(ActionVerb.run, impliedAction("--outside").?);
     try std.testing.expectEqual(ActionVerb.run, impliedAction("--outside").?);
     try std.testing.expectEqual(ActionVerb.grep, impliedAction("--all").?);
     try std.testing.expect(impliedAction("--wtach") == null);
@@ -389,8 +388,8 @@ test "writeMisplacedHint names the scope, and declines an unknown flag" {
     var buf: [256]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
 
-    try std.testing.expect(try writeMisplacedHint(&w, "--watch"));
-    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "x <alias> --watch <cmd>") != null);
+    try std.testing.expect(try writeMisplacedHint(&w, "--outside"));
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "x <alias> --outside <cmd>") != null);
 
     w = .fixed(&buf);
     try std.testing.expect(try writeMisplacedHint(&w, "--list"));

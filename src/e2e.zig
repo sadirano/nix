@@ -303,7 +303,7 @@ pub fn main(init: std.process.Init) !void {
 
         // A flag nix knows, typed in a scope that doesn't parse it, says WHERE
         // it belongs. "unknown flag" alone is true and useless when the flag
-        // exists - which is how `o <alias> --watch` read before.
+        // exists.
         // A sub-command flag with an alias in front of it can only have meant
         // its owner, so it runs rather than being explained back.
         r = try c.run(&.{ "pa", "--outside", "cmd", "/c", "exit", "0" });
@@ -311,8 +311,8 @@ pub fn main(init: std.process.Init) !void {
 
         // With no alias there is nothing to imply it onto: still an error, and
         // still told where it belongs.
-        r = try c.run(&.{ "--watch", "echo", "hi" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--watch <cmd>") != null, "a run-scoped flag with no alias names the command that owns it", r);
+        r = try c.run(&.{ "--outside", "echo", "hi" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--outside <cmd>") != null, "a run-scoped flag with no alias names the command that owns it", r);
 
         r = try c.run(&.{ "pa", "--list" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "takes no alias") != null, "a system flag after an alias says it takes no alias", r);
@@ -589,26 +589,6 @@ pub fn main(init: std.process.Init) !void {
 
         // Put back what the blocks after this one expect to find.
         try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\n");
-    }
-
-    // --- watch mode refusals (r --watch) ---------------------------------------
-    //
-    // The loop itself cannot be driven from here: it holds the terminal until
-    // Ctrl-C, and proving it reruns needs a real filesystem event with no way to
-    // stop afterwards. The DECISIONS around it are testable, and they are the
-    // part that has to hold for an agent - watch.zig unit-tests the ignore rule
-    // and the notification-buffer walk, which is where the substance is.
-    {
-        var r = try c.run(&.{ "--no-prompt", "pa", "--run", "--watch", ":hello" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--no-prompt") != null, "--watch refuses under --no-prompt rather than blocking forever", r);
-
-        r = try c.run(&.{ "pa", "--run", "--watch", "--outside", ":hello" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--outside") != null, "--watch and --outside refuse each other", r);
-
-        // The refusals must not be the flag going unrecognized: without them,
-        // the same command runs once and exits 0.
-        r = try c.run(&.{ "pa", "--run", ":hello" });
-        c.check(r.code == 0, "the same action without --watch still runs once", r);
     }
 
     // --- provenance gate (cloned actions and scripts) --------------------------

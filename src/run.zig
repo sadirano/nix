@@ -16,7 +16,6 @@ const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
 const env_zig = @import("env.zig");
-const watch = @import("watch.zig");
 const interrupt = @import("interrupt.zig");
 
 const App = app_zig.App;
@@ -39,45 +38,20 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     var argv = action_args;
     var outside = false;
-    var watching = false;
-    // All three flags sit before the action, and any order reads naturally, so
-    // accept them in any.
-    while (argv.len > 0) {
-        if (eql(argv[0], "-o") or eql(argv[0], "--outside")) {
-            outside = true;
-        } else if (eql(argv[0], "--watch")) {
-            watching = true;
-        } else break;
+    if (argv.len > 0 and (eql(argv[0], "-o") or eql(argv[0], "--outside"))) {
+        outside = true;
         argv = argv[1..];
     }
     if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
-    if (watching) {
-        // --outside hands the terminal straight back, and a detached command
-        // has no finish to observe: the loop would spin, spawning a window per
-        // change with nothing reporting whether any of them worked.
-        if (outside) {
-            try app.err.writeAll("nix: --watch and --outside pull in opposite directions - one holds this terminal to report each run, the other hands it back\n");
-            return 1;
-        }
-        // --no-prompt is a declaration that nothing may block. --watch is
-        // nothing BUT blocking: it occupies the terminal until Ctrl-C. An agent
-        // that wants the same effect runs the action once.
-        if (app.no_prompt) {
-            try app.err.writeAll("nix: --watch holds the terminal until Ctrl-C, which --no-prompt rules out - run the action once instead\n");
-            return 1;
-        }
-    }
     if (argv.len == 0) {
         try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `r <alias> :`)\n");
         return 1;
     }
-    if (watching) return watchLoop(app, alias, target, argv);
     return runOnce(app, alias, target, argv, outside);
 }
 
 /// runOnce is one pass of `r`: a named action (or chain), a project script, or a
-/// literal command. Split out from cmdRun so watch mode has a body to call
-/// again - everything before it is flag parsing that must happen exactly once.
+/// literal command.
 fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8, outside: bool) !u8 {
     // Named action(s): a leading ':' on the first token (`r <alias> :test`). A
     // bare ':' lists the alias's actions. Runs as a shell string in the alias dir.
@@ -136,59 +110,6 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
     };
     span.finish(app, alias, .run);
     return code;
-}
-
-/// watchLoop is `--watch`: run, then rerun whenever something under the alias
-/// dir changes, until Ctrl-C. A held-open foreground command, never a daemon.
-/// The status line goes to stderr so a transcript still pipes. Every rerun
-/// goes through runOnce, so `[notify] on_finish` fires each time.
-fn watchLoop(app: *App, alias: []const u8, dir: []const u8, argv: [][]const u8) !u8 {
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
-    const exclude_set = try watch.excludes(app.arena, cfg);
-    var w = watch.Watcher.init(app.arena, app.io, dir) catch |e| {
-        try app.err.print("nix: --watch: cannot watch {s} ({s})\n", .{ dir, @errorName(e) });
-        if (!proc.is_windows) try app.err.writeAll("  watch mode is Windows-only for now\n");
-        return 1;
-    };
-    defer w.deinit();
-
-    var runs: usize = 0;
-    var code: u8 = 0;
-    while (true) {
-        runs += 1;
-        const t0 = Io.Clock.awake.now(app.io).nanoseconds;
-        code = try runOnce(app, alias, dir, argv, false);
-        const ms = elapsedMs(app.io, t0);
-
-        // Ctrl-C during a rerun now returns through the normal path instead of
-        // taking nix down, so the loop has to notice and leave - otherwise the
-        // documented way out of `--watch` would just start the next rerun.
-        if (interrupt.fired()) {
-            try app.out.flush();
-            try app.err.print("\nwatching {s} - stopped after {d} run{s}\n", .{ alias, runs, if (runs == 1) "" else "s" });
-            try app.err.flush();
-            return code;
-        }
-        try app.out.flush();
-        try app.err.print("watching {s} - {d} run{s}, last: {s} in {s} - Ctrl-C to stop\n", .{
-            alias,
-            runs,
-            if (runs == 1) "" else "s",
-            if (code == 0) "ok" else try std.fmt.allocPrint(app.arena, "exit {d}", .{code}),
-            try notify.fmtDuration(app.arena, ms),
-        });
-        try app.err.flush();
-
-        // Blocks here until something worth rerunning for changes. Null means
-        // the watch itself ended (the directory went away, a handle failed);
-        // the last run's exit code is the honest answer for that.
-        const hit = (try w.next(exclude_set)) orelse {
-            try app.err.writeAll("nix: --watch: the watch ended\n");
-            return code;
-        };
-        try app.err.print("\n==> {s} changed - rerunning\n", .{hit});
-        try app.err.flush();
-    }
 }
 
 /// The environment variable that stops an exported action from re-entering

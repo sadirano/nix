@@ -71,7 +71,7 @@ pub fn arm() void {
 }
 
 /// disarm restores the default meaning of Ctrl-C. The event handle is kept for
-/// the next run: `--watch` arms once per rerun, and one handle costs nothing.
+/// the next run of a chain, and one handle costs nothing.
 pub fn disarm() void {
     if (!proc.is_windows) return;
     if (!armed) return;
