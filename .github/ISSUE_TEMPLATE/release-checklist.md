@@ -154,57 +154,6 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       shows the NAME only, and the value appears in neither the console
       output, nor the action's log, nor Task Manager's command-line column
       for the elevated process.
-- [ ] `x <alias> --deps :build` runs dependencies first and stops at the first
-      failure. A build order that continues past a failed dependency produces
-      a binary from stale inputs, which is worse than no build at all.
-
-      Setup (scratch: `NIX_HOME` keeps the aliases AND the approvals out of
-      the real `~/.nix`):
-
-      ```powershell
-      $root = "$env:TEMP\deps-check"
-      Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
-      $lib = "$root\lib"; $app = "$root\app"
-      New-Item -ItemType Directory -Force "$lib\.nix","$app\.nix" | Out-Null
-      $env:NIX_HOME = "$root\home"
-      nix lib $lib
-      nix app $app
-      Set-Content "$lib\.nix\actions.toml" @'
-      [actions]
-      build = "cmd /c echo lib > LIB_RAN.txt && exit 1"
-      '@
-      Set-Content "$app\.nix\actions.toml" @'
-      [deps]
-      needs = ["lib"]
-
-      [actions]
-      build = "cmd /c echo app > APP_RAN.txt"
-      '@
-      nix --trust lib
-      nix --trust app
-      nix app --run --deps :build
-      ```
-
-      **Trust BOTH aliases first.** A `--deps` chain gates the dependency
-      even where the same action run directly would not, so without it the
-      run stops at `lib` on a refusal - which reads exactly like "stopped at
-      the first failure" and tempts you to tick this having tested the
-      provenance gate instead.
-
-      Assert by MARKER FILE, not stdout - a chain that prints the right thing
-      while running the wrong commands is still a bug:
-
-      | case | change | expect |
-      |---|---|---|
-      | A dependency fails | as above | non-zero; `LIB_RAN` yes, `APP_RAN` **no** |
-      | B dependency succeeds | drop `&& exit 1` | exit 0; both, lib first |
-      | C dependency lacks `:build` | rename lib's action | `:build is not defined by: lib`, `nothing was run`; NEITHER marker |
-      | D control, no `--deps` | omit the flag | exit 0; `LIB_RAN` **no**, `APP_RAN` yes |
-
-      D is what makes A meaningful: it proves the dependency is not consulted
-      without the flag, so A's `LIB_RAN` is `--deps` working rather than a
-      coincidence. C fires before the trust gate, being a pure declaration
-      check, so it is the one case that needs no `--trust`.
 
 ## 7. Per-project environment
 
@@ -217,10 +166,10 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       NOT refuse - it runs WITHOUT that layer and says so once. So "the
       command worked" is not evidence the file applied; read `--env`, or
       check the variable itself.
-- [ ] Variables do not leak between members of a group fan-out or a `--deps`
-      chain. run.zig removes each layer before injecting the next, and this
-      is the only place that is observable - a leak hands one project's
-      credentials to the next command in the chain.
+- [ ] Variables do not leak between members of a group fan-out. run.zig
+      removes each layer before injecting the next, and this is the only
+      place that is observable - a leak hands one project's credentials to
+      the next member.
 
       ```powershell
       $root = "$env:TEMP\env-check"
@@ -255,9 +204,6 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       the env file was never applied (unapproved env.toml runs WITHOUT the
       layer rather than refusing), and the fan-out proves nothing: both
       blocks would look clean for the wrong reason.
-
-      Then repeat over a `--deps` chain, which needs `nix --trust` on every
-      alias in it - see the `--deps` step above.
 
 ## 8. `[bin]` exports
 
