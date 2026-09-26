@@ -43,11 +43,26 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         argv = argv[1..];
     }
     if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
+    if (takeHoldMarker(argv)) |rest| {
+        app.hold_requested = true;
+        argv = rest;
+    }
     if (argv.len == 0) {
         try app.err.writeAll("usage: nix <alias> --run <cmd> [args...]   (or :<action>, see `x <alias> :`)\n");
         return 1;
     }
     return runOnce(app, alias, target, argv, outside);
+}
+
+/// takeHoldMarker strips a leading `!` from the command (`x acme !git status`,
+/// or `! git status`), which asks for the window to be held after the run
+/// whatever its outcome. Returns null when there is no marker. Mutates argv[0]
+/// in place, so the caller's slice is what it runs.
+fn takeHoldMarker(argv: [][]const u8) ?[][]const u8 {
+    if (argv.len == 0 or argv[0].len == 0 or argv[0][0] != '!') return null;
+    if (argv[0].len == 1) return argv[1..];
+    argv[0] = argv[0][1..];
+    return argv;
 }
 
 /// runOnce is one pass of `r`: a named action (or chain), a project script, or a
@@ -814,6 +829,21 @@ pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const
         try app.err.print("nix: notify hook: {s}\n", .{@errorName(e)});
     };
     return code;
+}
+
+test "takeHoldMarker: a leading ! asks for the hold and is not part of the command" {
+    var a = [_][]const u8{ "!git", "status" };
+    const r1 = takeHoldMarker(&a).?;
+    try std.testing.expectEqual(@as(usize, 2), r1.len);
+    try std.testing.expectEqualStrings("git", r1[0]);
+    var b = [_][]const u8{ "!", "git", "status" };
+    try std.testing.expectEqualStrings("git", takeHoldMarker(&b).?[0]);
+    var c = [_][]const u8{"!:test"};
+    try std.testing.expectEqualStrings(":test", takeHoldMarker(&c).?[0]);
+    var d = [_][]const u8{ "git", "!x" };
+    try std.testing.expect(takeHoldMarker(&d) == null);
+    var e = [_][]const u8{"!"};
+    try std.testing.expectEqual(@as(usize, 0), takeHoldMarker(&e).?.len);
 }
 
 test "stripSudo: the marker is the first token, or it is not a marker" {

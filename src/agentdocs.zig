@@ -289,6 +289,10 @@ pub const specs = [_]Spec{
         \\and never under --no-prompt or a piped stdin, so an agent shell is not
         \\affected. If you are spawning nix somewhere a stray console could
         \\exist, pass --no-prompt and it can never block.
+        \\
+        \\A leading `!` on the command (`x <alias> !git status`) holds the
+        \\window after success too, with no timeout. It is for the user at a
+        \\shortcut; never add it to a command you run yourself.
         ,
         .agent_use =
         \\This is the command to reach for. It is safe, it is scriptable, and it

@@ -52,6 +52,9 @@ extern "kernel32" fn FlushConsoleInputBuffer(hConsoleInput: *anyopaque) callconv
 /// than merely unwanted: --no-prompt (the caller declared nothing may block), a
 /// non-console stdin (a pipe answers EOF instantly, so the hold would be a
 /// no-op that only prints a confusing line), and a shared console.
+///
+/// An explicit `!` (app.hold_requested) lifts only the shared-console check:
+/// the user asked, so a launcher that puts a cmd.exe beside nix still holds.
 pub fn onFailure(app: *App) void {
     if (!gated(app)) return;
     app.err.writeAll("\n(this window was opened for nix and would close now - press Enter)\n") catch {};
@@ -65,7 +68,17 @@ pub fn onFailure(app: *App) void {
 /// `[hold] on_success`, gets its window held after it worked. Unlike a failure
 /// it times out, because nothing has gone wrong and an unattended shortcut must
 /// still finish on its own.
+///
+/// An explicit `!` waits for a key with no timeout: it was asked for by
+/// someone who means to read the output, not configured once and forgotten.
 pub fn onSuccess(app: *App) void {
+    if (app.hold_requested) {
+        if (!gated(app)) return;
+        app.err.writeAll("\n(press a key to close)\n") catch {};
+        app.err.flush() catch {};
+        waitForKey(app.io, 0);
+        return;
+    }
     if (app.last_action.len == 0 or !gated(app)) return;
     const cfg = app_zig.loadConfig(app) catch return;
     if (!actions.namesAction(cfg.hold_on_success, app.last_alias, app.last_action)) return;
@@ -79,7 +92,7 @@ pub fn onSuccess(app: *App) void {
 }
 
 fn gated(app: *App) bool {
-    return app_zig.hasConsole(app) and proc.ownsConsole();
+    return app_zig.hasConsole(app) and (app.hold_requested or proc.ownsConsole());
 }
 
 /// waitForKey blocks until a key goes down or `timeout_ms` elapses (0 waits

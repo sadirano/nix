@@ -524,9 +524,16 @@ nix: :build failed (exit 1) - stopping
 
 Launched from a shell you already had open, nothing happens: the shell is attached too, the window outlives nix, the error is still on screen, and stopping would just be in the way. That distinction — `GetConsoleProcessList` reporting exactly one process — is what lets this be the default instead of a flag you'd have to remember on the one run that fails.
 
-It's at nix's single exit point rather than per action, so a failing chain, an unapproved action and a plain `unknown alias` all hold alike; from a shortcut each one is a window that blinks and is gone. Success never holds — there's nothing to read.
+It's at nix's single exit point rather than per action, so a failing chain, an unapproved action and a plain `unknown alias` all hold alike; from a shortcut each one is a window that blinks and is gone. Success holds only when you ask for it.
 
-Three things switch it off, each a case where holding would be wrong rather than merely unwanted: `--no-prompt` (the caller has declared that nothing may block), a stdin that isn't a console (a pipe answers instantly, so the hold would be a no-op that printed a confusing line), and a shared console. If you want to hold on *success* too — to read a build log you're about to overwrite — end the chain with a `:pause` action from `~/.nix/actions/_default.toml`, or launch through `cmd /k`.
+Three things switch it off, each a case where holding would be wrong rather than merely unwanted: `--no-prompt` (the caller has declared that nothing may block), a stdin that isn't a console (a pipe answers instantly, so the hold would be a no-op that printed a confusing line), and a shared console. To hold on *success* too, put a `!` in front of the command:
+
+```powershell
+x acme !git status        # or: x acme ! git status
+x acme !:build :test
+```
+
+The window then waits for a key whatever the outcome, with no timeout, and even when nix shares its console (a launcher that puts `cmd.exe` beside it) — you asked, so only `--no-prompt` and a piped stdin still switch it off. In PowerShell and cmd `!` is an ordinary character; in an interactive bash, quote it (`'!git'`) or history expansion eats it. For an action whose output is always the point, list it in `[hold] on_success` instead.
 
 ### The palette (`nix --actions`)
 
