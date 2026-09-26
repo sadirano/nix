@@ -369,7 +369,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
             // scripts are two different things to have read. Identical ref-sets
             // collapse to one row on their own, since the hash is the same.
             var named_file = false;
-            for (try actions.parseTable(app.arena, body, "actions")) |a| {
+            for (try actions.parse(app.arena, body)) |a| {
                 const record = (try recordForCommand(app, dir, true, a.name, a.command)) orelse continue;
                 if (context.isTrusted(app, record)) continue;
                 if (!named_file) {
@@ -391,7 +391,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 try plan.wrote(app.arena, "{s}: approved {s}\n", .{ alias, path });
                 // Name the scripts too - "approved" should say how far it reached.
                 var seen: std.ArrayList([]const u8) = .empty;
-                for (try actions.parseTable(app.arena, body, "actions")) |a| {
+                for (try actions.parse(app.arena, body)) |a| {
                     for (try refs_zig.referencedFiles(app, dir, a.command)) |f| {
                         if (refs_zig.containsFold(seen.items, f)) continue;
                         try seen.append(app.arena, f);
@@ -435,7 +435,7 @@ pub fn unapproved(app: *App, alias: []const u8, dir: []const u8) bool {
     if (context.underHome(app.home, dir)) return false;
     if (context.standing(app, alias)) return false;
     const body = app_zig.readFileMaybe(app, path) orelse return false;
-    for (actions.parseTable(app.arena, body, "actions") catch return false) |a| {
+    for (actions.parse(app.arena, body) catch return false) |a| {
         const record = (recordForCommand(app, dir, true, a.name, a.command) catch continue) orelse continue;
         if (!context.isTrusted(app, record)) return true;
     }

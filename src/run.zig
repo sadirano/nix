@@ -338,9 +338,9 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
 /// machine-wide file alone and never the current directory's project actions.
 pub fn resolveExportAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
     if (dir.len == 0) {
-        const list = try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home));
-        const cmd = actions.find(list, name) orelse return null;
-        return .{ .command = cmd, .from_project = false };
+        for (try actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home))) |a| if (store.eqlFoldAscii(a.name, name))
+            return .{ .command = a.command, .from_project = false, .shell = a.shell };
+        return null;
     }
     return resolveAction(app, alias, dir, name);
 }
@@ -632,11 +632,7 @@ pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_defa
 /// reaches listings or [notify] messages (those all read the raw,
 /// unexpanded command string). An unresolved name aborts before spawn.
 pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool, shell: actions.Shell) !u8 {
-    const cmd = (try expandSecrets(app, command)) orelse return 1;
-    if (shell != .default and (outside or stripSudo(cmd) != null)) {
-        try app.err.writeAll("nix: shell-specific actions cannot run in a separate or elevated console yet\n");
-        return 1;
-    }
+    const cmd = (try inShell(app, shell, (try expandSecrets(app, command)) orelse return 1)) orelse return 1;
     // An elevated action is never a foreground run, asked for or not: UAC hands
     // back a separate process under a different token, and it cannot write into
     // this console. It gets a window, like `--outside` does.
@@ -660,16 +656,6 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     // "stop now", which is what it should mean at a picker or a prompt.
     interrupt.arm();
     defer interrupt.disarm();
-    if (shell != .default) {
-        const cfg = config.loadConfig(app.arena, app.io, app.home) catch |e| {
-            try app.err.print("nix: read shell configuration: {s}\n", .{@errorName(e)});
-            return 1;
-        };
-        if (recording(app, cfg, name)) {
-            try app.err.writeAll("nix: recording shell-specific actions is not supported yet\n");
-            return 1;
-        }
-    }
     if (try openRecording(app, alias, name, command)) |rec| {
         var file = rec.file;
         // Footer written while the handle is open: Io.File exposes no
@@ -694,27 +680,46 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
         span.finish(app, alias, kind);
         return code;
     }
-    const code = if (shell == .default)
-        proc.runShellInherit(app.arena, app.io, cmd, dir, env)
-    else
-        blk: {
-            const cfg = config.loadConfig(app.arena, app.io, app.home) catch |e| {
-                try app.err.print("nix: read shell configuration: {s}\n", .{@errorName(e)});
-                return 1;
-            };
-            const executable = switch (shell) {
-                .bash => if (cfg.shell_bash.len > 0) cfg.shell_bash else "bash",
-                .pwsh => if (cfg.shell_pwsh.len > 0) cfg.shell_pwsh else "pwsh",
-                .default => unreachable,
-            };
-            const argv: []const []const u8 = if (shell == .bash) &.{ executable, "-c", cmd } else &.{ executable, "-NoProfile", "-Command", cmd };
-            break :blk proc.runInheritEnv(app.io, argv, dir, env);
-        } catch |e| {
-            try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
-            return 1;
-        };
+    const code = proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
+        try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
+        return 1;
+    };
     span.finish(app, alias, kind);
     return code;
+}
+
+/// inShell turns a `[bash]` or `[pwsh]` action into a platform-shell command
+/// line that starts that shell, so it takes every path a default action does -
+/// foreground, recorded, `--outside`, elevated. A `sudo` marker stays in front.
+///
+/// The script travels base64-encoded: it crosses cmd's parser and then the
+/// shell's argv parsing, and no quoting survives both. pwsh decodes it natively
+/// (-EncodedCommand, UTF-16LE). bash decodes it itself: with IFS empty and
+/// globbing off the substitution reaches eval as one word, and the script's
+/// first line restores both. A spaced path is quoted behind `call`, because cmd
+/// strips quotes from a line that opens with one.
+fn inShell(app: *App, shell: actions.Shell, command: []const u8) !?[]const u8 {
+    if (shell == .default) return command;
+    const cfg = config.loadConfig(app.arena, app.io, app.home) catch |e| {
+        try app.err.print("nix: read shell configuration: {s}\n", .{@errorName(e)});
+        return null;
+    };
+    const set = if (shell == .bash) cfg.shell_bash else cfg.shell_pwsh;
+    const exe = if (set.len > 0) set else @tagName(shell);
+    const script = stripSudo(command) orelse command;
+    const enc = std.base64.standard.Encoder;
+    const raw = if (shell == .pwsh)
+        std.mem.sliceAsBytes(try std.unicode.wtf8ToWtf16LeAlloc(app.arena, script))
+    else
+        try std.fmt.allocPrint(app.arena, "unset IFS; set +f\n{s}", .{script});
+    const b64 = enc.encode(try app.arena.alloc(u8, enc.calcSize(raw.len)), raw);
+    const q: u8 = if (proc.is_windows) '"' else '\'';
+    const lead = if (std.mem.indexOfScalar(u8, exe, ' ') == null) exe else try std.fmt.allocPrint(app.arena, "{s}{c}{s}{c}", .{ if (proc.is_windows) "call " else "", q, exe, q });
+    const sudo = if (script.ptr != command.ptr) "sudo " else "";
+    return if (shell == .pwsh)
+        try std.fmt.allocPrint(app.arena, "{s}{s} -NoProfile -EncodedCommand {s}", .{ sudo, lead, b64 })
+    else
+        try std.fmt.allocPrint(app.arena, "{s}{s} -c {c}IFS=; set -f; eval $(base64 -d <<<{s}){c}", .{ sudo, lead, q, b64, q });
 }
 
 /// recording is whether this run is recorded: the per-invocation flag if given,
@@ -894,11 +899,7 @@ fn expandSecrets(app: *App, command: []const u8) !?[]const u8 {
 /// Like `--outside`, no [notify] hook fires: nothing here observes the finish.
 /// An action marked `sudo` starts elevated, here as anywhere else.
 pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, shell: actions.Shell) !u8 {
-    if (shell != .default) {
-        try app.err.writeAll("nix: shell-specific actions cannot run in a separate console yet\n");
-        return 1;
-    }
-    const cmd = (try expandSecrets(app, command)) orelse return 1;
+    const cmd = (try inShell(app, shell, (try expandSecrets(app, command)) orelse return 1)) orelse return 1;
     return startWindowed(app, cmd, alias, dir, name);
 }
 

@@ -1105,6 +1105,44 @@ pub fn main(init: std.process.Init) !void {
             std.mem.indexOf(u8, r.out, ":plain") == null, "--actions matches on description text alone", r);
     }
 
+    // --- [bash] / [pwsh] sections run in the shell they name ------------------
+    {
+        try writeActions(&c, "pa", pa,
+            \\[actions]
+            \\hello = "echo from-project"
+            \\lint = "echo from-default-shell"
+            \\quoted = 'echo "rec  q"'
+            \\[bash]
+            \\lint = 'x="a  b"; printf "%s|" "$x" "$NIX_ALIAS" 100%; echo done'
+            \\bad = "exit 7"
+            \\[pwsh]
+            \\inspect = 'Write-Output ("ps-" + $env:NIX_ALIAS)'
+            \\
+        );
+        if (c.has("bash")) {
+            var r = try c.run(&.{ "pa", "--run", ":lint" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "a  b|pa|100%|done") != null, "a [bash] action runs in bash, quotes, spaces and % intact", r);
+            c.check(std.mem.indexOf(u8, r.out, "from-default-shell") == null, "a [bash] entry overrides the same name in [actions]", r);
+            r = try c.run(&.{ "pa", "--run", ":bad" });
+            c.check(r.code == 7, "a [bash] action's exit code passes through", r);
+            r = try c.run(&.{ "pa", "--log", "--run", ":lint" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "a  b|pa|100%|done") != null, "a [bash] action can be recorded", r);
+        } else for ([_][]const u8{ "a [bash] action runs in bash", "a [bash] entry overrides [actions]", "a [bash] exit code passes through", "a [bash] action can be recorded" }) |n| c.skip(n, "bash");
+        {
+            const r = try c.run(&.{ "pa", "--log", "--run", ":quoted" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "rec  q") != null and
+                std.mem.indexOf(u8, r.out, "\\\"") == null, "a recorded action keeps its double quotes", r);
+        }
+        if (c.has("pwsh")) {
+            const r = try c.run(&.{ "pa", "--run", ":inspect" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ps-pa") != null, "a [pwsh] action runs in pwsh", r);
+        } else c.skip("a [pwsh] action runs in pwsh", "pwsh");
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shells]\nbash = \"no-such-bash-for-nix-e2e\"\n");
+        const r = try c.run(&.{ "pa", "--run", ":bad" });
+        c.check(r.code != 0 and r.code != 7, "[shells] names the executable a [bash] action starts", r);
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "");
+    }
+
     // --- notify hook ([notify] on_finish fires after :actions) -----------------
     {
         try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\nbad = \"exit 3\"\n");
