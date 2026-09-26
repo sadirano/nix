@@ -640,17 +640,17 @@ pub fn runShellTee(
     io: Io,
     command: []const u8,
     cwd: []const u8,
-    env: ?*const std.process.Environ.Map,
+    env: *std.process.Environ.Map,
     out: *Io.Writer,
     sink: *Io.File,
 ) !u8 {
     // `2>&1` rather than the spawn options: std's StdIo cannot point stderr at
-    // stdout's pipe.
-    const merged = try std.fmt.allocPrint(arena, "{s} 2>&1", .{command});
-    const argv: []const []const u8 = if (is_windows)
-        &.{ if (env) |m| m.get("COMSPEC") orelse "cmd.exe" else "cmd.exe", "/c", merged }
-    else
-        &.{ "/bin/sh", "-c", merged };
+    // stdout's pipe. On Windows the command reaches cmd through a variable it
+    // expands, because std's argv escaping would turn every `"` into a `\"`
+    // that cmd does not read back (see runShellInherit).
+    if (is_windows) try env.put("NIX_RECORDED_COMMAND", command);
+    const merged = if (is_windows) "%NIX_RECORDED_COMMAND% 2>&1" else try std.fmt.allocPrint(arena, "{s} 2>&1", .{command});
+    const argv: []const []const u8 = if (is_windows) &.{ env.get("COMSPEC") orelse "cmd.exe", "/c", merged } else &.{ "/bin/sh", "-c", merged };
     var child = try std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
