@@ -156,7 +156,7 @@ pub fn canGrant(app: *App) bool {
 /// it without each having to remember to load config. A config that will not
 /// read means "not listed" - an unreadable file must fail toward the prompt.
 fn isConfirmTrusted(app: *App, name: []const u8) bool {
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return false;
+    const cfg = app_zig.loadConfig(app) catch return false;
     for (cfg.confirm_trusted) |t| if (store.eqlFoldAscii(t, name)) return true;
     return false;
 }
@@ -625,6 +625,7 @@ fn grantStanding(app: *App, alias: []const u8, dir: []const u8) !u8 {
         try app.out.print("{s}: already listed in [trust] always\n", .{alias});
         return 0;
     };
+    app_zig.forgetConfig(app); // the cached parse predates the write
     try app.out.print("{s}: standing trust granted, in {s} under [trust] always\n", .{ alias, written });
     try app.out.print("  Remove the name there to re-arm the gate; `nix --doctor` lists what has it.\n", .{});
     return 0;

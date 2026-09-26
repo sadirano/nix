@@ -293,12 +293,12 @@ pub fn isTrusted(app: *App, record: []const u8) bool {
 /// config.toml, so the two together still mean nobody else's code runs
 /// unreviewed - but the user's own project stops re-arming on every edit.
 ///
-/// Read from disk per call rather than cached on App, matching `isTrusted`: the
-/// gate must reflect config.toml as it stands, and an unreadable config means
-/// "not listed", so a broken file fails toward the prompt.
+/// An unreadable config means "not listed", so a broken file fails toward the
+/// prompt (app.loadConfig caches only a successful parse, so that holds on
+/// every call).
 pub fn standing(app: *App, alias: []const u8) bool {
     if (alias.len == 0) return false;
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return false;
+    const cfg = app_zig.loadConfig(app) catch return false;
     for (cfg.trust_always) |a| if (util.eqlFoldAscii(a, alias)) return true;
     return false;
 }

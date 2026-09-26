@@ -325,7 +325,7 @@ fn addDecls(
 /// collision-checked install plan. Read-only — shared by --sync-bin (which acts
 /// on it) and --doctor (which only reports).
 pub fn buildPlan(app: *App) !Plan {
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     const aliases = try store.loadAliases(app.arena, try store.readAliasesFile(app.arena, app.io, app.home));
     var out: std.ArrayList(Export) = .empty;
     var problems: std.ArrayList([]const u8) = .empty;
@@ -498,7 +498,7 @@ pub fn cmdSyncBin(app: *App) !u8 {
 /// collision must not pass silently just because the rest synced.
 pub fn syncBin(app: *App, implicit: bool) !u8 {
     const plan = try buildPlan(app);
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     const old = try loadManifest(app.arena, app.io, app.home);
     if (plan.exports.len == 0 and plan.problems.len == 0 and old.len == 0) {
         if (!implicit) try app.err.writeAll("no [bin] exports declared (add a [bin] table to a project's .nix/actions.toml)\n");
@@ -779,7 +779,7 @@ pub const Finding = struct { status: enum { ok, warn, note }, label: []const u8,
 pub fn doctorFindings(app: *App) ![]const Finding {
     var out: std.ArrayList(Finding) = .empty;
     const plan = try buildPlan(app);
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     const manifest = try loadManifest(app.arena, app.io, app.home);
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
 

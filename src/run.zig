@@ -597,7 +597,7 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
 /// strips quotes from a line that opens with one.
 fn inShell(app: *App, shell: actions.Shell, command: []const u8) !?[]const u8 {
     if (shell == .default) return command;
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch |e| {
+    const cfg = app_zig.loadConfig(app) catch |e| {
         try app.err.print("nix: read shell configuration: {s}\n", .{@errorName(e)});
         return null;
     };
@@ -785,7 +785,7 @@ pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: [
 /// it just goes unannounced.
 pub fn runAction(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool, shell: actions.Shell) !u8 {
     if (outside or stripSudo(command) != null) return runShellString(app, command, alias, dir, name, true, shell);
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch config.Config{};
+    const cfg = app_zig.loadConfig(app) catch config.Config{};
     if (cfg.notify_on_finish.len == 0) return runShellString(app, command, alias, dir, name, false, shell);
     const t0 = Io.Clock.awake.now(app.io).nanoseconds;
     const code = try runShellString(app, command, alias, dir, name, false, shell);

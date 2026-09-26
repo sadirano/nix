@@ -67,7 +67,7 @@ pub fn onFailure(app: *App) void {
 /// still finish on its own.
 pub fn onSuccess(app: *App) void {
     if (app.last_action.len == 0 or !gated(app)) return;
-    const cfg = config.loadConfig(app.arena, app.io, app.home) catch return;
+    const cfg = app_zig.loadConfig(app) catch return;
     if (!actions.namesAction(cfg.hold_on_success, app.last_alias, app.last_action)) return;
     if (cfg.hold_seconds == 0) {
         app.err.writeAll("\n(press a key to close)\n") catch {};
