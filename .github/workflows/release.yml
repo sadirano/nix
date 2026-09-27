@@ -103,6 +103,16 @@ jobs:
           make_latest: ${{ steps.prerelease.outputs.value == 'false' }}
           files: nix-${{ github.ref_name }}-windows-amd64.zip
 
+      # Read back what GitHub published rather than trusting the options above:
+      # the asset downloads and is the exe just built, it reports the tag, and
+      # the pre/latest flags are what Excavator's checkver depends on. A
+      # failure here does not un-publish; it fails the run so it is seen.
+      - name: Read back the published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./.github/scripts/release-readback.ps1 -Tag "${{ github.ref_name }}" -Exe zig-out/bin/nix.exe
+
       # The checklist's evidence outlives the issue: an issue body can be
       # edited afterwards, the release notes are what the tag shipped with.
       - name: Archive and close the release checklist

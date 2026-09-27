@@ -39,8 +39,6 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       intact). This is the rollback artifact for this release, so it comes
       BEFORE the deploy below, and lives somewhere the release cannot
       overwrite.
-- [ ] Download the candidate zip from its GitHub release; `nix.exe --version`
-      prints the candidate tag (baked from the tag, not `0.0.0`).
 - [ ] ⚠️ Deploy over the daily install (`x nix :deploy`, or drop-in +
       `nix --sync`); existing aliases, actions, `[shortcuts]` and
       `[bin]` exports all still resolve.
@@ -171,11 +169,11 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
 
 ## 9. Release hygiene
 
-- [ ] Release CI is green on the candidate tag.
-- [ ] The pre-release is marked **Pre-release** on GitHub and is not "Latest"
-      (Excavator's checkver reads `/releases/latest`). Check the API rather
-      than the web page: `gh api repos/:owner/:repo/releases/latest --jq
-      .tag_name` must NOT return the pre.
+- [ ] Release CI is green on the candidate tag. That run's last steps read the
+      release back: the published zip holds the exe it built, which reports
+      the tag, and the pre-release is flagged **Pre-release** and is not
+      `/releases/latest` (Excavator's checkver reads it). The checklist gate
+      runs before the build, so it cannot vouch for this - look at the run.
 - [ ] The stable Scoop bucket has **not** moved to the pre.
 - [ ] `scoop update nix-nightly` still works.
 - [ ] Any upgrade step this release needs from an older version is written
@@ -198,7 +196,8 @@ Copy-Item ~/.nix ~/.nix-pre-release-backup -Recurse
       push means the source you verified is the source that ships - the
       binary itself is rebuilt, with its own version and date. Docs-only
       commits do not trip it and do not invalidate this checklist.
-- [ ] The release publishes as **Latest**.
+- [ ] The stable release run is green: its read-back confirms the release is
+      **Latest** and the exe reports the tag.
 - [ ] Excavator bumps the stable bucket. Do not hand-edit it.
 - [ ] `scoop update nix` on the daily machine; `nix --version` matches the tag.
 
