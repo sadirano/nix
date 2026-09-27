@@ -336,6 +336,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         // Empty target (fzf has no current item) -> empty preview, not an error.
         // Join multiple tokens so unquoted paths with spaces still resolve.
         .preview => cmdPreview(app, try std.mem.join(app.arena, " ", rest)),
+        .walk => @import("walk.zig").cmdWalk(app, rest),
         .pick_try => pickui.cmdPickTry(app, rest),
         .rga_preview => cmdRgaPreview(app, try std.mem.join(app.arena, " ", rest)),
     };
