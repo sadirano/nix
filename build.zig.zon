@@ -9,7 +9,7 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .glean = .{
-            .url = "git+https://github.com/sadirano/glean#095b1092b35e06679d0b2bb1aba6ef020d03420a",
+            .url = "git+https://github.com/sadirano/glean?ref=v0.1.0#095b1092b35e06679d0b2bb1aba6ef020d03420a",
             .hash = "glean-0.1.0-n4qzlw4kAwDrDaU0CBiI0jnxcDaIAWGwBsKz5wgglS8t",
         },
     },
