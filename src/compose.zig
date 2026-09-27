@@ -145,7 +145,7 @@ fn scriptForm(app: *App, dir: []const u8, command: []const u8, shell: actions.Sh
 /// quotes, no drive or root, no %VAR% for cmd to expand into one first.
 fn localPath(word: []const u8) bool {
     if (word.len == 0 or std.mem.indexOfAny(u8, word, "\"'%") != null) return false;
-    return !std.fs.path.isAbsolute(word);
+    return !std.fs.path.isAbsoluteWindows(word);
 }
 
 /// shorterForm says how an action could be written with less, or null when
@@ -157,7 +157,7 @@ pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const 
     if (v.len == 0 or v[0] == ':') return null;
     if (longPs1(v)) |hit| {
         const sep = if (hit.rest.len > 0) " " else "";
-        const parent = std.fs.path.basename(std.fs.path.dirname(hit.path) orelse "");
+        const parent = std.fs.path.basenameWindows(std.fs.path.dirnameWindows(hit.path) orelse "");
         if (std.ascii.eqlIgnoreCase(parent, "scripts")) {
             if (run.resolveScript(app, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
                 return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a .ps1 in the scripts dir runs by bare name)", .{ name, hit.stem, sep, hit.rest });
@@ -265,7 +265,7 @@ pub fn longPs1(value: []const u8) ?LongPs1 {
         if (std.ascii.eqlIgnoreCase(tok, "-File")) {
             const path = std.mem.trim(u8, it.next() orelse return null, "\"'");
             if (!std.ascii.endsWithIgnoreCase(path, ".ps1")) return null;
-            const base = std.fs.path.basename(path);
+            const base = std.fs.path.basenameWindows(path);
             return .{ .path = path, .stem = base[0 .. base.len - ".ps1".len], .rest = std.mem.trim(u8, it.rest(), " \t") };
         }
         var known = false;

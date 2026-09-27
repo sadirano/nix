@@ -589,8 +589,8 @@ test "walk honors nested ignores, hidden files and early stop" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = std.testing.io;
-    try tmp.dir.createDir(io, "sub", .default_file);
-    try tmp.dir.createDir(io, ".git", .default_file);
+    try tmp.dir.createDir(io, "sub", .default_dir);
+    try tmp.dir.createDir(io, ".git", .default_dir);
     try tmp.dir.writeFile(io, .{ .sub_path = ".gitignore", .data = "*.tmp\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = ".ignore", .data = "hide.txt\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "sub/.gitignore", .data = "!keep.tmp\n!.keep\n" });
