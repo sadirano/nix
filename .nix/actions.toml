@@ -4,3 +4,5 @@
 deploy = "zig build deploy -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline"
 ci = "zig build ci"
 checklist = "bash .github/scripts/release-checklist.sh status"
+# Check a release candidate before the manual checklist.
+preflight = "pwsh -NoProfile -File .github/scripts/release-preflight.ps1"

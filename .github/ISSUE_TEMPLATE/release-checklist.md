@@ -17,6 +17,11 @@ checked. The `Candidate:` line above is written by CI when a pre-release tag
 is pushed; verify against THAT build. A new pre-release re-stamps the line and
 unticks every gated box, so start again from the build the line names.
 
+**Start with the preflight:** `x nix :preflight -- -Tag <candidate-tag>`. It
+downloads the candidate, runs it against a scratch home, and prints one line
+per box: `READY` (its preconditions pass - go ahead), `FAIL` (do not start
+that box; fix or cut a new pre first), or `MANUAL` (nothing it can check).
+
 **Sandboxing:** steps marked 🧪 must run against a scratch store, never the
 real one. In a fresh PowerShell:
 
