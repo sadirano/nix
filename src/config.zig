@@ -33,6 +33,8 @@ pub const Config = struct {
     /// [picker] engine: "native" opens nix's compiled-in picker (glean) where
     /// fzf would open; anything else keeps fzf.
     picker_engine: PickerEngine = .fzf,
+    /// [picker] bat: the bat executable previews run. Empty finds it on PATH.
+    picker_bat: []const u8 = "",
     /// [shortcuts] overrides: builtin slot name → custom command name.
     shortcuts: []const Shortcut = &.{},
     /// [grep] all = true makes `g` search with ripgrep-all (rga) by default,
@@ -342,6 +344,10 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         if (!std.mem.eql(u8, section, "picker")) continue;
         if (std.mem.eql(u8, key, "engine")) {
             cfg.picker_engine = if (std.ascii.eqlIgnoreCase(toml.unquoteLoose(val_start), "native")) .native else .fzf;
+            continue;
+        }
+        if (std.mem.eql(u8, key, "bat")) {
+            cfg.picker_bat = try arena.dupe(u8, toml.unquoteLoose(val_start));
             continue;
         }
         if (std.mem.eql(u8, key, "exclude") or std.mem.eql(u8, key, "exclude_extra") or

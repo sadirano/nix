@@ -111,7 +111,9 @@ Clipboard fine print: `y <alias> <pat>` copies the picked files as a real file d
 engine = "native"   # default "fzf"
 ```
 
-The native engine is Windows-only for now (elsewhere fzf stays the engine), shows rows without colour, and prints rather than opens when nobody is at a console, as `--no-prompt` does. `nix --doctor` reports which engine is in use.
+Previews run bat. nix finds it on `PATH`, and when that is a scoop shim it runs the real `bat.exe` the shim points at, which saves a process on every cursor move. `[picker] bat = "<path to bat.exe>"` names it outright.
+
+The native engine is Windows-only for now (elsewhere fzf stays the engine) and prints rather than opens when nobody is at a console, as `--no-prompt` does. `nix --doctor` reports which engine is in use.
 
 ## Closing the shell (`q`)
 

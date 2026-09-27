@@ -69,6 +69,8 @@ pub const App = struct {
     env_noted: bool = false,
     /// config.toml, parsed once per process on first use (see loadConfig).
     config: ?config.Config = null,
+    /// batPath's answer, resolved once per process.
+    bat_path: ?[]const u8 = null,
 };
 
 /// loadConfig is config.loadConfig for this process: read and parsed on the
@@ -86,6 +88,46 @@ pub fn loadConfig(app: *App) !config.Config {
     const c = try config.loadConfig(app.arena, app.io, app.home);
     app.config = c;
     return c;
+}
+
+/// batPath is the bat every preview runs: `[picker] bat` when set, else the
+/// one on PATH - and when that is a scoop shim, the real bat.exe its .shim
+/// file names, since the shim is one more process on every cursor move.
+/// Null when there is no bat.
+pub fn batPath(app: *App) ?[]const u8 {
+    if (app.bat_path) |cached| return cached;
+    const configured = if (loadConfig(app)) |cfg| cfg.picker_bat else |_| "";
+    const found = if (configured.len > 0) configured else proc.findInPath(app.arena, app.io, app.env, "bat") orelse return null;
+    const resolved = shimTarget(app, found) orelse found;
+    app.bat_path = resolved;
+    return resolved;
+}
+
+/// shimTarget reads a scoop shim's `path = "..."` line from the .shim file
+/// beside it. Anything unexpected keeps the shim.
+fn shimTarget(app: *App, exe: []const u8) ?[]const u8 {
+    const ext = std.fs.path.extension(exe);
+    if (!std.ascii.eqlIgnoreCase(ext, ".exe")) return null;
+    const shim = std.fmt.allocPrint(app.arena, "{s}.shim", .{exe[0 .. exe.len - ext.len]}) catch return null;
+    const text = Io.Dir.cwd().readFileAlloc(app.io, shim, app.arena, .limited(64 * 1024)) catch return null;
+    return parseShim(text);
+}
+
+fn parseShim(text: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (!std.mem.startsWith(u8, line, "path")) continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const value = std.mem.trim(u8, line[eq + 1 ..], " \t\"");
+        if (value.len > 0) return value;
+    }
+    return null;
+}
+
+test "parseShim reads the target of a scoop shim" {
+    try std.testing.expectEqualStrings("C:\\x\\bat.exe", parseShim("path = \"C:\\x\\bat.exe\"\r\n").?);
+    try std.testing.expect(parseShim("args = --x\n") == null);
 }
 
 /// forgetConfig drops the cached parse, for the one path that writes the file

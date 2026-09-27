@@ -98,23 +98,39 @@ pub fn cmdPreview(app: *App, raw: []const u8) !u8 {
     // Directory? list entries.
     if (Io.Dir.cwd().openDir(app.io, p, .{ .iterate = true })) |dir| {
         var d = dir;
+        defer d.close(app.io);
         var it = d.iterate();
         while (it.next(app.io) catch null) |ent| {
             try app.out.writeAll(ent.name);
             if (ent.kind == .directory) try app.out.writeByte(store.sep);
             try app.out.writeByte('\n');
         }
-        d.close(app.io);
         return 0;
     } else |_| {}
-    if (proc.findInPath(app.arena, app.io, app.env, "bat") != null) {
+    if (app_zig.batPath(app)) |bat| {
         try app.out.flush();
-        _ = proc.runInherit(app.io, &.{ "bat", "--style=numbers", "--color=always", p }, ".") catch {};
-        return 0;
+        // A bat that fails falls through to the raw text rather than an
+        // empty pane.
+        const code = proc.runInherit(app.io, &.{ bat, "--style=numbers", "--color=always", p }, ".") catch 1;
+        if (code == 0) return 0;
     }
-    const data = Io.Dir.cwd().readFileAlloc(app.io, p, app.arena, .unlimited) catch return 0;
+    // A pane shows a screenful: read the head of the file, never all of it.
+    const data = readHead(app, p, preview_head_bytes) catch |err| {
+        try app.out.print("preview: {s}\n", .{@errorName(err)});
+        return 0;
+    };
     try app.out.writeAll(data);
     return 0;
+}
+
+const preview_head_bytes = 1024 * 1024;
+
+fn readHead(app: *App, path: []const u8, limit: usize) ![]const u8 {
+    const file = try Io.Dir.cwd().openFile(app.io, path, .{});
+    defer file.close(app.io);
+    var reader = file.reader(app.io, &.{});
+    const buffer = try app.arena.alloc(u8, limit);
+    return buffer[0..try reader.interface.readSliceShort(buffer)];
 }
 
 pub const default_app_exts = [_][]const u8{

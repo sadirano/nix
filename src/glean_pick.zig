@@ -27,7 +27,7 @@ pub fn enabled(app: *App) bool {
 /// by the command that renders it.
 pub const Preview = enum {
     none,
-    /// A path: nix's own --preview (bat for a file, a listing for a dir).
+    /// A path: a folder's listing, or the file through bat.
     path,
     /// A `g` row, `file:line:text`: the file, focused on the line.
     grep_line,
@@ -35,7 +35,22 @@ pub const Preview = enum {
     rga,
 };
 
-/// Spec is the subset of fzf's flags nix uses, as glean options.
+/// bat's `header,grid` style puts this many lines above a file's first line:
+/// a rule, the `File:` line and another rule. Both engines pin them and
+/// count them when placing the matched line.
+pub const bat_style = "numbers,header,grid";
+pub const bat_header_lines = 3;
+
+/// fzfGrepPreview is fzf's preview command for a `g` row: the same bat, and
+/// the same style, the native pane runs.
+pub fn fzfGrepPreview(app: *App) ![]const u8 {
+    const bat = app_zig.batPath(app) orelse "bat";
+    return std.fmt.allocPrint(app.arena, "\"{s}\" --style=" ++ bat_style ++ " --color=always {{1}} --highlight-line {{2}}", .{bat});
+}
+
+/// Spec is one picker, described once: the fzf argv's --preview-window is
+/// generated from it (fzfPreviewWindow) and glean's options are built from
+/// it, so a change to either reaches both engines.
 pub const Spec = struct {
     prompt: []const u8 = "> ",
     multi: bool = false,
@@ -46,6 +61,10 @@ pub const Spec = struct {
     preview: Preview = .none,
     preview_percent: u8 = 40,
     preview_wrap: bool = false,
+    /// Lines pinned at the top of the pane while the rest scrolls (fzf's ~N).
+    preview_header_lines: usize = 0,
+    /// fzf's --ansi: rows carry the producer's colors.
+    ansi: bool = false,
 };
 
 /// Rows already in hand: fzf's runFilter.
@@ -161,6 +180,10 @@ fn options(app: *App, spec: Spec, cwd: []const u8, ctx: *PreviewContext) !glean.
         .colors = theme,
         .preview_percent = spec.preview_percent,
         .preview_wrap = spec.preview_wrap,
+        .ansi = spec.ansi,
+        // Going back to a row shows its preview at once; a file edited while
+        // the picker is open shows as it was, which a pick session tolerates.
+        .preview_cache = 32,
     };
     if (spec.preview != .none) {
         ctx.* = .{
@@ -168,48 +191,77 @@ fn options(app: *App, spec: Spec, cwd: []const u8, ctx: *PreviewContext) !glean.
             .kind = spec.preview,
             .cwd = cwd,
             .exe = app_zig.exePath(app),
-            .bat = if (spec.preview == .grep_line) proc.findInPath(app.arena, app.io, app.env, "bat") else null,
+            .bat = if (spec.preview == .grep_line or spec.preview == .path) app_zig.batPath(app) else null,
+            .header_lines = spec.preview_header_lines,
         };
         opts.preview = .{ .ctx = ctx, .func = PreviewContext.render };
+        // Without bat the pane is plain text, with no header to pin.
+        if (spec.preview != .grep_line or ctx.bat != null) opts.preview_header_lines = spec.preview_header_lines;
     }
     return opts;
 }
 
 /// PreviewContext renders a pane on glean's preview thread, so everything it
 /// needs from the App is copied in up front. Rows are relative to the pick's
-/// cwd, which is not nix's own, so each one is anchored there before a child
-/// sees it.
+/// cwd, which is not nix's own: preview children run there, and only an
+/// in-process read anchors the path.
 const PreviewContext = struct {
     io: std.Io,
     kind: Preview,
     cwd: []const u8,
     exe: []const u8,
     bat: ?[]const u8,
+    header_lines: usize,
 
     fn render(raw: *anyopaque, arena: std.mem.Allocator, row: []const u8) anyerror!glean.PreviewText {
         const self: *PreviewContext = @ptrCast(@alignCast(raw));
         switch (self.kind) {
             .none => return .{ .text = "" },
-            .path => return run(self.io, arena, &.{ self.exe, "--preview", try anchor(arena, self.cwd, row) }, null),
-            .rga => return run(self.io, arena, &.{ self.exe, "--rga-preview", try anchor(arena, self.cwd, row) }, null),
+            .path => {
+                // In-process, not through a second nix: a folder is listed
+                // here, and a file goes straight to bat, so moving on kills
+                // bat itself rather than a wrapper that outlives it.
+                const full = try anchor(arena, self.cwd, row);
+                if (std.Io.Dir.cwd().openDir(self.io, full, .{})) |dir| {
+                    dir.close(self.io);
+                    return glean.textPreview(arena, self.io, full, null);
+                } else |_| {}
+                const bat = self.bat orelse return glean.textPreview(arena, self.io, full, null);
+                return run(self.io, arena, &.{ bat, "--style=numbers", "--color=always", row }, null, self.cwd);
+            },
+            .rga => return run(self.io, arena, &.{ self.exe, "--rga-preview", row }, null, self.cwd),
             .grep_line => {
+                const header = self.header_lines;
                 const r = open_zig.splitGrepRow(row);
-                const path = try anchor(arena, self.cwd, r.file);
                 const line = std.fmt.parseInt(usize, r.line, 10) catch null;
-                const bat = self.bat orelse return glean.textPreview(arena, self.io, path, line);
-                // bat's header and grid put three lines above line 1.
+                const bat = self.bat orelse return glean.textPreview(arena, self.io, try anchor(arena, self.cwd, r.file), line);
+                const path = r.file;
                 const argv: []const []const u8 = if (r.line.len > 0)
-                    &.{ bat, "--style=numbers,header,grid", "--color=always", path, "--highlight-line", r.line }
+                    &.{ bat, "--style=" ++ bat_style, "--color=always", path, "--highlight-line", r.line }
                 else
-                    &.{ bat, "--style=numbers,header,grid", "--color=always", path };
-                return run(self.io, arena, argv, if (line) |n| n + 3 else null);
+                    &.{ bat, "--style=" ++ bat_style, "--color=always", path };
+                return run(self.io, arena, argv, if (line) |n| n + header else null, self.cwd);
             },
         }
     }
 };
 
-fn run(io: std.Io, arena: std.mem.Allocator, argv: []const []const u8, focus: ?usize) !glean.PreviewText {
-    var command: glean.CommandPreview = .{ .io = io, .argv = argv };
+/// fzfPreviewWindow renders a Spec's pane as fzf's --preview-window value. A
+/// `g` pane follows the row's line field ({2}), offset by the pinned lines so
+/// the match lands a third of the way down what scrolls.
+pub fn fzfPreviewWindow(arena: std.mem.Allocator, spec: Spec) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(arena, "up:{d}%:border-bottom", .{spec.preview_percent});
+    if (spec.preview_wrap) try out.appendSlice(arena, ":wrap");
+    if (spec.preview == .grep_line) try out.print(arena, ":+{{2}}+{d}/3", .{spec.preview_header_lines});
+    if (spec.preview_header_lines > 0) try out.print(arena, ":~{d}", .{spec.preview_header_lines});
+    return out.items;
+}
+
+fn run(io: std.Io, arena: std.mem.Allocator, argv: []const []const u8, focus: ?usize, cwd: []const u8) !glean.PreviewText {
+    // Run where the rows are relative to, as fzf does, so bat's header names
+    // the file the way the row does.
+    var command: glean.CommandPreview = .{ .io = io, .argv = argv, .cwd = cwd };
     const previewer = glean.commandPreviewer(&command);
     var text = try previewer.func(previewer.ctx, arena, "");
     text.focus_line = focus;
@@ -234,6 +286,15 @@ pub fn setProcessEnv(arena: std.mem.Allocator, name: []const u8, value: ?[]const
 }
 
 extern "kernel32" fn SetEnvironmentVariableW(name: [*:0]const u16, value: ?[*:0]const u16) callconv(.winapi) i32;
+
+test "fzfPreviewWindow reproduces the windows nix has always given fzf" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    try std.testing.expectEqualStrings("up:40%:border-bottom", try fzfPreviewWindow(a, .{ .preview = .path }));
+    try std.testing.expectEqualStrings("up:60%:border-bottom:+{2}+3/3:~3", try fzfPreviewWindow(a, .{ .preview = .grep_line, .preview_percent = 60, .preview_header_lines = bat_header_lines }));
+    try std.testing.expectEqualStrings("up:60%:border-bottom:wrap", try fzfPreviewWindow(a, .{ .preview = .rga, .preview_percent = 60, .preview_wrap = true }));
+}
 
 test "anchor joins relative rows to the pick's cwd and leaves absolute ones" {
     const arena = std.testing.allocator;

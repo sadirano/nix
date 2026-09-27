@@ -77,8 +77,8 @@ pub fn grepIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
 /// flags. The caller appends its own trailing query argument(s) - a plain rg
 /// query is optional, rga's is always `-e <query>`.
 fn buildSearchArgv(app: *App, bin: []const u8, relaxed: bool, extras: [][]const u8) !std.ArrayList([]const u8) {
-    // Colour is for fzf's --ansi: printed rows and glean's rows stay plain.
-    const colour = app_zig.hasConsole(app) and !glean_pick.enabled(app);
+    // Colour is for the picker's --ansi; printed rows stay clean for parsing.
+    const colour = app_zig.hasConsole(app);
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(app.arena, &.{ bin, "--smart-case", if (colour) "--color=always" else "--color=never", "--line-number", "--no-heading" });
     if (relaxed) try argv.append(app.arena, "--no-unicode");
@@ -129,8 +129,9 @@ fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
 
     // Rows are cwd-relative (`file:line:text`), so fzf's `:`-split fields feed
     // bat directly.
-    const preview = "bat --style=numbers,header,grid --color=always {1} --highlight-line {2}";
-    const preview_window = "up:60%:border-bottom:+{2}+3/3:~3";
+    const spec: glean_pick.Spec = .{ .multi = true, .ansi = true, .preview = .grep_line, .preview_percent = 60, .preview_header_lines = glean_pick.bat_header_lines };
+    const preview = try glean_pick.fzfGrepPreview(app);
+    const preview_window = try glean_pick.fzfPreviewWindow(app.arena, spec);
     const fzf = [_][]const u8{
         "fzf",          "--ansi",
         "--multi",      "--delimiter",
@@ -141,7 +142,7 @@ fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
 
     try app.out.flush();
     const res = if (glean_pick.enabled(app))
-        try glean_pick.pipeline(app, .{ .multi = true, .preview = .grep_line, .preview_percent = 60 }, rg.items, dir)
+        try glean_pick.pipeline(app, spec, rg.items, dir)
     else
         try proc.runPipeline(app.arena, app.io, rg.items, &fzf, dir, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled / nothing selected
@@ -189,16 +190,17 @@ fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     const native = glean_pick.enabled(app);
     if (native) glean_pick.setProcessEnv(app.arena, "NIX_RGA_QUERY", query);
     const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)});
+    const spec: glean_pick.Spec = .{ .multi = true, .ansi = true, .preview = .rga, .preview_percent = 60, .preview_wrap = true };
     const fzf = [_][]const u8{
-        "fzf",                       "--ansi",
-        "--multi",                   "--preview",
-        preview,                     "--preview-window",
-        "up:60%:border-bottom:wrap",
+        "fzf",                                            "--ansi",
+        "--multi",                                        "--preview",
+        preview,                                          "--preview-window",
+        try glean_pick.fzfPreviewWindow(app.arena, spec),
     };
 
     try app.out.flush();
     const res = if (native)
-        try glean_pick.pipeline(app, .{ .multi = true, .preview = .rga, .preview_percent = 60, .preview_wrap = true }, rga.items, dir)
+        try glean_pick.pipeline(app, spec, rga.items, dir)
     else
         try proc.runPipeline(app.arena, app.io, rga.items, &fzf, dir, fzfEnv(app));
     // Preview-only variable: drop it before anything else is spawned below.
@@ -305,10 +307,10 @@ pub fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
     const lineno = std.fmt.parseInt(usize, line, 10) catch 0;
 
     // Tier 2: a text file -> bat, highlighting the matched line when known.
-    if (!opensWithDefaultApp(app, file) and proc.findInPath(app.arena, app.io, app.env, "bat") != null) {
+    if (!opensWithDefaultApp(app, file) and app_zig.batPath(app) != null) {
         try app.out.flush();
         var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(app.arena, &.{ "bat", "--style=numbers", "--color=always" });
+        try argv.appendSlice(app.arena, &.{ app_zig.batPath(app).?, "--style=numbers", "--color=always" });
         if (lineno > 0) {
             const start = if (lineno > rga_preview_context) lineno - rga_preview_context else 1;
             try argv.appendSlice(app.arena, &.{ "--highlight-line", line, "--line-range" });

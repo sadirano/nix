@@ -267,8 +267,9 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
         try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})
     else
         "bat --style=numbers --color=always \"{}\" 2>/dev/null || ls -la \"{}\"";
+    const spec: glean_pick.Spec = .{ .preview = .path };
     const fzf_argv = [_][]const u8{
-        "fzf", "--preview", preview, "--preview-window", "up:40%:border-bottom",
+        "fzf", "--preview", preview, "--preview-window", try glean_pick.fzfPreviewWindow(app.arena, spec),
     };
 
     const pick = switch (try pickerSource(app, cfg, name)) {
@@ -295,7 +296,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
                 return null;
             }
             const res = if (native)
-                try glean_pick.filter(app, .{ .preview = .path }, input.items, ".")
+                try glean_pick.filter(app, spec, input.items, ".")
             else
                 try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
             if (res.code != 0) return null; // cancelled
@@ -307,7 +308,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
             var filt = PickFilter{ .arena = app.arena, .excludes = excludes };
             const xf: proc.LineTransform = .{ .ctx = &filt, .func = PickFilter.keep };
             const res = if (native)
-                try glean_pick.pipelineFiltered(app, .{ .preview = .path }, argv, ".", xf, 500, true)
+                try glean_pick.pipelineFiltered(app, spec, argv, ".", xf, 500, true)
             else
                 try proc.runPipelineFiltered(app.arena, app.io, argv, &fzf_argv, ".", fzfEnv(app), xf, 500, true);
             if (res.forwarded == 0) {

@@ -59,8 +59,8 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
 
     var prod: std.ArrayList([]const u8) = .empty;
     if (proc.findInPath(app.arena, app.io, app.env, "fd") != null) {
-        // Colour is for fzf's --ansi; printed rows and glean's stay clean.
-        try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (!app_zig.hasConsole(app) or native) "never" else "always" });
+        // Colour is for the picker's --ansi; printed rows must stay clean.
+        try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (app_zig.hasConsole(app)) "always" else "never" });
         for (extras) |x| try prod.append(app.arena, x);
         if (query.len > 0) try prod.append(app.arena, query);
         // Rows stay cwd-relative (no path arg): the producer runs in the alias dir.
@@ -86,15 +86,16 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
         try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})
     else
         "bat --style=numbers --color=always \"{}\" 2>/dev/null || ls -la \"{}\"";
+    const spec: glean_pick.Spec = .{ .multi = true, .ansi = true, .preview = .path };
     const fzf = [_][]const u8{
-        "fzf",                  "--ansi", "--multi",
-        "--preview",            preview,  "--preview-window",
-        "up:40%:border-bottom",
+        "fzf",                                            "--ansi", "--multi",
+        "--preview",                                      preview,  "--preview-window",
+        try glean_pick.fzfPreviewWindow(app.arena, spec),
     };
 
     try app.out.flush();
     const res = if (native)
-        try glean_pick.pipeline(app, .{ .multi = true, .preview = .path }, prod.items, dir)
+        try glean_pick.pipeline(app, spec, prod.items, dir)
     else
         try proc.runPipeline(app.arena, app.io, prod.items, &fzf, dir, fzfEnv(app));
     if (res.code != 0) return .cancelled;
