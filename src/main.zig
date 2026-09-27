@@ -37,6 +37,7 @@ const secret = @import("secret.zig");
 const context = @import("context.zig");
 const env_zig = @import("env.zig");
 const grammar = @import("grammar.zig");
+const pickui = @import("pickui.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
@@ -335,6 +336,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         // Empty target (fzf has no current item) -> empty preview, not an error.
         // Join multiple tokens so unquoted paths with spaces still resolve.
         .preview => cmdPreview(app, try std.mem.join(app.arena, " ", rest)),
+        .pick_try => pickui.cmdPickTry(app, rest),
         .rga_preview => cmdRgaPreview(app, try std.mem.join(app.arena, " ", rest)),
     };
 }

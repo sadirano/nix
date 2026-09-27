@@ -24,6 +24,8 @@ pub const png = @import("png.zig");
 pub const winpath = @import("winpath.zig");
 pub const compose = @import("compose.zig");
 pub const fuzzy = @import("fuzzy.zig");
+pub const tui = @import("tui.zig");
+pub const pickui = @import("pickui.zig");
 
 test {
     // Compile-check the whole library surface in the module test binary (the
