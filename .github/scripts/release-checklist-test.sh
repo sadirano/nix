@@ -99,7 +99,7 @@ has() { # name file pattern
 echo "== open with no existing issue creates a stamped body"
 STUB_NUM="" bash "$S" open v0.11.0-pre "$head_sha" > "$W/a.out" 2>&1; exits "open/new" 0 $?
 has "candidate stamped on line 1" "$W/capture.md" "^Candidate: v0.11.0-pre ($head_sha)\$"
-has "full template in the body" "$W/capture.md" '^## 10. Promote'
+has "full template in the body" "$W/capture.md" '^## 9. Promote'
 has "title drops the -pre suffix" "$STUB_LOG" 'Release v0.11.0'
 head -1 "$W/capture.md" | grep -q '^---' && bad "front matter leaked" || ok "front matter stripped"
 
