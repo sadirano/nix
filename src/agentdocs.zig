@@ -24,7 +24,7 @@ const grammar = @import("grammar.zig");
 pub const Safety = enum {
     /// No picker, no GUI, no clipboard: an agent may run it unprompted.
     safe,
-    /// Opens fzf. Without --no-prompt it hangs a non-interactive shell.
+    /// Opens a picker. Without --no-prompt it can hang a non-interactive shell.
     blocks,
     /// Moves the user's shell, GUI, or clipboard. Ask before running it.
     user_surface,
@@ -40,7 +40,7 @@ pub const Safety = enum {
     pub fn note(s: Safety) []const u8 {
         return switch (s) {
             .safe => "No picker and no side effects on the user's desktop. Run it freely.",
-            .blocks => "Opens an fzf picker and waits for a keypress, which hangs a non-interactive shell. Use the safe form below instead.",
+            .blocks => "Opens a picker (fzf, or the native one) and waits for a keypress, which can hang a non-interactive shell. Use the safe form below instead.",
             .user_surface => "Acts on something the user owns - their shell, a GUI window, or the clipboard. Don't run it unprompted; suggest it instead.",
         };
     }
