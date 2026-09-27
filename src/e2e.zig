@@ -604,6 +604,8 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and hasLineFold(r.out, "one") and hasLineFold(r.out, "two"), "a value of several :names runs them in order", r);
         r = try c.run(&.{ "pa", "--run", ":gone" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not an action") != null, "a reference to a missing action is refused", r);
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, ":gone refers to :nope") != null and std.mem.indexOf(u8, r.out, "copy = \":base more\"") != null, "--doctor lists broken references and long forms", r);
         r = try c.run(&.{ "pa", "--run", ":l1" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "leads back") != null, "a reference loop is refused, not followed", r);
         r = try c.run(&.{ "pa", "--run", ":copy" });

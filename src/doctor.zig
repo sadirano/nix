@@ -17,6 +17,7 @@ const provenance = @import("provenance.zig");
 const context = @import("context.zig");
 const env_zig = @import("env.zig");
 const run_zig = @import("run.zig");
+const compose = @import("compose.zig");
 const actions = @import("actions.zig");
 
 // Version baked by build.zig (git describe).
@@ -506,7 +507,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         }
     }
 
-    try d.section("Actions  (forms nix can shorten)");
+    try d.section("Actions  (references, and forms nix can shorten)");
     {
         // The same check a run prints before it starts, over every alias at
         // once, so a whole file can be fixed in one pass instead of one run at
@@ -516,7 +517,11 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         if (store.loadAliases(app.arena, adata)) |al| {
             for (al.items) |a| {
                 for (run_zig.mergedActions(app, a.name, a.path, false) catch &.{}) |act| {
-                    if (try run_zig.shorterForm(app, a.name, a.path, act.name, act.command)) |hint| {
+                    if (try compose.referenceProblem(app, a.name, a.path, act)) |why| {
+                        try d.row(.warn, a.name, why);
+                        any = true;
+                    }
+                    if (try compose.shorterForm(app, a.name, a.path, act.name, act.command)) |hint| {
                         try d.row(.warn, a.name, hint);
                         any = true;
                     }
@@ -525,12 +530,12 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         } else |_| {}
         const defaults = actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home)) catch &.{};
         for (defaults) |act| {
-            if (try run_zig.shorterForm(app, actions.default_owner, "", act.name, act.command)) |hint| {
+            if (try compose.shorterForm(app, actions.default_owner, "", act.name, act.command)) |hint| {
                 try d.row(.warn, actions.default_owner, hint);
                 any = true;
             }
         }
-        if (!any) try d.row(.ok, "actions", "none - every action is as short as nix can make it");
+        if (!any) try d.row(.ok, "actions", "none - every action is as short as nix can make it, and every reference resolves");
     }
 
     if (json) try renderJson(app, &d) else try renderHuman(app, &d, quiet);

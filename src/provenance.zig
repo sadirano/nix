@@ -21,6 +21,7 @@ const util = @import("util.zig");
 const refs_zig = @import("refs.zig");
 const resolve = @import("resolve.zig");
 const run_zig = @import("run.zig");
+const compose = @import("compose.zig");
 const env_zig = @import("env.zig");
 
 const App = app_zig.App;
@@ -365,7 +366,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
             for (try actions.parse(app.arena, body)) |a| {
                 // What the gate will be asked about is the expanded command, so
                 // that is what gets approved - and what the user reads here.
-                const command = run_zig.expandedCommand(app, alias, dir, a) orelse continue;
+                const command = compose.expandedCommand(app, alias, dir, a) orelse continue;
                 const record = (try recordForCommand(app, dir, true, a.name, command)) orelse continue;
                 if (context.isTrusted(app, record)) continue;
                 if (!named_file) {
@@ -388,7 +389,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 // Name the scripts too - "approved" should say how far it reached.
                 var seen: std.ArrayList([]const u8) = .empty;
                 for (try actions.parse(app.arena, body)) |a| {
-                    const command = run_zig.expandedCommand(app, alias, dir, a) orelse continue;
+                    const command = compose.expandedCommand(app, alias, dir, a) orelse continue;
                     for (try refs_zig.referencedFiles(app, dir, command)) |f| {
                         if (refs_zig.containsFold(seen.items, f)) continue;
                         try seen.append(app.arena, f);
@@ -433,7 +434,7 @@ pub fn unapproved(app: *App, alias: []const u8, dir: []const u8) bool {
     if (context.standing(app, alias)) return false;
     const body = app_zig.readFileMaybe(app, path) orelse return false;
     for (actions.parse(app.arena, body) catch return false) |a| {
-        const command = run_zig.expandedCommand(app, alias, dir, a) orelse continue;
+        const command = compose.expandedCommand(app, alias, dir, a) orelse continue;
         const record = (recordForCommand(app, dir, true, a.name, command) catch continue) orelse continue;
         if (!context.isTrusted(app, record)) return true;
     }
