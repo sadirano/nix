@@ -99,15 +99,29 @@ has() { # name file pattern
 echo "== open with no existing issue creates a stamped body"
 STUB_NUM="" bash "$S" open v0.11.0-pre "$head_sha" > "$W/a.out" 2>&1; exits "open/new" 0 $?
 has "candidate stamped on line 1" "$W/capture.md" "^Candidate: v0.11.0-pre ($head_sha)\$"
-has "full template in the body" "$W/capture.md" '^## 12. Promote'
+has "full template in the body" "$W/capture.md" '^## 10. Promote'
 has "title drops the -pre suffix" "$STUB_LOG" 'Release v0.11.0'
 head -1 "$W/capture.md" | grep -q '^---' && bad "front matter leaked" || ok "front matter stripped"
 
 echo "== open with an existing issue re-stamps it"
-printf 'Candidate: v0.11.0-pre (%s)\n\n- [x] one\n' "$old_sha" > "$W/body.md"
+printf 'Candidate: v0.11.0-pre (%s)\n\n- [x] one\n<!-- gate:stop -->\n- [x] after\n' "$old_sha" > "$W/body.md"
 STUB_NUM=42 STUB_BODY="$W/body.md" bash "$S" open v0.11.0-pre2 "$head_sha" >/dev/null 2>&1; exits "open/existing" 0 $?
 has "re-stamped to the new candidate" "$W/capture.md" "^Candidate: v0.11.0-pre2 ($head_sha)\$"
 has "commented that the candidate moved" "$STUB_LOG" 'issue comment 42'
+has "a gated tick is cleared" "$W/capture.md" '^- \[ \] one$'
+has "a post-publish tick is kept" "$W/capture.md" '^- \[x\] after$'
+
+echo "== a new tag on the same commit is still a new candidate"
+printf 'Candidate: v0.11.0-pre (%s)\n\n- [x] one\n' "$head_sha" > "$W/body.md"
+STUB_NUM=42 STUB_BODY="$W/body.md" bash "$S" open v0.11.0-rc1 "$head_sha" >/dev/null 2>&1; exits "open/same-sha" 0 $?
+has "same commit, new tag unticks" "$W/capture.md" '^- \[ \] one$'
+
+echo "== the same candidate again changes nothing"
+rm -f "$W/capture.md"; : > "$STUB_LOG"
+printf 'Candidate: v0.11.0-pre2 (%s)\n\n- [x] one\n' "$head_sha" > "$W/body.md"
+STUB_NUM=42 STUB_BODY="$W/body.md" bash "$S" open v0.11.0-pre2 "$head_sha" >/dev/null 2>&1; exits "open/rerun" 0 $?
+[ -e "$W/capture.md" ] && bad "a re-run rewrote the body" || ok "a re-run leaves the body alone"
+grep -q 'issue comment' "$STUB_LOG" && bad "a re-run commented" || ok "a re-run posts no comment"
 
 echo "== verify fails closed with no issue"
 STUB_NUM="" bash "$S" verify v0.11.0 "$head_sha" > "$W/c.out" 2>&1; exits "verify/no issue" 1 $?

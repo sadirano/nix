@@ -93,6 +93,17 @@ setCandidate() {
     '
 }
 
+# untickGated clears every ticked box above the gate:stop marker. A tick is a
+# claim about one build; once the candidate moves, nothing records which build
+# an old tick described, so it cannot be carried to the next one.
+untickGated() {
+    awk '
+        /^<!-- gate:stop/ { past = 1 }
+        !past { sub(/^- \[[xX]\]/, "- [ ]") }
+        { print }
+    '
+}
+
 # ---- issue lookup -----------------------------------------------------------
 
 # findIssue prints the number of the release issue for $TITLE, or nothing.
@@ -122,14 +133,19 @@ cmdOpen() {
         num="$(gh issue create --title "$TITLE" --label "$LABEL" --body-file "$tmp" | sed 's#.*/##')"
         note "opened #$num for $TITLE (candidate $tag)"
     else
-        gh issue view "$num" --json body --jq .body | setCandidate "$tag" "$sha" > "$tmp"
+        gh issue view "$num" --json body --jq .body | tr -d '\r' > "$tmp.old"
+        if grep -qxF "Candidate: $tag ($sha)" "$tmp.old"; then
+            note "#$num already names $tag ($sha); left as it is"
+            return
+        fi
+        untickGated < "$tmp.old" | setCandidate "$tag" "$sha" > "$tmp"
         gh issue edit "$num" --body-file "$tmp" >/dev/null
         gh issue comment "$num" --body \
 "Candidate is now \`$tag\` ($sha).
 
-Verify against that build. Boxes ticked against an earlier candidate only
-still hold where the change since it cannot have touched them." >/dev/null
-        note "restamped #$num to $tag"
+Every gated box was unticked: a tick described the previous build. Verify
+against this one." >/dev/null
+        note "restamped #$num to $tag and unticked the gated boxes"
     fi
 }
 
