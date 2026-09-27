@@ -2,9 +2,8 @@
 //! scratch NIX_HOME. Covers the
 //! dispatch/IO seam the unit tests can't reach: add/resolve/remove,
 //! actions, segments, export→import, and the read-only --resolve guarantee.
-//! Interactive paths (fzf pickers, navigation subshells), --init (it edits
-//! the real user PATH), and --secret (it edits the real Windows Credential
-//! Manager) are deliberately out of scope.
+//! Interactive paths (fzf pickers, navigation subshells) and --secret (it edits
+//! the real Windows Credential Manager) are deliberately out of scope.
 //!
 //! Windows-first, but it runs green on POSIX: a check whose SUBJECT is
 //! Windows (cmd's quoting, UAC, the registry PATH, the .exe wrappers, and
@@ -17,6 +16,7 @@ const std = @import("std");
 const Io = std.Io;
 const util = @import("util.zig");
 const proc = @import("proc.zig");
+const config = @import("config.zig");
 
 const RunResult = struct { out: []const u8, err: []const u8, code: u8 };
 
@@ -54,8 +54,12 @@ const Ctx = struct {
         var argv: std.ArrayList([]const u8) = .empty;
         try argv.append(c.arena, c.exe);
         try argv.appendSlice(c.arena, args);
+        return c.runCommand(argv.items, answer);
+    }
+
+    fn runCommand(c: *Ctx, argv: []const []const u8, answer: ?[]const u8) !RunResult {
         var child = try std.process.spawn(c.io, .{
-            .argv = argv.items,
+            .argv = argv,
             .cwd = .{ .path = c.work },
             .stdin = if (answer == null) .ignore else .pipe,
             .stdout = .pipe,
@@ -174,6 +178,51 @@ fn writeFile(c: *Ctx, path: []const u8, data: []const u8) !void {
 
 fn join(c: *Ctx, parts: []const []const u8) []const u8 {
     return std.fs.path.join(c.arena, parts) catch @panic("oom");
+}
+
+const RegistryPath = struct {
+    exists: bool = false,
+    kind: []const u8 = "",
+    raw: []const u8 = "",
+};
+
+fn sameRegistryPath(a: RegistryPath, b: RegistryPath) bool {
+    return a.exists == b.exists and std.mem.eql(u8, a.kind, b.kind) and std.mem.eql(u8, a.raw, b.raw);
+}
+
+fn registryPath(c: *Ctx) !RegistryPath {
+    const r = try c.runCommand(&.{ "reg", "query", "HKCU\\Environment", "/v", "Path" }, null);
+    if (r.code != 0) {
+        if (std.ascii.indexOfIgnoreCase(r.err, "unable to find") != null or
+            std.ascii.indexOfIgnoreCase(r.out, "unable to find") != null) return .{};
+        return error.RegistryPathQueryFailed;
+    }
+    var lines = std.mem.splitScalar(u8, r.out, '\n');
+    while (lines.next()) |line| {
+        var tokens = std.mem.tokenizeAny(u8, line, " \t\r");
+        const name = tokens.next() orelse continue;
+        if (!std.ascii.eqlIgnoreCase(name, "Path")) continue;
+        const kind = tokens.next() orelse return error.RegistryPathQueryMalformed;
+        if (!std.mem.startsWith(u8, kind, "REG_")) return error.RegistryPathQueryMalformed;
+        const pos = std.mem.indexOf(u8, line, kind) orelse return error.RegistryPathQueryMalformed;
+        return .{ .exists = true, .kind = kind, .raw = trim(line[pos + kind.len ..]) };
+    }
+    return error.RegistryPathQueryMalformed;
+}
+
+const ProfileState = struct {
+    exists: bool = false,
+    hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = [_]u8{0} ** std.crypto.hash.sha2.Sha256.digest_length,
+    mtime: i128 = 0,
+};
+
+fn profileState(c: *Ctx, path: []const u8) !ProfileState {
+    if (!proc.pathExists(c.io, path)) return .{};
+    const stat = try Io.Dir.cwd().statFile(c.io, path, .{});
+    const bytes = try Io.Dir.cwd().readFileAlloc(c.io, path, c.arena, .unlimited);
+    var state = ProfileState{ .exists = true, .mtime = stat.mtime.nanoseconds };
+    std.crypto.hash.sha2.Sha256.hash(bytes, &state.hash, .{});
+    return state;
 }
 
 /// writeActions writes a project actions.toml and approves it, which is what a
@@ -1200,13 +1249,30 @@ pub fn main(init: std.process.Init) !void {
         c.check(std.mem.indexOf(u8, man, "greet.cmd") != null and std.mem.indexOf(u8, man, "tool.exe") != null and
             std.mem.indexOf(u8, man, "task.cmd") != null, "the exports manifest records every install", r);
 
-        // A rebuild is a new, unconsented version: doctor flags it as pending,
-        // and `--sync-bin` (the explicit allow) refreshes the copy.
+        // A rebuild is a new, unconsented version: routine sync leaves the
+        // prior copy in place until --sync-bin explicitly allows the new one.
         try writeFile(&c, src_exe, "MZfake-v2");
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v1"), "--sync leaves a rebuilt export pending at its installed version", r);
         r = try c.run(&.{"--doctor"});
-        c.check(std.mem.indexOf(u8, r.out, "Bin exports") != null and std.mem.indexOf(u8, r.out, "not yet allowed") != null, "--doctor flags a rebuilt export as a new version pending consent", r);
+        c.check(std.mem.indexOf(u8, r.out, "Bin exports") != null and std.mem.indexOf(u8, r.out, "tool.exe") != null and
+            std.mem.indexOf(u8, r.out, "new version from pa not yet allowed") != null, "--doctor flags a rebuilt export as a new version pending consent", r);
         r = try c.run(&.{"--sync-bin"});
         c.check(r.code == 0 and std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v2"), "resync refreshes a rebuilt exe copy", r);
+
+        try writeFile(&c, inst_exe, "MZedited-by-hand");
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "tool.exe") != null and std.mem.indexOf(u8, r.out, "edited in") != null and
+            std.mem.indexOf(u8, r.out, "by hand") != null, "--doctor names an installed export edited by hand", r);
+        try writeFile(&c, pa_actions, "[actions]\nhello = \"echo from-project\"\n[bin]\ngreet = \"tools/greet.cmd\"\ntool = \"zig-out/tool.exe\"\n");
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "task.cmd") != null and std.mem.indexOf(u8, r.out, "no longer declared by") != null, "--doctor names an export whose declaration was removed", r);
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v2") and !proc.pathExists(io, inst_ps), "--sync-bin repairs an edited export and prunes an undeclared one", r);
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "edited in") == null and std.mem.indexOf(u8, r.out, "no longer declared by") == null, "--doctor clears repaired and pruned export drift", r);
+        try writeFile(&c, pa_actions, try std.fmt.allocPrint(arena, "[actions]\nhello = \"echo from-project\"\n{s}", .{bin_decls}));
+        _ = try c.run(&.{"--sync-bin"});
 
         // Collision: a second alias claims the same name — loud refusal, nobody
         // wins, and the previously installed file is withdrawn.
@@ -1256,8 +1322,8 @@ pub fn main(init: std.process.Init) !void {
         const ext = if (proc.is_windows) ".exe" else "";
         const send = join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "send{s}", .{ext}) });
         // An action export installs a copy of the CANONICAL binary, which
-        // --init/--sync maintain. --init is out of the harness's scope (it edits
-        // the real user PATH), so put it there the way --init would.
+        // --init/--sync maintain. This block needs the canonical copy before
+        // its later install-lifecycle checks run.
         const exe_bytes = try Io.Dir.cwd().readFileAlloc(io, c.exe, arena, .unlimited);
         try writeFile(&c, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "nix{s}", .{ext}) }), exe_bytes);
         var r = try c.run(&.{"--sync-bin"});
@@ -1821,6 +1887,180 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--init"});
         c.check(std.mem.indexOf(u8, r.err, "NOT added to your user PATH") != null and
             std.mem.indexOf(u8, r.err, "to your user PATH (new shells") == null, "--init under $NIX_HOME refuses to touch the user PATH", r);
+    }
+
+    // --- install lifecycle (release checklist sections 2 and 3) ---
+    if (c.windowsOnly("--init preserves the registry PATH and PowerShell profiles")) {
+        const shell = if (c.has("pwsh")) "pwsh" else "powershell.exe";
+        const docs_result = try c.runCommand(&.{ shell, "-NoProfile", "-Command", "[Environment]::GetFolderPath('MyDocuments')" }, null);
+        if (docs_result.code != 0 or trim(docs_result.out).len == 0) return error.DocumentsPathUnavailable;
+        const documents = trim(docs_result.out);
+        const profile_paths = [_][]const u8{
+            join(&c, &.{ documents, "WindowsPowerShell", "profile.ps1" }),
+            join(&c, &.{ documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1" }),
+            join(&c, &.{ documents, "PowerShell", "profile.ps1" }),
+            join(&c, &.{ documents, "PowerShell", "Microsoft.PowerShell_profile.ps1" }),
+        };
+        const profile_names = [_][]const u8{
+            "the WindowsPowerShell all-hosts profile",
+            "the WindowsPowerShell current-host profile",
+            "the PowerShell all-hosts profile",
+            "the PowerShell current-host profile",
+        };
+        var profiles_before: [profile_paths.len]ProfileState = undefined;
+        for (profile_paths, 0..) |path, i| profiles_before[i] = try profileState(&c, path);
+        const path_before = try registryPath(&c);
+        const init_result = try c.run(&.{"--init"});
+        const path_after = try registryPath(&c);
+        c.check(init_result.code == 0, "--init succeeds under a relocated NIX_HOME", init_result);
+        c.check(sameRegistryPath(path_before, path_after), "--init leaves the raw registry PATH, kind, and existence unchanged", init_result);
+        for (profile_paths, profile_names, 0..) |path, name, i| {
+            const after = try profileState(&c, path);
+            c.check(std.meta.eql(profiles_before[i], after), try std.fmt.allocPrint(arena, "--init leaves {s} unchanged", .{name}), init_result);
+        }
+
+        const bin_dir = join(&c, &.{ home, "bin" });
+        for (config.builtinShortcuts()) |shortcut| {
+            const wrapper = join(&c, &.{ bin_dir, try std.fmt.allocPrint(arena, "{s}.exe", .{shortcut.custom}) });
+            c.check(proc.pathExists(io, wrapper), try std.fmt.allocPrint(arena, "--init installs the {s} wrapper", .{shortcut.custom}), init_result);
+        }
+        c.check(proc.pathExists(io, join(&c, &.{ bin_dir, "nix.exe" })), "--init installs the canonical nix entry point", init_result);
+        const real_exe = c.exe;
+        for ([_]struct { name: []const u8, own_spec: []const u8 }{
+            .{ .name = "x", .own_spec = "run a command at the alias dir" },
+            .{ .name = "g", .own_spec = "ripgrep search under the alias dir" },
+            .{ .name = "q", .own_spec = "close the shell you typed it in" },
+        }) |slot| {
+            c.exe = join(&c, &.{ bin_dir, try std.fmt.allocPrint(arena, "{s}.exe", .{slot.name}) });
+            const r = try c.run(&.{"--agent"});
+            c.exe = real_exe;
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, slot.own_spec) != null, try std.fmt.allocPrint(arena, "the installed {s} wrapper dispatches to its own agent spec", .{slot.name}), r);
+        }
+
+        const sync_before = try registryPath(&c);
+        const sync_result = try c.run(&.{"--sync"});
+        const sync_after = try registryPath(&c);
+        c.check(sync_result.code == 0 and sameRegistryPath(sync_before, sync_after), "--sync leaves the raw registry PATH, kind, and existence unchanged", sync_result);
+    }
+
+    {
+        const guide = join(&c, &.{ home, "AGENTS.md" });
+        try writeFile(&c, guide, "e2e-guide-sentinel\n");
+        var r = try c.run(&.{"--init"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "e2e-guide-sentinel") == null and
+            std.mem.indexOf(u8, readFileOr(&c, guide, ""), "## Commands (what the user types)") != null, "--init regenerates the installed agent guide", r);
+        try writeFile(&c, guide, "e2e-guide-sentinel\n");
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "e2e-guide-sentinel") == null and
+            std.mem.indexOf(u8, readFileOr(&c, guide, ""), "## Commands (what the user types)") != null, "--sync regenerates an edited agent guide", r);
+        try Io.Dir.cwd().deleteFile(io, guide);
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "## Commands (what the user types)") != null, "--sync recreates a missing agent guide", r);
+    }
+
+    if (c.windowsOnly("--sync manages renamed and invalid shortcuts")) {
+        const config_path = join(&c, &.{ home, "config.toml" });
+        const had_config = proc.pathExists(io, config_path);
+        const saved_config = readFileOr(&c, config_path, "");
+        defer {
+            if (had_config) {
+                writeFile(&c, config_path, saved_config) catch {};
+            } else Io.Dir.cwd().deleteFile(io, config_path) catch {};
+        }
+        const bin_dir = join(&c, &.{ home, "bin" });
+        const g_exe = join(&c, &.{ bin_dir, "g.exe" });
+        const search_exe = join(&c, &.{ bin_dir, "search.exe" });
+        const find2_exe = join(&c, &.{ bin_dir, "find2.exe" });
+        try writeFile(&c, config_path, "[shortcuts]\ng = \"search\"\n");
+        var r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and proc.pathExists(io, search_exe) and !proc.pathExists(io, g_exe), "--sync installs a renamed shortcut and removes its old spelling", r);
+        try writeFile(&c, config_path, "[shortcuts]\ng = \"find2\"\n");
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and proc.pathExists(io, find2_exe) and !proc.pathExists(io, search_exe), "--sync removes a shortcut's previous custom spelling", r);
+        try writeFile(&c, config_path, "[shortcuts]\n");
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and proc.pathExists(io, g_exe) and !proc.pathExists(io, find2_exe), "--sync restores the builtin shortcut after its override is removed", r);
+        try writeFile(&c, config_path, "[shortcuts]\ng = \"nul\"\n");
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and proc.pathExists(io, g_exe), "a DOS device shortcut name installs no file and keeps the builtin", r);
+        try writeFile(&c, config_path, "[shortcuts]\ng = \"bad/name\"\n");
+        r = try c.run(&.{"--sync"});
+        c.check(r.code == 0 and proc.pathExists(io, g_exe) and !proc.pathExists(io, join(&c, &.{ bin_dir, "bad", "name.exe" })), "a shortcut name with a path separator installs no file and keeps the builtin", r);
+        const real_exe = c.exe;
+        c.exe = g_exe;
+        r = try c.run(&.{"--agent"});
+        c.exe = real_exe;
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ripgrep search under the alias dir") != null, "the builtin search wrapper still dispatches after invalid overrides", r);
+    }
+
+    if (c.windowsOnly("--sync replaces a wrapper while its old image runs")) {
+        const x_exe = join(&c, &.{ home, "bin", "x.exe" });
+        const exe_bytes = try Io.Dir.cwd().readFileAlloc(io, c.exe, arena, .unlimited);
+        const old_bytes = try arena.alloc(u8, exe_bytes.len + 4);
+        @memcpy(old_bytes[0..exe_bytes.len], exe_bytes);
+        @memcpy(old_bytes[exe_bytes.len..], "old!");
+        try writeFile(&c, x_exe, old_bytes);
+        const real_exe = c.exe;
+        c.exe = x_exe;
+        var r = try c.run(&.{"--agent"});
+        c.exe = real_exe;
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "run a command at the alias dir") != null, "an executable wrapper with trailing bytes still runs", r);
+
+        const started_file = join(&c, &.{ pa, "e2e-wrapper-started.txt" });
+        const finished_file = join(&c, &.{ pa, "e2e-wrapper-finished.txt" });
+        Io.Dir.cwd().deleteFile(io, started_file) catch {};
+        Io.Dir.cwd().deleteFile(io, finished_file) catch {};
+        defer {
+            Io.Dir.cwd().deleteFile(io, started_file) catch {};
+            Io.Dir.cwd().deleteFile(io, finished_file) catch {};
+        }
+        const command = "Set-Content -LiteralPath 'e2e-wrapper-started.txt' -Value started; Start-Sleep -Seconds 6; Set-Content -LiteralPath 'e2e-wrapper-finished.txt' -Value finished";
+        var child = try std.process.spawn(io, .{
+            .argv = &.{ x_exe, "pa", "powershell.exe", "-NoProfile", "-Command", command },
+            .cwd = .{ .path = c.work },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+            .environ_map = c.env,
+        });
+        defer if (child.id != null) child.kill(io);
+        const started_at = Io.Clock.awake.now(io).nanoseconds;
+        while (!proc.pathExists(io, started_file) and Io.Clock.awake.now(io).nanoseconds - started_at < 10 * std.time.ns_per_s) {
+            try io.sleep(.{ .nanoseconds = 100 * std.time.ns_per_ms }, .awake);
+        }
+        const started = proc.pathExists(io, started_file);
+        c.check(started, "the old x wrapper starts its long-running command", null);
+        if (started) {
+            r = try c.run(&.{"--sync"});
+            c.check(r.code == 0, "--sync succeeds while an old wrapper is running", r);
+            c.check(std.mem.eql(u8, readFileOr(&c, x_exe, ""), exe_bytes), "--sync installs a complete current x wrapper beside the running image", r);
+            var stale_complete = true;
+            var bin_dir = try Io.Dir.cwd().openDir(io, join(&c, &.{ home, "bin" }), .{ .iterate = true });
+            defer bin_dir.close(io);
+            var iter = bin_dir.iterate();
+            while (try iter.next(io)) |entry| {
+                if (!std.mem.startsWith(u8, entry.name, "x.exe.") or !std.mem.endsWith(u8, entry.name, ".stale")) continue;
+                const parked = join(&c, &.{ home, "bin", entry.name });
+                if (!std.mem.eql(u8, readFileOr(&c, parked, ""), old_bytes)) stale_complete = false;
+            }
+            c.check(stale_complete, "--sync leaves only complete parked x wrapper images", r);
+            c.exe = x_exe;
+            const fresh = try c.run(&.{"--agent"});
+            c.exe = real_exe;
+            c.check(fresh.code == 0 and std.mem.indexOf(u8, fresh.out, "run a command at the alias dir") != null, "a fresh x wrapper invocation works while the old one finishes", fresh);
+            const finish_wait = Io.Clock.awake.now(io).nanoseconds;
+            while (!proc.pathExists(io, finished_file) and Io.Clock.awake.now(io).nanoseconds - finish_wait < 15 * std.time.ns_per_s) {
+                try io.sleep(.{ .nanoseconds = 100 * std.time.ns_per_ms }, .awake);
+            }
+            const finished = proc.pathExists(io, finished_file);
+            if (!finished) child.kill(io);
+            const term: ?std.process.Child.Term = if (finished) try child.wait(io) else null;
+            const exited_ok = if (term) |t| switch (t) {
+                .exited => |code| code == 0,
+                else => false,
+            } else false;
+            c.check(finished and exited_ok, "the old wrapper finishes and writes its marker after --sync", null);
+        }
     }
 
     // --- time ledger (issue #20) -----------------------------------------------
