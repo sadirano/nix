@@ -119,15 +119,7 @@ pub fn validateExportName(name: []const u8) !void {
     for (name) |c| {
         if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return error.BadCharInName;
     }
-    const devices = [_][]const u8{
-        "con",  "prn",  "aux",  "nul",
-        "com1", "com2", "com3", "com4",
-        "com5", "com6", "com7", "com8",
-        "com9", "lpt1", "lpt2", "lpt3",
-        "lpt4", "lpt5", "lpt6", "lpt7",
-        "lpt8", "lpt9",
-    };
-    for (devices) |d| if (std.ascii.eqlIgnoreCase(name, d)) return error.DeviceName;
+    if (store.isDosDevice(name)) return error.DeviceName;
 }
 
 /// renderForwarder writes the one-line trampoline for a script export. cmd

@@ -238,6 +238,23 @@ pub fn toSlash(arena: std.mem.Allocator, p: []const u8) ![]const u8 {
 /// validateAliasName is the REGISTRATION check: it refuses the names nix owns
 /// (`.nix` and `_default` are fine to REFER to and never fine to register) and
 /// the characters that would break the line-based store.
+/// isDosDevice: `name`, or the part before its first dot, is a reserved DOS
+/// device name. `nul.exe` on PATH is a trap for every shell that touches it,
+/// and a file by that name cannot even be created or deleted normally.
+pub fn isDosDevice(name: []const u8) bool {
+    const stem = name[0 .. std.mem.indexOfScalar(u8, name, '.') orelse name.len];
+    const devices = [_][]const u8{
+        "con",  "prn",  "aux",  "nul",
+        "com1", "com2", "com3", "com4",
+        "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3",
+        "lpt4", "lpt5", "lpt6", "lpt7",
+        "lpt8", "lpt9",
+    };
+    for (devices) |d| if (std.ascii.eqlIgnoreCase(stem, d)) return true;
+    return false;
+}
+
 pub fn validateAliasName(name: []const u8) !void {
     const t = std.mem.trim(u8, name, " \t\r\n");
     if (t.len == 0) return error.EmptyName;

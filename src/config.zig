@@ -122,6 +122,15 @@ pub const Config = struct {
 /// `f`; `r` was a pwsh alias for Invoke-History and the one command the shell
 /// silently shadowed. The old spelling is available by name (`[shortcuts] x =
 /// ["x", "r"]`).
+/// usableShortcutName: a `[shortcuts]` value that can become a wrapper exe -
+/// an alias-safe name, not `nix` (it would shadow the canonical binary), and
+/// not a DOS device.
+pub fn usableShortcutName(name: []const u8) bool {
+    if (name.len == 0 or std.ascii.eqlIgnoreCase(name, "nix") or store.isDosDevice(name)) return false;
+    store.validateAliasName(name) catch return false;
+    return true;
+}
+
 pub fn builtinShortcuts() []const Shortcut {
     return &.{
         .{ .builtin = "o", .custom = "o" }, .{ .builtin = "e", .custom = "e" },
@@ -279,9 +288,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
                 customs[0] = toml.unquoteLoose(val_start);
             }
             for (customs) |custom| {
-                const usable = custom.len > 0 and !std.ascii.eqlIgnoreCase(custom, "nix") and
-                    if (store.validateAliasName(custom)) |_| true else |_| false;
-                if (!usable) continue;
+                if (!usableShortcutName(custom)) continue;
                 var sc: std.ArrayList(Shortcut) = .empty;
                 try sc.appendSlice(arena, cfg.shortcuts);
                 try sc.append(arena, .{ .builtin = try arena.dupe(u8, key), .custom = try arena.dupe(u8, custom) });
@@ -423,12 +430,11 @@ test "loadConfig shortcuts: unusable custom names are ignored" {
         .{ .name = "my app", .ok = false }, // space
         .{ .name = "a]b", .ok = false }, // TOML metachar
         .{ .name = "a\\b", .ok = false }, // path separator
+        .{ .name = "nul", .ok = false }, // DOS device: nul.exe cannot be a wrapper
+        .{ .name = "COM1", .ok = false },
+        .{ .name = "console", .ok = true }, // a device name's prefix is fine
     };
-    for (cases) |c| {
-        const usable = c.name.len > 0 and !std.ascii.eqlIgnoreCase(c.name, "nix") and
-            if (store.validateAliasName(c.name)) |_| true else |_| false;
-        try std.testing.expectEqual(c.ok, usable);
-    }
+    for (cases) |c| try std.testing.expectEqual(c.ok, usableShortcutName(c.name));
 }
 
 test "notify template survives quotes, '=' and spaces in the value" {
