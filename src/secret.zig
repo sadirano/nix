@@ -252,6 +252,12 @@ pub const Resolver = struct {
 
 const placeholder_prefix = "${secret:";
 
+/// hasPlaceholder reports whether `command` names a secret at all, without
+/// resolving anything.
+pub fn hasPlaceholder(command: []const u8) bool {
+    return std.mem.indexOf(u8, command, placeholder_prefix) != null;
+}
+
 /// expandSecrets replaces every `${secret:NAME}` in `command` with the value
 /// `resolver` returns for NAME. Stops at the first unresolvable name and
 /// returns `.missing` (the caller must abort before spawning — no partial

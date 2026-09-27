@@ -586,7 +586,7 @@ pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_defa
 /// reaches listings or [notify] messages (those all read the raw,
 /// unexpanded command string). An unresolved name aborts before spawn.
 pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, outside: bool, shell: actions.Shell) !u8 {
-    const cmd = (try inShell(app, shell, (try expandSecrets(app, command)) orelse return 1)) orelse return 1;
+    const cmd = (try prepare(app, shell, command)) orelse return 1;
     // An elevated action is never a foreground run, asked for or not: UAC hands
     // back a separate process under a different token, and it cannot write into
     // this console. It gets a window, like `--outside` does.
@@ -773,6 +773,34 @@ fn setVar(arena: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, va
     try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "set \"{s}={s}\" & ", .{ key, value }));
 }
 
+/// prepare turns an action's command, arguments and references already in
+/// place, into the line that is spawned: secrets expanded, then wrapped for its
+/// shell. Both launch paths come through here, so this is where an elevated
+/// command is refused a secret.
+///
+/// An elevated process is started with its whole command line visible to every
+/// process on the machine, so a secret placed there is no longer secret. The
+/// check runs before any credential is read, and again on the expanded line in
+/// case the expansion itself produced the `sudo` marker.
+fn prepare(app: *App, shell: actions.Shell, command: []const u8) !?[]const u8 {
+    if (elevatedSecret(command, command)) return refuseElevatedSecret(app);
+    const expanded = (try expandSecrets(app, command)) orelse return null;
+    if (elevatedSecret(command, expanded)) return refuseElevatedSecret(app);
+    return inShell(app, shell, expanded);
+}
+
+/// elevatedSecret: `command` names a secret, or expanded to something other
+/// than itself, and the line that would run is elevated.
+fn elevatedSecret(command: []const u8, expanded: []const u8) bool {
+    const named = secret.hasPlaceholder(command) or expanded.ptr != command.ptr;
+    return named and stripSudo(expanded) != null;
+}
+
+fn refuseElevatedSecret(app: *App) !?[]const u8 {
+    try app.err.writeAll("nix: a secret cannot be passed to an elevated action - its command line is readable by every process; nothing was run\n");
+    return null;
+}
+
 /// expandSecrets resolves an action's `${secret:NAME}` placeholders, or reports
 /// the unknown name and returns null. Every path that spawns a command string
 /// goes through here, so a resolved credential exists only for the length of
@@ -797,7 +825,7 @@ fn expandSecrets(app: *App, command: []const u8) !?[]const u8 {
 /// Like `--outside`, no [notify] hook fires: nothing here observes the finish.
 /// An action marked `sudo` starts elevated, here as anywhere else.
 pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8, shell: actions.Shell) !u8 {
-    const cmd = (try inShell(app, shell, (try expandSecrets(app, command)) orelse return 1)) orelse return 1;
+    const cmd = (try prepare(app, shell, command)) orelse return 1;
     return startWindowed(app, cmd, alias, dir, name);
 }
 
@@ -987,4 +1015,18 @@ test "runAction message shapes (via notify.expandTemplate pairs)" {
     // The composed {message} strings runAction hands the hook.
     try std.testing.expectEqualStrings(":build finished in 1m23s", try std.fmt.allocPrint(a, ":{s} finished in {s}", .{ "build", try notify.fmtDuration(a, 83_000) }));
     try std.testing.expectEqualStrings(":build failed (exit 3) after 850ms", try std.fmt.allocPrint(a, ":{s} failed (exit {d}) after {s}", .{ "build", 3, try notify.fmtDuration(a, 850) }));
+}
+
+test "elevatedSecret: a secret never reaches an elevated command line" {
+    if (!proc.is_windows) return error.SkipZigTest;
+    const inline_secret = "sudo tool --token ${secret:API}";
+    try std.testing.expect(elevatedSecret(inline_secret, inline_secret));
+    try std.testing.expect(elevatedSecret("  SUDO tool ${secret:API}", "  SUDO tool ${secret:API}"));
+    const plain = "tool --token ${secret:API}";
+    try std.testing.expect(!elevatedSecret(plain, plain));
+    const elevated = "sudo tool --flag";
+    try std.testing.expect(!elevatedSecret(elevated, elevated));
+    // A secret whose value itself opens with the marker.
+    try std.testing.expect(elevatedSecret("${secret:CMD} x", "sudo tool x"));
+    try std.testing.expect(!elevatedSecret("${secret:CMD} x", "tool x"));
 }
