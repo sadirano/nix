@@ -692,7 +692,9 @@ pub const specs = [_]Spec{
         \\A VALUE starting with `:name` is that action of the same alias, the
         \\rest of the line its arguments (`list = ":run list"`); several names
         \\chain (`ship = ":close :deploy"`). A .ps1 in .nix/scripts can open an
-        \\action by bare name (`stop = "shelf -Stop {args}"`). Write these rather
+        \\action by bare name (`stop = "shelf -Stop {args}"`), a .ps1 path runs
+        \\as written, and a relative path with `/` (`zig-out/bin/x.exe`) is
+        \\handed to cmd with `\` - cmd cannot start it otherwise. Write these rather
         \\than repeating a sibling's command or spelling out
         \\`powershell -File .nix/scripts/x.ps1`: a run prints `nix: shorter:`
         \\for the long forms, and `nix --doctor` lists them all.

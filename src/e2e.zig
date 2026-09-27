@@ -621,6 +621,20 @@ pub fn main(init: std.process.Init) !void {
             c.check(r.code == 0 and hasLineFold(r.out, "greet there"), "a .ps1 script runs by bare name inside an action", r);
             r = try c.run(&.{ "pa", "--run", ":long" });
             c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "long = \"greet there\"") != null, "the PowerShell long form is told the bare name", r);
+
+            // cmd reads the first `/` of a relative path as a switch; nix hands it `\`.
+            try writeFile(&c, join(&c, &.{ pa, "tools", "tool.cmd" }), "@echo tool %*\r\n");
+            try writeFile(&c, join(&c, &.{ pa, "tools", "hi.ps1" }), "Write-Output \"hi $args\"\n");
+            try writeActions(&c, "pa", pa, "[actions]\n" ++
+                "slashed = \"tools/tool.cmd there\"\n" ++
+                "ps1path = \"tools/hi.ps1 there\"\n" ++
+                "longpath = \"powershell -NoProfile -File tools/hi.ps1 there\"\n");
+            r = try c.run(&.{ "pa", "--run", ":slashed" });
+            c.check(r.code == 0 and hasLineFold(r.out, "tool there"), "a relative path written with / runs under cmd", r);
+            r = try c.run(&.{ "pa", "--run", ":ps1path" });
+            c.check(r.code == 0 and hasLineFold(r.out, "hi there"), "a .ps1 named by path runs through PowerShell", r);
+            r = try c.run(&.{ "pa", "--run", ":longpath" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "longpath = \"tools/hi.ps1 there\"") != null, "a spelled-out PowerShell line for a .ps1 path is told the short form", r);
         }
 
         // Put back what the blocks after this one expect to find.

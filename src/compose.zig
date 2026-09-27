@@ -103,27 +103,51 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
     return .{ .command = command, .from_project = from_project, .shell = a.shell, .written = a.command };
 }
 
-/// scriptForm lets an action open with a `.ps1` from the scripts dirs by bare
-/// name, as `x <alias> <script>` already could. cmd reaches a `.cmd`, `.bat`
-/// or `.exe` there through the PATH aliasRunEnv sets up, but not a `.ps1`,
-/// which is why every such action used to spell out the PowerShell line.
+/// scriptForm makes the first word of a default-shell action something cmd can
+/// start, on the two counts where it cannot:
 ///
-/// A project script is written RELATIVE to the alias dir, the way a hand-written
-/// line would name it, so the gate still counts it among the files it hashes.
+/// - A relative path written with `/` (`zig-out/bin/tool.exe`): cmd reads the
+///   first `/` as the start of a switch and reports `'zig-out' is not
+///   recognized`. The word becomes the same path with `\`.
+/// - A `.ps1`, by path or by bare name from the scripts dirs (as
+///   `x <alias> <script>` already could): cmd reaches a `.cmd`, `.bat` or
+///   `.exe` there through the PATH aliasRunEnv sets up, but never a `.ps1`. It
+///   gets the PowerShell line every such action used to spell out.
+///
+/// Only a path naming a file that exists is touched, so a word that merely
+/// looks like one is left as written. A project script stays RELATIVE to the
+/// alias dir, the way a hand-written line names it, so the gate still counts it
+/// among the files it hashes.
 fn scriptForm(app: *App, dir: []const u8, command: []const u8, shell: actions.Shell) ![]const u8 {
     if (!proc.is_windows or shell != .default) return command;
     const body = run.stripSudo(command) orelse command;
     const t = std.mem.trimStart(u8, body, " \t");
     const end = std.mem.indexOfAny(u8, t, " \t") orelse t.len;
-    const path = run.resolveScript(app, dir, t[0..end]) orelse return command;
-    if (!std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".ps1")) return command;
-    const rel = if (dir.len > 0 and path.len > dir.len + 1 and std.mem.startsWith(u8, path, dir) and (path[dir.len] == '\\' or path[dir.len] == '/'))
-        path[dir.len + 1 ..]
-    else
-        path;
-    const shown = if (std.mem.indexOfScalar(u8, rel, ' ') != null) try std.fmt.allocPrint(app.arena, "\"{s}\"", .{rel}) else rel;
     const sudo = if (body.ptr != command.ptr) "sudo " else "";
+    const word = t[0..end];
+    const is_ps1 = std.ascii.endsWithIgnoreCase(word, ".ps1");
+    var rel: []const u8 = undefined;
+    if (localPath(word) and (is_ps1 or std.mem.indexOfScalar(u8, word, '/') != null)) {
+        rel = try std.mem.replaceOwned(u8, app.arena, word, "/", "\\");
+        if (!proc.fileExists(app.io, if (dir.len > 0) try std.fs.path.join(app.arena, &.{ dir, rel }) else rel)) return command;
+        if (!is_ps1) return std.fmt.allocPrint(app.arena, "{s}{s}{s}", .{ sudo, rel, t[end..] });
+    } else {
+        const path = run.resolveScript(app, dir, word) orelse return command;
+        if (!std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".ps1")) return command;
+        rel = if (dir.len > 0 and path.len > dir.len + 1 and std.mem.startsWith(u8, path, dir) and (path[dir.len] == '\\' or path[dir.len] == '/'))
+            path[dir.len + 1 ..]
+        else
+            path;
+    }
+    const shown = if (std.mem.indexOfScalar(u8, rel, ' ') != null) try std.fmt.allocPrint(app.arena, "\"{s}\"", .{rel}) else rel;
     return std.fmt.allocPrint(app.arena, "{s}{s} -NoProfile -ExecutionPolicy Bypass -File {s}{s}", .{ sudo, proc.psShell(app.arena, app.io, app.env), shown, t[end..] });
+}
+
+/// localPath: a word written as a path relative to where the action runs - no
+/// quotes, no drive or root, no %VAR% for cmd to expand into one first.
+fn localPath(word: []const u8) bool {
+    if (word.len == 0 or std.mem.indexOfAny(u8, word, "\"'%") != null) return false;
+    return !std.fs.path.isAbsolute(word);
 }
 
 /// shorterForm says how an action could be written with less, or null when
@@ -134,9 +158,16 @@ pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const 
     const v = std.mem.trim(u8, written, " \t");
     if (v.len == 0 or v[0] == ':') return null;
     if (longPs1(v)) |hit| {
-        if (run.resolveScript(app, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
-            return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a .ps1 in the scripts dir runs by bare name)", .{ name, hit.stem, if (hit.rest.len > 0) " " else "", hit.rest });
-        };
+        const sep = if (hit.rest.len > 0) " " else "";
+        const parent = std.fs.path.basename(std.fs.path.dirname(hit.path) orelse "");
+        if (std.ascii.eqlIgnoreCase(parent, "scripts")) {
+            if (run.resolveScript(app, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
+                return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a .ps1 in the scripts dir runs by bare name)", .{ name, hit.stem, sep, hit.rest });
+            };
+        }
+        if (localPath(hit.path) and dir.len > 0 and proc.fileExists(app.io, try std.fs.path.join(app.arena, &.{ dir, hit.path }))) {
+            return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a .ps1 path runs as it is)", .{ name, hit.path, sep, hit.rest });
+        }
     }
     // An empty dir is the machine-wide file, whose siblings are its own lines -
     // not whatever project the cwd happens to hold.
@@ -186,9 +217,9 @@ pub fn splice(arena: std.mem.Allocator, command: []const u8, tail: []const u8) !
     return std.mem.replaceOwned(u8, arena, command, "{args}", t);
 }
 
-/// LongPs1 is `powershell -NoProfile ... -File <dir>/<stem>.ps1 <rest>`: what
-/// every `.ps1` action had to say before a script name could stand alone.
-pub const LongPs1 = struct { stem: []const u8, rest: []const u8 };
+/// LongPs1 is `powershell -NoProfile ... -File <path>.ps1 <rest>`: what every
+/// `.ps1` action had to say before a script could open the line by itself.
+pub const LongPs1 = struct { path: []const u8, stem: []const u8, rest: []const u8 };
 
 /// Flags the bare-name form passes anyway. Anything else on the line is a
 /// choice the short form would drop, so it is not reported.
@@ -208,9 +239,7 @@ pub fn longPs1(value: []const u8) ?LongPs1 {
             const path = std.mem.trim(u8, it.next() orelse return null, "\"'");
             if (!std.ascii.endsWithIgnoreCase(path, ".ps1")) return null;
             const base = std.fs.path.basename(path);
-            const parent = std.fs.path.basename(std.fs.path.dirname(path) orelse return null);
-            if (!std.ascii.eqlIgnoreCase(parent, "scripts")) return null;
-            return .{ .stem = base[0 .. base.len - ".ps1".len], .rest = std.mem.trim(u8, it.rest(), " \t") };
+            return .{ .path = path, .stem = base[0 .. base.len - ".ps1".len], .rest = std.mem.trim(u8, it.rest(), " \t") };
         }
         var known = false;
         for (implied_flags) |f| if (std.ascii.eqlIgnoreCase(tok, f)) {
@@ -307,8 +336,17 @@ test "longPs1: only the flags the short form implies" {
     const home = longPs1("pwsh -NoProfile -NoLogo -ExecutionPolicy Bypass -File %USERPROFILE%/.nix/scripts/close_vel.ps1").?;
     try std.testing.expectEqualStrings("close_vel", home.stem);
     try std.testing.expect(longPs1("powershell -Sta -File .nix/scripts/x.ps1") == null);
-    try std.testing.expect(longPs1("powershell -File tools/x.ps1") == null);
+    try std.testing.expectEqualStrings("tools/x.ps1", longPs1("powershell -File tools/x.ps1").?.path);
     try std.testing.expect(longPs1("python x.py") == null);
+}
+
+test "localPath: relative words only" {
+    try std.testing.expect(localPath("zig-out/bin/hoot.exe"));
+    try std.testing.expect(localPath("run.ps1"));
+    try std.testing.expect(!localPath("C:/tools/renpy.exe"));
+    try std.testing.expect(!localPath("%USERPROFILE%/.nix/scripts/x.ps1"));
+    try std.testing.expect(!localPath("\"zig-out/bin/x.exe\""));
+    try std.testing.expect(!localPath(""));
 }
 
 test "selfCall: x <same alias> :name" {
