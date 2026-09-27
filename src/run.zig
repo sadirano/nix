@@ -242,7 +242,7 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
 
     const depth = currentDepth(app);
     if (depth >= max_depth) {
-        try app.err.print("nix: :{s} called itself {d} levels deep - stopping\n", .{ call.names[0], depth });
+        try app.err.print("nix: :{s} called itself {d} levels deep - stopping\n", .{ call.links[0].name, depth });
         return 1;
     }
     try bumpDepth(app, depth);
@@ -252,7 +252,8 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
     const ctx_alias = cur.alias;
 
     // A chain stops at the first failure, exactly as `r <alias> :a :b` does.
-    for (call.names) |name| {
+    for (call.links) |link| {
+        const name = link.name;
         const r = (try resolveExportAction(app, actions.default_owner, "", name)) orelse {
             // Not machine-wide: the alias the cwd sits in answers instead, as if
             // it had been named. Only a name that would otherwise fail - one
@@ -260,7 +261,7 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
             if (ctx_alias.len > 0) {
                 const alias_dir = (try resolveAliasPath(app, ctx_alias)) orelse return 1;
                 if (try resolveAction(app, ctx_alias, alias_dir, name) != null) {
-                    const code = try runCall(app, .{ .names = &.{name}, .args = call.args }, ctx_alias, alias_dir, false);
+                    const code = try runCall(app, .{ .links = &.{link} }, ctx_alias, alias_dir, false);
                     if (code != 0) return code;
                     continue;
                 }
@@ -273,7 +274,7 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
         if (try compose.shorterForm(app, actions.default_owner, "", name, r.written)) |hint| {
             try app.err.print("nix: shorter: {s}\n", .{hint});
         }
-        const cmd = try applyArgs(app.arena, r.command, call.args);
+        const cmd = try applyArgs(app.arena, r.command, link.args);
         // from_project = false: _default.toml lives under ~/.nix, the user's own
         // and ungated. A `sudo` command still routes through the gate.
         if (!try provenance.gateAction(app, ctx_alias, dir, name, r.command, cmd, false, stripSudo(cmd) != null, .may_prompt)) return 1;
@@ -291,46 +292,58 @@ pub fn resolveExportAction(app: *App, alias: []const u8, dir: []const u8, name: 
     return resolveAction(app, alias, dir, name);
 }
 
-/// One `:action` invocation parsed off a command line: the names to run, in the
-/// order given, and the arguments they were called with.
-pub const ActionCall = struct {
-    names: []const []const u8,
+/// One action of a call, with the words written after it.
+pub const Link = struct {
+    name: []const u8,
     args: []const []const u8,
+};
+
+/// One `:action` invocation parsed off a command line: the actions to run, in
+/// the order given.
+pub const ActionCall = struct {
+    links: []const Link,
 };
 
 pub const ParsedCall = union(enum) { list, invalid, call: ActionCall };
 
-/// parseActionCall reads the leading run of `:name` tokens and whatever follows
-/// them. Several names chain (`r acme :build :test`); a bare `:` on its own
-/// lists the alias's actions.
+fn isActionName(tok: []const u8) bool {
+    return tok.len > 1 and tok[0] == ':';
+}
+
+/// parseActionCall reads `:name` tokens and the words after each: every action
+/// takes the words written after it, up to the next `:name`, so a chain says
+/// exactly which flag belongs to which link (`r acme :build --release :test
+/// --json`). A bare `:` on its own lists the alias's actions.
 ///
-/// Arguments are refused for a chain: `r acme :build :test --release` has no
-/// honest answer to "which action gets the flag", and picking one would be the
-/// kind of guess nix does not make. Name one action, or pass none.
+/// `--` makes everything after it literal, so a word that starts with `:` can
+/// still reach a command. Written straight after a name it is only that marker
+/// and is dropped (`:test -- --json` hands over `--json`); anywhere else it is
+/// also a word of its own, as it always was.
 pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
-    var n: usize = 0;
-    while (n < argv.len and argv[n].len > 1 and argv[n][0] == ':') n += 1;
-    if (n == 0) {
+    if (argv.len == 0 or !isActionName(argv[0])) {
         if (argv.len == 1) return .list; // a bare ':' is the listing form
         try app.err.writeAll("nix: name the action after ':' (e.g. x <alias> :test)\n");
         return .invalid;
     }
-    var args = argv[n..];
-    // `--` separates nix's words from the action's. It is optional, and exactly
-    // one leading marker is consumed, so `:test -- --json` reaches the command
-    // as `--json` rather than losing the flag to nix's own parsing.
-    if (args.len > 0 and eql(args[0], "--")) args = args[1..];
-    for (args) |a| if (eql(a, ":")) {
-        try app.err.writeAll("nix: name the action after ':' (e.g. x <alias> :test)\n");
-        return .invalid;
-    };
-    if (n > 1 and args.len > 0) {
-        try app.err.writeAll("nix: arguments go to a single action, not a chain of them\n");
-        return .invalid;
+    var links: std.ArrayList(Link) = .empty;
+    var name = argv[0][1..];
+    var args: std.ArrayList([]const u8) = .empty;
+    var literal = false;
+    for (argv[1..]) |tok| {
+        if (!literal and eql(tok, "--")) {
+            literal = true;
+            if (args.items.len > 0) try args.append(app.arena, tok);
+        } else if (!literal and isActionName(tok)) {
+            try links.append(app.arena, .{ .name = name, .args = args.items });
+            name = tok[1..];
+            args = .empty;
+        } else if (!literal and eql(tok, ":")) {
+            try app.err.writeAll("nix: name the action after ':' (e.g. x <alias> :test)\n");
+            return .invalid;
+        } else try args.append(app.arena, tok);
     }
-    const names = try app.arena.alloc([]const u8, n);
-    for (names, argv[0..n]) |*name, tok| name.* = tok[1..];
-    return .{ .call = .{ .names = names, .args = args } };
+    try links.append(app.arena, .{ .name = name, .args = args.items });
+    return .{ .call = .{ .links = links.items } };
 }
 
 /// runCall runs a parsed call: one action exactly as it always ran, or a chain
@@ -339,8 +352,9 @@ pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
 /// had been invoked alone, under a header so a chain's transcript can be read
 /// back afterwards.
 fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outside: bool) !u8 {
-    const chained = call.names.len > 1;
-    for (call.names, 0..) |name, i| {
+    const chained = call.links.len > 1;
+    for (call.links, 0..) |link, i| {
+        const name = link.name;
         const r = (try resolveAction(app, alias, dir, name)) orelse {
             try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `x {s} :`)\n", .{ alias, name, alias });
             return 1;
@@ -348,7 +362,7 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
         if (try compose.shorterForm(app, alias, dir, name, r.written)) |hint| {
             try app.err.print("nix: shorter: {s}\n", .{hint});
         }
-        const cmd = try applyArgs(app.arena, r.command, call.args);
+        const cmd = try applyArgs(app.arena, r.command, link.args);
         // Gated per link, not once for the chain: each link is its own command,
         // and an elevated one asks again even if an earlier link just did.
         if (!try provenance.gateAction(app, alias, dir, name, r.command, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
@@ -359,7 +373,7 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
         }
         const code = try runAction(app, cmd, alias, dir, name, outside, r.shell);
         if (code != 0) {
-            if (i + 1 < call.names.len) try app.err.print("nix: :{s} failed (exit {d}) - stopping\n", .{ name, code });
+            if (i + 1 < call.links.len) try app.err.print("nix: :{s} failed (exit {d}) - stopping\n", .{ name, code });
             return code;
         }
     }

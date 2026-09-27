@@ -352,8 +352,15 @@ x acme :build :test :deploy
 
 Runs in order, in this terminal, stopping at the first failure - the `&&` you
 would have typed, with a `==> acme :test` header per step so the log reads back
-cleanly. Chains take no arguments (which step would get them?); for a chain
-you run often, make it an action of its own:
+cleanly. Each action takes the words after it, up to the next `:name`:
+
+```powershell
+x acme :build --release :test --json   # zig build --release, then zig build test --json
+x acme :fmt -- :draft                  # after --, :draft is a word, not an action
+```
+
+For a chain you run often, make it an action of its own. Its links take their
+words the same way, and words you add when calling it go to the last link:
 
 ```toml
 release = ":ci :deploy"

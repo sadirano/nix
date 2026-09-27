@@ -75,13 +75,10 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
         problem.* = try std.fmt.allocPrint(app.arena, ":{s} leads back to itself through other actions", .{a.name});
         return error.BadActionReference;
     }
-    if (refs.names.len > 1 and refs.tail.len > 0) {
-        problem.* = try std.fmt.allocPrint(app.arena, ":{s} chains actions and passes them words too - arguments go to a single action, not a chain of them", .{a.name});
-        return error.BadActionReference;
-    }
     var parts: std.ArrayList([]const u8) = .empty;
     var from_project = raw.from_project;
-    for (refs.names) |ref| {
+    for (refs, 0..) |link, i| {
+        const ref = link.name;
         const hit = (try lookupRaw(app, alias, dir, ref)) orelse {
             problem.* = try std.fmt.allocPrint(app.arena, ":{s} refers to :{s}, which is not an action of {s}", .{ a.name, ref, alias });
             return error.BadActionReference;
@@ -94,12 +91,13 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
         }
         const sub = try expandAction(app, alias, dir, hit, depth + 1, problem);
         from_project = from_project or sub.from_project;
-        try parts.append(app.arena, sub.command);
+        // The caller's words go to the last link, so an earlier one keeps only
+        // what the value wrote after it.
+        var part = try splice(app.arena, sub.command, link.tail);
+        if (i + 1 < refs.len) part = try std.mem.replaceOwned(u8, app.arena, part, "{args}", "");
+        try parts.append(app.arena, part);
     }
-    const command = if (parts.items.len == 1)
-        try splice(app.arena, parts.items[0], refs.tail)
-    else
-        try std.mem.join(app.arena, " && ", parts.items);
+    const command = try std.mem.join(app.arena, " && ", parts.items);
     return .{ .command = command, .from_project = from_project, .shell = a.shell, .written = a.command };
 }
 
@@ -184,26 +182,55 @@ pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const 
     return null;
 }
 
-pub const Refs = struct {
-    names: []const []const u8,
-    /// The rest of the line after the names, verbatim - it is authored text,
-    /// not arguments a shell split, so it is spliced without re-quoting.
+pub const RefLink = struct {
+    name: []const u8,
+    /// The words after the name, verbatim - it is authored text, not arguments
+    /// a shell split, so it is spliced without re-quoting.
     tail: []const u8,
 };
 
-/// parseRefs reads a value's leading run of `:name` words, or returns null when
-/// the value is an ordinary command.
-pub fn parseRefs(arena: std.mem.Allocator, value: []const u8) !?Refs {
-    var rest = std.mem.trim(u8, value, " \t");
-    var names: std.ArrayList([]const u8) = .empty;
-    while (rest.len > 1 and rest[0] == ':') {
-        const end = std.mem.indexOfAny(u8, rest, " \t") orelse rest.len;
-        if (end < 2) break;
-        try names.append(arena, rest[1..end]);
-        rest = std.mem.trimStart(u8, rest[end..], " \t");
+/// parseRefs reads a value that opens with `:name` into its links, each with
+/// the words written after it - the same grammar as a chain typed after
+/// `x <alias>`, `--` included. Null when the value is an ordinary command.
+/// Words are split on blanks outside double quotes, so `":run \"a :b\""` is
+/// one link.
+pub fn parseRefs(arena: std.mem.Allocator, value: []const u8) !?[]RefLink {
+    const v = std.mem.trim(u8, value, " \t");
+    var links: std.ArrayList(RefLink) = .empty;
+    var name: []const u8 = "";
+    var tail_start: usize = 0;
+    var words: usize = 0; // words seen after the current name
+    var literal = false;
+    var i: usize = 0;
+    while (i < v.len) {
+        while (i < v.len and (v[i] == ' ' or v[i] == '\t')) i += 1;
+        if (i >= v.len) break;
+        const start = i;
+        var quoted = false;
+        while (i < v.len and (quoted or (v[i] != ' ' and v[i] != '\t'))) : (i += 1) {
+            if (v[i] == '"') quoted = !quoted;
+        }
+        const w = v[start..i];
+        const is_name = !literal and w.len > 1 and w[0] == ':';
+        if (links.items.len == 0 and name.len == 0) {
+            if (!is_name) return null;
+        } else if (!literal and std.mem.eql(u8, w, "--")) {
+            literal = true;
+            if (words == 0) tail_start = i;
+            continue;
+        } else if (!is_name) {
+            words += 1;
+            continue;
+        } else {
+            try links.append(arena, .{ .name = name, .tail = std.mem.trim(u8, v[tail_start..start], " \t") });
+        }
+        name = w[1..];
+        tail_start = i;
+        words = 0;
     }
-    if (names.items.len == 0) return null;
-    return .{ .names = names.items, .tail = rest };
+    if (name.len == 0) return null;
+    try links.append(arena, .{ .name = name, .tail = std.mem.trim(u8, v[tail_start..], " \t") });
+    return links.items;
 }
 
 /// splice hands `tail` to `command` as its arguments: into its `{args}` when it
@@ -304,17 +331,26 @@ pub fn sharedStart(name: []const u8, value: []const u8, siblings: []const action
     return best;
 }
 
-test "parseRefs: a leading run of :names, then the tail verbatim" {
+test "parseRefs: each :name takes the words after it, verbatim" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const one = (try parseRefs(a, ":run list --all")).?;
-    try std.testing.expectEqual(@as(usize, 1), one.names.len);
-    try std.testing.expectEqualStrings("run", one.names[0]);
-    try std.testing.expectEqualStrings("list --all", one.tail);
+    try std.testing.expectEqual(@as(usize, 1), one.len);
+    try std.testing.expectEqualStrings("run", one[0].name);
+    try std.testing.expectEqualStrings("list --all", one[0].tail);
     const two = (try parseRefs(a, "  :close :deploy")).?;
-    try std.testing.expectEqualStrings("deploy", two.names[1]);
-    try std.testing.expectEqualStrings("", two.tail);
+    try std.testing.expectEqualStrings("deploy", two[1].name);
+    try std.testing.expectEqualStrings("", two[1].tail);
+    const words = (try parseRefs(a, ":close --force :deploy --fast")).?;
+    try std.testing.expectEqualStrings("--force", words[0].tail);
+    try std.testing.expectEqualStrings("--fast", words[1].tail);
+    const lit = (try parseRefs(a, ":fmt -- :notaname x")).?;
+    try std.testing.expectEqual(@as(usize, 1), lit.len);
+    try std.testing.expectEqualStrings(":notaname x", lit[0].tail);
+    const q = (try parseRefs(a, ":run \"a :b\" c")).?;
+    try std.testing.expectEqual(@as(usize, 1), q.len);
+    try std.testing.expectEqualStrings("\"a :b\" c", q[0].tail);
     try std.testing.expect(try parseRefs(a, "zig build") == null);
     try std.testing.expect(try parseRefs(a, ": x") == null);
 }

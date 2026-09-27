@@ -686,12 +686,14 @@ pub const specs = [_]Spec{
         \\    serve = "npm run dev -- --port {args} --open"
         \\
         \\Several names chain in order and stop at the first failure:
-        \\`nix <alias> --run :build :test`. A chain takes no arguments - there
-        \\would be no saying which action they belong to.
+        \\`nix <alias> --run :build :test`. Each action takes the words after
+        \\it, up to the next `:name` (`--run :build --release :test --json`);
+        \\after `--` every word is literal, `:words` included.
         \\
         \\A VALUE starting with `:name` is that action of the same alias, the
         \\rest of the line its arguments (`list = ":run list"`); several names
-        \\chain (`ship = ":close :deploy"`). A .ps1 in .nix/scripts can open an
+        \\chain (`ship = ":close --force :deploy"`), each link with its own words
+        \\and the caller's going to the last. A .ps1 in .nix/scripts can open an
         \\action by bare name (`stop = "shelf -Stop {args}"`), a .ps1 path runs
         \\as written, and a relative path with `/` (`zig-out/bin/x.exe`) is
         \\handed to cmd with `\` - cmd cannot start it otherwise. Write these rather

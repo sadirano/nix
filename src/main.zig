@@ -555,7 +555,7 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
         },
         .call => |c| c,
     };
-    const name = call.names[0];
+    const name = call.links[0].name;
     const path = try actions.defaultPath(app.arena, app.home);
     const body = app_zig.readFileMaybe(app, path) orelse "";
 

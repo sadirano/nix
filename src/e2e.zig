@@ -526,10 +526,10 @@ pub fn main(init: std.process.Init) !void {
             c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no machine-wide action") != null, "a name neither layer has still errors inside an alias", r);
         }
 
-        // The colon grammar is parsed once (parseActionCall), so the chain rule
-        // is the same one `r <alias> :a :b arg` follows.
+        // The colon grammar is parsed once (parseActionCall), so a machine-wide
+        // chain takes words per link exactly as `r <alias> :a x :b y` does.
         r = try c.run(&.{ ":defonly", ":defonly", "arg" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "chain") != null, "arguments to a `:name` chain are refused", r);
+        c.check(r.code == 0, "a machine-wide chain takes words after its last name", r);
 
         // The sigil is reserved, which is what makes a leading `:` unambiguous.
         r = try c.run(&.{ "a:b", join(&c, &.{ root, "colon" }) });
@@ -573,9 +573,13 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 3 and std.mem.indexOf(u8, r.out, "two") == null and
             std.mem.indexOf(u8, r.err, "stopping") != null, "a failing link stops the chain and keeps its exit code", r);
 
-        // Which action would the argument belong to? No answer, so it is refused.
+        // Each action takes the words written after it.
+        r = try c.run(&.{ "pa", "--run", ":one", "a1", ":two", "b1" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one a1") and hasLineFold(r.out, "two b1"), "each link of a chain takes the words after its name", r);
         r = try c.run(&.{ "pa", "--run", ":one", ":two", "--", "x" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "chain") != null, "arguments are refused for a chain", r);
+        c.check(r.code == 0 and hasLineFold(r.out, "one") and hasLineFold(r.out, "two x"), "words after the last name go to the last link", r);
+        r = try c.run(&.{ "pa", "--run", ":one", "--", ":two" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one :two") and !hasLineFold(r.out, "two"), "after `--` a :word is an argument, not an action", r);
 
         // Quotes reach the shell as written. This is what makes the re-quoting
         // above safe, and it is why the foreground run builds its own command
@@ -594,6 +598,7 @@ pub fn main(init: std.process.Init) !void {
             "base = \"echo a-long-prefix {args}\"\n" ++
             "list = \":base list\"\n" ++
             "both = \":one :two\"\n" ++
+            "each = \":one A :base B\"\n" ++
             "copy = \"echo a-long-prefix more\"\n" ++
             "gone = \":nope\"\n" ++
             "l1 = \":l2\"\n" ++
@@ -602,6 +607,8 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and hasLineFold(r.out, "a-long-prefix list X"), "a :name value runs that action with its words, then the caller's", r);
         r = try c.run(&.{ "pa", "--run", ":both" });
         c.check(r.code == 0 and hasLineFold(r.out, "one") and hasLineFold(r.out, "two"), "a value of several :names runs them in order", r);
+        r = try c.run(&.{ "pa", "--run", ":each", "--", "C" });
+        c.check(r.code == 0 and hasLineFold(r.out, "one A") and hasLineFold(r.out, "a-long-prefix B C"), "a chain value gives each link its words, and the caller's to the last", r);
         r = try c.run(&.{ "pa", "--run", ":gone" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not an action") != null, "a reference to a missing action is refused", r);
         r = try c.run(&.{"--doctor"});

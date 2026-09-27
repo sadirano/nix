@@ -455,7 +455,7 @@ Words are re-quoted as they were typed: `x acme :commit -- -m "two words"` reach
 
 `-o` on an action now means what it always said: a real console window of its own, opened in the alias directory and left open so you can read it, with nix returning immediately. (On a literal command — `x acme -o some.exe` — `-o` still just starts the program detached and hands you back the prompt; that path is for launching apps, not for watching output.)
 
-**Chains** run several actions in order, in this terminal, stopping at the first failure — the `&&` you would otherwise have typed, without naming the alias twice. Each link runs exactly as it would alone, under a `==> acme :test` header so the transcript can be read back. Arguments are refused for a chain (`x acme :build :test -- --release` has no honest answer to *which* action gets the flag): name one action, or pass none.
+**Chains** run several actions in order, in this terminal, stopping at the first failure — the `&&` you would otherwise have typed, without naming the alias twice. Each link runs exactly as it would alone, under a `==> acme :test` header so the transcript can be read back. Each action takes the words written after it, up to the next `:name`: `x acme :build --release :test --json` runs `zig build --release`, then `zig build test --json`. After `--` every word is literal, so `x acme :fmt -- :draft` hands `:draft` to `:fmt` instead of running it.
 
 **References** let an action be written as another one, so a long prefix is spelled once. A value starting with `:name` runs that action of the same alias, with the rest of the line as its arguments; several names make a chain:
 
@@ -464,7 +464,7 @@ Words are re-quoted as they were typed: `x acme :commit -- -m "two words"` reach
 run   = "zig build run -Doptimize=ReleaseFast -- {args}"
 list  = ":run list"            # zig build run -Doptimize=ReleaseFast -- list
 quota = ":run quota {args}"    # your own arguments still land at {args}
-ship  = ":close :deploy"       # both, in order, stopping at the first failure
+ship  = ":close --force :deploy" # each link takes its own words; yours go to :deploy
 close = "stop-server"          # a .ps1 in .nix/scripts runs by bare name
 ```
 
