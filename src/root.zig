@@ -23,6 +23,7 @@ pub const hold = @import("hold.zig");
 pub const png = @import("png.zig");
 pub const winpath = @import("winpath.zig");
 pub const compose = @import("compose.zig");
+pub const fuzzy = @import("fuzzy.zig");
 
 test {
     // Compile-check the whole library surface in the module test binary (the
