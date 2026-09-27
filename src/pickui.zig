@@ -208,10 +208,12 @@ pub const State = struct {
 
     pub fn step(self: *State, key: tui.Key) !?Outcome {
         switch (key) {
-            .up, .ctrl_k, .ctrl_p => self.move(-1),
-            .down, .ctrl_j, .ctrl_n => self.move(1),
-            .page_up => self.move(-@as(isize, @intCast(@min(self.listHeight(), std.math.maxInt(isize))))),
-            .page_down => self.move(@intCast(@min(self.listHeight(), std.math.maxInt(isize)))),
+            // The list grows upward from the prompt, so the best match is at
+            // the bottom and "up" on screen means further down the ranking.
+            .up, .ctrl_k, .ctrl_p => self.move(1),
+            .down, .ctrl_j, .ctrl_n => self.move(-1),
+            .page_up => self.move(@intCast(@min(self.listHeight(), std.math.maxInt(isize)))),
+            .page_down => self.move(-@as(isize, @intCast(@min(self.listHeight(), std.math.maxInt(isize))))),
             .tab => {
                 self.toggle();
                 if (self.opts.multi) self.move(1);
@@ -612,8 +614,8 @@ test "step narrows, clamps, marks, accepts, cancels, and edits" {
     _ = try state.step(.{ .character = 'b' });
     try std.testing.expectEqual(@as(usize, 1), state.hits.len);
     try std.testing.expectEqual(@as(u32, 1), state.hits[0].index);
-    _ = try state.step(.down);
     _ = try state.step(.up);
+    _ = try state.step(.down);
     try std.testing.expectEqual(@as(usize, 0), state.current);
     _ = try state.step(.tab);
     try std.testing.expect(state.marked[1]);
@@ -634,8 +636,8 @@ test "step narrows, clamps, marks, accepts, cancels, and edits" {
 
     var plain = try State.init(a, &.{ "one", "two" }, .{});
     defer plain.deinit();
-    _ = try plain.step(.down);
-    _ = try plain.step(.down);
+    _ = try plain.step(.up);
+    _ = try plain.step(.up);
     try std.testing.expectEqual(@as(usize, 1), plain.current);
     const current = (try plain.step(.enter)).?;
     try std.testing.expectEqualSlices(u32, &.{1}, current.picked);
@@ -646,11 +648,11 @@ test "marks return original list order even after moving backward" {
     const a = std.testing.allocator;
     var state = try State.init(a, &.{ "one", "two", "three" }, .{ .multi = true });
     defer state.deinit();
-    _ = try state.step(.down);
-    _ = try state.step(.down);
+    _ = try state.step(.up);
+    _ = try state.step(.up);
     _ = try state.step(.tab);
-    _ = try state.step(.up);
-    _ = try state.step(.up);
+    _ = try state.step(.down);
+    _ = try state.step(.down);
     _ = try state.step(.tab);
     const result = (try state.step(.enter)).?;
     try std.testing.expectEqualSlices(u32, &.{ 0, 2 }, result.picked);
