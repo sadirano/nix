@@ -1,6 +1,8 @@
 # Zig build artifacts
 .zig-cache/
 zig-out/
+# Package dependencies Zig fetches into the project (glean)
+zig-pkg/
 
 # Release packaging artifacts
 dist/
