@@ -23,11 +23,9 @@ pub const hold = @import("hold.zig");
 pub const png = @import("png.zig");
 pub const winpath = @import("winpath.zig");
 pub const compose = @import("compose.zig");
-pub const fuzzy = @import("fuzzy.zig");
 pub const ignore = @import("ignore.zig");
 pub const walk = @import("walk.zig");
-pub const tui = @import("tui.zig");
-pub const pickui = @import("pickui.zig");
+pub const glean_pick = @import("glean_pick.zig");
 
 test {
     // Compile-check the whole library surface in the module test binary (the

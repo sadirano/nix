@@ -39,9 +39,13 @@ pub fn build(b: *std.Build) void {
     // reaches the same files directly by path, so importing it here would only
     // compile a second copy. It stays for dependents and for `zig build test`,
     // whose refAllDecls over root.zig compile-checks the whole surface.
+    // glean is the native fzf-style picker, compiled in rather than spawned.
+    const glean_mod = gleanFor(b, target, optimize);
+
     const mod = b.addModule("nix", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .imports = &.{.{ .name = "glean", .module = glean_mod }},
     });
 
     // One options module shared by every compile below: `createModule` per
@@ -56,6 +60,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "build_options", .module = options_mod },
+                .{ .name = "glean", .module = glean_mod },
             },
         }),
     });
@@ -96,6 +101,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "build_options", .module = e2e_options.createModule() },
+                .{ .name = "glean", .module = glean_mod },
             },
         }),
     });
@@ -168,7 +174,10 @@ pub fn build(b: *std.Build) void {
                 .cpu_model = .baseline,
             }),
             .optimize = .ReleaseFast,
-            .imports = &.{.{ .name = "build_options", .module = options_mod }},
+            .imports = &.{
+                .{ .name = "build_options", .module = options_mod },
+                .{ .name = "glean", .module = gleanFor(b, b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .cpu_model = .baseline }), .ReleaseFast) },
+            },
         }),
     });
 
@@ -181,7 +190,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
             .optimize = .Debug,
-            .imports = &.{.{ .name = "build_options", .module = options_mod }},
+            .imports = &.{
+                .{ .name = "build_options", .module = options_mod },
+                .{ .name = "glean", .module = gleanFor(b, b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }), .Debug) },
+            },
         }),
     });
 
@@ -404,4 +416,10 @@ test "parseVersionQuad: the shapes git describe actually produces" {
     try eq(@as(u16, 0), q.major);
     q = parseVersionQuad("not-a-version");
     try eq(@as(u16, 0), q.major);
+}
+
+/// gleanFor builds glean for one compile's target: its module pins a target,
+/// so the portable and linux checks each need their own instance.
+fn gleanFor(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.dependency("glean", .{ .target = target, .optimize = optimize }).module("glean");
 }

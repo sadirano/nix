@@ -12,6 +12,7 @@ const open_zig = @import("open.zig");
 const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
 const fzfEnv = app_zig.fzfEnv;
+const glean_pick = @import("glean_pick.zig");
 const exePath = app_zig.exePath;
 const isGlobalFlag = app_zig.isGlobalFlag;
 const stripCmdCarets = open_zig.stripCmdCarets;
@@ -45,9 +46,11 @@ pub const FindPick = union(enum) { selected: []const u8, cancelled, failed, prin
 /// without acting on it — shared by `f` (which opens) and `y <alias> <pat>`
 /// (which copies the files to the clipboard).
 pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
-    // Under --no-prompt the rows go to stdout, so fzf is not required at all —
+    // Unattended (--no-prompt, or no console to draw on) the rows go to stdout,
+    // so no picker runs and fzf is not required at all —
     // check for it only on the interactive path.
-    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    const native = glean_pick.enabled(app);
+    if (app_zig.hasConsole(app) and !native and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return .failed;
     }
@@ -56,8 +59,8 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
 
     var prod: std.ArrayList([]const u8) = .empty;
     if (proc.findInPath(app.arena, app.io, app.env, "fd") != null) {
-        // Colour is for fzf's --ansi; printed rows must stay clean for parsing.
-        try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (app.no_prompt) "never" else "always" });
+        // Colour is for fzf's --ansi; printed rows and glean's stay clean.
+        try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (!app_zig.hasConsole(app) or native) "never" else "always" });
         for (extras) |x| try prod.append(app.arena, x);
         if (query.len > 0) try prod.append(app.arena, query);
         // Rows stay cwd-relative (no path arg): the producer runs in the alias dir.
@@ -77,7 +80,7 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
         return .failed;
     }
 
-    if (app.no_prompt) return .{ .printed = try open_zig.printProducerRows(app, dir, prod.items) };
+    if (!app_zig.hasConsole(app)) return .{ .printed = try open_zig.printProducerRows(app, dir, prod.items) };
 
     const preview = if (proc.is_windows)
         try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})
@@ -90,7 +93,10 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
     };
 
     try app.out.flush();
-    const res = try proc.runPipeline(app.arena, app.io, prod.items, &fzf, dir, fzfEnv(app));
+    const res = if (native)
+        try glean_pick.pipeline(app, .{ .multi = true, .preview = .path }, prod.items, dir)
+    else
+        try proc.runPipeline(app.arena, app.io, prod.items, &fzf, dir, fzfEnv(app));
     if (res.code != 0) return .cancelled;
     return .{ .selected = res.output };
 }

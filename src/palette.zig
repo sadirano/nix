@@ -14,6 +14,7 @@ const resolve = @import("resolve.zig");
 const provenance = @import("provenance.zig");
 const exports = @import("exports.zig");
 const actions = @import("actions.zig");
+const glean_pick = @import("glean_pick.zig");
 
 const App = app_zig.App;
 const isGlobalFlag = app_zig.isGlobalFlag;
@@ -161,7 +162,8 @@ fn seedAndEdit(app: *App, dir: []const u8, path: []const u8) !u8 {
 /// listing just prints, which is what it always did.
 fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fzf: []const u8) !u8 {
     const can_ask = app_zig.hasConsole(app);
-    const have_fzf = can_ask and proc.findInPath(app.arena, app.io, app.env, "fzf") != null;
+    const native = glean_pick.enabled(app);
+    const have_fzf = can_ask and (native or proc.findInPath(app.arena, app.io, app.env, "fzf") != null);
     if (!can_ask or !have_fzf) {
         if (can_ask and !have_fzf and missing_fzf.len > 0) {
             try app.err.writeAll(missing_fzf);
@@ -181,7 +183,11 @@ fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fz
         "--delimiter", "\t",       "--with-nth", "2..",
     };
     try app.out.flush();
-    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, try render(app.arena, entries, .{ .alias_column = with_alias, .keys = true }), fzfEnv(app));
+    const rows = try render(app.arena, entries, .{ .alias_column = with_alias, .keys = true });
+    const res = if (native)
+        try glean_pick.filter(app, .{ .prompt = "action> ", .header_lines = 1, .multi = true, .delimiter = '\t', .with_nth_from = 2 }, rows, ".")
+    else
+        try proc.runFilter(app.arena, app.io, &fzf_argv, rows, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled
 
     var picks: std.ArrayList(Entry) = .empty;

@@ -249,11 +249,16 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
 
     try d.section("Picker  (unknown-alias 'o <name>')");
 
-    // fzf — without it the picker cannot run at all.
+    // The engine decides whether fzf is needed at all: the native one is
+    // compiled in, and fzf is then only what `engine = "fzf"` would use.
+    const native = @import("glean_pick.zig").enabled(app);
+    try d.row(.ok, "engine", if (native) "native (glean, compiled in)" else "fzf");
     if (proc.findInPath(app.arena, app.io, app.env, "fzf")) |p| {
         try d.row(.ok, "fzf", p);
+    } else if (native) {
+        try d.row(.info, "fzf", "not found - not needed by the native engine");
     } else {
-        try d.row(.fail, "fzf", "not found - the picker can't run (install fzf)");
+        try d.row(.fail, "fzf", "not found - the picker can't run (install fzf, or set [picker] engine = \"native\")");
     }
 
     // Every verdict below is ASKED of picker.zig rather than re-derived here.

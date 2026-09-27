@@ -14,6 +14,7 @@ const open_zig = @import("open.zig");
 const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
 const fzfEnv = app_zig.fzfEnv;
+const glean_pick = @import("glean_pick.zig");
 const exePath = app_zig.exePath;
 const isGlobalFlag = app_zig.isGlobalFlag;
 const startsWithDash = app_zig.startsWithDash;
@@ -76,10 +77,12 @@ pub fn grepIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
 /// flags. The caller appends its own trailing query argument(s) - a plain rg
 /// query is optional, rga's is always `-e <query>`.
 fn buildSearchArgv(app: *App, bin: []const u8, relaxed: bool, extras: [][]const u8) !std.ArrayList([]const u8) {
+    // Colour is for fzf's --ansi: printed rows and glean's rows stay plain.
+    const colour = app_zig.hasConsole(app) and !glean_pick.enabled(app);
     var argv: std.ArrayList([]const u8) = .empty;
-    try argv.appendSlice(app.arena, &.{ bin, "--smart-case", if (app.no_prompt) "--color=never" else "--color=always", "--line-number", "--no-heading" });
+    try argv.appendSlice(app.arena, &.{ bin, "--smart-case", if (colour) "--color=always" else "--color=never", "--line-number", "--no-heading" });
     if (relaxed) try argv.append(app.arena, "--no-unicode");
-    if (!app.no_prompt) {
+    if (colour) {
         for ([_][]const u8{ "path:fg:blue", "line:fg:green", "match:fg:red", "match:style:bold" }) |spec| {
             try argv.append(app.arena, "--colors");
             try argv.append(app.arena, spec);
@@ -89,10 +92,10 @@ fn buildSearchArgv(app: *App, bin: []const u8, relaxed: bool, extras: [][]const 
     return argv;
 }
 
-/// requireFzf reports whether fzf must be on PATH but is not. Under
-/// --no-prompt the rows go to stdout instead, so fzf isn't needed there.
+/// requireFzf reports whether fzf must be on PATH but is not. Unattended
+/// (--no-prompt, or no console) the rows go to stdout, so fzf is not needed.
 fn requireFzf(app: *App) !bool {
-    if (!app.no_prompt and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    if (app_zig.hasConsole(app) and !glean_pick.enabled(app) and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return false;
     }
@@ -122,7 +125,7 @@ fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     var rg = try buildSearchArgv(app, "rg", relaxed, extras);
     if (query.len > 0) try rg.append(app.arena, query);
 
-    if (app.no_prompt) return open_zig.printProducerRows(app, dir, rg.items);
+    if (!app_zig.hasConsole(app)) return open_zig.printProducerRows(app, dir, rg.items);
 
     // Rows are cwd-relative (`file:line:text`), so fzf's `:`-split fields feed
     // bat directly.
@@ -137,7 +140,10 @@ fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const res = try proc.runPipeline(app.arena, app.io, rg.items, &fzf, dir, fzfEnv(app));
+    const res = if (glean_pick.enabled(app))
+        try glean_pick.pipeline(app, .{ .multi = true, .preview = .grep_line, .preview_percent = 60 }, rg.items, dir)
+    else
+        try proc.runPipeline(app.arena, app.io, rg.items, &fzf, dir, fzfEnv(app));
     if (res.code != 0) return 0; // cancelled / nothing selected
     return openSelectionsInEditor(app, dir, res.output, true);
 }
@@ -173,13 +179,15 @@ fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     try rga.append(app.arena, "-e");
     try rga.append(app.arena, query);
 
-    if (app.no_prompt) return open_zig.printProducerRows(app, dir, rga.items);
+    if (!app_zig.hasConsole(app)) return open_zig.printProducerRows(app, dir, rga.items);
 
     // Preview gets the whole highlighted row ({}) and parses file:line itself,
     // via our `--rga-preview` verb. Passing the full row (rather than separate
     // {1}/{2} fields) sidesteps cross-shell field-quoting; the pattern travels in
     // the environment so fzf's preview shell needs no quoting of query text.
     app.env.put("NIX_RGA_QUERY", query) catch {};
+    const native = glean_pick.enabled(app);
+    if (native) glean_pick.setProcessEnv(app.arena, "NIX_RGA_QUERY", query);
     const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)});
     const fzf = [_][]const u8{
         "fzf",                       "--ansi",
@@ -189,9 +197,13 @@ fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     };
 
     try app.out.flush();
-    const res = try proc.runPipeline(app.arena, app.io, rga.items, &fzf, dir, fzfEnv(app));
+    const res = if (native)
+        try glean_pick.pipeline(app, .{ .multi = true, .preview = .rga, .preview_percent = 60, .preview_wrap = true }, rga.items, dir)
+    else
+        try proc.runPipeline(app.arena, app.io, rga.items, &fzf, dir, fzfEnv(app));
     // Preview-only variable: drop it before anything else is spawned below.
     _ = app.env.orderedRemove("NIX_RGA_QUERY");
+    if (native) glean_pick.setProcessEnv(app.arena, "NIX_RGA_QUERY", null);
     if (res.code != 0) return 0; // cancelled / nothing selected
     return openRgaSelections(app, dir, res.output);
 }

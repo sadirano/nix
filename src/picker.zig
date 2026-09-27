@@ -9,6 +9,7 @@ const store = @import("store.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
 const util = @import("util.zig");
+const glean_pick = @import("glean_pick.zig");
 
 const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
@@ -254,7 +255,8 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
         try app.err.print("nix: unknown alias \"{s}\" (register it: nix {s} <path>)\n", .{ name, name });
         return null;
     }
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    const native = glean_pick.enabled(app);
+    if (!native and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: unknown alias \"{s}\" (install fzf for the picker, or register it: nix {s} <path>)\n", .{ name, name });
         return null;
     }
@@ -292,7 +294,10 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
                 try app.err.print("nix: no unregistered directory matches \"{s}\" (register it: nix {s} <path>)\n", .{ name, name });
                 return null;
             }
-            const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
+            const res = if (native)
+                try glean_pick.filter(app, .{ .preview = .path }, input.items, ".")
+            else
+                try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
             if (res.code != 0) return null; // cancelled
             break :blk std.mem.trim(u8, res.output, " \t\r\n");
         },
@@ -300,7 +305,11 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
         // through the exclusion filter so they render as they arrive.
         .stream => |argv| blk: {
             var filt = PickFilter{ .arena = app.arena, .excludes = excludes };
-            const res = try proc.runPipelineFiltered(app.arena, app.io, argv, &fzf_argv, ".", fzfEnv(app), .{ .ctx = &filt, .func = PickFilter.keep }, 500, true);
+            const xf: proc.LineTransform = .{ .ctx = &filt, .func = PickFilter.keep };
+            const res = if (native)
+                try glean_pick.pipelineFiltered(app, .{ .preview = .path }, argv, ".", xf, 500, true)
+            else
+                try proc.runPipelineFiltered(app.arena, app.io, argv, &fzf_argv, ".", fzfEnv(app), xf, 500, true);
             if (res.forwarded == 0) {
                 try app.err.print("nix: no unregistered directory matches \"{s}\" (register it: nix {s} <path>)\n", .{ name, name });
                 return null;

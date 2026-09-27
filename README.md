@@ -104,6 +104,15 @@ Clipboard fine print: `y <alias> <pat>` copies the picked files as a real file d
 
 `f` shares the same fzf-with-preview picker, choosing its file lister by what's available — Everything's `es` on Windows, else `fd`, else `find`. Enter opens directories and default-app file types (PDF, images, archives, …) with the OS handler, everything else in your editor.
 
+**A native picker, no fzf needed.** Every picker nix opens (`f`, `g`, `s`/`y` with a pattern, the unknown-alias picker, `nix --actions`, segment menus) can use [glean](https://github.com/sadirano/glean) instead: an fzf-style picker compiled into nix, with fzf's query syntax, ranking and look, so no external process is started. Turn it on in `config.toml`:
+
+```toml
+[picker]
+engine = "native"   # default "fzf"
+```
+
+The native engine is Windows-only for now (elsewhere fzf stays the engine), shows rows without colour, and prints rather than opens when nobody is at a console, as `--no-prompt` does. `nix --doctor` reports which engine is in use.
+
 ## Closing the shell (`q`)
 
 `q` closes the shell you typed it in. It's the one command that takes no alias: a child process can't make its parent return from a prompt — `exit` inside a command exits that command's own shell and nothing else — so ending the shell that ran you means terminating it.

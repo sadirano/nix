@@ -18,6 +18,8 @@ pub const Shortcut = struct { builtin: []const u8, custom: []const u8 };
 /// directory nix-managed only for users who want that guarantee.
 pub const ForeignPolicy = enum { warn, purge };
 
+pub const PickerEngine = enum { fzf, native };
+
 pub const Config = struct {
     /// null means "key absent" → use defaults; an explicit empty slice means
     /// "no filtering".
@@ -28,6 +30,9 @@ pub const Config = struct {
     /// default to every fixed drive root on Windows (home directory elsewhere).
     /// Unused when a working `es` is present (it indexes all drives instantly).
     picker_search_roots: [][]const u8 = &.{},
+    /// [picker] engine: "native" opens nix's compiled-in picker (glean) where
+    /// fzf would open; anything else keeps fzf.
+    picker_engine: PickerEngine = .fzf,
     /// [shortcuts] overrides: builtin slot name → custom command name.
     shortcuts: []const Shortcut = &.{},
     /// [grep] all = true makes `g` search with ripgrep-all (rga) by default,
@@ -335,6 +340,10 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             continue;
         }
         if (!std.mem.eql(u8, section, "picker")) continue;
+        if (std.mem.eql(u8, key, "engine")) {
+            cfg.picker_engine = if (std.ascii.eqlIgnoreCase(toml.unquoteLoose(val_start), "native")) .native else .fzf;
+            continue;
+        }
         if (std.mem.eql(u8, key, "exclude") or std.mem.eql(u8, key, "exclude_extra") or
             std.mem.eql(u8, key, "search_roots"))
         {

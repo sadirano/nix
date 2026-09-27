@@ -7,7 +7,12 @@
     // it shows up in code reviews that modify the field.
     .fingerprint = 0x57e916d83dee977f, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .glean = .{
+            .url = "git+https://github.com/sadirano/glean#fdf2d44e8ffc1008a6db1d62ed922110c95956be",
+            .hash = "glean-0.1.0-n4qzl8agAgAbSwUH6kTrv2cg1Y8XE7rnrc0_L3qyOKvs",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

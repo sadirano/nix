@@ -15,6 +15,7 @@ const picker = @import("picker.zig");
 const proc = @import("proc.zig");
 const util = @import("util.zig");
 const config = @import("config.zig");
+const glean_pick = @import("glean_pick.zig");
 
 const App = app_zig.App;
 const absPath = app_zig.absPath;
@@ -284,7 +285,8 @@ fn pickCandidate(
         }
         return null;
     }
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    const native = glean_pick.enabled(app);
+    if (!native and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
         try app.err.print("nix: install fzf to pick among {s}'s {d} candidates (or name one inline: `{s}:<value>@<alias>`)\n", .{ cd.segment, cands.len, cd.segment });
         return null;
     }
@@ -299,7 +301,10 @@ fn pickCandidate(
         "2..",
     };
     try app.out.flush();
-    const res = try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, app_zig.fzfEnv(app));
+    const res = if (native)
+        try glean_pick.filter(app, .{ .prompt = fzf_argv[2], .delimiter = '\t', .with_nth_from = 2 }, input.items, ".")
+    else
+        try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, app_zig.fzfEnv(app));
     if (res.code != 0) return null; // cancelled
     return selectedIndex(res.output, cands.len);
 }

@@ -39,7 +39,6 @@ pub const SystemVerb = enum {
     help,
     preview,
     walk,
-    pick_try,
     rga_preview,
 };
 
@@ -115,7 +114,6 @@ pub const system = [_]System{
     // nix re-invoking itself for an fzf preview pane. Not user grammar.
     .{ .flags = &.{"--preview"}, .verb = .preview, .help = "", .spec = "", .visibility = .internal },
     .{ .flags = &.{"--walk"}, .verb = .walk, .args = "[dir]", .help = "", .spec = "", .visibility = .internal },
-    .{ .flags = &.{"--pick-try"}, .verb = .pick_try, .help = "", .spec = "", .visibility = .internal },
     .{ .flags = &.{"--rga-preview"}, .verb = .rga_preview, .help = "", .spec = "", .visibility = .internal },
 };
 
