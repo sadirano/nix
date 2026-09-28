@@ -41,13 +41,6 @@ jobs:
       - name: End-to-end
         run: zig build e2e
 
-      # Drop the local rolling `nightly` tag before building so `git describe`
-      # reports the semver base (e.g. v0.9.0-pre-12-gABCDEF) rather than the
-      # stale `nightly` tag fetched from a previous run.
-      - name: Drop local nightly tag
-        shell: bash
-        run: git tag -d nightly 2>/dev/null || true
-
       # Portable build: -Dcpu=baseline avoids baking the runner's CPU extensions
       # into the binary. Mirrors ci.yml / the :build action in .nix/actions.toml.
       - name: Build

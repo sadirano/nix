@@ -238,11 +238,14 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(&linux_check.step);
 }
 
-// gitDescribe returns `git describe --tags --always --dirty` for the build
-// tree, or null when git is unavailable, this isn't a checkout, or there are no
+// gitDescribe returns `git describe --tags --always --dirty --exclude nightly`
+// for the build tree, or null when git is unavailable, this isn't a checkout, or there are no
 // commits yet. The output is allocated from the build arena. Re-run on every
 // configure, so the baked version stays current without a manual bump; when the
 // string changes, the generated options file changes and the exe is rebuilt.
+// The rolling `nightly` tag is excluded because it shares a commit with a
+// release tag whenever one is cut at main's tip, and a checkout can hand back
+// both as lightweight tags, at which point describe picks `nightly`.
 /// Quad is the four 16-bit fields FILEVERSION/PRODUCTVERSION take. `build` is
 /// the commit distance since the tag, which keeps the quad increasing between
 /// releases — the alternative, zero, makes every commit since a tag claim to be
@@ -348,7 +351,7 @@ fn addVersionResource(b: *std.Build, exe: *std.Build.Step.Compile, version: []co
 fn gitDescribe(b: *std.Build) ?[]const u8 {
     var code: u8 = undefined;
     const stdout = b.runAllowFail(
-        &.{ "git", "describe", "--tags", "--always", "--dirty" },
+        &.{ "git", "describe", "--tags", "--always", "--dirty", "--exclude", "nightly" },
         &code,
         .ignore,
     ) catch return null;
