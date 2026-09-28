@@ -1948,14 +1948,14 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, guide, "e2e-guide-sentinel\n");
         var r = try c.run(&.{"--init"});
         c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "e2e-guide-sentinel") == null and
-            std.mem.indexOf(u8, readFileOr(&c, guide, ""), "## Commands (what the user types)") != null, "--init regenerates the installed agent guide", r);
+            std.mem.indexOf(u8, readFileOr(&c, guide, ""), "# nix directory aliases - agent guide") != null, "--init regenerates the installed agent guide", r);
         try writeFile(&c, guide, "e2e-guide-sentinel\n");
         r = try c.run(&.{"--sync"});
         c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "e2e-guide-sentinel") == null and
-            std.mem.indexOf(u8, readFileOr(&c, guide, ""), "## Commands (what the user types)") != null, "--sync regenerates an edited agent guide", r);
+            std.mem.indexOf(u8, readFileOr(&c, guide, ""), "# nix directory aliases - agent guide") != null, "--sync regenerates an edited agent guide", r);
         try Io.Dir.cwd().deleteFile(io, guide);
         r = try c.run(&.{"--sync"});
-        c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "## Commands (what the user types)") != null, "--sync recreates a missing agent guide", r);
+        c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "# nix directory aliases - agent guide") != null, "--sync recreates a missing agent guide", r);
     }
 
     if (c.windowsOnly("--sync manages renamed and invalid shortcuts")) {

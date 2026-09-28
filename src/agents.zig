@@ -56,137 +56,38 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\
         \\# nix directory aliases - agent guide
         \\
-        \\The user of this machine navigates with [nix](https://github.com/sadirano/nix),
-        \\a directory alias manager: projects get short aliases, and navigation,
-        \\running, searching, and file movement go through them. When telling the user
-        \\how to open, run, or find something, prefer the nix syntax below over raw
-        \\cd/absolute-path instructions - e.g. "I added a deploy action; run it with
-        \\`{[x]s} acme :deploy`".
-        \\
-        \\## Commands (what the user types)
+        \\This machine uses [nix](https://github.com/sadirano/nix): projects have short
+        \\aliases, and navigating, running and searching go through them. Tell the user
+        \\nix forms, not cd/absolute paths ("run it with `{[x]s} acme :deploy`").
         \\
         \\{[table]s}
-        \\Extras: `{[x]s} <alias> :<name>` runs a saved action (`{[x]s} <alias> :` lists
-        \\them); `{[o]s} docs@acme` resolves a sub-alias segment; `nix <name> <path>`
-        \\registers a new alias.
+        \\`{[x]s} <alias> :<name>` runs a saved action (`{[x]s} <alias> :` lists them);
+        \\`docs@acme` is a sub-alias segment; `nix <name> <path>` registers an alias.
+        \\`shared@<alias>` is the project's handoff drop: resolve "the shared" with
+        \\`nix shared@<alias>`, never by searching the disk, and keep it out of git.
         \\
-        \\**`shared@<alias>` is the project's handoff drop** - built in, resolving to
-        \\`<alias-dir>/.nix/shared/`. When the user says another agent left something
-        \\in "the shared", or you must leave something for the next agent, resolve it
-        \\with `nix shared@<alias>` rather than searching the disk for a "shared"
-        \\directory. Keep it out of version control: briefs and handoffs are not
-        \\project source.
+        \\**Full spec per command: `<cmd> --agent`, or `nix --agent <topic>`** (bare
+        \\`nix --agent` lists topics: actions, env, segments, state, ...).
         \\
-        \\`{[q]s}` is the exception to everything below: it closes the shell it
-        \\runs in, so running it yourself ends your own session mid-task. Suggest
-        \\it, never call it.
+        \\## Rules
         \\
-        \\**Every command has a full spec for you: `<cmd> --agent`** (or
-        \\`nix --agent <topic>`; bare `nix --agent` lists the topics). Each one states
-        \\whether you may run the command yourself and gives the non-interactive form.
-        \\
-        \\## Guidance for agents
-        \\
-        \\1. **Suggest nix forms.** When work produces something runnable or openable,
-        \\   give the user the nix one-liner: `{[x]s} <alias> :test`,
-        \\   `{[e]s} <alias> src/main.zig`, `{[s]s} <alias> report.pdf`, `{[g]s} <alias> TODO`.
-        \\2. **Discover aliases before suggesting.** `nix --list` prints every alias
-        \\   with its path; `nix --list-names` prints bare names; `nix <alias>` resolves
-        \\   one to its absolute path; `nix --which [path]` prints the alias containing
-        \\   a path (default: cwd) - and inside a `{[x]s}`/`{[o]s}` session `$NIX_ALIAS` /
-        \\   `$NIX_ALIAS_PATH` are already set. Use the alias that maps to the directory
-        \\   you worked in - don't invent names. If none covers it, suggest registering
-        \\   one: `nix <name> <path>`. One name is always there: `.nix` is built in
-        \\   and names nix's own home, so nix's config and scripts are reachable
-        \\   without an absolute path (`{[e]s} .nix config.toml`). It cannot be
-        \\   registered or repointed.
-        \\3. **Prefer saved actions for repeatable commands.** `nix --no-prompt --actions`
-        \\   lists every action already wired up on this machine (alias, name,
-        \\   command, description) - check there before writing a command line
-        \\   of your own. A bare `:` after any command is the interactive
-        \\   shorthand for it (`{[x]s} :`), and `<cmd> <alias> :` narrows it to
-        \\   one project (`{[o]s} acme :` and `{[x]s} acme :` are the same
-        \\   question) - both print rather than open a picker when nobody can
-        \\   answer, so they are safe to run yourself. `{[e]s} acme :` is not:
-        \\   from the editor the same question CREATES the project's
-        \\   .nix/actions.toml from a template when there is nothing to list.
-        \\   If a project needs a
-        \\   recurring build/test/serve/deploy command, add it to the project's
-        \\   `.nix/actions.toml` under `[actions]` - with a `#` comment above it,
-        \\   which nix shows as the action's description - and point the user at
-        \\   `{[x]s} <alias> :<name>`. Full scripts go in the project's `.nix/scripts/`
-        \\   and run by bare name: `{[x]s} <alias> build`. Personal machine-wide
-        \\   actions live in `~/.nix/actions/_default.toml` (lowest precedence,
-        \\   available via `{[x]s} <any-alias> :<name>`). A tool the project
-        \\   builds that should be runnable from anywhere goes under `[bin]` in
-        \\   the same actions.toml (e.g. `hoot = "zig-out/bin/hoot.exe"`);
-        \\   `nix --sync-bin` installs it into `~/.nix/bin`, which is on PATH.
-        \\   A `[bin]` value may instead name one of the file's own actions
-        \\   (`ship = ":deploy"`), which makes `ship` a global command running
-        \\   that action in the alias dir - arguments and all - from anywhere.
-        \\   One bare action name only: flags and chains are refused. In
-        \\   `~/.nix/actions/_default.toml` the same line makes a personal
-        \\   global that runs in the CURRENT directory. An export whose action
-        \\   lives in a committed actions.toml will not install until the user
-        \\   runs `nix --trust <alias>`.
-        \\   Actions take arguments (`{[x]s} <alias> :test -- --json`, appended or
-        \\   substituted into an `{{args}}` placeholder) and chain in order,
-        \\   stopping at the first failure (`{[x]s} <alias> :build :test`). An
-        \\   action whose command begins with `sudo` runs ELEVATED in its own
-        \\   console - it raises a UAC prompt only the user can answer, so never
-        \\   put one in a command you expect to run unattended.
-        \\   A project's `.nix/actions.toml` and `.nix/scripts/` are gated: the
-        \\   first run of an unapproved file shows the command and asks, and
-        \\   without a console (an agent's shell) it refuses instead. So an action
-        \\   you just wrote will NOT run for you until the user approves it with
-        \\   `nix --trust <alias>` - that is the check working, not a bug.
-        \\   `--trust` is not yours to run, and will not let you: it prints
-        \\   everything it would approve, asks once, and without a console it
-        \\   refuses exactly as the gate does. Files under `~/.nix` are not
-        \\   gated, and neither is an alias the user has given STANDING TRUST
-        \\   (`[trust] always` in config.toml, granted by
-        \\   `nix --trust <alias> --always`, listed by `nix --doctor`) - there
-        \\   the gate never appears, however the files change. That grant is the
-        \\   user's, refuses without a console like `--trust`, and is not yours
-        \\   to ask for on your own behalf.
-        \\   Configuration the commands NEED goes in `.nix/env.toml` under
-        \\   `[env]`, and is set for every `{[x]s} <alias> ...` and every
-        \\   `{[o]s} <alias>` session (`~/.nix/env/<alias>.toml` is the private
-        \\   per-machine override, and it wins). Same trust gate as actions.toml,
-        \\   so a file you just wrote will not inject until the user approves it.
-        \\   Credentials belong there as `${{secret:NAME}}` references, never as
-        \\   literal values in a committed file; `nix <alias> --env` prints the
-        \\   merged result with provenance and no secret values.
-        \\4. **In your own shell, resolve - don't `{[o]s}`.** `{[o]s}` is shell glue that
-        \\   cds the user's interactive shell; in an agent's shell run `nix <alias>`
-        \\   to get the path, then use the absolute path. `{[x]s} <alias> <cmd>` works
-        \\   fine from agent shells.
-        \\5. **Add `--no-prompt` instead of avoiding the pickers.** `{[g]s}`, `{[f]s}`,
-        \\   patterned `{[s]s}`/`{[y]s}`, and `nix --actions` open a picker and would block a
-        \\   non-interactive shell. With `--no-prompt` they print what they would have
-        \\   offered and act on nothing: `nix <alias> --no-prompt --grep <pat>`,
-        \\   `nix <alias> --no-prompt --find <pat>`. The flag goes BEFORE the action
-        \\   flag - everything after it belongs to the search tool.
-        \\6. **Don't touch nix state destructively.** Never edit or delete `~/.nix`
-        \\   contents (`aliases.toml`, `usage`, ...) unless explicitly
-        \\   asked; adding a project-local `.nix/actions.toml`, `.nix/env.toml`
-        \\   or `.nix/scripts/` inside a project is fine and encouraged. Registering a name that
-        \\   already exists REPOINTS it and forgets the path it had, so check
-        \\   `nix --list` first and pick an unused name. nix refuses this when it
-        \\   cannot ask (your shell included).
-        \\
-        \\## Example phrasing
-        \\
-        \\> Done - I wired the build and added actions. From anywhere:
-        \\> - `{[x]s} acme :test` - run the test suite
-        \\> - `{[x]s} acme :deploy` - build and deploy
-        \\> - `{[e]s} acme src/server.zig` - jump to the entry point
-        \\> - `{[g]s} acme "TODO(auth)"` - find the follow-ups I left
+        \\1. Never run `{[q]s}`: it closes the shell it runs in. Suggest it only.
+        \\2. In your own shell, resolve (`nix <alias>`), don't `{[o]s}`; `{[x]s} <alias> <cmd>`
+        \\   works. `nix --list` / `nix --which [path]` find aliases; don't invent
+        \\   names. `.nix` is built in and names nix's own home.
+        \\3. Check `nix --no-prompt --actions` before writing a command line. A
+        \\   recurring command belongs in the project's `.nix/actions.toml`
+        \\   (`nix --agent actions`). A new or edited project file will not run for
+        \\   you until the user runs `nix --trust <alias>`; that is theirs, not yours.
+        \\4. Pickers (`{[g]s}`, `{[f]s}`, patterned `{[s]s}`/`{[y]s}`, `--actions`) block:
+        \\   put `--no-prompt` BEFORE the action flag
+        \\   (`nix <alias> --no-prompt --grep <pat>`).
+        \\5. Don't edit ~/.nix state unasked. Registering an existing name REPOINTS
+        \\   it, so check `nix --list` first.
         \\
     , .{
         .table = try commandTable(arena, cfg),
         .o = config.shortcutFor(cfg, "o"),
-        .e = config.shortcutFor(cfg, "e"),
         .s = config.shortcutFor(cfg, "s"),
         .y = config.shortcutFor(cfg, "y"),
         .x = config.shortcutFor(cfg, "x"),
@@ -197,14 +98,11 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
     return b.items;
 }
 
-test "render: the {args} placeholder survives the format pass" {
+test "render stays small enough to load into every agent session" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const out = try render(arena_state.allocator(), .{});
-    // It is written `{{args}}` in the template; a slip there would put a stray
-    // brace in every generated guide on every machine.
-    try std.testing.expect(std.mem.indexOf(u8, out, "`{args}` placeholder") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "{{args}}") == null);
+    try std.testing.expect(out.len < 3000);
 }
 
 test "render uses default names" {
