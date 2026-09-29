@@ -9,6 +9,7 @@ pub const segments = @import("segments.zig");
 pub const segwalk = @import("segwalk.zig");
 pub const context = @import("context.zig");
 pub const actions = @import("actions.zig");
+pub const jobs = @import("jobs.zig");
 pub const provenance = @import("provenance.zig");
 pub const config = @import("config.zig");
 pub const usage = @import("usage.zig");

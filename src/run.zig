@@ -18,6 +18,7 @@ const provenance = @import("provenance.zig");
 const env_zig = @import("env.zig");
 const interrupt = @import("interrupt.zig");
 const compose = @import("compose.zig");
+const jobs = @import("jobs.zig");
 
 const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
@@ -260,7 +261,11 @@ pub fn cmdHere(app: *App, argv: [][]const u8) !u8 {
             // defined machine-wide keeps meaning that everywhere.
             if (ctx_alias.len > 0) {
                 const alias_dir = (try resolveAliasPath(app, ctx_alias)) orelse return 1;
-                if (try resolveAction(app, ctx_alias, alias_dir, name) != null) {
+                const local = resolveAction(app, ctx_alias, alias_dir, name) catch |e| {
+                    if (e == error.BadJob) return 1;
+                    return e;
+                };
+                if (local != null) {
                     const code = try runCall(app, .{ .links = &.{link} }, ctx_alias, alias_dir, false);
                     if (code != 0) return code;
                     continue;
@@ -355,7 +360,11 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
     const chained = call.links.len > 1;
     for (call.links, 0..) |link, i| {
         const name = link.name;
-        const r = (try resolveAction(app, alias, dir, name)) orelse {
+        const resolved = resolveAction(app, alias, dir, name) catch |e| {
+            if (e == error.BadJob) return 1;
+            return e;
+        };
+        const r = resolved orelse {
             try app.err.print("nix: alias \"{s}\" has no action \":{s}\" (list with `x {s} :`)\n", .{ alias, name, alias });
             return 1;
         };
@@ -532,7 +541,8 @@ pub const Resolved = struct {
 /// resolveAction looks up a named action for an alias: project-local
 /// `<dir>/.nix/actions.toml` first (wins), then central
 /// `~/.nix/actions/<alias>.toml`, then the machine-wide
-/// `~/.nix/actions/_default.toml`. Returns null if absent.
+/// `~/.nix/actions/_default.toml`, then alias and global script jobs.
+/// Returns null if absent.
 ///
 /// The command comes back expanded (see compose.expandAction), so every caller - the
 /// gate included - sees what will actually run.
@@ -557,7 +567,8 @@ pub fn actionPaths(app: *App, alias: []const u8, dir: []const u8) ![]const []con
 
 /// mergedActions flattens an alias's action layers into what `x <alias> :name`
 /// resolves: project-local, then central, then machine-wide, earliest winning
-/// per name. `include_default` drops the last layer, which the palette does -
+/// per name. Script jobs follow the toml layers. `include_default` drops the
+/// machine-wide toml and global jobs, which the palette does -
 /// listing a machine-wide default once per alias would bury the real rows.
 ///
 /// A layer that cannot be read contributes nothing rather than failing the
@@ -566,10 +577,35 @@ pub fn actionPaths(app: *App, alias: []const u8, dir: []const u8) ![]const []con
 pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_default: bool) ![]actions.Action {
     const paths = try actionPaths(app, alias, dir);
     var merged: std.ArrayList(actions.Action) = .empty;
+    const hidden_default: []const actions.Action = if (include_default) &.{} else actions.loadFile(app.arena, app.io, paths[2]) catch &.{};
     for (if (include_default) paths else paths[0..2]) |p| {
         outer: for (actions.loadFile(app.arena, app.io, p) catch continue) |a| {
             for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // earlier layer wins
             try merged.append(app.arena, a);
+        }
+    }
+    var ambiguous: std.ArrayList([]const u8) = .empty;
+    for (0..if (include_default) @as(usize, 2) else 1) |i| {
+        const scope = if (i == 0) alias else "_global";
+        const scanned = jobs.scan(app, scope) catch continue;
+        outer: for (scanned) |found| {
+            var job = found;
+            for (merged.items) |m| if (store.eqlFoldAscii(m.name, job.name)) continue :outer;
+            // The global palette hides _default rows, but their precedence
+            // still prevents a same-name alias job from becoming a false row.
+            for (hidden_default) |a| if (store.eqlFoldAscii(a.name, job.name)) continue :outer;
+            for (ambiguous.items) |name| if (store.eqlFoldAscii(name, job.name)) continue :outer;
+            if (jobs.collision(scanned, job.name) != null) {
+                // An ambiguous alias job also blocks a global job of that name:
+                // lookup refuses it instead of falling through to the global scope.
+                try ambiguous.append(app.arena, job.name);
+                continue;
+            }
+            job.header = jobs.readHeader(app, job) catch |e| blk: {
+                if (e == error.OutOfMemory) return e;
+                break :blk .{ .description = "(unreadable)" };
+            };
+            try merged.append(app.arena, try jobs.asAction(app, job));
         }
     }
     return merged.items;

@@ -236,7 +236,7 @@ pub fn toSlash(arena: std.mem.Allocator, p: []const u8) ![]const u8 {
 }
 
 /// validateAliasName is the REGISTRATION check: it refuses the names nix owns
-/// (`.nix` and `_default` are fine to REFER to and never fine to register) and
+/// (`.nix`, `_default`, and `_global` are fine to REFER to and never fine to register) and
 /// the characters that would break the line-based store.
 /// isDosDevice: `name`, or the part before its first dot, is a reserved DOS
 /// device name. `nul.exe` on PATH is a trap for every shell that touches it,
@@ -261,6 +261,8 @@ pub fn validateAliasName(name: []const u8) !void {
     // `_default` names the machine-wide actions file (~/.nix/actions/_default.toml);
     // an alias by that name would share its central actions file. See actions.zig.
     if (eqlFoldAscii(t, "_default")) return error.ReservedName;
+    // `_global` names the jobs shared by every alias, not an alias of its own.
+    if (eqlFoldAscii(t, "_global")) return error.ReservedGlobalName;
     // `.nix` always names nix's own home, resolved internally (see self_alias).
     // Refused for the same reason as _default: registering it would shadow a
     // name the tool answers for itself, and the entry could then be repointed
@@ -433,6 +435,8 @@ test "validateAliasName: rejects separators, @, spaces, control chars, empty" {
     try std.testing.expectError(error.ControlInName, validateAliasName("a\tb"));
     try std.testing.expectError(error.ReservedName, validateAliasName("_default"));
     try std.testing.expectError(error.ReservedName, validateAliasName("_DEFAULT"));
+    try std.testing.expectError(error.ReservedGlobalName, validateAliasName("_global"));
+    try std.testing.expectError(error.ReservedGlobalName, validateAliasName("_GLOBAL"));
     // TOML metacharacters would corrupt the aliases.toml round-trip:
     // `[a]b]` reads back as `a`, `#work` becomes a comment, `=`/quotes split
     // or truncate lines.

@@ -14,6 +14,7 @@ const resolve = @import("resolve.zig");
 const provenance = @import("provenance.zig");
 const exports = @import("exports.zig");
 const actions = @import("actions.zig");
+const jobs = @import("jobs.zig");
 const glean_pick = @import("glean_pick.zig");
 
 const App = app_zig.App;
@@ -110,6 +111,19 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
 pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8, seed: bool) !u8 {
     var entries: std.ArrayList(Entry) = .empty;
     const installed = exports.load(app.arena, app.io, app.home) catch &.{};
+    var toml_actions: std.ArrayList(actions.Action) = .empty;
+    for (try run_zig.actionPaths(app, alias, dir)) |p| {
+        try toml_actions.appendSlice(app.arena, actions.loadFile(app.arena, app.io, p) catch continue);
+    }
+    for ([_][]const u8{ alias, "_global" }) |scope| {
+        for (jobs.scan(app, scope) catch continue) |job| {
+            for (toml_actions.items) |a| {
+                if (!store.eqlFoldAscii(a.name, job.name)) continue;
+                try app.err.print("nix: jobs/{s}/{s} is shadowed by :{s} from a toml file\n", .{ job.scope, job.file, job.name });
+                break;
+            }
+        }
+    }
     for (try run_zig.mergedActions(app, alias, dir, true)) |a| {
         try entries.append(app.arena, .{
             .alias = alias,
@@ -380,7 +394,11 @@ fn startAll(app: *App, picks: []const Entry) !u8 {
 /// the rendered row: the palette may have been open a while, and what runs must
 /// be what actions.toml says now.
 fn freshCommand(app: *App, e: Entry, dir: []const u8) !?run_zig.Resolved {
-    return (try run_zig.resolveAction(app, e.alias, dir, e.name)) orelse {
+    const resolved = run_zig.resolveAction(app, e.alias, dir, e.name) catch |err| {
+        if (err == error.BadJob) return null;
+        return err;
+    };
+    return resolved orelse {
         try app.err.print("nix: alias \"{s}\" no longer has an action \":{s}\"\n", .{ e.alias, e.name });
         return null;
     };

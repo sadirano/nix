@@ -36,6 +36,7 @@ pub fn nameErrorText(e: anyerror) ?[]const u8 {
         error.ControlInName => "names can't contain control characters",
         error.TomlMetaInName => "names can't contain [ ] = # or quotes",
         error.ReservedName => "\"_default\" is reserved (machine-wide default actions)",
+        error.ReservedGlobalName => "\"_global\" is reserved (machine-wide script actions)",
         error.ReservedSelfName => "\".nix\" is reserved - it always names nix's own home",
         else => null,
     };
@@ -871,6 +872,7 @@ test "nameErrorText and pathErrorText explain validation failures" {
     try std.testing.expectEqualStrings("names can't contain control characters", nameErrorText(error.ControlInName).?);
     try std.testing.expectEqualStrings("names can't contain [ ] = # or quotes", nameErrorText(error.TomlMetaInName).?);
     try std.testing.expectEqualStrings("\"_default\" is reserved (machine-wide default actions)", nameErrorText(error.ReservedName).?);
+    try std.testing.expectEqualStrings("\"_global\" is reserved (machine-wide script actions)", nameErrorText(error.ReservedGlobalName).?);
     try std.testing.expectEqualStrings("\".nix\" is reserved - it always names nix's own home", nameErrorText(error.ReservedSelfName).?);
     try std.testing.expect(nameErrorText(error.FileNotFound) == null);
 

@@ -176,6 +176,27 @@ fn writeFile(c: *Ctx, path: []const u8, data: []const u8) !void {
     try Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = data, .flags = .{ .permissions = perms } });
 }
 
+extern "kernel32" fn CreateFileW(
+    path: [*:0]const u16,
+    access: u32,
+    share: u32,
+    security: ?*const anyopaque,
+    disposition: u32,
+    flags: u32,
+    template: ?std.os.windows.HANDLE,
+) callconv(.winapi) std.os.windows.HANDLE;
+
+/// A zero share mode makes a sibling unreadable to the child process while
+/// the harness keeps this handle open.
+fn openExclusive(c: *Ctx, path: []const u8) !std.os.windows.HANDLE {
+    if (comptime proc.is_windows) {
+        const wide = try std.unicode.utf8ToUtf16LeAllocZ(c.arena, path);
+        const handle = CreateFileW(wide.ptr, 0x80000000, 0, null, 3, 0x80, null);
+        if (handle == std.os.windows.INVALID_HANDLE_VALUE) return error.ExclusiveOpenFailed;
+        return handle;
+    } else unreachable;
+}
+
 fn join(c: *Ctx, parts: []const []const u8) []const u8 {
     return std.fs.path.join(c.arena, parts) catch @panic("oom");
 }
@@ -695,6 +716,110 @@ pub fn main(init: std.process.Init) !void {
 
         // Put back what the blocks after this one expect to find.
         try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\n");
+    }
+
+    // --- private script actions ------------------------------------------------
+    {
+        const alias_jobs = join(&c, &.{ home, "jobs", "pa" });
+        try writeFile(&c, join(&c, &.{ alias_jobs, "echoargs.cmd" }), ":: nix: - Echo job arguments\r\n@echo off\r\necho job=%*\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "hello.cmd" }), "@echo job-shadow\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "defonly.cmd" }), "@echo default-shadow\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "seed.ps1" }), "# nix: uses=2 - Re-seed the ladder\nWrite-Output \"ps1 $args\"\n");
+        try writeFile(&c, join(&c, &.{ home, "jobs", "_global", "fromglobal.cmd" }), "@echo off\r\necho global-job\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "check.ps1" }), "Write-Output wrong\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "check.py" }), "print('wrong')\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "bad.cmd" }), ":: nix: uses=0\r\n@echo off\r\necho ran > bad-job-marker.txt\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "permanent.py" }), "# nix: - Permanent helper\nprint('listed')\n");
+        // Past the 4096-byte header read: an ordinary comment that long is still
+        // a script with no header, and only a declaration that long refuses.
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longcomment.cmd" }), ":: " ++ "a" ** 4200 ++ "\r\n@echo long-comment-ok\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longbang.cmd" }), "#!x\r\n:: " ++ "a" ** 4200 ++ "\r\n@echo long-bang-ok\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longdecl.cmd" }), ":: nix: - " ++ "a" ** 4200 ++ "\r\n@echo off\r\necho ran > longdecl-marker.txt\r\n");
+        // Undecided at the bound: padding before `nix:`, the token cut by the
+        // bound, and a shebang that fills the read before line two starts.
+        try writeFile(&c, join(&c, &.{ alias_jobs, "padded.cmd" }), "::" ++ " " ** 4200 ++ "nix: uses=0\r\necho ran > padded-marker.txt\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "cuttoken.cmd" }), "::" ++ " " ** 4092 ++ "nix: uses=0\r\necho ran > cuttoken-marker.txt\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longshebang.cmd" }), "#!" ++ "x" ** 4200 ++ "\r\n:: nix: uses=0\r\necho ran > longshebang-marker.txt\r\n");
+        var r = try c.run(&.{ "pa", "--run", ":" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[job] Echo job arguments") != null and
+            std.mem.indexOf(u8, r.out, "[once] Re-seed the ladder") != null and
+            std.mem.indexOf(u8, r.out, "[job] Permanent helper") != null, "script jobs list with permanent and once descriptions", r);
+        c.check(std.mem.indexOf(u8, r.err, "nix: jobs/pa/hello.cmd is shadowed by :hello from a toml file") != null and
+            hasRow(r.out, ":hello"), "listing reports a job shadowed by toml", r);
+        r = try c.run(&.{ "--no-prompt", "--actions" });
+        c.check(r.code == 0 and hasRow(r.out, "pa") and std.mem.indexOf(u8, r.out, ":echoargs") != null and
+            std.mem.indexOf(u8, r.out, ":fromglobal") == null and
+            std.mem.indexOf(u8, r.out, ":defonly") == null, "global palette includes alias jobs but hides global and default-shadowed jobs", r);
+        r = try c.run(&.{ "pa", "--run", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null and
+            std.mem.indexOf(u8, r.out, "job-shadow") == null, "a toml action wins over a same-name job", r);
+        r = try c.run(&.{ "pa", "--run", ":check" });
+        c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "nix: jobs/pa has check.ps1 and check.py - keep one") != null, "duplicate job basenames refuse deterministically", r);
+        r = try c.run(&.{ "pa", "--run", ":bad" });
+        c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "bad nix: header") != null and
+            !proc.pathExists(io, join(&c, &.{ pa, "bad-job-marker.txt" })), "a malformed job header refuses before running", r);
+        // These two RUN a .cmd, so they need cmd; the refusals below never
+        // start a runtime and hold everywhere.
+        if (c.windowsOnly("a long ordinary first comment still runs")) {
+            r = try c.run(&.{ "pa", "--run", ":longcomment" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "long-comment-ok") != null, "a first comment longer than the header read is no header, not a bad one", r);
+            r = try c.run(&.{ "pa", "--run", ":longbang" });
+            c.check(std.mem.indexOf(u8, r.out, "long-bang-ok") != null and std.mem.indexOf(u8, r.err, "bad nix: header") == null, "the same holds for a long comment on the line after a shebang", r);
+        }
+        inline for (.{ "padded", "cuttoken", "longshebang" }) |name| {
+            r = try c.run(&.{ "pa", "--run", ":" ++ name });
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "header exceeds 4096 bytes") != null and
+                !proc.pathExists(io, join(&c, &.{ pa, name ++ "-marker.txt" })), "an undecided header at the read bound refuses: " ++ name, r);
+        }
+        r = try c.run(&.{ "pa", "--run", ":longdecl" });
+        c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "header exceeds 4096 bytes") != null and
+            !proc.pathExists(io, join(&c, &.{ pa, "longdecl-marker.txt" })), "a nix: declaration longer than the header read refuses", r);
+
+        if (c.windowsOnly("Windows script jobs run through cmd and PowerShell")) {
+            r = try c.run(&.{ "pa", "--run", ":echoargs", "first", "second" });
+            c.check(r.code == 0 and hasLineFold(r.out, "job=first second") and
+                std.mem.indexOf(u8, r.err, "nix: shorter:") == null, "a .cmd job runs with appended arguments and no lint hint", r);
+            r = try c.run(&.{ "pa", "--run", ":seed", "now" });
+            c.check(r.code == 0 and hasLineFold(r.out, "ps1 now"), "a .ps1 job runs through PowerShell", r);
+            r = try c.run(&.{ "pa", "--run", ":fromglobal" });
+            c.check(r.code == 0 and hasLineFold(r.out, "global-job"), "a global script job runs from an alias", r);
+
+            const locked_path = join(&c, &.{ alias_jobs, "locked.cmd" });
+            try writeFile(&c, locked_path, ":: nix: - Alias locked job\r\n@echo alias-locked\r\n");
+            try writeFile(&c, join(&c, &.{ home, "jobs", "_global", "locked.cmd" }), ":: nix: - Global locked substitute\r\n@echo global-locked\r\n");
+            {
+                const locked = try openExclusive(&c, locked_path);
+                defer std.os.windows.CloseHandle(locked);
+                const duplicate_member = try openExclusive(&c, join(&c, &.{ alias_jobs, "check.ps1" }));
+                defer std.os.windows.CloseHandle(duplicate_member);
+
+                r = try c.run(&.{ "pa", "--run", ":echoargs", "still", "runs" });
+                c.check(r.code == 0 and hasLineFold(r.out, "job=still runs"), "an unreadable sibling does not stop an unrelated job", r);
+                r = try c.run(&.{ "pa", "--run", ":" });
+                c.check(r.code == 0 and hasRow(r.out, ":echoargs") and hasRow(r.out, ":locked") and
+                    std.mem.indexOf(u8, r.out, "[job] (unreadable)") != null and
+                    std.mem.indexOf(u8, r.out, locked_path) != null and
+                    std.mem.indexOf(u8, r.out, "Global locked substitute") == null, "an unreadable job lists in its alias scope without yielding to global", r);
+                r = try c.run(&.{ "pa", "--run", ":check" });
+                c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "nix: jobs/pa has check.ps1 and check.py - keep one") != null, "an unreadable duplicate member still gets the collision diagnostic", r);
+                r = try c.run(&.{ "pa", "--run", ":locked" });
+                const read_prefix = try std.fmt.allocPrint(c.arena, "nix: {s}: cannot read (", .{locked_path});
+                c.check(r.code == 1 and std.mem.indexOf(u8, r.err, read_prefix) != null and
+                    std.mem.indexOf(u8, r.out, "global-locked") == null, "executing an unreadable job fails without global fallback", r);
+            }
+
+            const spaced_home = join(&c, &.{ root, "home with space" });
+            try c.env.put("NIX_HOME", spaced_home);
+            const registered = try c.run(&.{ "sp", pa });
+            c.check(registered.code == 0, "an alias registers under a spaced NIX_HOME", registered);
+            try writeFile(&c, join(&c, &.{ spaced_home, "jobs", "sp", "spaced.cmd" }), "@echo off\r\necho spaced-home-job\r\n");
+            r = try c.run(&.{ "sp", "--run", ":spaced" });
+            c.check(r.code == 0 and hasLineFold(r.out, "spaced-home-job"), "a script job runs from a NIX_HOME containing a space", r);
+            try c.env.put("NIX_HOME", home);
+        }
+        // Later palette and editor checks start from an empty action store.
+        try Io.Dir.cwd().deleteTree(io, alias_jobs);
+        try Io.Dir.cwd().deleteTree(io, join(&c, &.{ home, "jobs", "_global" }));
     }
 
     // --- provenance gate (cloned actions and scripts) --------------------------

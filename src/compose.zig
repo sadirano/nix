@@ -15,6 +15,7 @@ const store = @import("store.zig");
 const proc = @import("proc.zig");
 const app_zig = @import("app.zig");
 const run = @import("run.zig");
+const jobs = @import("jobs.zig");
 
 const App = app_zig.App;
 
@@ -42,7 +43,7 @@ pub fn referenceProblem(app: *App, alias: []const u8, dir: []const u8, a: action
     return null;
 }
 
-pub const Raw = struct { action: actions.Action, from_project: bool };
+pub const Raw = struct { action: actions.Action, from_project: bool, from_job: bool = false };
 
 /// An empty `dir` is the machine-wide file alone, as resolveExportAction means
 /// it: there is no alias dir, and the cwd's project actions are not consulted.
@@ -56,6 +57,10 @@ pub fn lookupRaw(app: *App, alias: []const u8, dir: []const u8, name: []const u8
         for (try actions.loadFile(app.arena, app.io, p)) |a| if (store.eqlFoldAscii(a.name, name))
             return .{ .action = a, .from_project = i == 0 };
     }
+    if (try jobs.lookup(app, alias, name)) |job|
+        return .{ .action = try jobs.asAction(app, job), .from_project = false, .from_job = true };
+    if (try jobs.lookup(app, "_global", name)) |job|
+        return .{ .action = try jobs.asAction(app, job), .from_project = false, .from_job = true };
     return null;
 }
 
@@ -69,7 +74,7 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
         .command = try scriptForm(app, dir, a.command, a.shell),
         .from_project = raw.from_project,
         .shell = a.shell,
-        .written = a.command,
+        .written = if (raw.from_job) "" else a.command,
     };
     if (depth >= max_depth) {
         problem.* = try std.fmt.allocPrint(app.arena, ":{s} leads back to itself through other actions", .{a.name});
