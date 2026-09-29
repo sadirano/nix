@@ -21,6 +21,15 @@ jobs:
           # `git describe --tags`, and a shallow clone would report "0.0.0".
           fetch-depth: 0
 
+      # checkout re-fetches the triggering tag as a LIGHTWEIGHT ref, while an
+      # older tag on the same commit stays annotated - and describe prefers the
+      # annotated one. A stable tag cut on its last pre's commit then baked
+      # the pre's name (v0.12.0 built as v0.12.0-pre5). Re-fetching restores
+      # the tag objects.
+      - name: Restore annotated tags
+        shell: bash
+        run: git fetch --force --tags origin
+
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
