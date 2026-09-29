@@ -690,6 +690,7 @@ pub fn confirm(app: *App, question: []const u8, files: []const []const u8) !bool
             try view(app, files);
             continue;
         }
+        if (n > 0) app.declined = true;
         return false;
     }
 }

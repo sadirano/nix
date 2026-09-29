@@ -56,6 +56,7 @@ extern "kernel32" fn FlushConsoleInputBuffer(hConsoleInput: *anyopaque) callconv
 /// An explicit `!` (app.hold_requested) lifts only the shared-console check:
 /// the user asked, so a launcher that puts a cmd.exe beside nix still holds.
 pub fn onFailure(app: *App) void {
+    if (app.declined and !app.hold_requested) return;
     if (!gated(app)) return;
     app.err.writeAll("\n(this window was opened for nix and would close now - press Enter)\n") catch {};
     app.err.flush() catch {};

@@ -45,6 +45,10 @@ pub const App = struct {
     /// `x <alias> !<cmd>`: hold the window after this run, success or not,
     /// and even in a console nix shares.
     hold_requested: bool = false,
+    /// The person at the console said no: Esc in a picker, or a declined
+    /// prompt. The run still exits non-zero, but there is nothing unread to
+    /// hold the window for.
+    declined: bool = false,
     /// `--as <dialect>`: how paths are spelled when printed or copied. Read by
     /// the resolve and yank paths; navigate refuses it, since `o`'s stdout
     /// feeds the wrapper's cd.

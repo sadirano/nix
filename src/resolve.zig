@@ -172,8 +172,9 @@ fn readAnswer(app: *App, default_yes: bool) !bool {
     const line = buf[0..n];
     const end = std.mem.indexOfScalar(u8, line, '\n') orelse line.len;
     const ans = std.mem.trim(u8, line[0..end], " \t\r\n");
-    if (ans.len == 0) return default_yes;
-    return std.ascii.eqlIgnoreCase(ans, "y") or std.ascii.eqlIgnoreCase(ans, "yes");
+    const yes = if (ans.len == 0) default_yes else std.ascii.eqlIgnoreCase(ans, "y") or std.ascii.eqlIgnoreCase(ans, "yes");
+    if (!yes) app.declined = true;
+    return yes;
 }
 
 /// resolveAliasPath resolves an alias to its directory and records usage - the

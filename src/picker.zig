@@ -246,6 +246,14 @@ const PickFilter = struct {
     }
 };
 
+/// cancelled maps a picker's non-zero exit to "no pick". 1 (nothing chosen)
+/// and 130 (Esc) are the person at the console choosing; anything else is the
+/// picker failing, which still holds a window nix owns.
+fn cancelled(app: *App, code: u8) ?[]const u8 {
+    if (code == 1 or code == 130) app.declined = true;
+    return null;
+}
+
 /// pickDirectory handles an unknown alias: list candidate dirs (es, or a streamed
 /// fd/find walk), filter exclusions, and let the user choose in fzf. Returns
 /// the picked directory (the caller registers it). null = cancelled / no match.
@@ -299,7 +307,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
                 try glean_pick.filter(app, spec, input.items, ".")
             else
                 try proc.runFilter(app.arena, app.io, &fzf_argv, input.items, fzfEnv(app));
-            if (res.code != 0) return null; // cancelled
+            if (res.code != 0) return cancelled(app, res.code);
             break :blk std.mem.trim(u8, res.output, " \t\r\n");
         },
         // fd/find can walk for seconds across drives: stream matches into fzf
@@ -315,7 +323,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
                 try app.err.print("nix: no unregistered directory matches \"{s}\" (register it: nix {s} <path>)\n", .{ name, name });
                 return null;
             }
-            if (res.code != 0) return null; // cancelled
+            if (res.code != 0) return cancelled(app, res.code);
             break :blk std.mem.trim(u8, res.output, " \t\r\n");
         },
     };
