@@ -734,10 +734,10 @@ pub fn main(init: std.process.Init) !void {
     {
         const alias_jobs = join(&c, &.{ home, "jobs", "pa" });
         try writeFile(&c, join(&c, &.{ alias_jobs, "echoargs.cmd" }), ":: nix: - Echo job arguments\r\n@echo off\r\necho job=%*\r\n");
-        try writeFile(&c, join(&c, &.{ alias_jobs, "hello.cmd" }), "@echo job-shadow\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "hello.cmd" }), ":: nix: uses=1 - Shadowed helper\r\n@echo job-shadow\r\n");
         try writeFile(&c, join(&c, &.{ alias_jobs, "defonly.cmd" }), "@echo default-shadow\r\n");
         try writeFile(&c, join(&c, &.{ alias_jobs, "seed.ps1" }), "# nix: uses=2 - Re-seed the ladder\nWrite-Output \"ps1 $args\"\n");
-        try writeFile(&c, join(&c, &.{ home, "jobs", "_global", "fromglobal.cmd" }), "@echo off\r\necho global-job\r\n");
+        try writeFile(&c, join(&c, &.{ home, "jobs", "_global", "fromglobal.cmd" }), ":: nix: uses=3 - Global helper\r\n@echo off\r\necho global-job\r\n");
         try writeFile(&c, join(&c, &.{ alias_jobs, "check.ps1" }), "Write-Output wrong\n");
         try writeFile(&c, join(&c, &.{ alias_jobs, "check.py" }), "print('wrong')\n");
         try writeFile(&c, join(&c, &.{ alias_jobs, "bad.cmd" }), ":: nix: uses=0\r\n@echo off\r\necho ran > bad-job-marker.txt\r\n");
@@ -774,6 +774,17 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pa", "--run", ":bad" });
         c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "bad nix: header") != null and
             !proc.pathExists(io, join(&c, &.{ pa, "bad-job-marker.txt" })), "a malformed job header refuses before running", r);
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "jobs/pa/hello.cmd is shadowed") != null and
+            std.mem.indexOf(u8, r.out, "jobs/pa/bad.cmd: bad nix: header") != null and
+            std.mem.indexOf(u8, r.out, "jobs/pa has check.ps1 and check.py") != null, "doctor reports shadowed, malformed and duplicate script actions", r);
+        r = try c.run(&.{ "--keep", "pa", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "jobs/pa/hello.cmd") != null and
+            std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ alias_jobs, "hello.cmd" }), ""), "nix: - Shadowed helper") != null, "--keep finds a shadowed script through its script tiers", r);
+        r = try c.run(&.{ "--keep", "pa", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "nix: :hello is already permanent") != null, "--keep reports an already permanent script", r);
+        r = try c.run(&.{ "--keep", "pa", ":missing-job" });
+        c.check(r.code == 1, "--keep fails when neither script tier has the name", r);
         // These two RUN a .cmd, so they need cmd; the refusals below never
         // start a runtime and hold everywhere.
         if (c.windowsOnly("a long ordinary first comment still runs")) {
@@ -867,6 +878,35 @@ pub fn main(init: std.process.Init) !void {
             c.check(r.code == 0 and hasLineFold(r.out, "global-job") and
                 std.mem.indexOf(u8, r.err, "run it?") == null and
                 std.mem.count(u8, readFileOr(&c, log_path, ""), "_global/fromglobal.cmd ok\n") == 2, "a global job shares approval and uses across aliases", r);
+            try c.env.put("NIX_E2E_TTY", "0");
+            r = try c.run(&.{ "--keep", "pa", ":fromglobal" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "jobs/_global/fromglobal.cmd") != null and
+                std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "jobs", "_global", "fromglobal.cmd" }), ""), "nix: - Global helper") != null, "--keep uses the global script tier when the alias tier has no match", r);
+            r = try c.run(&.{ "pb", "--run", ":fromglobal" });
+            c.check(r.code == 0 and hasLineFold(r.out, "global-job") and std.mem.indexOf(u8, r.err, "run it?") == null, "a kept global script carries approval across aliases", r);
+
+            try writeFile(&c, central_pa, central_base ++ "budget = \"echo shadow\"\n");
+            r = try c.run(&.{"--clean"});
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "pa/budget.cmd  spent") != null and
+                std.mem.indexOf(u8, r.out, "pa/two words.cmd  spent") != null and
+                proc.pathExists(io, budget_path) and
+                std.mem.indexOf(u8, readFileOr(&c, log_path, ""), "pa/budget.cmd ok") != null, "--clean lists shadowed candidates without a console and changes nothing", r);
+            r = try c.run(&.{"--doctor"});
+            c.check(std.mem.indexOf(u8, r.out, "script actions waiting for nix --clean") != null and
+                std.mem.indexOf(u8, r.out, "jobs/pa/budget.cmd is shadowed") != null, "doctor reports a spent shadowed script waiting for clean", r);
+            r = try c.run(&.{ "--keep", "pa", ":two words" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "jobs/pa/two words.cmd") != null and
+                std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ alias_jobs, "two words.cmd" }), ""), "nix: - Spaced job") != null, "--keep removes the budget and prints the changed script", r);
+            r = try c.run(&.{ "pa", "--run", ":" });
+            c.check(std.mem.indexOf(u8, r.out, "[job] Spaced job") != null, "--keep changes a once action into a permanent job", r);
+            r = try c.run(&.{ "pa", "--run", ":two words" });
+            c.check(r.code == 0 and hasLine(r.out, "spaced-job-ran") and std.mem.indexOf(u8, r.err, "run it?") == null, "--keep carries the old approval to nix's own rewrite", r);
+            try c.env.put("NIX_E2E_TTY", "1");
+            r = try c.runAnswering(&.{"--clean"}, "y\n");
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "delete these 1? [y/N]") != null and
+                !proc.pathExists(io, budget_path) and proc.pathExists(io, join(&c, &.{ alias_jobs, "two words.cmd" })) and
+                std.mem.indexOf(u8, readFileOr(&c, log_path, ""), "pa/budget.cmd") == null, "--clean confirms once, deletes only candidates and prunes their log lines", r);
+            try writeFile(&c, central_pa, central_base);
 
             const locked_path = join(&c, &.{ alias_jobs, "locked.cmd" });
             try writeFile(&c, locked_path, ":: nix: - Alias locked job\r\n@echo alias-locked\r\n");
@@ -904,6 +944,33 @@ pub fn main(init: std.process.Init) !void {
         // Later palette and editor checks start from an empty action store.
         try Io.Dir.cwd().deleteTree(io, alias_jobs);
         try Io.Dir.cwd().deleteTree(io, join(&c, &.{ home, "jobs", "_global" }));
+    }
+
+    // A scope that names a directory elsewhere must never be opened by clean.
+    {
+        const foreign = join(&c, &.{ root, "outside-jobs" });
+        const foreign_script = join(&c, &.{ foreign, "foreign.cmd" });
+        const linked = join(&c, &.{ home, "jobs", "linked" });
+        try writeFile(&c, foreign_script, ":: nix: uses=1\r\n@echo outside\r\n");
+        try writeFile(&c, join(&c, &.{ home, "jobs", "runs.log" }), "100 linked/foreign.cmd ok\n");
+        if (c.windowsOnly("a junction scope is not followed by --clean")) {
+            const mk = try c.runCommand(&.{ "cmd", "/c", "mklink", "/J", linked, foreign }, null);
+            c.check(mk.code == 0, "scratch junction fixture is created", mk);
+            if (mk.code == 0) {
+                try c.env.put("NIX_E2E_TTY", "0");
+                const r = try c.run(&.{"--clean"});
+                c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "nothing to clean") != null and
+                    proc.pathExists(io, foreign_script), "--clean skips a junction scope", r);
+                try c.env.put("NIX_E2E_TTY", "1");
+            }
+        } else {
+            try Io.Dir.cwd().symLink(io, foreign, linked, .{ .is_directory = true });
+            try c.env.put("NIX_E2E_TTY", "0");
+            const r = try c.run(&.{"--clean"});
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "nothing to clean") != null and
+                proc.pathExists(io, foreign_script), "--clean skips a symlink scope", r);
+            try c.env.put("NIX_E2E_TTY", "1");
+        }
     }
 
     // --- provenance gate (cloned actions and scripts) --------------------------

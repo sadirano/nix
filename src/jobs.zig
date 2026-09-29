@@ -5,6 +5,7 @@ const app_zig = @import("app.zig");
 const actions = @import("actions.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
+const util = @import("util.zig");
 
 const App = app_zig.App;
 const Io = std.Io;
@@ -110,7 +111,7 @@ pub fn contentHash(bytes: []const u8) [64]u8 {
     return std.fmt.bytesToHex(digest, .lower);
 }
 
-fn logPath(app: *App) ![]const u8 {
+pub fn logPath(app: *App) ![]const u8 {
     return std.fs.path.join(app.arena, &.{ app.home, "jobs", "runs.log" });
 }
 
@@ -156,6 +157,8 @@ extern "kernel32" fn CreateFileW(
     flags: u32,
     template: ?std.os.windows.HANDLE,
 ) callconv(.winapi) std.os.windows.HANDLE;
+
+extern "kernel32" fn GetFileAttributesW(path: [*:0]const u16) callconv(.winapi) u32;
 
 pub fn append(app: *App, job: Job, kind: EventKind, hash: ?[]const u8) !void {
     const at = @divTrunc(Io.Clock.real.now(app.io).nanoseconds, std.time.ns_per_s);
@@ -388,6 +391,105 @@ pub fn asListingAction(app: *App, job: Job) !actions.Action {
     return action;
 }
 
+/// statFile's no-follow mode covers POSIX links. On Windows we inspect the
+/// named entry's own attributes so a junction or another reparse point cannot
+/// turn a jobs scope or script into a path elsewhere before a cleanup.
+pub fn directStat(app: *App, path: []const u8, kind: Io.File.Kind) !?Io.File.Stat {
+    if (comptime proc.is_windows) {
+        const wide = try std.unicode.utf8ToUtf16LeAllocZ(app.arena, path);
+        const attrs = GetFileAttributesW(wide.ptr);
+        if (attrs == 0xffffffff or attrs & 0x400 != 0) return null;
+        if ((attrs & 0x10 != 0) != (kind == .directory)) return null;
+    }
+    const stat = Io.Dir.cwd().statFile(app.io, path, .{ .follow_symlinks = false }) catch return null;
+    return if (stat.kind == kind) stat else null;
+}
+
+/// Enumerate only scope directories immediately below jobs. In particular,
+/// opening a junction first and checking it later would already have followed it.
+pub fn scopes(app: *App) ![][]const u8 {
+    const root = try std.fs.path.join(app.arena, &.{ app.home, "jobs" });
+    if (try directStat(app, root, .directory) == null) return &.{};
+    var dir = try Io.Dir.cwd().openDir(app.io, root, .{ .iterate = true });
+    defer dir.close(app.io);
+    var result: std.ArrayList([]const u8) = .empty;
+    var it = dir.iterate();
+    while (try it.next(app.io)) |ent| {
+        if (ent.kind != .directory) continue;
+        const path = try std.fs.path.join(app.arena, &.{ root, ent.name });
+        if (try directStat(app, path, .directory) == null) continue;
+        try result.append(app.arena, try app.arena.dupe(u8, ent.name));
+    }
+    std.mem.sort([]const u8, result.items, {}, util.lessThanStr);
+    return result.items;
+}
+
+pub const Candidate = struct { job: Job, reason: []const u8 };
+const stale_days: i64 = 14;
+const seconds_per_day: i64 = 24 * 60 * 60;
+
+/// Spent takes precedence over age. Age is measured since the newer of the
+/// file edit and last attempt, so an attempted failed run keeps the job alive.
+pub fn candidateReason(arena: std.mem.Allocator, header: Header, count: u64, mtime_ns: i128, last_attempt: ?i64, now_ns: i128) !?[]const u8 {
+    const uses = header.uses orelse return null;
+    if (header.bad != null) return null;
+    if (count >= uses) return try std.fmt.allocPrint(arena, "spent {d}/{d}", .{ count, uses });
+    const newest = @max(mtime_ns, if (last_attempt) |at| @as(i128, at) * std.time.ns_per_s else mtime_ns);
+    const age_ns = now_ns - newest;
+    const day_ns = seconds_per_day * std.time.ns_per_s;
+    if (age_ns <= stale_days * day_ns) return null;
+    return try std.fmt.allocPrint(arena, "untouched {d}d", .{@divFloor(age_ns, day_ns)});
+}
+
+pub fn candidates(app: *App) ![]Candidate {
+    var result: std.ArrayList(Candidate) = .empty;
+    const log = try loadLog(app);
+    const now = Io.Clock.real.now(app.io).nanoseconds;
+    for (try scopes(app)) |scope| {
+        for (try scan(app, scope)) |job| {
+            const stat = try directStat(app, job.path, .file) orelse continue;
+            const header = readHeader(app, job) catch continue;
+            const st = state(log, job.scope, job.file, null);
+            const reason = try candidateReason(app.arena, header, st.count, stat.mtime.nanoseconds, st.last_attempt, now) orelse continue;
+            try result.append(app.arena, .{ .job = job, .reason = reason });
+        }
+    }
+    return result.items;
+}
+
+/// Keep malformed lines unchanged, and remove only identities whose files were
+/// actually deleted; an unrelated log event must survive byte-for-byte.
+pub fn pruneLog(arena: std.mem.Allocator, log: []const u8, deleted: []const Job) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var lines = std.mem.splitScalar(u8, log, '\n');
+    while (lines.next()) |line| {
+        const start = @intFromPtr(line.ptr) - @intFromPtr(log.ptr);
+        const end = start + line.len + @as(usize, if (start + line.len < log.len) 1 else 0);
+        const event = parseLine(line);
+        var drop = false;
+        if (event) |ev| for (deleted) |job| {
+            if (std.mem.eql(u8, ev.scope, job.scope) and std.mem.eql(u8, ev.file, job.file)) {
+                drop = true;
+                break;
+            }
+        };
+        if (!drop) try out.appendSlice(arena, log[start..end]);
+    }
+    return out.items;
+}
+
+/// Replace only the declaration line, preserving a shebang, body, and the
+/// original line endings. A budget-only declaration has no meaning afterward.
+pub fn permanentContent(arena: std.mem.Allocator, ext: Extension, body: []const u8, header: Header) ![]const u8 {
+    const first_end = std.mem.indexOfScalar(u8, body, '\n') orelse body.len;
+    const start = if (std.mem.startsWith(u8, body, "#!") and first_end < body.len) first_end + 1 else 0;
+    const line_end = if (std.mem.indexOfScalarPos(u8, body, start, '\n')) |at| at + 1 else body.len;
+    const line = body[start..line_end];
+    const ending: []const u8 = if (std.mem.endsWith(u8, line, "\r\n")) "\r\n" else if (std.mem.endsWith(u8, line, "\n")) "\n" else "";
+    const replacement = if (header.description.len == 0) "" else try std.fmt.allocPrint(arena, "{s} nix: - {s}{s}", .{ commentPrefix(ext), header.description, ending });
+    return std.mem.concat(arena, u8, &.{ body[0..start], replacement, body[line_end..] });
+}
+
 test "header examples, shebang, and permanent fallback" {
     const seeded = parseHeader(.py, "# nix: uses=3 - Re-seed the ladder\nprint('ok')\n");
     try std.testing.expectEqual(@as(?u64, 3), seeded.uses);
@@ -508,4 +610,42 @@ test "run log approval uses the latest hash without resetting uses" {
     try std.testing.expect(!state(log, "_global", "fix.cmd", old).approved);
     try std.testing.expect(!state(log, "pa", "fix.cmd", current).approved);
     try std.testing.expectEqualStrings("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", &contentHash(""));
+}
+
+test "clean candidates distinguish spent, stale attempts, never run, and permanent" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const day: i128 = seconds_per_day * std.time.ns_per_s;
+    const now: i128 = 100 * day;
+    const budget = Header{ .uses = 3 };
+    try std.testing.expectEqualStrings("spent 3/3", (try candidateReason(arena, budget, 3, now, null, now)).?);
+    try std.testing.expectEqualStrings("spent 4/3", (try candidateReason(arena, budget, 4, now, null, now)).?);
+    try std.testing.expectEqualStrings("untouched 21d", (try candidateReason(arena, budget, 0, now - 21 * day, null, now)).?);
+    try std.testing.expectEqualStrings("untouched 16d", (try candidateReason(arena, budget, 1, now - 21 * day, 84 * seconds_per_day, now)).?);
+    try std.testing.expect((try candidateReason(arena, budget, 1, now - 21 * day, 90 * seconds_per_day, now)) == null);
+    try std.testing.expect((try candidateReason(arena, budget, 1, now - 10 * day, 79 * seconds_per_day, now)) == null);
+    try std.testing.expect((try candidateReason(arena, budget, 0, now - 14 * day, null, now)) == null);
+    try std.testing.expect((try candidateReason(arena, .{}, 100, 0, null, now)) == null);
+}
+
+test "keep rewrite preserves description, drops bare header, and keeps shebang" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const described = "# nix: uses=2 - Fix the index\nprint('done')\n";
+    try std.testing.expectEqualStrings("# nix: - Fix the index\nprint('done')\n", try permanentContent(a, .py, described, parseHeader(.py, described)));
+    const bare = ":: nix: uses=1\r\n@echo off\r\n";
+    try std.testing.expectEqualStrings("@echo off\r\n", try permanentContent(a, .cmd, bare, parseHeader(.cmd, bare)));
+    const shebang = "#!/usr/bin/env node\n// nix: uses=3 - Generate\nconsole.log('ok')\n";
+    try std.testing.expectEqualStrings("#!/usr/bin/env node\n// nix: - Generate\nconsole.log('ok')\n", try permanentContent(a, .js, shebang, parseHeader(.js, shebang)));
+}
+
+test "clean log rewrite removes only deleted identities" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const log = "100 pa/old.cmd start\n101 pa/old.cmd ok\n102 pa/new.cmd ok\nbad line\n103 _global/old.cmd ok\n104 pa/old.cmd approve " ++ "a" ** 64 ++ "\n";
+    const deleted = [_]Job{.{ .scope = "pa", .file = "old.cmd", .path = "", .name = "old", .ext = .cmd }};
+    try std.testing.expectEqualStrings("102 pa/new.cmd ok\nbad line\n103 _global/old.cmd ok\n", try pruneLog(a, log, &deleted));
 }

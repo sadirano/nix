@@ -751,6 +751,55 @@ pub const specs = [_]Spec{
         .see_also = &.{ "x", "--actions", "--secret", "--sync-bin", "env" },
     },
     .{
+        .topic = "jobs",
+        .summary = "private script actions with optional use budgets",
+        .safety = .safe,
+        .detail =
+        \\A script file is an action. Keep it in the private nix store:
+        \\
+        \\    ~/.nix/jobs/<alias>/<name>.<ext>    one alias
+        \\    ~/.nix/jobs/_global/<name>.<ext>  every alias
+        \\    ~/.nix/jobs/runs.log             starts, successes, approvals
+        \\
+        \\Extensions select the runner: .ps1, .py, .js, or .cmd. The first
+        \\line, or the second after a shebang, may contain a header in the
+        \\script's comment syntax: `# nix: uses=3 - Re-seed the demo ladder`
+        \\(`//` for .js, `::` for .cmd). A positive `uses=N` makes it
+        \\disposable; without it the script is permanent. Only a successful
+        \\run spends a use. A spent script still runs and warns. The first run
+        \\and every content edit require approval after showing the script.
+        \\Without a console, an unapproved script refuses to run.
+        \\
+        \\Run one as `nix <alias> --run :<name>`. Script lookup uses the
+        \\alias scope before `_global`, after all toml action layers. A toml
+        \\action can shadow a script; `--keep` still finds the script.
+        \\Two files with the same basename in one scope are an error.
+        \\
+        \\`nix --clean` lists spent budgeted scripts and budgeted scripts
+        \\whose file edit and last attempt are both older than 14 days.
+        \\A never-run script uses its edit time. Permanent scripts are never
+        \\candidates. At a console it asks once before deleting the listed
+        \\files and their run-log lines. Without a console it lists only.
+        \\Deletion stays directly inside a jobs scope and never follows a
+        \\symlink or junction.
+        \\
+        \\`nix --keep <alias> :<name>` removes `uses=N` from the script's
+        \\header, keeping its description. If the old content was approved,
+        \\nix records approval for its own rewrite so the next run does not ask.
+        ,
+        .agent_use =
+        \\Use `nix --clean` to inspect candidates without a console. Give the
+        \\user the same command at a console when they want to delete them.
+        \\Use `nix --keep <alias> :<name>` when the script should remain
+        \\available after its budget is spent.
+        ,
+        .examples = &.{
+            "`nix --clean` - list candidates and ask before deletion at a console",
+            "`nix --keep acme :repair` - make a budgeted script permanent",
+        },
+        .see_also = &.{ "actions", "x", "--doctor" },
+    },
+    .{
         .topic = "env",
         .summary = "per-project environment (.nix/env.toml)",
         .safety = .safe,

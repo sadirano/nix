@@ -19,6 +19,7 @@ const env_zig = @import("env.zig");
 const run_zig = @import("run.zig");
 const compose = @import("compose.zig");
 const actions = @import("actions.zig");
+const jobs = @import("jobs.zig");
 
 // Version baked by build.zig (git describe).
 const build_version = @import("build_options").version;
@@ -541,6 +542,62 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             }
         }
         if (!any) try d.row(.ok, "actions", "none - every action is as short as nix can make it, and every reference resolves");
+    }
+
+    try d.section("Script actions  (~/.nix/jobs)");
+    {
+        const adata = store.readAliasesFile(app.arena, app.io, app.home) catch "";
+        const aliases: std.ArrayList(store.Alias) = store.loadAliases(app.arena, adata) catch .empty;
+        const defaults = actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home)) catch &.{};
+        var any = false;
+        for (try jobs.scopes(app)) |scope| {
+            const list = jobs.scan(app, scope) catch continue;
+            for (list, 0..) |job, i| {
+                var duplicate = false;
+                for (list[0..i]) |earlier| if (store.eqlFoldAscii(earlier.name, job.name)) {
+                    duplicate = true;
+                    break;
+                };
+                if (!duplicate) if (jobs.collision(list, job.name)) |pair| {
+                    try d.row(.warn, "jobs", try std.fmt.allocPrint(app.arena, "jobs/{s} has {s} and {s} - keep one", .{ scope, pair.first.file, pair.second.file }));
+                    any = true;
+                };
+                const header = jobs.readHeader(app, job) catch null;
+                if (header) |h| if (h.bad) |why| {
+                    try d.row(.warn, "jobs", try std.fmt.allocPrint(app.arena, "jobs/{s}/{s}: bad nix: header ({s})", .{ scope, job.file, why }));
+                    any = true;
+                };
+                var shadowed_by: ?[]const u8 = null;
+                for (aliases.items) |alias| {
+                    if (!std.mem.eql(u8, scope, "_global") and !store.eqlFoldAscii(scope, alias.name)) continue;
+                    const toml = run_zig.tomlActions(app, alias.name, alias.path) catch &.{};
+                    for (toml) |act| if (store.eqlFoldAscii(act.name, job.name)) {
+                        shadowed_by = alias.name;
+                        break;
+                    };
+                    if (shadowed_by == null) for (defaults) |act| {
+                        if (store.eqlFoldAscii(act.name, job.name)) {
+                            shadowed_by = alias.name;
+                            break;
+                        }
+                    };
+                    if (shadowed_by == null and std.mem.eql(u8, scope, "_global")) {
+                        for (jobs.scan(app, alias.name) catch &.{}) |local| if (store.eqlFoldAscii(local.name, job.name)) {
+                            shadowed_by = alias.name;
+                            break;
+                        };
+                    }
+                    if (shadowed_by != null) break;
+                }
+                if (shadowed_by) |alias| {
+                    try d.row(.warn, "jobs", try std.fmt.allocPrint(app.arena, "jobs/{s}/{s} is shadowed for {s}", .{ scope, job.file, alias }));
+                    any = true;
+                }
+            }
+        }
+        const waiting = (try jobs.candidates(app)).len;
+        if (waiting > 0) try d.row(.info, "jobs", try std.fmt.allocPrint(app.arena, "{d} script actions waiting for nix --clean", .{waiting}));
+        if (!any and waiting == 0) try d.row(.ok, "jobs", "no script action problems");
     }
 
     if (json) try renderJson(app, &d) else try renderHuman(app, &d, quiet);

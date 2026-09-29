@@ -14,6 +14,7 @@ const snippet = @import("snippet.zig");
 const agents = @import("agents.zig");
 const agentdocs = @import("agentdocs.zig");
 const actions = @import("actions.zig");
+const jobcmd = @import("jobcmd.zig");
 const winpath = @import("winpath.zig");
 const util = @import("util.zig");
 const app_zig = @import("app.zig");
@@ -317,6 +318,8 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         },
         .edit => cmdEdit(app, "", rest),
         .doctor => doctor.cmdDoctor(app, rest),
+        .clean => jobcmd.cmdClean(app, rest),
+        .keep => jobcmd.cmdKeep(app, rest),
         .contexts => cmdContexts(app),
         .actions => palette.cmdActions(app, rest),
         .sync => init_zig.cmdSync(app),
