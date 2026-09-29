@@ -19,6 +19,7 @@ const env_zig = @import("env.zig");
 const interrupt = @import("interrupt.zig");
 const compose = @import("compose.zig");
 const jobs = @import("jobs.zig");
+const jobrun = @import("jobrun.zig");
 
 const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
@@ -213,6 +214,9 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
         try app.err.print("nix: \"{s}\" runs {s} :{s}, which no longer exists - fix the [bin] line, then `nix --sync-bin`\n", .{ name, alias, action });
         return 1;
     };
+    // An exported script action is still that script action, with the same
+    // approval and run log as when invoked through its alias.
+    if (r.job != null) return runCall(app, .{ .links = &.{.{ .name = action, .args = args }} }, alias, dir, false);
     const cmd = try applyArgs(app.arena, r.command, args);
     if (!try provenance.gateAction(app, ctx_alias, dir, action, r.command, cmd, r.from_project, stripSudo(cmd) != null, .may_prompt)) return 1;
     return runAction(app, cmd, ctx_alias, dir, action, false, r.shell);
@@ -380,7 +384,9 @@ fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outs
             try app.err.print("==> {s} :{s}\n", .{ alias, name });
             try app.err.flush();
         }
+        if (r.job) |job| if (!try jobrun.before(app, job, name)) return 1;
         const code = try runAction(app, cmd, alias, dir, name, outside, r.shell);
+        if (r.job) |job| if (!try jobrun.after(app, job, code, outside or stripSudo(cmd) != null)) return 1;
         if (code != 0) {
             if (i + 1 < call.links.len) try app.err.print("nix: :{s} failed (exit {d}) - stopping\n", .{ name, code });
             return code;
@@ -533,6 +539,7 @@ pub const Resolved = struct {
     command: []const u8,
     from_project: bool,
     shell: actions.Shell = .default,
+    job: ?jobs.Job = null,
     /// The value as the file spells it, before references and script names
     /// were expanded - what the long-form hint reads.
     written: []const u8 = "",
@@ -570,20 +577,16 @@ pub fn actionPaths(app: *App, alias: []const u8, dir: []const u8) ![]const []con
 /// per name. Script jobs follow the toml layers. `include_default` drops the
 /// machine-wide toml and global jobs, which the palette does -
 /// listing a machine-wide default once per alias would bury the real rows.
+/// `with_counts` loads the run log only for a listing, never for lint.
 ///
 /// A layer that cannot be read contributes nothing rather than failing the
 /// whole listing: an alias on an unplugged drive costs its own project layer,
 /// not the other aliases' actions.
-pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_default: bool) ![]actions.Action {
+pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_default: bool, with_counts: bool) ![]actions.Action {
     const paths = try actionPaths(app, alias, dir);
     var merged: std.ArrayList(actions.Action) = .empty;
     const hidden_default: []const actions.Action = if (include_default) &.{} else actions.loadFile(app.arena, app.io, paths[2]) catch &.{};
-    for (if (include_default) paths else paths[0..2]) |p| {
-        outer: for (actions.loadFile(app.arena, app.io, p) catch continue) |a| {
-            for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // earlier layer wins
-            try merged.append(app.arena, a);
-        }
-    }
+    try mergeLayers(app, if (include_default) paths else paths[0..2], &merged);
     var ambiguous: std.ArrayList([]const u8) = .empty;
     for (0..if (include_default) @as(usize, 2) else 1) |i| {
         const scope = if (i == 0) alias else "_global";
@@ -605,10 +608,27 @@ pub fn mergedActions(app: *App, alias: []const u8, dir: []const u8, include_defa
                 if (e == error.OutOfMemory) return e;
                 break :blk .{ .description = "(unreadable)" };
             };
-            try merged.append(app.arena, try jobs.asAction(app, job));
+            try merged.append(app.arena, if (with_counts) try jobs.asListingAction(app, job) else try jobs.asAction(app, job));
         }
     }
     return merged.items;
+}
+
+/// tomlActions is the alias's project and private toml actions, without script
+/// actions: the siblings a composed action may refer to.
+pub fn tomlActions(app: *App, alias: []const u8, dir: []const u8) ![]actions.Action {
+    var merged: std.ArrayList(actions.Action) = .empty;
+    try mergeLayers(app, (try actionPaths(app, alias, dir))[0..2], &merged);
+    return merged.items;
+}
+
+fn mergeLayers(app: *App, paths: []const []const u8, merged: *std.ArrayList(actions.Action)) !void {
+    for (paths) |p| {
+        outer: for (actions.loadFile(app.arena, app.io, p) catch continue) |a| {
+            for (merged.items) |m| if (store.eqlFoldAscii(m.name, a.name)) continue :outer; // earlier layer wins
+            try merged.append(app.arena, a);
+        }
+    }
 }
 
 /// runShellString runs an action's command through the shell (cmd /c on Windows,

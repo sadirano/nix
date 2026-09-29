@@ -176,6 +176,18 @@ fn writeFile(c: *Ctx, path: []const u8, data: []const u8) !void {
     try Io.Dir.cwd().writeFile(c.io, .{ .sub_path = path, .data = data, .flags = .{ .permissions = perms } });
 }
 
+/// Large script bodies would fill the harness's stderr pipe before it reads
+/// stdout, so those fixtures start with the same approval a console records.
+fn approveJob(c: *Ctx, home: []const u8, scope: []const u8, file: []const u8, body: []const u8) !void {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(body, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    const line = try std.fmt.allocPrint(c.arena, "100 {s}/{s} approve {s}\n", .{ scope, file, &hex });
+    const path = join(c, &.{ home, "jobs", "runs.log" });
+    const updated = try std.mem.concat(c.arena, u8, &.{ readFileOr(c, path, ""), line });
+    try writeFile(c, path, updated);
+}
+
 extern "kernel32" fn CreateFileW(
     path: [*:0]const u16,
     access: u32,
@@ -732,8 +744,12 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, join(&c, &.{ alias_jobs, "permanent.py" }), "# nix: - Permanent helper\nprint('listed')\n");
         // Past the 4096-byte header read: an ordinary comment that long is still
         // a script with no header, and only a declaration that long refuses.
-        try writeFile(&c, join(&c, &.{ alias_jobs, "longcomment.cmd" }), ":: " ++ "a" ** 4200 ++ "\r\n@echo long-comment-ok\r\n");
-        try writeFile(&c, join(&c, &.{ alias_jobs, "longbang.cmd" }), "#!x\r\n:: " ++ "a" ** 4200 ++ "\r\n@echo long-bang-ok\r\n");
+        const longcomment_body = ":: " ++ "a" ** 4200 ++ "\r\n@echo long-comment-ok\r\n";
+        const longbang_body = "#!x\r\n:: " ++ "a" ** 4200 ++ "\r\n@echo long-bang-ok\r\n";
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longcomment.cmd" }), longcomment_body);
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longbang.cmd" }), longbang_body);
+        try approveJob(&c, home, "pa", "longcomment.cmd", longcomment_body);
+        try approveJob(&c, home, "pa", "longbang.cmd", longbang_body);
         try writeFile(&c, join(&c, &.{ alias_jobs, "longdecl.cmd" }), ":: nix: - " ++ "a" ** 4200 ++ "\r\n@echo off\r\necho ran > longdecl-marker.txt\r\n");
         // Undecided at the bound: padding before `nix:`, the token cut by the
         // bound, and a shebang that fills the read before line two starts.
@@ -742,7 +758,7 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, join(&c, &.{ alias_jobs, "longshebang.cmd" }), "#!" ++ "x" ** 4200 ++ "\r\n:: nix: uses=0\r\necho ran > longshebang-marker.txt\r\n");
         var r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[job] Echo job arguments") != null and
-            std.mem.indexOf(u8, r.out, "[once] Re-seed the ladder") != null and
+            std.mem.indexOf(u8, r.out, "[once 0/2] Re-seed the ladder") != null and
             std.mem.indexOf(u8, r.out, "[job] Permanent helper") != null, "script jobs list with permanent and once descriptions", r);
         c.check(std.mem.indexOf(u8, r.err, "nix: jobs/pa/hello.cmd is shadowed by :hello from a toml file") != null and
             hasRow(r.out, ":hello"), "listing reports a job shadowed by toml", r);
@@ -776,13 +792,81 @@ pub fn main(init: std.process.Init) !void {
             !proc.pathExists(io, join(&c, &.{ pa, "longdecl-marker.txt" })), "a nix: declaration longer than the header read refuses", r);
 
         if (c.windowsOnly("Windows script jobs run through cmd and PowerShell")) {
-            r = try c.run(&.{ "pa", "--run", ":echoargs", "first", "second" });
+            const log_path = join(&c, &.{ home, "jobs", "runs.log" });
+            const budget_path = join(&c, &.{ alias_jobs, "budget.cmd" });
+            const budget_body = ":: nix: uses=1 - Spend once\r\n@echo off\r\necho budget-ran\r\n";
+            try writeFile(&c, budget_path, budget_body);
+            const central_pa = join(&c, &.{ home, "actions", "pa.toml" });
+            const central_base = "[actions]\nhello = \"echo from-central\"\nonly = \"echo central-only\"\n";
+            try writeFile(&c, central_pa, central_base ++ "wrapper = \":budget\"\n");
+            try c.env.put("NIX_E2E_TTY", "0");
+            r = try c.run(&.{ "pa", "--run", ":wrapper" });
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.err, ":wrapper refers to :budget, a script action - run it directly with x pa :budget") != null and
+                std.mem.indexOf(u8, r.out, "budget-ran") == null and
+                std.mem.indexOf(u8, readFileOr(&c, log_path, ""), "pa/budget.cmd start") == null, "a toml reference to a script job refuses before execution", r);
+            try writeFile(&c, central_pa, central_base);
+            r = try c.run(&.{ "pa", "--run", ":budget" });
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "is a script action nobody has approved yet") != null and
+                std.mem.indexOf(u8, r.out, "budget-ran") == null and
+                std.mem.indexOf(u8, readFileOr(&c, log_path, ""), "pa/budget.cmd start") == null, "an unapproved job refuses without a console and leaves no start", r);
+            try c.env.put("NIX_E2E_TTY", "1");
+            r = try c.runAnswering(&.{ "pa", "--run", ":budget" }, "n\n");
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.out, "budget-ran") == null and
+                std.mem.indexOf(u8, readFileOr(&c, log_path, ""), "pa/budget.cmd approve ") == null, "declining the script review records no approval and runs nothing", r);
+            r = try c.runAnswering(&.{ "pa", "--run", ":budget" }, "y\n");
+            c.check(r.code == 0 and hasLine(r.out, "budget-ran") and
+                std.mem.indexOf(u8, r.err, budget_path) != null and std.mem.indexOf(u8, r.err, budget_body) != null and
+                std.mem.indexOf(u8, r.err, "run it? [y/N]") != null, "first job run shows its full content and asks", r);
+            var log = readFileOr(&c, log_path, "");
+            c.check(std.mem.count(u8, log, "pa/budget.cmd approve ") == 1 and
+                std.mem.count(u8, log, "pa/budget.cmd start\n") == 1 and
+                std.mem.count(u8, log, "pa/budget.cmd ok\n") == 1, "an approved successful job records approval, start and ok", null);
+            r = try c.run(&.{ "pa", "--run", ":" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[spent 1/1] Spend once") != null and
+                std.mem.indexOf(u8, r.out, "[once 0/2] Re-seed the ladder") != null, "listing shows once and spent counts", r);
+            r = try c.run(&.{ "pa", "--run", ":budget" });
+            c.check(r.code == 0 and hasLine(r.out, "budget-ran") and
+                std.mem.indexOf(u8, r.err, "nix: :budget is spent (1/1); nix --clean removes it") != null, "a spent job warns but still runs", r);
+
+            const spaced_body = ":: nix: uses=1 - Spaced job\r\n@echo off\r\necho spaced-job-ran\r\n";
+            try writeFile(&c, join(&c, &.{ alias_jobs, "two words.cmd" }), spaced_body);
+            r = try c.runAnswering(&.{ "pa", "--run", ":two words" }, "y\n");
+            c.check(r.code == 0 and hasLine(r.out, "spaced-job-ran") and
+                std.mem.indexOf(u8, r.err, "run it? [y/N]") != null, "a spaced script job is approved and runs", r);
+            r = try c.run(&.{ "pa", "--run", ":" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[spent 1/1] Spaced job") != null, "a spaced job lists as spent after one run", r);
+            try c.env.put("NIX_E2E_TTY", "0");
+            r = try c.run(&.{ "pa", "--run", ":two words" });
+            c.check(r.code == 0 and hasLine(r.out, "spaced-job-ran") and
+                std.mem.indexOf(u8, r.err, "run it?") == null and
+                std.mem.count(u8, readFileOr(&c, log_path, ""), "pa/two words.cmd approve ") == 1, "a spaced job reuses approval without a console", r);
+            try c.env.put("NIX_E2E_TTY", "1");
+
+            const fail_path = join(&c, &.{ alias_jobs, "failjob.cmd" });
+            try writeFile(&c, fail_path, "@echo off\r\nexit /b 7\r\n");
+            r = try c.runAnswering(&.{ "pa", "--run", ":failjob" }, "y\n");
+            log = readFileOr(&c, log_path, "");
+            c.check(r.code == 7 and std.mem.count(u8, log, "pa/failjob.cmd start\n") == 1 and
+                std.mem.count(u8, log, "pa/failjob.cmd ok\n") == 0, "a failed job records start but no use", r);
+
+            try writeFile(&c, budget_path, ":: nix: uses=1 - Spend once\r\n@echo off\r\necho edited-budget-ran\r\n");
+            try c.env.put("NIX_E2E_TTY", "0");
+            r = try c.run(&.{ "pa", "--run", ":budget" });
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "nobody has approved yet") != null and
+                std.mem.indexOf(u8, r.out, "edited-budget-ran") == null, "editing an approved job re-arms confirmation without clearing uses", r);
+            try c.env.put("NIX_E2E_TTY", "1");
+
+            r = try c.runAnswering(&.{ "pa", "--run", ":echoargs", "first", "second" }, "y\n");
             c.check(r.code == 0 and hasLineFold(r.out, "job=first second") and
                 std.mem.indexOf(u8, r.err, "nix: shorter:") == null, "a .cmd job runs with appended arguments and no lint hint", r);
-            r = try c.run(&.{ "pa", "--run", ":seed", "now" });
+            r = try c.runAnswering(&.{ "pa", "--run", ":seed", "now" }, "y\n");
             c.check(r.code == 0 and hasLineFold(r.out, "ps1 now"), "a .ps1 job runs through PowerShell", r);
-            r = try c.run(&.{ "pa", "--run", ":fromglobal" });
+            r = try c.runAnswering(&.{ "pa", "--run", ":fromglobal" }, "y\n");
             c.check(r.code == 0 and hasLineFold(r.out, "global-job"), "a global script job runs from an alias", r);
+            r = try c.run(&.{ "pb", "--run", ":fromglobal" });
+            c.check(r.code == 0 and hasLineFold(r.out, "global-job") and
+                std.mem.indexOf(u8, r.err, "run it?") == null and
+                std.mem.count(u8, readFileOr(&c, log_path, ""), "_global/fromglobal.cmd ok\n") == 2, "a global job shares approval and uses across aliases", r);
 
             const locked_path = join(&c, &.{ alias_jobs, "locked.cmd" });
             try writeFile(&c, locked_path, ":: nix: - Alias locked job\r\n@echo alias-locked\r\n");
@@ -813,7 +897,7 @@ pub fn main(init: std.process.Init) !void {
             const registered = try c.run(&.{ "sp", pa });
             c.check(registered.code == 0, "an alias registers under a spaced NIX_HOME", registered);
             try writeFile(&c, join(&c, &.{ spaced_home, "jobs", "sp", "spaced.cmd" }), "@echo off\r\necho spaced-home-job\r\n");
-            r = try c.run(&.{ "sp", "--run", ":spaced" });
+            r = try c.runAnswering(&.{ "sp", "--run", ":spaced" }, "y\n");
             c.check(r.code == 0 and hasLineFold(r.out, "spaced-home-job"), "a script job runs from a NIX_HOME containing a space", r);
             try c.env.put("NIX_HOME", home);
         }

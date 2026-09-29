@@ -124,7 +124,7 @@ pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8, seed: bool
             }
         }
     }
-    for (try run_zig.mergedActions(app, alias, dir, true)) |a| {
+    for (try run_zig.mergedActions(app, alias, dir, true, true)) |a| {
         try entries.append(app.arena, .{
             .alias = alias,
             .name = a.name,
@@ -236,7 +236,7 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
     const installed = exports.load(app.arena, app.io, app.home) catch &.{};
     for (aliases.items) |al| {
         const dir = try store.fromSlash(app.arena, al.path);
-        for (try run_zig.mergedActions(app, al.name, dir, false)) |a| {
+        for (try run_zig.mergedActions(app, al.name, dir, false, true)) |a| {
             const e: Entry = .{
                 .alias = al.name,
                 .name = a.name,

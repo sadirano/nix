@@ -26,6 +26,148 @@ pub const Job = struct {
     header: Header = .{},
 };
 
+pub const EventKind = enum { start, ok, approve };
+
+pub const Event = struct {
+    at: i64,
+    scope: []const u8,
+    file: []const u8,
+    kind: EventKind,
+    hash: ?[]const u8 = null,
+};
+
+pub const State = struct {
+    count: u64 = 0,
+    last_attempt: ?i64 = null,
+    approved: bool = false,
+};
+
+/// One damaged line has no effect on the other events in an append-only log.
+pub fn parseLine(line: []const u8) ?Event {
+    const text = std.mem.trim(u8, line, " \t\r");
+    const at_end = std.mem.indexOfAny(u8, text, " \t") orelse return null;
+    const at = std.fmt.parseInt(i64, text[0..at_end], 10) catch return null;
+    if (at <= 0) return null;
+    const rest = std.mem.trimStart(u8, text[at_end..], " \t");
+    const event_start = lastSeparator(rest) orelse return null;
+    const last = rest[event_start + 1 ..];
+    const before_last = std.mem.trimEnd(u8, rest[0..event_start], " \t");
+    var identity = before_last;
+    var kind: EventKind = undefined;
+    var hash: ?[]const u8 = null;
+    if (std.mem.eql(u8, last, "start")) {
+        kind = .start;
+    } else if (std.mem.eql(u8, last, "ok")) {
+        kind = .ok;
+    } else {
+        const approve_start = lastSeparator(before_last) orelse return null;
+        if (!std.mem.eql(u8, before_last[approve_start + 1 ..], "approve")) return null;
+        identity = std.mem.trimEnd(u8, before_last[0..approve_start], " \t");
+        if (last.len != 64) return null;
+        for (last) |ch| if (!std.ascii.isHex(ch)) return null;
+        kind = .approve;
+        hash = last;
+    }
+    const slash = std.mem.indexOfScalar(u8, identity, '/') orelse return null;
+    const scope = identity[0..slash];
+    const file = identity[slash + 1 ..];
+    if (scope.len == 0 or file.len == 0 or std.mem.indexOfAny(u8, scope, " \t\r\\") != null or
+        std.mem.indexOfAny(u8, file, "/\\\t\r") != null or extension(file) == null) return null;
+    return .{ .at = at, .scope = scope, .file = file, .kind = kind, .hash = hash };
+}
+
+fn lastSeparator(text: []const u8) ?usize {
+    var i = text.len;
+    while (i > 0) {
+        i -= 1;
+        if (text[i] == ' ' or text[i] == '\t') return i;
+    }
+    return null;
+}
+
+pub fn state(log: []const u8, scope: []const u8, file: []const u8, current_hash: ?[]const u8) State {
+    var result = State{};
+    var lines = std.mem.splitScalar(u8, log, '\n');
+    while (lines.next()) |line| {
+        const event = parseLine(line) orelse continue;
+        if (!std.mem.eql(u8, event.scope, scope) or !std.mem.eql(u8, event.file, file)) continue;
+        switch (event.kind) {
+            .start => if (result.last_attempt == null or event.at > result.last_attempt.?) {
+                result.last_attempt = event.at;
+            },
+            .ok => if (result.count < std.math.maxInt(u64)) {
+                result.count += 1;
+            },
+            .approve => result.approved = current_hash != null and std.ascii.eqlIgnoreCase(event.hash.?, current_hash.?),
+        }
+    }
+    return result;
+}
+
+pub fn contentHash(bytes: []const u8) [64]u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+fn logPath(app: *App) ![]const u8 {
+    return std.fs.path.join(app.arena, &.{ app.home, "jobs", "runs.log" });
+}
+
+/// The first script action reads the log; further links and listing rows use
+/// this same snapshot, extended by this process's own appends.
+pub fn loadLog(app: *App) ![]const u8 {
+    if (app.job_log) |log| return log;
+    const log = Io.Dir.cwd().readFileAlloc(app.io, try logPath(app), app.arena, .unlimited) catch |e| switch (e) {
+        error.FileNotFound => "",
+        else => return e,
+    };
+    app.job_log = log;
+    return log;
+}
+
+/// Open with the OS append flag: seeking to a measured length would let two
+/// simultaneous runs overwrite each other's event without a lock.
+fn appendLine(app: *App, path: []const u8, line: []const u8) !void {
+    const file: Io.File = if (comptime proc.is_windows) blk: {
+        const wide = try std.unicode.utf8ToUtf16LeAllocZ(app.arena, path);
+        const handle = CreateFileW(wide.ptr, 0x0004, 0x0007, null, 4, 0x80, null);
+        if (handle == std.os.windows.INVALID_HANDLE_VALUE) return error.CannotOpenLog;
+        break :blk .{ .handle = handle, .flags = .{ .nonblocking = false } };
+    } else blk: {
+        const fd = try std.posix.openat(Io.Dir.cwd().handle, path, .{
+            .ACCMODE = .WRONLY,
+            .CREAT = true,
+            .APPEND = true,
+            .CLOEXEC = true,
+        }, 0o666);
+        break :blk .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    };
+    defer file.close(app.io);
+    try file.writeStreamingAll(app.io, line);
+}
+
+extern "kernel32" fn CreateFileW(
+    path: [*:0]const u16,
+    access: u32,
+    share: u32,
+    security: ?*const anyopaque,
+    disposition: u32,
+    flags: u32,
+    template: ?std.os.windows.HANDLE,
+) callconv(.winapi) std.os.windows.HANDLE;
+
+pub fn append(app: *App, job: Job, kind: EventKind, hash: ?[]const u8) !void {
+    const at = @divTrunc(Io.Clock.real.now(app.io).nanoseconds, std.time.ns_per_s);
+    const line = if (kind == .approve)
+        try std.fmt.allocPrint(app.arena, "{d} {s}/{s} approve {s}\n", .{ at, job.scope, job.file, hash.? })
+    else
+        try std.fmt.allocPrint(app.arena, "{d} {s}/{s} {s}\n", .{ at, job.scope, job.file, @tagName(kind) });
+    const updated = if (app.job_log) |prior| try std.mem.concat(app.arena, u8, &.{ prior, line }) else null;
+    try appendLine(app, try logPath(app), line);
+    if (updated) |log| app.job_log = log;
+}
+
 pub fn extension(file: []const u8) ?Extension {
     const ext = std.fs.path.extension(file);
     if (ext.len == file.len) return null; // ".ps1" has no action name.
@@ -236,6 +378,16 @@ pub fn asAction(app: *App, job: Job) !actions.Action {
     };
 }
 
+/// Only listings need the current budget marker; lookup and lint stay log-free.
+pub fn asListingAction(app: *App, job: Job) !actions.Action {
+    var action = try asAction(app, job);
+    if (job.header.uses) |uses| {
+        const count = (state(try loadLog(app), job.scope, job.file, null)).count;
+        action.description = try std.fmt.allocPrint(app.arena, "[{s} {d}/{d}] {s}", .{ if (count >= uses) "spent" else "once", count, uses, job.header.description });
+    }
+    return action;
+}
+
 test "header examples, shebang, and permanent fallback" {
     const seeded = parseHeader(.py, "# nix: uses=3 - Re-seed the ladder\nprint('ok')\n");
     try std.testing.expectEqual(@as(?u64, 3), seeded.uses);
@@ -304,4 +456,56 @@ test "excludesDeclaration: only bytes that rule nix: out count as no header" {
     try std.testing.expect(!excludesDeclaration(.ps1, "# nix: uses=1 - long"));
     try std.testing.expect(!excludesDeclaration(.py, "#!/usr/bin/env python with no end"));
     try std.testing.expect(!excludesDeclaration(.cmd, ":"));
+}
+
+test "run log skips malformed events and derives count and last attempt" {
+    const log =
+        "100 pa/seed.ps1 start\n" ++
+        "101 pa/seed.ps1 ok\n" ++
+        "bad pa/seed.ps1 ok\n" ++
+        "102 pa/seed.ps1 ok extra\n" ++
+        "103 pa/seed.ps1 approve short\n" ++
+        "104 pa/other.ps1 ok\n" ++
+        "99 pa/seed.ps1 start\n" ++
+        "105 pa/seed.ps1 ok\n";
+    try std.testing.expect(parseLine("103 pa/seed.ps1 approve short") == null);
+    try std.testing.expect(parseLine("104 pa/seed.ps1 ok extra") == null);
+    try std.testing.expect(parseLine("104 pa/seed.ps1/more ok") == null);
+    const result = state(log, "pa", "seed.ps1", null);
+    try std.testing.expectEqual(@as(u64, 2), result.count);
+    try std.testing.expectEqual(@as(?i64, 100), result.last_attempt);
+    try std.testing.expect(!result.approved);
+}
+
+test "run log preserves spaced script identities for every event" {
+    const hash = "a" ** 64;
+    const start = parseLine("100 pa/two words.cmd start").?;
+    const ok = parseLine("101 pa/two words.cmd ok").?;
+    const approve = parseLine("102 pa/two words.cmd approve " ++ hash).?;
+    for ([_]Event{ start, ok, approve }, [_]EventKind{ .start, .ok, .approve }) |event, kind| {
+        try std.testing.expectEqualStrings("pa", event.scope);
+        try std.testing.expectEqualStrings("two words.cmd", event.file);
+        try std.testing.expectEqual(kind, event.kind);
+    }
+    try std.testing.expectEqualStrings(hash, approve.hash.?);
+    const log = "100 pa/two words.cmd start\n101 pa/two words.cmd ok\n102 pa/two words.cmd approve " ++ hash ++ "\n";
+    const result = state(log, "pa", "two words.cmd", hash);
+    try std.testing.expectEqual(@as(u64, 1), result.count);
+    try std.testing.expectEqual(@as(?i64, 100), result.last_attempt);
+    try std.testing.expect(result.approved);
+}
+
+test "run log approval uses the latest hash without resetting uses" {
+    const old = "a" ** 64;
+    const current = "b" ** 64;
+    const log = "100 _global/fix.cmd approve " ++ old ++ "\n" ++
+        "101 _global/fix.cmd ok\n" ++
+        "102 _global/fix.cmd approve " ++ current ++ "\n" ++
+        "103 pa/fix.cmd approve " ++ old ++ "\n";
+    const approved = state(log, "_global", "fix.cmd", current);
+    try std.testing.expect(approved.approved);
+    try std.testing.expectEqual(@as(u64, 1), approved.count);
+    try std.testing.expect(!state(log, "_global", "fix.cmd", old).approved);
+    try std.testing.expect(!state(log, "pa", "fix.cmd", current).approved);
+    try std.testing.expectEqualStrings("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", &contentHash(""));
 }

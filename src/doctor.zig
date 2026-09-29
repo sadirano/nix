@@ -521,7 +521,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         var any = false;
         if (store.loadAliases(app.arena, adata)) |al| {
             for (al.items) |a| {
-                for (run_zig.mergedActions(app, a.name, a.path, false) catch &.{}) |act| {
+                for (run_zig.mergedActions(app, a.name, a.path, false, false) catch &.{}) |act| {
                     if (try compose.referenceProblem(app, a.name, a.path, act)) |why| {
                         try d.row(.warn, a.name, why);
                         any = true;

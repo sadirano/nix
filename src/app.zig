@@ -73,6 +73,9 @@ pub const App = struct {
     env_noted: bool = false,
     /// config.toml, parsed once per process on first use (see loadConfig).
     config: ?config.Config = null,
+    /// Loaded on demand for script actions; appended events extend this copy so
+    /// a later link in the same invocation sees the preceding link's use.
+    job_log: ?[]const u8 = null,
     /// batPath's answer, resolved once per process.
     bat_path: ?[]const u8 = null,
 };

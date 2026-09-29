@@ -43,7 +43,7 @@ pub fn referenceProblem(app: *App, alias: []const u8, dir: []const u8, a: action
     return null;
 }
 
-pub const Raw = struct { action: actions.Action, from_project: bool, from_job: bool = false };
+pub const Raw = struct { action: actions.Action, from_project: bool, job: ?jobs.Job = null };
 
 /// An empty `dir` is the machine-wide file alone, as resolveExportAction means
 /// it: there is no alias dir, and the cwd's project actions are not consulted.
@@ -58,9 +58,9 @@ pub fn lookupRaw(app: *App, alias: []const u8, dir: []const u8, name: []const u8
             return .{ .action = a, .from_project = i == 0 };
     }
     if (try jobs.lookup(app, alias, name)) |job|
-        return .{ .action = try jobs.asAction(app, job), .from_project = false, .from_job = true };
+        return .{ .action = try jobs.asAction(app, job), .from_project = false, .job = job };
     if (try jobs.lookup(app, "_global", name)) |job|
-        return .{ .action = try jobs.asAction(app, job), .from_project = false, .from_job = true };
+        return .{ .action = try jobs.asAction(app, job), .from_project = false, .job = job };
     return null;
 }
 
@@ -74,7 +74,8 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
         .command = try scriptForm(app, dir, a.command, a.shell),
         .from_project = raw.from_project,
         .shell = a.shell,
-        .written = if (raw.from_job) "" else a.command,
+        .written = if (raw.job != null) "" else a.command,
+        .job = raw.job,
     };
     if (depth >= max_depth) {
         problem.* = try std.fmt.allocPrint(app.arena, ":{s} leads back to itself through other actions", .{a.name});
@@ -88,6 +89,10 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
             problem.* = try std.fmt.allocPrint(app.arena, ":{s} refers to :{s}, which is not an action of {s}", .{ a.name, ref, alias });
             return error.BadActionReference;
         };
+        if (hit.job != null) {
+            problem.* = try std.fmt.allocPrint(app.arena, ":{s} refers to :{s}, a script action - run it directly with x {s} :{s}", .{ a.name, ref, alias, ref });
+            return error.BadActionReference;
+        }
         // Each shell gets its command as a script of its own, so text meant for
         // one cannot be spliced into another's.
         if (hit.action.shell != a.shell) {
@@ -177,7 +182,7 @@ pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const 
     const siblings = if (dir.len == 0)
         actions.loadFile(app.arena, app.io, try actions.defaultPath(app.arena, app.home)) catch &.{}
     else
-        run.mergedActions(app, alias, dir, false) catch &.{};
+        run.tomlActions(app, alias, dir) catch &.{};
     if (sharedStart(name, v, siblings)) |s| {
         return try std.fmt.allocPrint(app.arena, "{s} = \":{s}{s}{s}\" (it repeats :{s})", .{ name, s.name, if (s.rest.len > 0) " " else "", s.rest, s.name });
     }
@@ -413,4 +418,52 @@ test "sharedStart: longest whole sibling at a word boundary" {
     try std.testing.expect(sharedStart("test", "zig build test", &sib) == null);
     try std.testing.expect(sharedStart("x", "python tools/klass.pyc", &sib) == null);
     try std.testing.expect(sharedStart("x", "python play.py --resume && python report.py", &sib) == null);
+}
+
+test "resolving and linting a toml action leaves the job log unloaded" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDir(io, "actions", .default_dir);
+    try tmp.dir.createDir(io, "jobs", .default_dir);
+    try tmp.dir.createDir(io, "jobs/pa", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "actions/pa.toml", .data = "[actions]\nhello = \"echo hello\"\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "jobs/pa/budget.cmd", .data = ":: nix: uses=1 - Spend once\r\n@echo off\r\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "jobs/runs.log", .data = "100 pa/budget.cmd ok\n" });
+    const home = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(home);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var env: std.process.Environ.Map = .init(arena_state.allocator());
+    var err_buf: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&err_buf);
+    var app: App = .{ .arena = arena_state.allocator(), .io = io, .out = &writer, .err = &writer, .env = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
+    try std.testing.expect((try jobs.lookup(&app, "pa", "budget")).?.header.uses != null);
+    const resolved = (try run.resolveAction(&app, "pa", home, "hello")).?;
+    try std.testing.expectEqualStrings("echo hello", resolved.command);
+    try std.testing.expect(app.job_log == null);
+    _ = try shorterForm(&app, "pa", home, "hello", resolved.written);
+    try std.testing.expect(app.job_log == null);
+}
+
+test "shorterForm never suggests a reference to a script action" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDir(io, "actions", .default_dir);
+    try tmp.dir.createDir(io, "jobs", .default_dir);
+    try tmp.dir.createDir(io, "jobs/pa", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "actions/pa.toml", .data = "[actions]\nhello = \"echo hello\"\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "jobs/pa/task.py", .data = "print('task')\n" });
+    const home = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(home);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var env: std.process.Environ.Map = .init(arena_state.allocator());
+    var err_buf: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&err_buf);
+    var app: App = .{ .arena = arena_state.allocator(), .io = io, .out = &writer, .err = &writer, .env = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
+    const job = (try jobs.lookup(&app, "pa", "task")).?;
+    const written = try std.fmt.allocPrint(app.arena, "{s} --dry-run", .{(try jobs.asAction(&app, job)).command});
+    try std.testing.expect((try shorterForm(&app, "pa", home, "preview", written)) == null);
 }
