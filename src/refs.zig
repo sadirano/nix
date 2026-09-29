@@ -135,7 +135,7 @@ pub fn escapes(rel: []const u8) bool {
 /// Falls back to the basename when the path is not under dir, which is what the
 /// record used to hold for every file.
 pub fn relativeTo(dir: []const u8, path: []const u8) []const u8 {
-    if (path.len > dir.len and store.eqlFoldAscii(path[0..dir.len], dir)) {
+    if (path.len > dir.len and util.eqlPathAscii(path[0..dir.len], dir)) {
         var r = path[dir.len..];
         if (r.len > 0 and (r[0] == '/' or r[0] == '\\')) r = r[1..];
         if (r.len > 0) return r;
@@ -215,6 +215,10 @@ test "relativeTo: a referenced file is named by its place in the project" {
     // Separators are left as they came; canonPath folds them at the call site,
     // which is what makes one file reached two ways one approval.
     try std.testing.expectEqualStrings("scripts\\deploy.py", relativeTo("C:\\a", "C:\\a\\scripts\\deploy.py"));
+    // aliases.toml spells dir with `/` while the joined path carries `\`: still
+    // under dir. Falling back to the basename here gave `--sync-bin` a different
+    // record than `--trust` for any script below the project root.
+    try std.testing.expectEqualStrings("tools\\img.py", relativeTo("C:/a", "C:\\a\\tools\\img.py"));
     // Not under dir: the basename, which is what every record used to hold.
     try std.testing.expectEqualStrings("deploy.py", relativeTo("C:/a", "D:/other/deploy.py"));
     // dir itself is not a file under dir.

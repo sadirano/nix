@@ -1413,6 +1413,16 @@ pub fn main(init: std.process.Init) !void {
         _ = try c.trust(&.{"pg"});
         r = try c.run(&.{"--sync-bin"});
         c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "risky{s}", .{ext}) })), "--trust unblocks the export, and sync-bin installs it", r);
+
+        // A sibling running a script BELOW the project root. aliases.toml spells
+        // the dir with `/`, the joined script path carries `\`, and the export
+        // check used to name the script by basename where --trust named it by
+        // its place in the project: approved, and still reported unapproved.
+        try writeFile(&c, join(&c, &.{ pg, "tools", "img.py" }), "print(1)\n");
+        try writeFile(&c, pg_actions, "[actions]\nrisky = \"echo cloned\"\nimg = \"python tools/img.py\"\n[bin]\nrisky = \":risky\"\n");
+        _ = try c.trust(&.{"pg"});
+        r = try c.run(&.{"--sync-bin"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") == null, "an approved script below the project root does not block the export", r);
         try writeFile(&c, pg_actions, pg_restore);
 
         // An export whose name BECOMES a command wrapper is refused - and the
