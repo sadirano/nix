@@ -108,6 +108,7 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     const s = config.shortcutFor(cfg, "s");
     const y = config.shortcutFor(cfg, "y");
     const p = config.shortcutFor(cfg, "p");
+    const w = config.shortcutFor(cfg, "w");
     const x = config.shortcutFor(cfg, "x");
     const g = config.shortcutFor(cfg, "g");
     const f = config.shortcutFor(cfg, "f");
@@ -153,6 +154,7 @@ fn writeBash(arena: std.mem.Allocator, io: Io, home: []const u8, exe: []const u8
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --explore \"$@\"; }}\n", .{s});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --yank \"$@\"; }}\n", .{y});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --paste \"$@\"; }}\n", .{p});
+    try b.print(arena, "{s}() {{ \"$NIX_EXE\" --write \"$@\"; }}\n", .{w});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --run \"$@\"; }}\n", .{x});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --grep \"$@\"; }}\n", .{g});
     try b.print(arena, "{s}() {{ local alias=$1; shift; \"$NIX_EXE\" \"$alias\" --find \"$@\"; }}\n\n", .{f});

@@ -84,6 +84,10 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   (`nix <alias> --no-prompt --grep <pat>`).
         \\5. Don't edit ~/.nix state unasked. Registering an existing name REPOINTS
         \\   it, so check `nix --list` first.
+        \\6. When you would hand the user a command to paste, write
+        \\   `~/.nix/jobs/<alias>/<name>.<ext>` instead, with
+        \\   `# nix: uses=N - <what it does>` first; give them `{[x]s} <alias> :<name>`.
+        \\   The first run shows the script and asks. Full spec: `nix --agent jobs`.
         \\
     , .{
         .table = try commandTable(arena, cfg),

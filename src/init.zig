@@ -42,6 +42,7 @@ const starter_config =
     \\#   s  = "show"       # open the dir in the file manager
     \\#   y  = "yank"       # copy the path (or picked files)
     \\#   p  = "paste"      # save the clipboard into the dir
+    \\#   w  = "write"      # capture a script action from the clipboard
     \\#   x  = "run"        # run a command / saved action
     \\#   g  = "search"     # ripgrep search under the dir
     \\#   f  = "findfile"   # fuzzy-find files under the dir

@@ -3,12 +3,106 @@
 const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
+const clipboard = @import("clipboard.zig");
+const grammar = @import("grammar.zig");
 const jobs = @import("jobs.zig");
 const store = @import("store.zig");
 const util = @import("util.zig");
 
 const App = app_zig.App;
 const Job = jobs.Job;
+
+/// Capture only into a name the jobs resolver can address as one component.
+fn validFilename(file: []const u8) bool {
+    if (jobs.extension(file) == null or std.mem.indexOf(u8, file, "..") != null or
+        std.mem.indexOfAny(u8, file, "/\\<>:\"|?*") != null) return false;
+    const name = file[0 .. file.len - std.fs.path.extension(file).len];
+    if (name.len == 0 or store.isDosDevice(name)) return false;
+    // The name is typed back as `x <alias> :<name>`, so it stays a word no
+    // shell splits or reads as syntax.
+    for (name) |ch| if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_' and ch != '.') return false;
+    return true;
+}
+
+/// The capture check includes every extension, even one nix cannot run, so a
+/// saved script never silently takes a name already used by another file.
+fn basenameExists(app: *App, dir_path: []const u8, name: []const u8) !bool {
+    var dir = Io.Dir.cwd().openDir(app.io, dir_path, .{ .iterate = true }) catch |e| switch (e) {
+        error.FileNotFound => return false,
+        else => return e,
+    };
+    defer dir.close(app.io);
+    var it = dir.iterate();
+    while (try it.next(app.io)) |entry| {
+        const ext = std.fs.path.extension(entry.name);
+        const stem = entry.name[0 .. entry.name.len - ext.len];
+        if (store.eqlFoldAscii(stem, name)) return true;
+    }
+    return false;
+}
+
+pub fn cmdWrite(app: *App, args: [][]const u8) !u8 {
+    var pos: std.ArrayList([]const u8) = .empty;
+    for (args) |arg| if (!app_zig.isGlobalFlag(arg)) try pos.append(app.arena, arg);
+    const global = pos.items.len > 0 and grammar.writeFlag(pos.items[0]) != null;
+    if (pos.items.len != 2) {
+        try app.err.writeAll("nix: usage: w <alias> <name>.<ext> | w --global <name>.<ext>\n");
+        return 1;
+    }
+    const alias = if (global) "" else pos.items[0];
+    const file = pos.items[1];
+    if (jobs.extension(file) == null) {
+        try app.err.writeAll("nix: w needs the file extension (.ps1 .py .js .cmd) - nix never guesses the language\n");
+        return 1;
+    }
+    if (!validFilename(file)) {
+        try app.err.writeAll("nix: a script action's name uses letters, digits, - _ and . only\n");
+        return 1;
+    }
+    if (!global) {
+        if (!store.isSelfAlias(alias)) store.validateAliasName(alias) catch {
+            try app.err.print("nix: invalid alias \"{s}\"\n", .{alias});
+            return 1;
+        };
+        const data = try store.readAliasesFile(app.arena, app.io, app.home);
+        if (try store.lookupAlias(app.arena, data, alias, app.home) == null) {
+            try app.err.print("nix: unknown alias \"{s}\"\n", .{alias});
+            return 1;
+        }
+    }
+    const scope = try app.arena.dupe(u8, if (global) "_global" else alias);
+    if (!global) {
+        for (scope) |*ch| ch.* = std.ascii.toLower(ch.*);
+    }
+    const dir_path = try std.fs.path.join(app.arena, &.{ app.home, "jobs", scope });
+    const name = file[0 .. file.len - std.fs.path.extension(file).len];
+    if (try basenameExists(app, dir_path, name)) {
+        try app.err.print("nix: jobs/{s}/{s} already exists (with an extension)\n", .{ scope, name });
+        return 1;
+    }
+    const content = clipboard.readText(app.arena, app.io, app.env) catch |e| {
+        try app.err.print("nix: read clipboard: {s}\n", .{@errorName(e)});
+        return 1;
+    } orelse {
+        try app.err.writeAll("nix: clipboard is empty\n");
+        return 1;
+    };
+    try util.mkdirAll(app.io, dir_path);
+    const path = try std.fs.path.join(app.arena, &.{ dir_path, file });
+    const output = Io.Dir.cwd().createFile(app.io, path, .{ .exclusive = true }) catch |e| {
+        try app.err.print("nix: cannot save jobs/{s}/{s} ({s})\n", .{ scope, file, @errorName(e) });
+        return 1;
+    };
+    output.writeStreamingAll(app.io, content) catch |e| {
+        output.close(app.io);
+        Io.Dir.cwd().deleteFile(app.io, path) catch {};
+        try app.err.print("nix: cannot save jobs/{s}/{s} ({s})\n", .{ scope, file, @errorName(e) });
+        return 1;
+    };
+    output.close(app.io);
+    try app.out.print("saved .nix/jobs/{s}/{s} - run it with x {s} :{s}\n", .{ scope, file, if (global) "<any alias>" else alias, name });
+    return 0;
+}
 
 fn confirmDelete(app: *App, count: usize) !bool {
     try app.err.print("delete these {d}? [y/N] ", .{count});

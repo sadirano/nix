@@ -483,6 +483,12 @@ A `.ps1` in `.nix/scripts` or `~/.nix/scripts` can open an action by bare name, 
 
 Actions resolve from three places, most specific winning: `<alias-dir>/.nix/actions.toml` (travels with the repo) overrides `~/.nix/actions/<alias>.toml` (private, per-machine), which overrides `~/.nix/actions/_default.toml` — **machine-wide defaults** for personal cross-project actions (`claude`, `git status`, …) defined once and available via `x <any-alias> :<name>` without leaking into committed repos (`_default` is reserved; it can't be registered as an alias). A leading `:` is what marks a saved action — without it, `x <alias> <cmd>` still runs `<cmd>` literally. With no alias at all, `x :<name>` runs the machine-wide action in the current directory; when `_default.toml` has no such name and you're standing inside an alias, that alias's own `:<name>` runs instead, exactly as if you had typed `x <alias> :<name>`. A name defined machine-wide always means the machine-wide command. `e :` opens that machine-wide file (`e :<name>` opens it at that action's line, seeding a stub if the name is new); `e <alias> :` opens the project's.
 
+### Script actions
+
+A script file under the built-in `.nix` alias at `jobs/<alias>/<name>.<ext>` is a private action (`jobs/_global/` makes it available to every alias). Use `.ps1`, `.py`, `.js`, or `.cmd`; the extension picks the runner. Put `# nix: uses=1 - What it does` on the first line for a one-use handoff (`//` for JavaScript, `::` for cmd). The first run shows the script and asks for approval; only successful runs count toward `uses`.
+
+`w acme repair.ps1` saves clipboard text there without running it; `w --global report.py` saves a global action. Run it with `x acme :repair`, or open the resolved script with `e acme :repair`. `nix --clean` lists spent or stale budgeted scripts and asks before removing them. `nix --keep acme :repair` removes the use budget, leaving the script in place. See `nix --agent jobs` for the full rules.
+
 ### Actions that need administrator rights
 
 Write `sudo` in front of the command. That's the whole syntax:

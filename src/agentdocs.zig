@@ -151,6 +151,9 @@ pub const specs = [_]Spec{
         \\the one place a listing writes anything, and the reason
         \\`${cmd:o} <alias> :` / `${cmd:x} <alias> :` are the read-only forms of
         \\the same question.
+        \\`${cmd:e} <alias> :<name>` opens a script action's file when that
+        \\name resolves to a script. A toml action with the same name wins,
+        \\and its `:<name>` still reaches the editor unchanged.
         ,
         .agent_use =
         \\Don't run it - it spawns a GUI window and takes the user's focus, and
@@ -250,6 +253,33 @@ pub const specs = [_]Spec{
             "`${cmd:p} acme design-notes` - save it under a name",
         },
         .see_also = &.{"y"},
+    },
+    .{
+        .slot = "w",
+        .topic = "w",
+        .args = "<alias> <name>.<ext>",
+        .summary = "save clipboard text as a script action",
+        .safety = .user_surface,
+        .detail =
+        \\`w <alias> <name>.<ext>` saves the clipboard as a private script
+        \\action. `w --global <name>.<ext>` saves one visible through every
+        \\alias. The extension is required: .ps1, .py, .js, or .cmd. The name
+        \\must be one path component, and an existing basename in that scope
+        \\is never overwritten, even if its extension differs. An empty
+        \\clipboard refuses. Capture never runs or approves the script.
+        ,
+        .agent_use =
+        \\The clipboard belongs to the user. Write a reviewed script file
+        \\directly for an agent handoff; suggest `w` when the user wants to
+        \\capture what they copied. See `nix --agent jobs` for the header and
+        \\first-run approval.
+        ,
+        .suggest = "After copying a script, use `${cmd:w} <alias> <name>.<ext>` to save it.",
+        .examples = &.{
+            "`${cmd:w} acme repair.ps1` - capture for one alias",
+            "`${cmd:w} --global report.py` - capture for every alias",
+        },
+        .see_also = &.{ "jobs", "e", "x" },
     },
     .{
         .slot = "x",
@@ -761,8 +791,10 @@ pub const specs = [_]Spec{
         \\    ~/.nix/jobs/_global/<name>.<ext>  every alias
         \\    ~/.nix/jobs/runs.log             starts, successes, approvals
         \\
-        \\Extensions select the runner: .ps1, .py, .js, or .cmd. The first
-        \\line, or the second after a shebang, may contain a header in the
+        \\Extensions select the runner: .ps1 uses PowerShell with -NoProfile
+        \\-ExecutionPolicy Bypass -File, .py uses python, .js node, and .cmd
+        \\cmd. A missing runtime is an error, never a reason to substitute.
+        \\The first line, or the second after a shebang, may contain a header in the
         \\script's comment syntax: `# nix: uses=3 - Re-seed the demo ladder`
         \\(`//` for .js, `::` for .cmd). A positive `uses=N` makes it
         \\disposable; without it the script is permanent. Only a successful
@@ -774,6 +806,12 @@ pub const specs = [_]Spec{
         \\alias scope before `_global`, after all toml action layers. A toml
         \\action can shadow a script; `--keep` still finds the script.
         \\Two files with the same basename in one scope are an error.
+        \\`w <alias> <name>.<ext>` captures clipboard text into the alias
+        \\scope, and `w --global <name>.<ext>` into `_global`. It refuses
+        \\an empty clipboard or an existing basename and never runs or
+        \\approves what it saves. `e <alias> :<name>` opens a script file
+        \\only when run resolution picks that script; a shadowed script is
+        \\not what `e` opens.
         \\
         \\`nix --clean` lists spent budgeted scripts and budgeted scripts
         \\whose file edit and last attempt are both older than 14 days.
@@ -788,12 +826,20 @@ pub const specs = [_]Spec{
         \\nix records approval for its own rewrite so the next run does not ask.
         ,
         .agent_use =
+        \\When you would hand the user a command to paste, write the script
+        \\under `~/.nix/jobs/<alias>/<name>.<ext>` with `uses=N` in its first
+        \\line header (`# nix: uses=1 - What it does`, `//` for .js, `::`
+        \\for .cmd). Give them `x <alias> :<name>`. The first run shows the
+        \\whole script and asks for approval. Do not approve it for them.
+        \\
         \\Use `nix --clean` to inspect candidates without a console. Give the
         \\user the same command at a console when they want to delete them.
         \\Use `nix --keep <alias> :<name>` when the script should remain
         \\available after its budget is spent.
         ,
         .examples = &.{
+            "`w acme repair.ps1` - capture copied script text",
+            "`e acme :repair` - open the script chosen by run resolution",
             "`nix --clean` - list candidates and ask before deletion at a console",
             "`nix --keep acme :repair` - make a budgeted script permanent",
         },

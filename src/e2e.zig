@@ -733,6 +733,50 @@ pub fn main(init: std.process.Init) !void {
     // --- private script actions ------------------------------------------------
     {
         const alias_jobs = join(&c, &.{ home, "jobs", "pa" });
+        const captured = join(&c, &.{ alias_jobs, "captured.cmd" });
+        const capture_body = "@echo off\r\necho captured-ran > captured-marker.txt\r\n";
+        try writeFile(&c, clip, capture_body);
+        var capture = try c.run(&.{ "--write", "pa", "captured.cmd" });
+        c.check(capture.code == 0 and std.mem.eql(u8, readFileOr(&c, captured, ""), capture_body) and
+            std.mem.indexOf(u8, capture.out, "saved .nix/jobs/pa/captured.cmd - run it with x pa :captured") != null and
+            !proc.pathExists(io, join(&c, &.{ pa, "captured-marker.txt" })), "w captures clipboard text without running it", capture);
+        capture = try c.run(&.{ "--write", "pa", "missing" });
+        c.check(capture.code == 1 and std.mem.indexOf(u8, capture.err, "w needs the file extension (.ps1 .py .js .cmd) - nix never guesses the language") != null, "w refuses a name without a supported extension", capture);
+        capture = try c.run(&.{ "--write", "pa", "../escape.cmd" });
+        c.check(capture.code == 1 and !proc.pathExists(io, join(&c, &.{ home, "jobs", "escape.cmd" })), "w refuses a name that escapes the jobs scope", capture);
+        capture = try c.run(&.{ "--write", "pa", "two words.cmd" });
+        c.check(capture.code == 1 and std.mem.indexOf(u8, capture.err, "letters, digits") != null and
+            !proc.pathExists(io, join(&c, &.{ alias_jobs, "two words.cmd" })), "w refuses a name with a space", capture);
+        capture = try c.run(&.{ "--write", "pa", "a;b.cmd" });
+        c.check(capture.code == 1 and !proc.pathExists(io, join(&c, &.{ alias_jobs, "a;b.cmd" })), "w refuses a name with shell syntax", capture);
+        capture = try c.run(&.{ "--write", "unregistered", "stray.cmd" });
+        c.check(capture.code == 1 and std.mem.indexOf(u8, capture.err, "unknown alias") != null and
+            !proc.pathExists(io, join(&c, &.{ home, "jobs", "unregistered" })), "w requires a registered alias", capture);
+        capture = try c.run(&.{ "--write", "pa", "captured.py" });
+        c.check(capture.code == 1 and !proc.pathExists(io, join(&c, &.{ alias_jobs, "captured.py" })) and
+            std.mem.eql(u8, readFileOr(&c, captured, ""), capture_body), "w refuses an existing basename with another extension", capture);
+        try writeFile(&c, clip, "");
+        capture = try c.run(&.{ "--write", "pa", "empty.cmd" });
+        c.check(capture.code == 1 and std.mem.indexOf(u8, capture.err, "clipboard is empty") != null and
+            !proc.pathExists(io, join(&c, &.{ alias_jobs, "empty.cmd" })), "w refuses an empty clipboard", capture);
+        try writeFile(&c, clip, "@echo off\r\necho global-captured\r\n");
+        if (c.windowsOnly("w multicall wrapper captures a global script")) {
+            const real_exe = c.exe;
+            const w_exe = join(&c, &.{ root, "w.exe" });
+            try writeFile(&c, w_exe, try Io.Dir.cwd().readFileAlloc(io, real_exe, arena, .unlimited));
+            c.exe = w_exe;
+            capture = try c.run(&.{ "--global", "globalcaptured.cmd" });
+            c.exe = real_exe;
+        } else {
+            capture = try c.run(&.{ "--write", "--global", "globalcaptured.cmd" });
+        }
+        c.check(capture.code == 0 and std.mem.indexOf(u8, capture.out, "x <any alias> :globalcaptured") != null and
+            std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "jobs", "_global", "globalcaptured.cmd" }), ""), "global-captured") != null, "w --global saves in the shared script scope", capture);
+        try c.env.put("NIX_E2E_TTY", "0");
+        capture = try c.run(&.{ "pa", "--run", ":captured" });
+        c.check(capture.code == 1 and std.mem.indexOf(u8, capture.err, "is a script action nobody has approved yet") != null and
+            !proc.pathExists(io, join(&c, &.{ pa, "captured-marker.txt" })), "a captured script refuses to run without a console", capture);
+        try c.env.put("NIX_E2E_TTY", "1");
         try writeFile(&c, join(&c, &.{ alias_jobs, "echoargs.cmd" }), ":: nix: - Echo job arguments\r\n@echo off\r\necho job=%*\r\n");
         try writeFile(&c, join(&c, &.{ alias_jobs, "hello.cmd" }), ":: nix: uses=1 - Shadowed helper\r\n@echo job-shadow\r\n");
         try writeFile(&c, join(&c, &.{ alias_jobs, "defonly.cmd" }), "@echo default-shadow\r\n");
@@ -1749,10 +1793,24 @@ pub fn main(init: std.process.Init) !void {
         const fake_editor = join(&c, &.{ root, "fakeed.cmd" });
         try writeFile(&c, fake_editor, "@echo off\r\necho EDITARGS %*\r\n");
         try c.env.put("EDITOR", fake_editor);
+        const edit_job = join(&c, &.{ home, "jobs", "pa", "editjob.cmd" });
+        const shadowed_edit_job = join(&c, &.{ home, "jobs", "pa", "hello.cmd" });
+        try writeFile(&c, edit_job, "@echo off\r\n");
+        try writeFile(&c, shadowed_edit_job, "@echo off\r\n");
+        c.exe = e_exe;
+        var r = try c.run(&.{ "pa", ":editjob" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "EDITARGS") != null and
+            std.ascii.indexOfIgnoreCase(r.out, edit_job) != null, "e <alias> :<job> opens the script chosen by run resolution", r);
+        r = try c.run(&.{ "pa", ":editjob", "notes.txt" });
+        c.check(r.code == 0 and std.ascii.indexOfIgnoreCase(r.out, edit_job) != null and std.mem.indexOf(u8, r.out, "notes.txt") != null and
+            std.mem.indexOf(u8, r.out, ":editjob") == null, "e <alias> :<job> with more files opens the script and the rest", r);
+        r = try c.run(&.{ "pa", ":hello" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "EDITARGS :hello") != null, "e leaves a toml action's name unchanged when it shadows a script", r);
+        try Io.Dir.cwd().deleteFile(io, edit_job);
+        try Io.Dir.cwd().deleteFile(io, shadowed_edit_job);
         const def_actions = join(&c, &.{ home, "actions", "_default.toml" });
         const before = readFileOr(&c, def_actions, "");
-        c.exe = e_exe;
-        var r = try c.run(&.{":brandnew"});
+        r = try c.run(&.{":brandnew"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "added a stub") != null and
             std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), "brandnew") != null, "`e :name` seeds a stub for a new action", r);
         // …and opens AT the declaration: naming an action says which line you
@@ -2242,6 +2300,13 @@ pub fn main(init: std.process.Init) !void {
         try Io.Dir.cwd().deleteFile(io, guide);
         r = try c.run(&.{"--sync"});
         c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, guide, ""), "# nix directory aliases - agent guide") != null, "--sync recreates a missing agent guide", r);
+        c.check(std.mem.indexOf(u8, readFileOr(&c, guide, ""), "nix --agent jobs") != null and
+            std.mem.indexOf(u8, readFileOr(&c, guide, ""), "# nix: uses=N") != null, "the generated guide teaches script handoffs", r);
+        if (c.windowsOnly("--sync installs the w wrapper and records its name")) {
+            const manifest = join(&c, &.{ home, "wrappers.toml" });
+            c.check(proc.pathExists(io, join(&c, &.{ home, "bin", "w.exe" })) and
+                std.mem.indexOf(u8, readFileOr(&c, manifest, ""), "w = 'w'") != null, "--sync installs w.exe and records w in wrappers.toml", r);
+        }
     }
 
     if (c.windowsOnly("--sync manages renamed and invalid shortcuts")) {

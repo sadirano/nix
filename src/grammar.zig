@@ -28,6 +28,7 @@ pub const SystemVerb = enum {
     doctor,
     clean,
     keep,
+    write,
     contexts,
     actions,
     init,
@@ -62,6 +63,7 @@ pub const ActionVerb = enum {
 
 /// Process-wide flags any sub-parser silently accepts.
 pub const GlobalFlag = enum { no_prompt, json, as };
+pub const WriteFlag = enum { global };
 
 /// internal commands are real and dispatched, but are nix re-invoking itself
 /// (fzf preview panes) rather than anything a user or agent types. They are
@@ -93,6 +95,7 @@ pub fn Row(comptime Verb: type) type {
 pub const System = Row(SystemVerb);
 pub const Action = Row(ActionVerb);
 pub const Global = Row(GlobalFlag);
+pub const Write = Row(WriteFlag);
 
 // ---- the tables -------------------------------------------------------------
 
@@ -104,6 +107,7 @@ pub const system = [_]System{
     .{ .flags = &.{ "--doctor", "-D" }, .verb = .doctor, .args = "[-q]", .help = "check tools/config and what the picker will use", .spec = "--doctor" },
     .{ .flags = &.{"--clean"}, .verb = .clean, .help = "list and confirm deletion of spent or stale script actions", .spec = "jobs" },
     .{ .flags = &.{"--keep"}, .verb = .keep, .args = "<alias> :<name>", .help = "make a budgeted script action permanent", .spec = "jobs" },
+    .{ .flags = &.{"--write"}, .verb = .write, .args = "<alias> <name>.<ext> | --global <name>.<ext>", .help = "save clipboard text as a script action (w)", .spec = "jobs" },
     .{ .flags = &.{ "--actions", "-A" }, .verb = .actions, .args = "[pat]", .help = "every alias's actions in one picker; Enter runs the pick", .spec = "--actions" },
     .{ .flags = &.{ "--contexts", "-c" }, .verb = .contexts, .help = "list global @-segment contexts", .spec = "segments" },
     .{ .flags = &.{ "--init", "-I" }, .verb = .init, .help = "set up ~/.nix, wrappers, and PATH", .spec = "" },
@@ -163,6 +167,11 @@ pub const globals = [_]Global{
     },
 };
 
+/// `--global` belongs to the write command, not the process-wide modifiers.
+pub const write_flags = [_]Write{
+    .{ .flags = &.{"--global"}, .verb = .global, .help = "save for every alias", .spec = "jobs" },
+};
+
 /// Flags a sub-command parses for itself, and the form that would work. They
 /// are deliberately NOT rows above - the owning module still parses them, and
 /// promoting them would mean a verb the dispatcher has no arm for. They are
@@ -217,6 +226,10 @@ pub fn isGlobal(flag: []const u8) bool {
     return lookup(GlobalFlag, &globals, flag) != null;
 }
 
+pub fn writeFlag(flag: []const u8) ?WriteFlag {
+    return lookup(WriteFlag, &write_flags, flag);
+}
+
 /// flagFor returns an action's canonical spelling - the inverse of aliasAction,
 /// used when the multicall layer rewrites `g acme pat` into the canonical
 /// `nix acme --grep pat`.
@@ -230,7 +243,7 @@ pub fn flagFor(verb: ActionVerb) []const u8 {
 /// knows reports whether a token is a flag nix accepts anywhere - the universe
 /// the agentdocs safe_form lint checks against.
 pub fn knows(flag: []const u8) bool {
-    return systemVerb(flag) != null or aliasAction(flag) != null or isGlobal(flag) or impliedAction(flag) != null;
+    return systemVerb(flag) != null or aliasAction(flag) != null or isGlobal(flag) or writeFlag(flag) != null or impliedAction(flag) != null;
 }
 
 // ---- rendering --------------------------------------------------------------
@@ -293,16 +306,19 @@ test "every flag resolves to its verb, unknown flags to null" {
 
     try std.testing.expect(isGlobal("--no-prompt"));
     try std.testing.expect(!isGlobal("-q"));
+    try std.testing.expectEqual(WriteFlag.global, writeFlag("--global").?);
+    try std.testing.expect(writeFlag("--bogus") == null);
 
     try std.testing.expect(knows("--list"));
     try std.testing.expect(knows("--grep"));
     try std.testing.expect(knows("--no-prompt"));
     try std.testing.expect(knows("--outside"));
+    try std.testing.expect(knows("--global"));
     try std.testing.expect(!knows("--bogus"));
 }
 
 test "no flag is claimed by two rows of the same table" {
-    inline for (.{ .{ SystemVerb, &system }, .{ ActionVerb, &actions }, .{ GlobalFlag, &globals } }) |pair| {
+    inline for (.{ .{ SystemVerb, &system }, .{ ActionVerb, &actions }, .{ GlobalFlag, &globals }, .{ WriteFlag, &write_flags } }) |pair| {
         const rows = pair[1];
         for (rows, 0..) |a, i| {
             for (a.flags) |fa| {
@@ -315,7 +331,7 @@ test "no flag is claimed by two rows of the same table" {
 }
 
 test "every verb has exactly one row" {
-    inline for (.{ .{ SystemVerb, &system }, .{ ActionVerb, &actions }, .{ GlobalFlag, &globals } }) |pair| {
+    inline for (.{ .{ SystemVerb, &system }, .{ ActionVerb, &actions }, .{ GlobalFlag, &globals }, .{ WriteFlag, &write_flags } }) |pair| {
         const Verb = pair[0];
         const rows = pair[1];
         for (std.enums.values(Verb)) |v| {

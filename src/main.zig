@@ -14,6 +14,7 @@ const snippet = @import("snippet.zig");
 const agents = @import("agents.zig");
 const agentdocs = @import("agentdocs.zig");
 const actions = @import("actions.zig");
+const compose = @import("compose.zig");
 const jobcmd = @import("jobcmd.zig");
 const winpath = @import("winpath.zig");
 const util = @import("util.zig");
@@ -320,6 +321,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .doctor => doctor.cmdDoctor(app, rest),
         .clean => jobcmd.cmdClean(app, rest),
         .keep => jobcmd.cmdKeep(app, rest),
+        .write => jobcmd.cmdWrite(app, rest),
         .contexts => cmdContexts(app),
         .actions => palette.cmdActions(app, rest),
         .sync => init_zig.cmdSync(app),
@@ -520,6 +522,13 @@ const resolveEditor = app_zig.resolveEditor;
 
 fn cmdEdit(app: *App, alias: []const u8, files: [][]const u8) !u8 {
     const dir = if (alias.len == 0) app.home else (try resolveAliasPath(app, alias)) orelse return 1;
+    if (alias.len > 0 and files.len > 0 and files[0].len > 1 and files[0][0] == ':') {
+        const resolved = try compose.lookupRaw(app, alias, dir, files[0][1..]);
+        if (resolved) |action| if (action.job) |job| {
+            if (files.len == 1) return app_zig.openFileInEditor(app, job.path, "", dir);
+            files[0] = job.path;
+        };
+    }
     const ed = resolveEditor(app) orelse {
         try app.err.writeAll("nix: no $EDITOR set and none of nvim/vim/code/nano/notepad found on PATH\n");
         return 1;
@@ -767,6 +776,12 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
         for (args, 0..) |a, i| out[1 + i] = a;
         return .{ .args = out, .nav_alias = "", .is_nav = false };
     }
+    if (eql(action, "write") and !(args.len == 1 and eql(args[0], "--agent"))) {
+        const out = try arena.alloc([]const u8, args.len + 1);
+        out[0] = "--write";
+        for (args, 0..) |a, i| out[1 + i] = a;
+        return .{ .args = out, .nav_alias = "", .is_nav = false };
+    }
     if (args.len == 0) {
         if (eql(action, "navigate")) {
             const a = try arena.alloc([]const u8, 1);
@@ -823,8 +838,8 @@ fn slotAction(slot: []const u8) ?[]const u8 {
         .{ .k = "o", .v = "navigate" }, .{ .k = "e", .v = "edit" },
         .{ .k = "s", .v = "explore" },  .{ .k = "y", .v = "yank" },
         .{ .k = "p", .v = "paste" },    .{ .k = "x", .v = "run" },
-        .{ .k = "g", .v = "grep" },     .{ .k = "f", .v = "find" },
-        .{ .k = "q", .v = "quit" },
+        .{ .k = "w", .v = "write" },    .{ .k = "g", .v = "grep" },
+        .{ .k = "f", .v = "find" },     .{ .k = "q", .v = "quit" },
     };
     for (map) |m| if (eql(slot, m.k)) return m.v;
     return null;
@@ -1162,6 +1177,7 @@ test "multicallAction: wrapper-name mapping, .exe stripping, case-fold" {
     try std.testing.expectEqualStrings("edit", multicallAction("e.exe").?);
     try std.testing.expectEqualStrings("grep", multicallAction("G").?);
     try std.testing.expectEqualStrings("find", multicallAction("C:/bin/f.exe").?);
+    try std.testing.expectEqualStrings("write", multicallAction("W.EXE").?);
     // The canonical binary name is not a multicall wrapper.
     try std.testing.expect(multicallAction("nix") == null);
     try std.testing.expect(multicallAction("unknown") == null);

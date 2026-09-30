@@ -155,7 +155,18 @@ pub fn readImage(arena: std.mem.Allocator, io: Io) !?[]const u8 {
 }
 
 /// readText returns the clipboard's Unicode text as UTF-8, or null if absent.
-pub fn readText(arena: std.mem.Allocator, io: Io) !?[]const u8 {
+/// The test sink is also the read source, so captures never inspect the user's
+/// clipboard while the harness is running.
+pub fn readText(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map) !?[]const u8 {
+    if (env.get(sink_env)) |path| {
+        if (path.len > 0) {
+            const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |e| switch (e) {
+                error.FileNotFound => return null,
+                else => return e,
+            };
+            return if (data.len == 0) null else data;
+        }
+    }
     if (!is_windows) return null;
     const user32 = LoadLibraryA("user32.dll") orelse return null;
     const avail = try proc(IsClipboardFormatAvailableFn, user32, "IsClipboardFormatAvailable");
