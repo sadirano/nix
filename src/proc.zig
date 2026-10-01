@@ -777,6 +777,10 @@ pub fn runPipeline(
         .stderr = .inherit,
         .environ_map = env,
     });
+    // fzf is already on screen, so any failure from here on (the producer not
+    // starting, a pump error) must take it down, or it is left holding the
+    // terminal with nobody to answer it. kill is a no-op once fzf was waited.
+    errdefer fzf.kill(io);
     var prod = try std.process.spawn(io, .{
         .argv = producer_argv,
         .cwd = .{ .path = cwd },
@@ -843,6 +847,7 @@ pub fn runPipelineFiltered(
         .stderr = .inherit,
         .environ_map = env,
     });
+    errdefer fzf.kill(io); // see runPipeline
     var prod = try std.process.spawn(io, .{
         .argv = producer_argv,
         .cwd = .{ .path = cwd },
@@ -850,6 +855,9 @@ pub fn runPipelineFiltered(
         .stdout = .pipe,
         .stderr = if (quiet_producer) .ignore else .inherit,
     });
+    // A pump error returns before reap, which would orphan a producer still
+    // walking the disk. A no-op once reap has run.
+    errdefer prod.kill(io);
 
     // Each kept line is forwarded the moment it completes, so fzf renders as
     // the producer walks (see runPipeline for the streaming rationale).
