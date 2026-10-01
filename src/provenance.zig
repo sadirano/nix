@@ -217,20 +217,20 @@ pub fn gateAction(
         .confirm_elevated => {
             try app.err.print("nix: :{s} will run as ADMINISTRATOR:\n", .{name});
             try app.err.print("  {s}\n", .{command});
-            try listRefs(app, refs);
+            try listRefs(app, dir, declared, refs);
             return confirm(app, "Run it elevated?", viewable);
         },
         .refuse_unapproved => {
             try app.err.print("nix: {s}'s :{s} has not been approved:\n", .{ alias, name });
             try app.err.print("  {s}\n", .{command});
-            try describeCovered(app, decl, refs);
+            try describeCovered(app, dir, declared, decl, refs);
             try app.err.print("  Review it, then run:\n    nix --trust {s}\n", .{alias});
             return false;
         },
         .confirm_unapproved => {
             try app.err.print("nix: {s}'s :{s} wants to run:\n", .{ alias, name });
             try app.err.print("  {s}\n", .{command});
-            try describeCovered(app, decl, refs);
+            try describeCovered(app, dir, declared, decl, refs);
             if (!try confirm(app, "Approve these files as they stand, and run?", viewable)) {
                 return false;
             }
@@ -253,14 +253,19 @@ fn withDecl(app: *App, decl: ?[]const u8, refs: []const []const u8) ![]const []c
 /// prompt says "approve these files" and shows one command, leaving the user to
 /// guess how far the yes reaches - which is the whole complaint the referenced
 /// -file hashing exists to answer.
-fn describeCovered(app: *App, decl: ?[]const u8, refs: []const []const u8) !void {
+fn describeCovered(app: *App, dir: []const u8, command: []const u8, decl: ?[]const u8, refs: []const []const u8) !void {
     if (decl) |p| try app.err.print("  declared in {s}\n", .{p});
-    try listRefs(app, refs);
+    try listRefs(app, dir, command, refs);
 }
 
-fn listRefs(app: *App, refs: []const []const u8) !void {
+/// listRefs names the scripts `command` runs, and says so when that list
+/// stopped at refs.max_refs rather than letting it look complete.
+fn listRefs(app: *App, dir: []const u8, command: []const u8, refs: []const []const u8) !void {
     for (refs) |p| try app.err.print("  runs         {s}\n", .{p});
+    if (try refs_zig.overCap(app, dir, command, refs)) try app.err.print("  {s}\n", .{over_cap_note});
 }
+
+const over_cap_note = std.fmt.comptimePrint("note: names more than {d} project scripts - only these are covered; edits to the rest will not re-arm the prompt", .{refs_zig.max_refs});
 
 /// gateScript is the same gate for a bare-name run of a project script. Gating
 /// the actions file but not the scripts beside it would move the unreviewed
@@ -378,6 +383,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 try plan.line(app.arena, "    :{s: <9}{s}\n", .{ a.name, command });
                 const refs = try refs_zig.referencedFiles(app, dir, command);
                 for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
+                if (try refs_zig.overCap(app, dir, command, refs)) try plan.line(app.arena, "      {s}\n", .{over_cap_note});
                 try plan.add(app.arena, .{
                     .record = record,
                     .label = try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, a.name }),

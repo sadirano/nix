@@ -1151,6 +1151,25 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "v2") == null and
             std.mem.indexOf(u8, r.err, "not been approved") != null, "editing a referenced script re-arms the gate", r);
 
+        // Past refs.max_refs scripts the list stops, so the prompt must say it
+        // stopped rather than look complete. Exactly at the cap it says nothing.
+        {
+            var many: std.ArrayList(u8) = .empty;
+            try many.appendSlice(c.arena, "[actions]\nmany = \"echo");
+            for (1..10) |i| {
+                const name = try std.fmt.allocPrint(c.arena, "t{d}.py", .{i});
+                try writeFile(&c, join(&c, &.{ pg, "many", name }), "print(1)\n");
+                if (i <= 8) try many.print(c.arena, " many/{s}", .{name});
+            }
+            try writeFile(&c, pg_actions, try std.fmt.allocPrint(c.arena, "{s}\"\n", .{many.items}));
+            r = try c.run(&.{ "pg", "--run", ":many" });
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "t8.py") != null and
+                std.mem.indexOf(u8, r.err, "names more than") == null, "eight referenced scripts are listed with no cap note", r);
+            try writeFile(&c, pg_actions, try std.fmt.allocPrint(c.arena, "{s} many/t9.py\"\n", .{many.items}));
+            r = try c.run(&.{ "pg", "--run", ":many" });
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "names more than 8 project scripts") != null, "a ninth referenced script is called out, not silently dropped", r);
+        }
+
         // ...but a BUILD OUTPUT must not. Re-arming on every rebuild is how a
         // person learns to answer `y` without reading, so only reviewable source
         // counts. The .exe here stands in for zig-out\bin\nix.exe.

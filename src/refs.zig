@@ -48,10 +48,24 @@ pub fn reviewable(path: []const u8) bool {
 /// Order follows the command line and duplicates collapse, so the same command
 /// always produces the same list.
 pub fn referencedFiles(app: *App, dir: []const u8, command: []const u8) ![]const []const u8 {
+    return collect(app, dir, command, max_refs);
+}
+
+/// overCap: `refs` (referencedFiles' answer for `command`) stopped at the cap
+/// and the command names at least one more. Those are neither shown nor
+/// covered by approval, so the prompt says so. Measured on 2026-10-01: no
+/// action in 26 projects named more than 3, so this is a warning, not a
+/// refusal.
+pub fn overCap(app: *App, dir: []const u8, command: []const u8, refs: []const []const u8) !bool {
+    if (refs.len < max_refs) return false;
+    return (try collect(app, dir, command, max_refs + 1)).len > max_refs;
+}
+
+fn collect(app: *App, dir: []const u8, command: []const u8, limit: usize) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     var it = QuotedTokens{ .s = command };
     while (it.next()) |raw| {
-        if (out.items.len >= max_refs) break;
+        if (out.items.len >= limit) break;
         const tok = std.mem.trim(u8, raw, "\"'");
         if (tok.len == 0 or tok[0] == '-') continue; // a flag is not a path
         const rel = stripDotSlash(tok);
