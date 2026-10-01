@@ -110,15 +110,18 @@ extern "kernel32" fn CloseHandle(h: ?*anyopaque) callconv(.winapi) i32;
 
 /// liveChildren counts this process's live children named `exe`. The pipeline
 /// hides its Child structs, so the process table is the only witness to one
-/// left behind.
-fn liveChildren(comptime exe: []const u8) usize {
+/// left behind. A listing that cannot be taken is an error, never zero: "no
+/// evidence" must not read as "nothing left behind".
+fn liveChildren(comptime exe: []const u8) !usize {
     const snap = CreateToolhelp32Snapshot(2, 0); // TH32CS_SNAPPROCESS
+    if (snap == null or @intFromPtr(snap) == std.math.maxInt(usize)) return error.NoProcessSnapshot; // INVALID_HANDLE_VALUE
     defer _ = CloseHandle(snap);
     const me = GetCurrentProcessId();
     var e: PROCESSENTRY32W = undefined;
     e.dwSize = @sizeOf(PROCESSENTRY32W);
     var n: usize = 0;
     var ok = Process32FirstW(snap, &e);
+    if (ok == 0) return error.NoProcessSnapshot; // a real listing always has entries
     while (ok != 0) : (ok = Process32NextW(snap, &e)) {
         if (e.th32ParentProcessID != me) continue;
         const name = std.mem.sliceTo(&e.szExeFile, 0);
@@ -143,9 +146,9 @@ test "a producer that cannot start leaves no filter process behind" {
     // so if the pipeline forgets it - handle open, never killed - it is still
     // there after the call returns, exactly like a stranded fzf in a terminal.
     const missing = &.{"nix-test-no-such-producer"};
-    const before = liveChildren("findstr.exe");
+    const before = try liveChildren("findstr.exe");
     try std.testing.expectError(error.FileNotFound, proc.runPipeline(a, std.testing.io, missing, &.{ "findstr", "x" }, ".", null));
-    try std.testing.expectEqual(before, liveChildren("findstr.exe"));
+    try std.testing.expectEqual(before, try liveChildren("findstr.exe"));
 
     try std.testing.expectError(error.FileNotFound, proc.runPipelineFiltered(
         a,
@@ -158,5 +161,5 @@ test "a producer that cannot start leaves no filter process behind" {
         0,
         true,
     ));
-    try std.testing.expectEqual(before, liveChildren("findstr.exe"));
+    try std.testing.expectEqual(before, try liveChildren("findstr.exe"));
 }
