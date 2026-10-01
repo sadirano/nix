@@ -599,14 +599,32 @@ pub fn renderTrustAlways(arena: std.mem.Allocator, existing: []const u8, names: 
         // section header and silently reassign every key after it; a `]` in a
         // string or a comment is not the end (toml.ArrayScan).
         var scan: toml.ArrayScan = .{};
-        _ = scan.feed(item.pair.raw);
+        var last = item.pair.raw;
+        _ = scan.feed(last);
         while (scan.depth > 0) {
             const cont = lines.next() orelse break;
-            _ = scan.feed(std.mem.trim(u8, cont, " \t\r"));
+            last = std.mem.trim(u8, cont, " \t\r");
+            _ = scan.feed(last);
         }
         try out.appendSlice(arena, arr.items);
+        // A comment after the old value's closing `]` was the user's note on
+        // this line; it stays. Comments inside a multi-line array went with
+        // the elements they described.
+        const kept = toml.stripComment(last);
+        if (kept.len < last.len) {
+            try out.append(arena, ' ');
+            try out.appendSlice(arena, std.mem.trimStart(u8, last[kept.len..], " \t"));
+        }
         try out.appendSlice(arena, eol);
         replaced = true;
+    }
+    // A file that did not end in a newline still does not: the rewrite
+    // changes one value, not how the file ends.
+    if (replaced and existing.len > 0 and existing[existing.len - 1] != '\n') {
+        // The last line was emitted with '\n' (copied) or eol (rewritten);
+        // drop either, without eating a CR the file itself ended with.
+        if (std.mem.endsWith(u8, out.items, "\n")) out.shrinkRetainingCapacity(out.items.len - 1);
+        if (existing[existing.len - 1] != '\r' and std.mem.endsWith(u8, out.items, "\r")) out.shrinkRetainingCapacity(out.items.len - 1);
     }
     if (!replaced) {
         if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.appendSlice(arena, eol);
@@ -704,4 +722,12 @@ test "renderTrustAlways: only the exact key, real brackets, and the file's own l
     try std.testing.expect(std.mem.indexOf(u8, dos_new, "[trust]\r\nalways = [\"a\"]\r\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, dos_new, "\r\r") == null);
     for (dos_new, 0..) |c, i| if (c == '\n') try std.testing.expect(i > 0 and dos_new[i - 1] == '\r');
+
+    // The user's note after the value stays, including after a multi-line one.
+    try std.testing.expectEqualStrings("[trust]\nalways = [\"a\", \"b\"] # keep\n", (try renderTrustAlways(a, "[trust]\nalways = [\"a\"] # keep\n", &.{ "a", "b" })).?);
+    try std.testing.expectEqualStrings("[trust]\nalways = [\"a\", \"b\"] # keep\n", (try renderTrustAlways(a, "[trust]\nalways = [\n  \"a\", # inner\n] # keep\n", &.{ "a", "b" })).?);
+
+    // No final newline before, none after - whichever line is last.
+    try std.testing.expectEqualStrings("[trust]\nalways = [\"a\", \"b\"]\n[grep]\nall = true", (try renderTrustAlways(a, "[trust]\nalways = [\"a\"]\n[grep]\nall = true", &.{ "a", "b" })).?);
+    try std.testing.expectEqualStrings("[trust]\r\nalways = [\"a\", \"b\"]", (try renderTrustAlways(a, "[trust]\r\nalways = [\"a\"]", &.{ "a", "b" })).?);
 }
