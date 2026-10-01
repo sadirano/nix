@@ -211,6 +211,11 @@ p acme notes.txt          # an explicit extension wins
 becomes a `.md`, and files copied in Explorer are copied in (folders
 recursively). Names never collide - `shot.png`, `shot-1.png`, `shot-2.png`.
 
+The name stays inside the alias: `p acme drafts/today` creates `drafts`
+there, but `..`, rooted or drive paths (`\x`, `C:\x`), characters Windows
+forbids, a part ending in a dot or space, and device names like `nul` or
+`com1.md` are refused before anything is written.
+
 **Daily habits:**
 
 - `Win+Shift+S`, then `p bugs login-error` - screenshot filed, path on the
