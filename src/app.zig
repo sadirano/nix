@@ -57,7 +57,8 @@ pub const App = struct {
     /// aliasRunEnv. Empty for every non-segmented target.
     ctx_vars: []const segments.Var = &.{},
     /// What env.zig contributed on the last aliasRunEnv call - kept because the
-    /// elevated path has to know which values came from a secret.
+    /// elevated path cannot inherit an environment and writes these onto its
+    /// command line instead (run.elevatedCommand).
     env_vars: []const EnvVar = &.{},
     /// Every name aliasRunEnv put into the child environment on its last call
     /// (PATH, NIX_ALIAS, env.toml, context variables), with whatever was under

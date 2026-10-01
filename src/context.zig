@@ -67,8 +67,8 @@ pub fn parseKvLines(arena: std.mem.Allocator, data: []const u8) ![]Var {
         // `secret:TOKEN=…` declares a credential (#51), reusing the vocabulary
         // `${secret:NAME}` already established in env.toml. Matched
         // case-insensitively on purpose: the cost of missing the marker is a
-        // token on an elevated command line, and `SECRET:TOKEN` would
-        // otherwise become a variable of that literal name.
+        // token written to the plaintext result cache, and `SECRET:TOKEN`
+        // would otherwise become a variable of that literal name.
         var secret = false;
         if (key.len >= secret_prefix.len and std.ascii.eqlIgnoreCase(key[0..secret_prefix.len], secret_prefix)) {
             secret = true;
@@ -623,7 +623,7 @@ test "parseKvLines: a secret: prefix declares the variable, and is not part of i
     defer arena_state.deinit();
     const a = arena_state.allocator();
     // Case folds and the space after the marker is not part of the name:
-    // missing a marker costs a token on an elevated command line. `secretive`
+    // missing a marker costs a token in the plaintext cache. `secretive`
     // merely starts with the letters; `secret:=x` has no name left at all.
     const vars = try parseKvLines(a, "client_name=acme\nsecret:VAULT_TOKEN=s.abc123\nSECRET: OTHER = x\nsecret:=nameless\nsecretive=not-a-marker\n");
     try std.testing.expectEqual(@as(usize, 4), vars.len);
