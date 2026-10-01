@@ -570,39 +570,47 @@ pub fn renderTrustAlways(arena: std.mem.Allocator, existing: []const u8, names: 
     var out: std.ArrayList(u8) = .empty;
     var section: []const u8 = "";
     var replaced = false;
+    // Lines we write keep the file's own line ending: a config.toml saved with
+    // CRLF must not come back LF on every grant, which would turn one changed
+    // line into a whole-file diff.
+    const crlf = std.mem.indexOf(u8, existing, "\r\n") != null;
+    const eol: []const u8 = if (crlf) "\r\n" else "\n";
     // Split the body WITHOUT its final newline: splitting "a\n" yields a
     // trailing empty piece, and re-terminating that piece appends a blank line
     // to config.toml on every grant.
     const body = if (std.mem.endsWith(u8, existing, "\n")) existing[0 .. existing.len - 1] else existing;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (if (body.len == 0) null else lines.next()) |raw| {
-        const line = std.mem.trimEnd(u8, raw, "\r");
-        const t = std.mem.trim(u8, line, " \t");
-        if (t.len > 1 and t[0] == '[' and t[t.len - 1] == ']') section = t[1 .. t.len - 1];
+        // Reading goes through toml.zig like every other reader, so this sees
+        // the same sections and keys loadConfig does - `always_extra` is a
+        // different key, not a prefix match.
+        const item = toml.classify(std.mem.trim(u8, raw, " \t\r"));
+        if (item == .header) section = std.mem.trim(u8, item.header.name, " \t");
         const is_key = std.mem.eql(u8, section, "trust") and
-            std.mem.startsWith(u8, t, "always") and
-            std.mem.indexOfScalar(u8, t, '=') != null;
+            item == .pair and std.mem.eql(u8, item.pair.key, "always");
         if (!is_key) {
-            try out.appendSlice(arena, line);
+            // Untouched lines go back byte for byte, CR and all.
+            try out.appendSlice(arena, raw);
             try out.append(arena, '\n');
             continue;
         }
         // Swallow the old value, however many lines its array spans, then emit
         // the new one-liner in its place. A leftover `]` would be parsed as a
-        // section header and silently reassign every key after it.
-        var depth: usize = std.mem.count(u8, t, "[") - @min(std.mem.count(u8, t, "["), std.mem.count(u8, t, "]"));
-        while (depth > 0) {
+        // section header and silently reassign every key after it; a `]` in a
+        // string or a comment is not the end (toml.ArrayScan).
+        var scan: toml.ArrayScan = .{};
+        _ = scan.feed(item.pair.raw);
+        while (scan.depth > 0) {
             const cont = lines.next() orelse break;
-            depth += std.mem.count(u8, cont, "[");
-            depth -= @min(depth, std.mem.count(u8, cont, "]"));
+            _ = scan.feed(std.mem.trim(u8, cont, " \t\r"));
         }
         try out.appendSlice(arena, arr.items);
-        try out.append(arena, '\n');
+        try out.appendSlice(arena, eol);
         replaced = true;
     }
     if (!replaced) {
-        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.append(arena, '\n');
-        try out.appendSlice(arena,
+        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.appendSlice(arena, eol);
+        const block =
             \\
             \\# [trust] always names the aliases whose project files never raise nix's
             \\# approval prompt - their actions, scripts, env.toml and context sources
@@ -611,9 +619,10 @@ pub fn renderTrustAlways(arena: std.mem.Allocator, existing: []const u8, names: 
             \\# repos you write. An elevated (sudo) action still confirms every time.
             \\[trust]
             \\
-        );
+        ;
+        try out.appendSlice(arena, if (crlf) try std.mem.replaceOwned(u8, arena, block, "\n", "\r\n") else block);
         try out.appendSlice(arena, arr.items);
-        try out.append(arena, '\n');
+        try out.appendSlice(arena, eol);
     }
     if (std.mem.eql(u8, out.items, existing)) return null;
     return out.items;
@@ -670,4 +679,29 @@ test renderTrustAlways {
 
     // Identical result means there is nothing to write.
     try std.testing.expectEqual(@as(?[]const u8, null), try renderTrustAlways(a, "[trust]\nalways = [\"jpmine\"]\n", &.{"jpmine"}));
+}
+
+test "renderTrustAlways: only the exact key, real brackets, and the file's own line endings (NIX-002)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // `always_extra` is another key: it survives, and the real one is added.
+    const extra = "[trust]\nalways_extra = [\"keep\"]\n";
+    const e = (try renderTrustAlways(a, extra, &.{"jp"})).?;
+    try std.testing.expect(std.mem.startsWith(u8, e, extra));
+    try std.testing.expect(std.mem.indexOf(u8, e, "always = [\"jp\"]") != null);
+
+    // A `]` in a comment or a string inside the old array does not end it
+    // early, so nothing of it is left behind to be misread.
+    const tricky = "[trust]\nalways = [\n  \"a\", # was ] here\n  'b]',\n]\n[grep]\nall = true\n";
+    try std.testing.expectEqualStrings("[trust]\nalways = [\"a\", \"b\"]\n[grep]\nall = true\n", (try renderTrustAlways(a, tricky, &.{ "a", "b" })).?);
+
+    // CRLF files stay CRLF: every untouched line byte for byte, the new line too.
+    const dos = "# mine\r\n[trust]\r\nalways = [\"a\"]\r\n[grep]\r\nall = true\r\n";
+    try std.testing.expectEqualStrings("# mine\r\n[trust]\r\nalways = [\"a\", \"b\"]\r\n[grep]\r\nall = true\r\n", (try renderTrustAlways(a, dos, &.{ "a", "b" })).?);
+    const dos_new = (try renderTrustAlways(a, "[grep]\r\nall = true\r\n", &.{"a"})).?;
+    try std.testing.expect(std.mem.indexOf(u8, dos_new, "[trust]\r\nalways = [\"a\"]\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dos_new, "\r\r") == null);
+    for (dos_new, 0..) |c, i| if (c == '\n') try std.testing.expect(i > 0 and dos_new[i - 1] == '\r');
 }

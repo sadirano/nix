@@ -92,23 +92,80 @@ pub const Lines = struct {
 
     /// gatherArray collects an inline array's text from `raw` (the value text
     /// on the pair's own line) across any following lines, up to the closing
-    /// `]`, consuming them. Comment lines inside are skipped so their quoted
-    /// text cannot parse as elements and a `]` in one cannot end the array
-    /// early. An unterminated array stops at the end of the file.
+    /// `]`, consuming them. Comments are cut off every piece, whole-line or
+    /// trailing, so their quoted text cannot parse as elements; and only a `]`
+    /// that is syntax (not inside a string, see ArrayScan) ends the array. A
+    /// value that does not open an array consumes nothing. An unterminated
+    /// array stops at the end of the file.
     pub fn gatherArray(self: *Lines, arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
         var buf: std.ArrayList(u8) = .empty;
-        try buf.appendSlice(arena, raw);
-        while (std.mem.indexOfScalar(u8, buf.items, ']') == null) {
+        try buf.appendSlice(arena, stripComment(raw));
+        var scan: ArrayScan = .{};
+        _ = scan.feed(raw);
+        while (scan.depth > 0) {
             const line = self.it.next() orelse break;
             self.line_no += 1;
-            const cont = std.mem.trim(u8, line, " \t\r");
-            if (cont.len > 0 and cont[0] == '#') continue;
+            const cont = stripComment(std.mem.trim(u8, line, " \t\r"));
+            if (cont.len == 0) continue;
             try buf.append(arena, ' ');
             try buf.appendSlice(arena, cont);
+            _ = scan.feed(cont);
         }
         return buf.items;
     }
 };
+
+/// ArrayScan follows how deep a line-by-line read is inside an inline array,
+/// counting only brackets that are TOML syntax: a `]` inside a quoted string
+/// or after a `#` comment ends nothing. Quotes are read the loose way
+/// parseStringArray reads them: a backslash is a literal character, so
+/// `"C:\dir\"` closes where it looks like it does. Strings never span lines in
+/// the files nix reads (no `"""`), so the quote state starts fresh per line.
+pub const ArrayScan = struct {
+    depth: usize = 0,
+
+    /// feed reads one line, or the value text after `=`. True when this line
+    /// closed the outermost array.
+    pub fn feed(self: *ArrayScan, line: []const u8) bool {
+        var quote: u8 = 0;
+        var i: usize = 0;
+        while (i < line.len) : (i += 1) {
+            const c = line[i];
+            if (quote != 0) {
+                if (c == quote) quote = 0;
+                continue;
+            }
+            switch (c) {
+                '"', '\'' => quote = c,
+                '#' => return false,
+                '[' => self.depth += 1,
+                ']' => if (self.depth > 0) {
+                    self.depth -= 1;
+                    if (self.depth == 0) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+};
+
+/// stripComment cuts a line at its first `#` outside a quoted string, and
+/// the blanks before it.
+pub fn stripComment(line: []const u8) []const u8 {
+    var quote: u8 = 0;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (quote != 0) {
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '"' or c == '\'') quote = c;
+        if (c == '#') return std.mem.trimEnd(u8, line[0..i], " \t");
+    }
+    return line;
+}
 
 // ---- values -------------------------------------------------------------------
 
@@ -330,4 +387,31 @@ test "gatherArray: single line untouched, multi-line joined, comments inside ski
     const p2 = open.next().?.pair;
     try std.testing.expectEqualStrings("[ \"a\"", try open.gatherArray(a, p2.raw));
     try std.testing.expect(open.next() == null);
+}
+
+test "gatherArray: a quoted or commented bracket does not end the array (NIX-003)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // The first element holds a `]`: every later element must survive.
+    var q = Lines.init("on_success = [\n  \"test [x]\",\n  'lit]',\n  \"C:\\dir\\\",\n  \"last\", # old ] \"ghost\"\n]\nafter = 1\n");
+    const p = q.next().?.pair;
+    const arr = try parseStringArray(a, try q.gatherArray(a, p.raw));
+    try std.testing.expectEqual(@as(usize, 4), arr.len);
+    try std.testing.expectEqualStrings("test [x]", arr[0]);
+    try std.testing.expectEqualStrings("lit]", arr[1]);
+    try std.testing.expectEqualStrings("C:\\dir\\", arr[2]); // backslash is literal
+    try std.testing.expectEqualStrings("last", arr[3]);
+    try std.testing.expectEqualStrings("after", q.next().?.pair.key);
+
+    // A trailing comment on a one-line array is not an element.
+    var t = Lines.init("x = [\"a\"] # \"b\"\n");
+    const arr2 = try parseStringArray(a, try t.gatherArray(a, t.next().?.pair.raw));
+    try std.testing.expectEqual(@as(usize, 1), arr2.len);
+
+    // A value that is not an array consumes no following line.
+    var s = Lines.init("x = \"plain\"\nnext = 1\n");
+    _ = try s.gatherArray(a, s.next().?.pair.raw);
+    try std.testing.expectEqualStrings("next", s.next().?.pair.key);
 }
