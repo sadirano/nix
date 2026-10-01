@@ -35,9 +35,16 @@ fn isDir(app: *App, p: []const u8) bool {
     } else |_| return false;
 }
 
-/// Return a short reason when a user-supplied paste name is unsafe.
-pub fn checkPasteName(name: []const u8) ?[]const u8 {
-    if (std.mem.trim(u8, name, " ").len == 0) return null;
+/// Return a short reason when a user-supplied paste name is unsafe. Checks the
+/// name as it will be used: pasteFilename trims blanks, so " NUL.txt" must be
+/// judged as "NUL.txt".
+///
+/// The name is NOT checked against links: a junction or symlink inside the
+/// alias is followed, even out of it. Somebody made that link so files would
+/// land where it points, and refusing it would take its meaning away.
+pub fn checkPasteName(raw: []const u8) ?[]const u8 {
+    const name = std.mem.trim(u8, raw, " \t");
+    if (name.len == 0) return null;
     if (name[0] == '/' or name[0] == '\\') return "must be relative";
     if (name.len >= 2 and name[1] == ':') return "must not be drive-qualified";
 
@@ -58,7 +65,10 @@ fn checkPasteSegment(segment: []const u8) ?[]const u8 {
     if (segment.len == 0) return "has an empty path segment";
     if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, ".."))
         return "contains a dot path segment";
-    if (segment.len > 255) return "has a path segment longer than 255 bytes";
+    // The Windows limit is 255 UTF-16 units, not bytes: 130 accented letters
+    // take 260 bytes and still fit.
+    const units = std.unicode.calcWtf16LeLen(segment) catch return "is not valid UTF-8";
+    if (units > 255) return "has a path segment longer than 255 characters";
     // Windows silently removes a trailing dot or space from a path component.
     if (segment[segment.len - 1] == '.' or segment[segment.len - 1] == ' ')
         return "has a path segment ending in dot or space";
@@ -129,7 +139,9 @@ pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name
         try app.err.print("nix: paste name \"{s}\" {s}\n", .{ name, reason });
         return 1;
     }
-    const safe_name = if (std.mem.trim(u8, name, " ").len == 0) "" else name;
+    // Every branch gets the trimmed name the check approved, including the
+    // folder copy, which uses the name as given rather than via pasteFilename.
+    const safe_name = std.mem.trim(u8, name, " \t");
     if (try clipboard.readFiles(app.arena, app.io)) |files| {
         return pasteFiles(app, alias, target, files, safe_name);
     }
@@ -208,7 +220,7 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
 test "checkPasteName accepts relative names and ordinary stems" {
     for ([_][]const u8{
         "",      "note",       "note.md",  "drafts/today", "drafts\\today.png", "a.b.c",
-        "comfy", "console.md", "nullable",
+        "comfy", "console.md", "nullable", " note ",       "x ",                "\u{e9}" ** 130,
     }) |name| {
         try std.testing.expect(checkPasteName(name) == null);
     }
@@ -216,10 +228,10 @@ test "checkPasteName accepts relative names and ordinary stems" {
 
 test "checkPasteName refuses escaping and Windows-mangled names" {
     for ([_][]const u8{
-        "..",   "../x",     "..\\x",  "a/../b", "/x",      "\\x",      "\\\\srv\\s\\x",
-        "C:x",  "C:\\x",    "a//b",   "a/",     "./x",     "x.md:ads", "a<b",
-        "a?b",  "x.",       "x ",     "nul",    "NUL.txt", "con",      "com1.md",
-        "lpt9", "a" ** 256, "a\x01b",
+        "..",       "../x",   "..\\x",    "a/../b",  "/x",    "\\x",           "\\\\srv\\s\\x",
+        "C:x",      "C:\\x",  "a//b",     "a/",      "./x",   "x.md:ads",      "a<b",
+        "a?b",      "x.",     "nul",      "NUL.txt", "con",   "com1.md",       "lpt9",
+        "a" ** 256, "a\x01b", " NUL.txt", "\tcon ",  " ../x", "\u{e9}" ** 256,
     }) |name| {
         try std.testing.expect(checkPasteName(name) != null);
     }
