@@ -35,6 +35,45 @@ fn isDir(app: *App, p: []const u8) bool {
     } else |_| return false;
 }
 
+/// Return a short reason when a user-supplied paste name is unsafe.
+pub fn checkPasteName(name: []const u8) ?[]const u8 {
+    if (std.mem.trim(u8, name, " ").len == 0) return null;
+    if (name[0] == '/' or name[0] == '\\') return "must be relative";
+    if (name.len >= 2 and name[1] == ':') return "must not be drive-qualified";
+
+    // Both separator spellings can become directory boundaries on Windows.
+    var start: usize = 0;
+    for (name, 0..) |c, i| {
+        if (c < 0x20 or std.mem.indexOfScalar(u8, "<>:\"|?*", c) != null)
+            return "contains a Windows-invalid character";
+        if (c == '/' or c == '\\') {
+            if (checkPasteSegment(name[start..i])) |reason| return reason;
+            start = i + 1;
+        }
+    }
+    return checkPasteSegment(name[start..]);
+}
+
+fn checkPasteSegment(segment: []const u8) ?[]const u8 {
+    if (segment.len == 0) return "has an empty path segment";
+    if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, ".."))
+        return "contains a dot path segment";
+    if (segment.len > 255) return "has a path segment longer than 255 bytes";
+    // Windows silently removes a trailing dot or space from a path component.
+    if (segment[segment.len - 1] == '.' or segment[segment.len - 1] == ' ')
+        return "has a path segment ending in dot or space";
+
+    // Windows device names remain reserved when followed by an extension.
+    const stem = segment[0 .. std.mem.indexOfScalar(u8, segment, '.') orelse segment.len];
+    for ([_][]const u8{ "CON", "PRN", "AUX", "NUL" }) |reserved| {
+        if (std.ascii.eqlIgnoreCase(stem, reserved)) return "uses a Windows device name";
+    }
+    if (stem.len == 4 and stem[3] >= '1' and stem[3] <= '9' and
+        (std.ascii.eqlIgnoreCase(stem[0..3], "COM") or std.ascii.eqlIgnoreCase(stem[0..3], "LPT")))
+        return "uses a Windows device name";
+    return null;
+}
+
 /// pasteFilename builds the destination filename: explicit extension honoured,
 /// else defaultExt appended, else a local timestamp.
 fn pasteFilename(app: *App, name: []const u8, default_ext: []const u8) ![]const u8 {
@@ -86,14 +125,19 @@ fn copyTree(app: *App, src: []const u8, dest: []const u8) !void {
 /// first. Shared by the alias and group forms of `p`; `alias` labels the
 /// destination for the on_paste hook.
 pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name: []const u8) !u8 {
+    if (checkPasteName(name)) |reason| {
+        try app.err.print("nix: paste name \"{s}\" {s}\n", .{ name, reason });
+        return 1;
+    }
+    const safe_name = if (std.mem.trim(u8, name, " ").len == 0) "" else name;
     if (try clipboard.readFiles(app.arena, app.io)) |files| {
-        return pasteFiles(app, alias, target, files, name);
+        return pasteFiles(app, alias, target, files, safe_name);
     }
     if (try clipboard.readImage(app.arena, app.io)) |img| {
-        return pasteContent(app, alias, target, name, img, ".png");
+        return pasteContent(app, alias, target, safe_name, img, ".png");
     }
     if (try clipboard.readText(app.arena, app.io, app.env)) |text| {
-        return pasteContent(app, alias, target, name, text, ".md");
+        return pasteContent(app, alias, target, safe_name, text, ".md");
     }
     try app.err.writeAll("nix: clipboard holds no files, image, or text to paste\n");
     return 1;
@@ -104,6 +148,7 @@ pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name
 fn pasteContent(app: *App, alias: []const u8, target: []const u8, name: []const u8, data: []const u8, default_ext: []const u8) !u8 {
     const fname = try pasteFilename(app, name, default_ext);
     const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname }));
+    try store.mkdirAll(app.io, std.fs.path.dirname(dest).?);
     try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = data });
     try app.out.print("{s}\n", .{dest});
     try app.out.flush();
@@ -128,6 +173,7 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
             base = if (dir) name else try pasteFilename(app, name, std.fs.path.extension(src));
         }
         const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, base }));
+        try store.mkdirAll(app.io, std.fs.path.dirname(dest).?);
         if (dir) {
             copyTree(app, src, dest) catch |e| {
                 try app.err.print("nix: copy {s}: {s}\n", .{ src, @errorName(e) });
@@ -157,6 +203,26 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
         try std.fmt.allocPrint(app.arena, "pasted {d} files into {s}", .{ outs.items.len, target });
     notifyEvent(app, .paste, alias, target, msg);
     return 0;
+}
+
+test "checkPasteName accepts relative names and ordinary stems" {
+    for ([_][]const u8{
+        "",      "note",       "note.md",  "drafts/today", "drafts\\today.png", "a.b.c",
+        "comfy", "console.md", "nullable",
+    }) |name| {
+        try std.testing.expect(checkPasteName(name) == null);
+    }
+}
+
+test "checkPasteName refuses escaping and Windows-mangled names" {
+    for ([_][]const u8{
+        "..",   "../x",     "..\\x",  "a/../b", "/x",      "\\x",      "\\\\srv\\s\\x",
+        "C:x",  "C:\\x",    "a//b",   "a/",     "./x",     "x.md:ads", "a<b",
+        "a?b",  "x.",       "x ",     "nul",    "NUL.txt", "con",      "com1.md",
+        "lpt9", "a" ** 256, "a\x01b",
+    }) |name| {
+        try std.testing.expect(checkPasteName(name) != null);
+    }
 }
 
 /// yankPathText is the bare `y <alias>`: print the target path and copy it to
