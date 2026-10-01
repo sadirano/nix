@@ -552,8 +552,8 @@ Behaviour worth knowing:
 - `PATH`, `PATHEXT`, `COMSPEC` and `NIX_*` can't be set here.
 - A cloned `env.toml` sets nothing until approved (`nix --trust acme env`); the
   command still runs, and nix tells you the variables were skipped.
-- Elevated actions get the env minus anything from a secret (a command line is
-  visible to every process on the machine).
+- Elevated actions get the whole env, secrets included (it travels on a command
+  line, which other programs can read).
 
 **Workflow: dev vs. staging vs. prod.** Keep one alias per target pointing at
 the same repo? No need - override one variable for one command instead:
@@ -703,8 +703,7 @@ x task:123@work claude    # same place, run a command there
 
 The contract: append `KEY=VALUE` lines to the file named by
 `$NIX_CONTEXT_OUT`; stdout is only shown, never parsed; a non-zero exit aborts.
-`secret:KEY=value` marks a credential (never cached, withheld from elevated
-commands). Results are cached for `cache` (`"30s"`, `"10m"`, `"2h"`, `"1d"`,
+`secret:KEY=value` marks a credential (never cached). Results are cached for `cache` (`"30s"`, `"10m"`, `"2h"`, `"1d"`,
 `"0"`). Full samples: [`assets/samples/context-source/`](../assets/samples/context-source/).
 
 ### 4.5 Menus

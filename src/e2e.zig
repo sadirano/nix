@@ -2845,14 +2845,6 @@ pub fn main(init: std.process.Init) !void {
             c.skip("an edited project re-arms the gate behind its [bin] export", "a successful --sync-bin");
         }
 
-        // NOTE: the secret-vs-elevation crossing (#38's second bullet) is not
-        // here and cannot be. Every elevated path goes through ShellExecuteEx
-        // and raises a UAC prompt only a human can answer, so an automated
-        // check would either hang or need the harness to run elevated. The
-        // invariant is pinned where it is decidable instead - elevatedCommand is
-        // a pure function over the variables, unit tested in run.zig for exactly
-        // this ("env.toml travels, a resolved secret does not").
-
         // Leave nothing behind: --doctor below reports on the whole store.
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "ka.toml" })) catch {};
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "kb.toml" })) catch {};

@@ -351,7 +351,7 @@ The candidate list is cached like any other result — a repeated `o ticket@acme
 
 **The script's contract.** nix creates a temp file and puts its path in `$NIX_CONTEXT_OUT`; the script appends `KEY=VALUE` lines to it. Its **stdout is relayed to stderr** for you to read, never parsed, so a `.cmd` missing `@echo off` or a chatty tool it calls can't corrupt a variable. A non-zero exit aborts resolution and caches nothing. `NIX_SEGMENT`, `NIX_SEGMENT_VALUE`, `NIX_ALIAS`, and `NIX_ALIAS_PATH` are also set. Working samples for both shells: [`assets/samples/context-source/`](assets/samples/context-source/).
 
-**A source can declare a variable secret.** Prefix the key and the value is treated as a credential: `secret:VAULT_TOKEN=s.abc123`. It reaches the child environment and `source-template` exactly like any other produced variable — the path is not the leak — but it is **withheld from an elevated (`sudo`) command line**, where everything becomes world-readable in the process list, and the result is **not cached at all**, since `contexts-cache.toml` is plaintext (caching only the rest would silently hand back a result missing its token). That rule wins over the menu cache too: a candidate list with a credential in it re-runs the lookup on every navigation, including the one that just drew the menu. Without the marker nix cannot tell a looked-up client name from a looked-up credential — they are the same bytes — so it says which variables are about to travel and lets you decide.
+**A source can declare a variable secret.** Prefix the key and the value is treated as a credential: `secret:VAULT_TOKEN=s.abc123`. It reaches the child environment, `source-template` and an elevated (`sudo`) action exactly like any other produced variable, but the result is **not cached at all**, since `contexts-cache.toml` is plaintext (caching only the rest would silently hand back a result missing its token). That rule wins over the menu cache too: a candidate list with a credential in it re-runs the lookup on every navigation, including the one that just drew the menu. Without the marker nix cannot tell a looked-up client name from a looked-up credential — they are the same bytes — so the source is the one that says.
 
 **`run` is a bare script name**, resolved like any project script — `<alias>/.nix/scripts/` first, then `~/.nix/scripts/`, extension-probed (`.cmd`/`.bat`/`.exe`/`.ps1`; `.ps1` is invoked through pwsh automatically). A name containing a path separator is taken relative to the alias dir. Tokens split *before* `${}` expands, so a value containing spaces stays one argument.
 
@@ -729,7 +729,7 @@ It never refuses the command or the navigation over an environment file; being u
 
 `nix --doctor` has an Env section listing which aliases have layers, which are waiting for approval, which names were refused, and which referenced secrets have no value stored yet.
 
-One deliberate gap: an **elevated** (`sudo`) action gets the environment too, minus anything resolved from a secret. Elevation carries variables in as a `set` prelude on a command line, and a command line is readable in the process list by anyone on the machine; nix names each variable it withheld rather than passing the credential up there.
+An **elevated** (`sudo`) action gets the environment too, secrets included. Elevation carries variables in as a `set` prelude on a command line, which other programs on the machine can read; as with a secret in an action's command line, the value is the program's once nix hands it over.
 
 ## Global tools (`[bin]` exports)
 

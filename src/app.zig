@@ -143,11 +143,9 @@ pub fn forgetConfig(app: *App) void {
     app.config = null;
 }
 
-/// One variable the per-project environment set. `from_secret` travels with it
-/// because the elevated path writes variables onto a command line, where a
-/// credential must not go (run.elevatedCommand). Declared here so App can name
-/// it without depending on env.zig.
-pub const EnvVar = struct { key: []const u8, value: []const u8, from_secret: bool };
+/// One variable the per-project environment set. Declared here so App can
+/// name it without depending on env.zig.
+pub const EnvVar = struct { key: []const u8, value: []const u8 };
 
 /// One variable nix overwrote, with whatever was under it. `prev` is null when
 /// the name was not set at all before nix put it there.

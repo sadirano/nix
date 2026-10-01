@@ -719,31 +719,6 @@ fn startWindowed(app: *App, command: []const u8, alias: []const u8, dir: []const
     try app.out.flush();
     if (stripSudo(command)) |bare| {
         const comspec = env.get("COMSPEC") orelse "cmd.exe";
-        // Say what the elevated window will NOT have. A secret-derived variable
-        // is withheld there (elevatedCommand explains why), and a command that
-        // silently ran without its credential is the worst kind of failure.
-        for (app.env_vars) |kv| if (kv.from_secret) {
-            try app.err.print("nix: {s} is secret-derived and is NOT passed to an elevated window (it would sit in that process's command line)\n", .{kv.key});
-        };
-        // A context variable its source declared secret is withheld on the same
-        // terms; the rest travel, because nix cannot tell a looked-up name from
-        // a looked-up credential on its own. Name both sets - what is missing
-        // from the window, and what is about to be readable in the process list.
-        {
-            var travelling: std.ArrayList(u8) = .empty;
-            for (app.ctx_vars) |kv| {
-                if (kv.secret) {
-                    try app.err.print("nix: {s} was declared secret by its context source and is NOT passed to an elevated window\n", .{kv.key});
-                    continue;
-                }
-                if (travelling.items.len > 0) try travelling.appendSlice(app.arena, ", ");
-                try travelling.appendSlice(app.arena, kv.key);
-            }
-            if (travelling.items.len > 0) {
-                try app.err.print("nix: context variables travel on the elevated command line, readable in the process list: {s}\n", .{travelling.items});
-                try app.err.writeAll("  nix cannot tell a looked-up name from a looked-up credential - mark one as `secret:NAME=` in the source's output to withhold it\n");
-            }
-        }
         const line = try elevatedCommand(app.arena, app.home, app.env_vars, app.ctx_vars, bare, alias, dir);
         proc.spawnElevated(app.arena, line, dir, comspec) catch |e| {
             switch (e) {
@@ -778,19 +753,11 @@ fn started(app: *App, alias: []const u8, name: []const u8, elevated: bool) !u8 {
 /// whose own PATH is the administrator's. Prepending the script dirs to that is
 /// right; overwriting it with ours would be a lie about whose session this is.
 ///
-/// The project's env.toml variables travel too - an elevated deploy needs its
-/// DATABASE_URL like any other - with ONE exception: a value resolved from
-/// `${secret:NAME}` is left out. Everything here becomes a command line, and a
-/// command line is readable in the process list by anyone on the machine; a
-/// credential that only ever lived in a child's environment must not be
-/// promoted to that. startWindowed says which variables it withheld.
-///
-/// A context variable is withheld on the same terms once its source DECLARES
-/// it secret (a `secret:NAME=` line in $NIX_CONTEXT_OUT, #51). Undeclared ones
-/// still travel, because nix cannot tell a looked-up client name from a
-/// looked-up token by inspection and dropping them all would break the
-/// ordinary case these exist for. startWindowed names both sets: what was
-/// withheld, and what is about to be readable in the process list.
+/// The project's env.toml variables and the context variables travel too -
+/// an elevated deploy needs its DATABASE_URL like any other - secrets
+/// included. A command line is readable in the process list, and nix leaves
+/// that to the user: it keeps secrets out of files and listings, not out of
+/// the programs it hands them to.
 fn elevatedCommand(
     arena: std.mem.Allocator,
     home: []const u8,
@@ -809,11 +776,9 @@ fn elevatedCommand(
         try setVar(arena, &buf, "NIX_ALIAS_PATH", dir);
     }
     for (env_vars) |kv| {
-        if (kv.from_secret) continue;
         try setVar(arena, &buf, kv.key, kv.value);
     }
     for (ctx_vars) |kv| {
-        if (kv.secret) continue;
         try setVar(arena, &buf, kv.key, kv.value);
     }
     try buf.appendSlice(arena, command);
@@ -831,30 +796,10 @@ fn setVar(arena: std.mem.Allocator, buf: *std.ArrayList(u8), key: []const u8, va
 
 /// prepare turns an action's command, arguments and references already in
 /// place, into the line that is spawned: secrets expanded, then wrapped for its
-/// shell. Both launch paths come through here, so this is where an elevated
-/// command is refused a secret.
-///
-/// An elevated process is started with its whole command line visible to every
-/// process on the machine, so a secret placed there is no longer secret. The
-/// check runs before any credential is read, and again on the expanded line in
-/// case the expansion itself produced the `sudo` marker.
+/// shell. Both launch paths come through here.
 fn prepare(app: *App, shell: actions.Shell, command: []const u8) !?[]const u8 {
-    if (elevatedSecret(command, command)) return refuseElevatedSecret(app);
     const expanded = (try expandSecrets(app, command)) orelse return null;
-    if (elevatedSecret(command, expanded)) return refuseElevatedSecret(app);
     return inShell(app, shell, expanded);
-}
-
-/// elevatedSecret: `command` names a secret, or expanded to something other
-/// than itself, and the line that would run is elevated.
-fn elevatedSecret(command: []const u8, expanded: []const u8) bool {
-    const named = secret.hasPlaceholder(command) or expanded.ptr != command.ptr;
-    return named and stripSudo(expanded) != null;
-}
-
-fn refuseElevatedSecret(app: *App) !?[]const u8 {
-    try app.err.writeAll("nix: a secret cannot be passed to an elevated action - its command line is readable by every process; nothing was run\n");
-    return null;
 }
 
 /// expandSecrets resolves an action's `${secret:NAME}` placeholders, or reports
@@ -985,38 +930,24 @@ test "elevatedCommand: the alias context is carried in, PATH extended not replac
     try std.testing.expect(std.mem.indexOf(u8, guarded, "del /q") == null);
 }
 
-test "elevatedCommand: env.toml travels, a resolved secret does not" {
+test "elevatedCommand: env.toml and context variables travel, secrets included" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
     const vars = [_]app_zig.EnvVar{
-        .{ .key = "DATABASE_URL", .value = "postgres://box/dev", .from_secret = false },
-        .{ .key = "ACME_TOKEN", .value = "hunter2", .from_secret = true },
+        .{ .key = "DATABASE_URL", .value = "postgres://box/dev" },
+        .{ .key = "ACME_TOKEN", .value = "hunter2" },
     };
-    const line = try elevatedCommand(a, "H", &vars, &.{}, "deploy.ps1", "acme", "D");
-    try std.testing.expect(std.mem.indexOf(u8, line, "set \"DATABASE_URL=postgres://box/dev\"") != null);
-    // A command line is world-readable in the process list; the credential that
-    // only lived in a child's environment must not be promoted to one.
-    try std.testing.expect(std.mem.indexOf(u8, line, "hunter2") == null);
-    try std.testing.expect(std.mem.indexOf(u8, line, "ACME_TOKEN") == null);
-}
-
-test "elevatedCommand: a context variable travels unless its source declared it secret" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
     const ctx = [_]segments.Var{
         .{ .key = "CLIENT", .value = "northwind" },
-        // The asymmetry #51 closed: a vault-fetched token looks exactly like a
-        // looked-up name until the source says which it is.
         .{ .key = "VAULT_TOKEN", .value = "s.abc123", .secret = true },
     };
-    const line = try elevatedCommand(a, "H", &.{}, &ctx, "deploy.ps1", "acme", "D");
+    const line = try elevatedCommand(a, "H", &vars, &ctx, "deploy.ps1", "acme", "D");
+    try std.testing.expect(std.mem.indexOf(u8, line, "set \"DATABASE_URL=postgres://box/dev\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "set \"ACME_TOKEN=hunter2\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, line, "set \"CLIENT=northwind\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, line, "s.abc123") == null);
-    try std.testing.expect(std.mem.indexOf(u8, line, "VAULT_TOKEN") == null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "set \"VAULT_TOKEN=s.abc123\"") != null);
 }
 
 test "applyArgs: appended by default, substituted where the command asks" {
@@ -1071,18 +1002,4 @@ test "runAction message shapes (via notify.expandTemplate pairs)" {
     // The composed {message} strings runAction hands the hook.
     try std.testing.expectEqualStrings(":build finished in 1m23s", try std.fmt.allocPrint(a, ":{s} finished in {s}", .{ "build", try notify.fmtDuration(a, 83_000) }));
     try std.testing.expectEqualStrings(":build failed (exit 3) after 850ms", try std.fmt.allocPrint(a, ":{s} failed (exit {d}) after {s}", .{ "build", 3, try notify.fmtDuration(a, 850) }));
-}
-
-test "elevatedSecret: a secret never reaches an elevated command line" {
-    if (!proc.is_windows) return error.SkipZigTest;
-    const inline_secret = "sudo tool --token ${secret:API}";
-    try std.testing.expect(elevatedSecret(inline_secret, inline_secret));
-    try std.testing.expect(elevatedSecret("  SUDO tool ${secret:API}", "  SUDO tool ${secret:API}"));
-    const plain = "tool --token ${secret:API}";
-    try std.testing.expect(!elevatedSecret(plain, plain));
-    const elevated = "sudo tool --flag";
-    try std.testing.expect(!elevatedSecret(elevated, elevated));
-    // A secret whose value itself opens with the marker.
-    try std.testing.expect(elevatedSecret("${secret:CMD} x", "sudo tool x"));
-    try std.testing.expect(!elevatedSecret("${secret:CMD} x", "tool x"));
 }

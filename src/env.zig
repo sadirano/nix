@@ -296,7 +296,6 @@ pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode, scope: 
     var out: std.ArrayList(app_zig.EnvVar) = .empty;
     var cred = secret.CredResolveCtx{ .arena = app.arena };
     for (loaded.merged.entries) |e| {
-        const from_secret = std.mem.indexOf(u8, e.raw, "${secret:") != null;
         const value = switch (try secret.expandSecrets(app.arena, e.raw, secret.credentialResolver(&cred))) {
             .ok => |v| v,
             .missing => |name| {
@@ -310,7 +309,7 @@ pub fn inject(app: *App, alias: []const u8, dir: []const u8, mode: Mode, scope: 
             },
         };
         try app_zig.putSaved(app, scope, e.key, value);
-        try out.append(app.arena, .{ .key = e.key, .value = value, .from_secret = from_secret });
+        try out.append(app.arena, .{ .key = e.key, .value = value });
     }
     app.env_vars = out.items;
     return out.items;

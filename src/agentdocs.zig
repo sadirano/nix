@@ -918,10 +918,9 @@ pub const specs = [_]Spec{
         \\run will execute, and any edit to the script re-arms that prompt.
         \\
         \\A source writes `KEY=VALUE` lines to $NIX_CONTEXT_OUT. A key written
-        \\`secret:NAME=` declares that value a credential: it still reaches the
-        \\child and the path template, but it is withheld from an elevated
-        \\command line (world-readable in the process list) and the result is
-        \\not cached, since the cache is a plaintext file.
+        \\`secret:NAME=` declares that value a credential: it reaches the child
+        \\and the path template like any other, but the result is not cached,
+        \\since the cache is a plaintext file.
         \\
         \\A source may answer with SEVERAL blocks, separated by a `---` line,
         \\one per candidate ("which of my open tickets?"). One block resolves
