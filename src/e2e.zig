@@ -955,7 +955,7 @@ pub fn main(init: std.process.Init) !void {
             const locked_path = join(&c, &.{ alias_jobs, "locked.cmd" });
             try writeFile(&c, locked_path, ":: nix: - Alias locked job\r\n@echo alias-locked\r\n");
             try writeFile(&c, join(&c, &.{ home, "jobs", "_global", "locked.cmd" }), ":: nix: - Global locked substitute\r\n@echo global-locked\r\n");
-            {
+            if (comptime proc.is_windows) {
                 const locked = try openExclusive(&c, locked_path);
                 defer std.os.windows.CloseHandle(locked);
                 const duplicate_member = try openExclusive(&c, join(&c, &.{ alias_jobs, "check.ps1" }));

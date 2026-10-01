@@ -197,6 +197,18 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // CI runs the e2e harness on Linux, and a runtime-only Windows guard there
+    // still compiles the Windows call behind it, which fails to link off
+    // Windows. The main-module canary never saw that file.
+    const e2e_linux_check = b.addExecutable(.{
+        .name = "e2e-linux-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/e2e.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
+            .optimize = .Debug,
+        }),
+    });
+
     const ci_step = b.step("ci", "Everything CI runs: fmt check, size ratchet, tests, e2e, portable + linux builds");
     ci_step.dependOn(&fmt_check.step);
     // The size ratchet runs beside fmt: both are about the shape of the tree
@@ -236,6 +248,7 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(e2e_step);
     ci_step.dependOn(&portable.step);
     ci_step.dependOn(&linux_check.step);
+    ci_step.dependOn(&e2e_linux_check.step);
 }
 
 // gitDescribe returns `git describe --tags --always --dirty --exclude nightly`
