@@ -70,7 +70,7 @@ pub fn isCmdShell(shell: []const u8) bool {
 /// trimmedEnv reads an environment variable and treats a blank (or
 /// whitespace-only) value the same as an unset one.
 fn trimmedEnv(app: *App, name: []const u8) ?[]const u8 {
-    const v = app.env.get(name) orelse return null;
+    const v = app.getEnv(name) orelse return null;
     const t = std.mem.trim(u8, v, " \t");
     return if (t.len > 0) t else null;
 }

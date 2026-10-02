@@ -701,7 +701,7 @@ fn view(app: *App, files: []const []const u8) !void {
     try app.err.flush();
     // Detached, not inherited: a console editor sharing this terminal would fight
     // the pending prompt for the same stdin.
-    proc.runDetachedEnv(app.io, argv.items, app.home, false, app.env) catch |e| {
+    proc.runDetachedEnv(app.io, argv.items, app.home, false, app.env()) catch |e| {
         try app.err.print("  (editor {s}: {s})\n", .{ ed, @errorName(e) });
     };
 }

@@ -32,7 +32,7 @@ pub fn fire(app: *App, template: []const u8, dir: []const u8, pairs: []const Pai
     const argv = try app.arena.alloc([]const u8, tokens.len);
     for (tokens, 0..) |t, i| argv[i] = try expandTemplate(app.arena, t, pairs);
     const env = try app.arena.create(std.process.Environ.Map);
-    env.* = try app.env.clone(app.arena);
+    env.* = try app.env().clone(app.arena);
     for (env_extra) |ex| try env.put(ex.k, ex.v);
     try app.out.flush();
     _ = try proc.runInheritEnv(app.io, argv, dir, env);

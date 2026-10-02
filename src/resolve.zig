@@ -63,7 +63,7 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
     // Checked BEFORE anything is written: a path that cannot name a directory
     // must never reach aliases.toml, least of all by overwriting a good one.
     try store.validateAliasPath(p);
-    const expanded = try store.expandTilde(app.arena, app.env, p);
+    const expanded = try store.expandTilde(app.arena, app.env(), p);
     const abs = try absPath(app, expanded);
     // Also before the save: a mistyped path must not leave an alias pointing
     // at a directory nobody agreed to create.
@@ -227,7 +227,7 @@ const SegLookup = struct {
         // variable left over in your environment silently changes where you
         // land, and common names (TEMP, USER, PATH) are already taken. Keep
         // [contexts.vars] names specific for that reason.
-        if (self.app.env.get(name)) |v| return v;
+        if (self.app.getEnv(name)) |v| return v;
         for (self.cd.vars.items) |kv| if (std.mem.eql(u8, kv.key, name)) return kv.value;
         return null;
     }
@@ -280,7 +280,7 @@ fn pickCandidate(
         return null;
     }
     const native = glean_pick.enabled(app);
-    if (!native and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    if (!native and proc.findInPath(app.arena, app.io, app.env(), "fzf") == null) {
         try app.err.print("nix: install fzf to pick among {s}'s {d} candidates (or name one inline: `{s}:<value>@<alias>`)\n", .{ cd.segment, cands.len, cd.segment });
         return null;
     }
@@ -727,7 +727,7 @@ pub fn cmdWhich(app: *App, args: [][]const u8) !u8 {
         const n = try std.process.currentPath(app.io, &buf);
         break :blk try app.arena.dupe(u8, buf[0..n]);
     };
-    const expanded = try store.expandTilde(app.arena, app.env, std.mem.trim(u8, raw, " \t"));
+    const expanded = try store.expandTilde(app.arena, app.env(), std.mem.trim(u8, raw, " \t"));
     const abs = try absPath(app, expanded);
 
     const data = try store.readAliasesFile(app.arena, app.io, app.home);

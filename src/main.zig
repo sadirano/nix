@@ -62,7 +62,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .environ = init.environ,
     });
     const io = threaded.io();
-    var environ_map = try std.process.Environ.createMap(init.environ, arena);
 
     // Render our UTF-8 output as-written on the Windows console instead of
     // mojibake under the default OEM code page (no-op elsewhere).
@@ -83,14 +82,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer err.flush() catch {};
 
     const raw_args = try init.args.toSlice(arena);
-    const home = try store.resolveHome(arena, &environ_map);
+    const home = try store.resolveHome(arena, app_zig.EnvLookup{ .arena = arena, .environ = init.environ });
 
     var app: App = .{
         .arena = arena,
         .io = io,
         .out = out,
         .err = err,
-        .env = &environ_map,
+        .environ = init.environ,
         .home = home,
         .argv0 = raw_args[0],
         // json/no_prompt are set in run() once the args are in canonical form —
@@ -157,12 +156,12 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         // words belong to the action, so they must not pass setGlobalFlags or
         // any of nix's own parsing.
         if (try exports.lookupExport(app.arena, app.io, app.home, base)) |ex| {
-            history.record(app, raw_args, false);
+            history.record(app, raw_args, .normal);
             return run_zig.cmdExport(app, base, ex.alias, ex.action, args);
         }
         break :blk null;
     };
-    history.record(app, raw_args, if (mc_action) |a| eql(a, "quit") else false);
+    history.record(app, raw_args, historyKind(mc_action, args));
 
     // The colon forms, resolved AFTER argv0: a `[bin]` action export has already
     // returned above, because the caller's words belong to that action - `ship :`
@@ -226,6 +225,22 @@ fn bareColon(args: [][]const u8) ?[][]const u8 {
         return args[i + 1 ..];
     }
     return null; // nothing but global flags: not the colon form
+}
+
+/// historyKind classifies the invocation by nix's own grammar, so global flags
+/// in front (`nix --as wsl --which`) cannot hide what it is.
+fn historyKind(mc_action: ?[]const u8, args: []const []const u8) history.Kind {
+    if (mc_action) |a| return if (eql(a, "quit")) .quit else .normal;
+    for (args) |a| {
+        if (isGlobalFlag(a)) continue;
+        const verb = systemVerb(a) orelse return .normal;
+        return switch (verb) {
+            .quit => .quit,
+            .which => .which,
+            else => .normal,
+        };
+    }
+    return .normal;
 }
 
 /// leadingActionCall reports whether the first non-global token is `:<name>` -
@@ -310,6 +325,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .list => cmd_registry.cmdList(app),
         .list_names => cmd_registry.cmdListNames(app),
         .which => cmdWhich(app, rest),
+        .history => history.cmdHistory(app, rest),
         .version => cmd_registry.cmdVersion(app),
         .help => blk: {
             try printUsage(app);
@@ -913,7 +929,7 @@ fn cmdAgent(app: *App, rest: [][]const u8) !u8 {
 fn agentFacts(app: *App, spec: *const agentdocs.Spec) !agentdocs.Facts {
     var missing: std.ArrayList([]const u8) = .empty;
     for (spec.needs_tools) |t| {
-        if (proc.findInPath(app.arena, app.io, app.env, t) == null) {
+        if (proc.findInPath(app.arena, app.io, app.env(), t) == null) {
             try missing.append(app.arena, t);
         }
     }

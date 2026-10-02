@@ -16,7 +16,7 @@ pub const uniqueTmpName = util.uniqueTmpName;
 
 /// resolveHome returns the nix config dir: $NIX_HOME, tilde-expanded, else
 /// <userhome>/.nix.
-pub fn resolveHome(arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]const u8 {
+pub fn resolveHome(arena: std.mem.Allocator, env: anytype) ![]const u8 {
     if (env.get("NIX_HOME")) |v| {
         const t = std.mem.trim(u8, v, " \t");
         if (t.len > 0) return expandTilde(arena, env, t);
@@ -31,7 +31,7 @@ pub fn resolveHome(arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]c
 /// `--init`/`--sync` add `<home>/bin` to the user's registry PATH, which is
 /// right only for the real home: a scratch or per-project home is temporary,
 /// and a PATH entry pointing into one outlives the directory.
-pub fn isRelocatedHome(arena: std.mem.Allocator, env: *std.process.Environ.Map, home: []const u8) bool {
+pub fn isRelocatedHome(arena: std.mem.Allocator, env: anytype, home: []const u8) bool {
     const user = env.get("USERPROFILE") orelse env.get("HOME") orelse return true;
     const def = std.fs.path.join(arena, &.{ user, ".nix" }) catch return true;
     return !eqlPathFold(def, home);
@@ -58,7 +58,7 @@ fn trimTrailingSep(p: []const u8) []const u8 {
 }
 
 /// expandTilde expands a leading ~/ or bare ~ to the user home directory.
-pub fn expandTilde(arena: std.mem.Allocator, env: *std.process.Environ.Map, p: []const u8) ![]const u8 {
+pub fn expandTilde(arena: std.mem.Allocator, env: anytype, p: []const u8) ![]const u8 {
     const home = env.get("USERPROFILE") orelse env.get("HOME") orelse return p;
     if (std.mem.eql(u8, p, "~")) return home;
     if (std.mem.startsWith(u8, p, "~/") or std.mem.startsWith(u8, p, "~\\")) {

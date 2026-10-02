@@ -414,7 +414,7 @@ fn expandArgv(app: *App, src: Source, script: []const u8, high: []const Var, low
         low: []const Var,
         app: *App,
         fn get(self: @This(), name: []const u8) ?[]const u8 {
-            return findVar(self.high, name) orelse self.app.env.get(name) orelse findVar(self.low, name);
+            return findVar(self.high, name) orelse self.app.getEnv(name) orelse findVar(self.low, name);
         }
     };
     for (tokens[1..], 1..) |tok, i| {
@@ -475,25 +475,25 @@ pub fn run(
     };
     defer Io.Dir.cwd().deleteFile(app.io, out_file) catch {};
 
-    // The protocol variables belong to THIS script's invocation only. app.env is
+    // The protocol variables belong to THIS script's invocation only. app.env() is
     // the map every later spawn inherits (the `r` command, the `o` subshell, the
     // next segment's source), so they are removed again as soon as the script
     // exits - otherwise a command would see an NIX_CONTEXT_OUT naming a deleted
     // temp file, and a second segment would see the first one's NIX_SEGMENT.
     // NIX_ALIAS/NIX_ALIAS_PATH are exempt: aliasRunEnv sets those for the child
     // anyway, and they describe the alias, not this call.
-    try app.env.put("NIX_CONTEXT_OUT", out_file);
-    try app.env.put("NIX_SEGMENT", cd.segment);
-    try app.env.put("NIX_SEGMENT_VALUE", if (ps.has_value) ps.value else "");
-    try app.env.put("NIX_ALIAS", alias);
-    try app.env.put("NIX_ALIAS_PATH", dir);
+    try app.env().put("NIX_CONTEXT_OUT", out_file);
+    try app.env().put("NIX_SEGMENT", cd.segment);
+    try app.env().put("NIX_SEGMENT_VALUE", if (ps.has_value) ps.value else "");
+    try app.env().put("NIX_ALIAS", alias);
+    try app.env().put("NIX_ALIAS_PATH", dir);
     defer for ([_][]const u8{ "NIX_CONTEXT_OUT", "NIX_SEGMENT", "NIX_SEGMENT_VALUE" }) |k| {
-        _ = app.env.orderedRemove(k);
+        _ = app.env().orderedRemove(k);
     };
 
     const argv = try run_zig.wrapPs1(app, expanded);
     try app.out.flush();
-    const res = proc.runCaptured(app.arena, app.io, argv, dir, app.env) catch |e| {
+    const res = proc.runCaptured(app.arena, app.io, argv, dir, app.env()) catch |e| {
         try app.err.print("nix: {s}: run {s}: {s}\n", .{ src.label, r.script, @errorName(e) });
         return null;
     };
@@ -584,8 +584,8 @@ pub fn run(
 /// rather than the current directory, so `nix-ctx-*.env` never lands in the
 /// project the user is standing in.
 fn tmpDir(app: *App) ![]const u8 {
-    if (app.env.get("TEMP")) |t| if (t.len > 0) return t;
-    if (app.env.get("TMPDIR")) |t| if (t.len > 0) return t;
+    if (app.getEnv("TEMP")) |t| if (t.len > 0) return t;
+    if (app.getEnv("TMPDIR")) |t| if (t.len > 0) return t;
     return if (proc.is_windows) app.home else "/tmp";
 }
 

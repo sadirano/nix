@@ -273,7 +273,7 @@ pub fn planEnv(app: *App, alias: []const u8, dir: []const u8, plan: *provenance.
 /// stand in; it warns, drops that one variable, and still takes them there.
 pub const Mode = enum { run, navigate };
 
-/// inject resolves both layers into `app.env` and returns what it set, or null
+/// inject resolves both layers into `app.env()` and returns what it set, or null
 /// when a secret could not be resolved on a `.run` (already reported - the
 /// caller must abort without spawning).
 ///

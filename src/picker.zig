@@ -70,7 +70,7 @@ pub fn isScriptShim(path: []const u8) bool {
 /// Everything *service* runs, and a dead es returns nothing rather than
 /// failing.
 pub fn esTool(app: *App) Tool {
-    const p = proc.findInPath(app.arena, app.io, app.env, "es") orelse return .{};
+    const p = proc.findInPath(app.arena, app.io, app.env(), "es") orelse return .{};
     // The same switch shape the real query uses, so a "working" verdict here
     // cannot diverge from what the picker is about to run.
     const out = proc.probeOutput(app.arena, app.io, &.{ "es", "/ad", "-n", "1" }, ".") catch "";
@@ -81,7 +81,7 @@ pub fn esTool(app: *App) Tool {
 /// fdTool resolves fd, rejecting a script shim before probing and requiring the
 /// binary to identify itself.
 pub fn fdTool(app: *App) Tool {
-    const p = proc.findInPath(app.arena, app.io, app.env, "fd") orelse return .{};
+    const p = proc.findInPath(app.arena, app.io, app.env(), "fd") orelse return .{};
     if (isScriptShim(p)) return .{ .state = .shim, .path = p };
     const ver = std.mem.trim(u8, proc.probeOutput(app.arena, app.io, &.{ "fd", "--version" }, ".") catch "", " \t\r\n");
     if (!std.mem.startsWith(u8, ver, "fd ")) return .{ .state = .broken, .path = p };
@@ -92,7 +92,7 @@ pub fn fdTool(app: *App) Tool {
 /// string-search tool that would answer findInPath and walk nothing.
 pub fn findTool(app: *App) Tool {
     if (proc.is_windows) return .{};
-    const p = proc.findInPath(app.arena, app.io, app.env, "find") orelse return .{};
+    const p = proc.findInPath(app.arena, app.io, app.env(), "find") orelse return .{};
     return .{ .state = .ok, .path = p };
 }
 
@@ -129,7 +129,7 @@ pub fn resolveRoots(app: *App, cfg: config.Config) !Roots {
         for (cfg.picker_search_roots) |r| {
             const t = std.mem.trim(u8, r, " \t");
             if (t.len == 0) continue;
-            try all.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env, t)));
+            try all.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env(), t)));
         }
     } else {
         const drives = try proc.fixedDriveRoots(app.arena);
@@ -139,7 +139,7 @@ pub fn resolveRoots(app: *App, cfg: config.Config) !Roots {
         } else {
             origin = .home;
             // USERPROFILE first, then HOME - the order resolveHome uses.
-            if (app.env.get("USERPROFILE") orelse app.env.get("HOME")) |h| try all.append(app.arena, h);
+            if (app.getEnv("USERPROFILE") orelse app.getEnv("HOME")) |h| try all.append(app.arena, h);
         }
     }
     var existing: std.ArrayList([]const u8) = .empty;
@@ -152,7 +152,7 @@ pub fn resolveRoots(app: *App, cfg: config.Config) !Roots {
 /// where it isn't available, or is installed but non-functional (returns
 /// nothing), we fall through to a streamed fd/find walk of the search roots.
 pub fn pickerSource(app: *App, cfg: config.Config, name: []const u8) !PickerSource {
-    if (proc.findInPath(app.arena, app.io, app.env, "es") != null) {
+    if (proc.findInPath(app.arena, app.io, app.env(), "es") != null) {
         // es matches `name` as a substring anywhere in the path; /ad = dirs only.
         // Quiet: a dead es prints "Everything IPC not found" to stderr — suppress
         // it so the fall-through is silent. es is indexed and instant, so we just
@@ -261,7 +261,7 @@ pub fn pickDirectory(app: *App, name: []const u8) !?[]const u8 {
         return null;
     }
     const native = glean_pick.enabled(app);
-    if (!native and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    if (!native and proc.findInPath(app.arena, app.io, app.env(), "fzf") == null) {
         try app.err.print("nix: unknown alias \"{s}\" (install fzf for the picker, or register it: nix {s} <path>)\n", .{ name, name });
         return null;
     }

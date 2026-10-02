@@ -7,6 +7,38 @@ const Io = std.Io;
 
 const is_windows = builtin.os.tag == .windows;
 
+/// appendFile adds `data` to the end of `path`, creating the file but never its
+/// directory. Opened with the OS append flag: seeking to a measured length
+/// would let two simultaneous writers overwrite each other without a lock.
+pub fn appendFile(arena: std.mem.Allocator, io: Io, path: []const u8, data: []const u8) !void {
+    const file: Io.File = if (comptime is_windows) blk: {
+        const wide = try std.unicode.utf8ToUtf16LeAllocZ(arena, path);
+        const handle = CreateFileW(wide.ptr, 0x0004, 0x0007, null, 4, 0x80, null);
+        if (handle == std.os.windows.INVALID_HANDLE_VALUE) return error.CannotOpenForAppend;
+        break :blk .{ .handle = handle, .flags = .{ .nonblocking = false } };
+    } else blk: {
+        const fd = try std.posix.openat(Io.Dir.cwd().handle, path, .{
+            .ACCMODE = .WRONLY,
+            .CREAT = true,
+            .APPEND = true,
+            .CLOEXEC = true,
+        }, 0o666);
+        break :blk .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    };
+    defer file.close(io);
+    try file.writeStreamingAll(io, data);
+}
+
+extern "kernel32" fn CreateFileW(
+    path: [*:0]const u16,
+    access: u32,
+    share: u32,
+    security: ?*const anyopaque,
+    disposition: u32,
+    flags: u32,
+    template: ?std.os.windows.HANDLE,
+) callconv(.winapi) std.os.windows.HANDLE;
+
 /// lowerDup returns an ASCII-lowercased copy of s.
 pub fn lowerDup(arena: std.mem.Allocator, s: []const u8) ![]const u8 {
     const out = try arena.dupe(u8, s);

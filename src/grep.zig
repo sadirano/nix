@@ -95,7 +95,7 @@ fn buildSearchArgv(app: *App, bin: []const u8, relaxed: bool, extras: [][]const 
 /// requireFzf reports whether fzf must be on PATH but is not. Unattended
 /// (--no-prompt, or no console) the rows go to stdout, so fzf is not needed.
 fn requireFzf(app: *App) !bool {
-    if (app_zig.hasConsole(app) and !glean_pick.enabled(app) and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    if (app_zig.hasConsole(app) and !glean_pick.enabled(app) and proc.findInPath(app.arena, app.io, app.env(), "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return false;
     }
@@ -105,7 +105,7 @@ fn requireFzf(app: *App) !bool {
 /// grepRg is the classic `g`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
 fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
-    if (proc.findInPath(app.arena, app.io, app.env, "rg") == null) {
+    if (proc.findInPath(app.arena, app.io, app.env(), "rg") == null) {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
     }
@@ -158,7 +158,7 @@ fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
 /// sends default-app files (PDF/docx/…) to the OS handler and only text hits to
 /// the editor at their line.
 fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
-    if (proc.findInPath(app.arena, app.io, app.env, "rga") == null) {
+    if (proc.findInPath(app.arena, app.io, app.env(), "rga") == null) {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
     }
@@ -186,7 +186,7 @@ fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     // via our `--rga-preview` verb. Passing the full row (rather than separate
     // {1}/{2} fields) sidesteps cross-shell field-quoting; the pattern travels in
     // the environment so fzf's preview shell needs no quoting of query text.
-    app.env.put("NIX_RGA_QUERY", query) catch {};
+    app.env().put("NIX_RGA_QUERY", query) catch {};
     const native = glean_pick.enabled(app);
     if (native) glean_pick.setProcessEnv(app.arena, "NIX_RGA_QUERY", query);
     const preview = try std.fmt.allocPrint(app.arena, "\"{s}\" --rga-preview \"{{}}\"", .{exePath(app)});
@@ -204,7 +204,7 @@ fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     else
         try proc.runPipeline(app.arena, app.io, rga.items, &fzf, dir, fzfEnv(app));
     // Preview-only variable: drop it before anything else is spawned below.
-    _ = app.env.orderedRemove("NIX_RGA_QUERY");
+    _ = app.env().orderedRemove("NIX_RGA_QUERY");
     if (native) glean_pick.setProcessEnv(app.arena, "NIX_RGA_QUERY", null);
     if (res.code != 0) return 0; // cancelled / nothing selected
     return openRgaSelections(app, dir, res.output);
@@ -322,8 +322,8 @@ pub fn cmdRgaPreview(app: *App, raw: []const u8) !u8 {
     }
 
     // Tier 3: doc/archive -> rga --pretty, trimmed to the selected line's window.
-    if (proc.findInPath(app.arena, app.io, app.env, "rga") == null) return 0;
-    const query = app.env.get("NIX_RGA_QUERY") orelse "";
+    if (proc.findInPath(app.arena, app.io, app.env(), "rga") == null) return 0;
+    const query = app.getEnv("NIX_RGA_QUERY") orelse "";
     if (query.len == 0) return 0;
 
     const ctx = std.fmt.comptimePrint("{d}", .{rga_preview_context});

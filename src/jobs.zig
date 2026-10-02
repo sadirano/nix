@@ -127,37 +127,6 @@ pub fn loadLog(app: *App) ![]const u8 {
     return log;
 }
 
-/// Open with the OS append flag: seeking to a measured length would let two
-/// simultaneous runs overwrite each other's event without a lock.
-fn appendLine(app: *App, path: []const u8, line: []const u8) !void {
-    const file: Io.File = if (comptime proc.is_windows) blk: {
-        const wide = try std.unicode.utf8ToUtf16LeAllocZ(app.arena, path);
-        const handle = CreateFileW(wide.ptr, 0x0004, 0x0007, null, 4, 0x80, null);
-        if (handle == std.os.windows.INVALID_HANDLE_VALUE) return error.CannotOpenLog;
-        break :blk .{ .handle = handle, .flags = .{ .nonblocking = false } };
-    } else blk: {
-        const fd = try std.posix.openat(Io.Dir.cwd().handle, path, .{
-            .ACCMODE = .WRONLY,
-            .CREAT = true,
-            .APPEND = true,
-            .CLOEXEC = true,
-        }, 0o666);
-        break :blk .{ .handle = fd, .flags = .{ .nonblocking = false } };
-    };
-    defer file.close(app.io);
-    try file.writeStreamingAll(app.io, line);
-}
-
-extern "kernel32" fn CreateFileW(
-    path: [*:0]const u16,
-    access: u32,
-    share: u32,
-    security: ?*const anyopaque,
-    disposition: u32,
-    flags: u32,
-    template: ?std.os.windows.HANDLE,
-) callconv(.winapi) std.os.windows.HANDLE;
-
 extern "kernel32" fn GetFileAttributesW(path: [*:0]const u16) callconv(.winapi) u32;
 
 pub fn append(app: *App, job: Job, kind: EventKind, hash: ?[]const u8) !void {
@@ -167,7 +136,7 @@ pub fn append(app: *App, job: Job, kind: EventKind, hash: ?[]const u8) !void {
     else
         try std.fmt.allocPrint(app.arena, "{d} {s}/{s} {s}\n", .{ at, job.scope, job.file, @tagName(kind) });
     const updated = if (app.job_log) |prior| try std.mem.concat(app.arena, u8, &.{ prior, line }) else null;
-    try appendLine(app, try logPath(app), line);
+    try util.appendFile(app.arena, app.io, try logPath(app), line);
     if (updated) |log| app.job_log = log;
 }
 
@@ -368,7 +337,7 @@ pub fn lookup(app: *App, scope: []const u8, name: []const u8) !?Job {
 
 pub fn asAction(app: *App, job: Job) !actions.Action {
     const command = switch (job.ext) {
-        .ps1 => try std.fmt.allocPrint(app.arena, "{s} -NoProfile -ExecutionPolicy Bypass -File \"{s}\"", .{ proc.psShell(app.arena, app.io, app.env), job.path }),
+        .ps1 => try std.fmt.allocPrint(app.arena, "{s} -NoProfile -ExecutionPolicy Bypass -File \"{s}\"", .{ proc.psShell(app.arena, app.io, app.env()), job.path }),
         .py => try std.fmt.allocPrint(app.arena, "python \"{s}\"", .{job.path}),
         .js => try std.fmt.allocPrint(app.arena, "node \"{s}\"", .{job.path}),
         .cmd => try std.fmt.allocPrint(app.arena, "\"{s}\"", .{job.path}),

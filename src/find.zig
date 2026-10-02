@@ -49,7 +49,7 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
     // so no picker runs and fzf is not required at all —
     // check for it only on the interactive path.
     const native = glean_pick.enabled(app);
-    if (app_zig.hasConsole(app) and !native and proc.findInPath(app.arena, app.io, app.env, "fzf") == null) {
+    if (app_zig.hasConsole(app) and !native and proc.findInPath(app.arena, app.io, app.env(), "fzf") == null) {
         try app.err.writeAll("nix: fzf not found on PATH\n");
         return .failed;
     }
@@ -57,17 +57,17 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
     const extras = if (args.len > 1) args[1..] else args[0..0];
 
     var prod: std.ArrayList([]const u8) = .empty;
-    if (proc.findInPath(app.arena, app.io, app.env, "fd") != null) {
+    if (proc.findInPath(app.arena, app.io, app.env(), "fd") != null) {
         // Colour is for the picker's --ansi; printed rows must stay clean.
         try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (app_zig.hasConsole(app)) "always" else "never" });
         for (extras) |x| try prod.append(app.arena, x);
         if (query.len > 0) try prod.append(app.arena, query);
         // Rows stay cwd-relative (no path arg): the producer runs in the alias dir.
-    } else if (proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "es") != null) {
+    } else if (proc.is_windows and proc.findInPath(app.arena, app.io, app.env(), "es") != null) {
         try prod.appendSlice(app.arena, &.{ "es", "-path", "./" });
         if (query.len > 0) try prod.append(app.arena, query);
         for (extras) |x| try prod.append(app.arena, x);
-    } else if (!proc.is_windows and proc.findInPath(app.arena, app.io, app.env, "find") != null) {
+    } else if (!proc.is_windows and proc.findInPath(app.arena, app.io, app.env(), "find") != null) {
         try prod.appendSlice(app.arena, &.{ "find", ".", "-type", "f" });
         if (query.len > 0) {
             try prod.append(app.arena, "-name");

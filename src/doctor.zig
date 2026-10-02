@@ -177,7 +177,7 @@ fn normDir(s: []const u8) []const u8 {
 /// pathContains reports whether `dir` is one of the PATH entries (case-insensitive
 /// on Windows, trailing-separator-insensitive everywhere).
 fn pathContains(app: *App, dir: []const u8) bool {
-    const path = app.env.get("PATH") orelse return false;
+    const path = app.getEnv("PATH") orelse return false;
     const sep: u8 = if (proc.is_windows) ';' else ':';
     const target = normDir(dir);
     var it = std.mem.splitScalar(u8, path, sep);
@@ -254,7 +254,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     // compiled in, and fzf is then only what `engine = "fzf"` would use.
     const native = @import("glean_pick.zig").enabled(app);
     try d.row(.ok, "engine", if (native) "native (glean, compiled in)" else "fzf");
-    if (proc.findInPath(app.arena, app.io, app.env, "fzf")) |p| {
+    if (proc.findInPath(app.arena, app.io, app.env(), "fzf")) |p| {
         try d.row(.ok, "fzf", p);
     } else if (native) {
         try d.row(.info, "fzf", "not found - not needed by the native engine");
@@ -333,7 +333,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
             .{ .name = "rga", .feature = "g --all (search PDFs/office docs/archives)" },
         };
         for (tools) |t| {
-            if (proc.findInPath(app.arena, app.io, app.env, t.name)) |p| {
+            if (proc.findInPath(app.arena, app.io, app.env(), t.name)) |p| {
                 try d.row(.ok, t.name, try std.fmt.allocPrint(app.arena, "{s}  ({s})", .{ t.feature, p }));
             } else {
                 try d.row(.warn, t.name, try std.fmt.allocPrint(app.arena, "not found - {s} unavailable", .{t.feature}));
@@ -384,7 +384,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
                 // itself findable?
                 const end = std.mem.indexOfAny(u8, h.template, " \t") orelse h.template.len;
                 const exe = h.template[0..end];
-                if (proc.findInPath(app.arena, app.io, app.env, exe)) |p| {
+                if (proc.findInPath(app.arena, app.io, app.env(), exe)) |p| {
                     try d.row(.ok, "notify hook", try std.fmt.allocPrint(app.arena, "{s} reports via {s}  ({s})", .{ h.key, exe, p }));
                 } else {
                     try d.row(.warn, "notify hook", try std.fmt.allocPrint(app.arena, "[notify] {s}: \"{s}\" not found - the hook will fail every time it fires", .{ h.key, exe }));

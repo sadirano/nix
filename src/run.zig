@@ -146,14 +146,14 @@ pub const export_var = "NIX_EXPORT";
 /// currentDepth reads the recursion guard's counter above - 0 when absent or
 /// unparseable, which is the state a top-level invocation starts from.
 fn currentDepth(app: *App) u8 {
-    const d = app.env.get(depth_var) orelse return 0;
+    const d = app.getEnv(depth_var) orelse return 0;
     return std.fmt.parseInt(u8, d, 10) catch 0;
 }
 
 /// bumpDepth writes the counter one past `depth`, for whatever this call is
 /// about to spawn.
 fn bumpDepth(app: *App, depth: u8) !void {
-    try app.env.put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
+    try app.env().put(depth_var, try std.fmt.allocPrint(app.arena, "{d}", .{depth + 1}));
 }
 
 /// CurrentContext is the current directory, and the alias that owns it if any -
@@ -188,7 +188,7 @@ pub fn cmdExport(app: *App, name: []const u8, alias: []const u8, action: []const
         return 1;
     }
     try bumpDepth(app, depth);
-    try app.env.put(export_var, name);
+    try app.env().put(export_var, name);
 
     const machine_wide = std.mem.eql(u8, alias, actions.default_owner);
     var dir: []const u8 = undefined;
@@ -444,7 +444,7 @@ pub fn stripSudo(command: []const u8) ?[]const u8 {
 /// the top of the next call, so repeated runs never stack scripts dirs, and a
 /// chain never hands one link's alias, env.toml or context to the next.
 /// Restored rather than removed, because a name may have been the user's own
-/// before nix wrote over it. Returns app.env, or null when `mode` is `.run`
+/// before nix wrote over it. Returns app.env(), or null when `mode` is `.run`
 /// and a `${secret:NAME}` could not be resolved - the caller must then abort
 /// without spawning, the reason having been printed. Runs only on the
 /// run/navigate paths, so the resolve hot path pays nothing.
@@ -460,7 +460,7 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.
     const sep = if (proc.is_windows) ";" else ":";
     const local = try std.fs.path.join(app.arena, &.{ dir, ".nix", "scripts" });
     const central = try std.fs.path.join(app.arena, &.{ app.home, "scripts" });
-    const orig = app.env.get("PATH") orelse "";
+    const orig = app.getEnv("PATH") orelse "";
     const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, orig });
     try app_zig.putSaved(app, &scope, "PATH", newpath);
     if (alias.len > 0) {
@@ -475,7 +475,7 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.
     if ((try env_zig.inject(app, alias, dir, mode, &scope)) == null) return null;
     // Context-source variables (context.zig).
     for (app.ctx_vars) |kv| try app_zig.putSaved(app, &scope, kv.key, kv.value);
-    return app.env;
+    return app.env();
 }
 
 /// resolveScript resolves a bare command to a project script in
@@ -509,7 +509,7 @@ pub fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
 /// `.ps1` handling for `[bin]` trampolines.
 pub fn wrapPs1(app: *App, resolved: [][]const u8) ![][]const u8 {
     if (resolved.len == 0 or !std.ascii.eqlIgnoreCase(std.fs.path.extension(resolved[0]), ".ps1")) return resolved;
-    const shell = proc.psShell(app.arena, app.io, app.env);
+    const shell = proc.psShell(app.arena, app.io, app.env());
     var out = try app.arena.alloc([]const u8, resolved.len + 5);
     out[0] = shell;
     out[1] = "-NoProfile";

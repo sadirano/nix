@@ -80,7 +80,7 @@ pub fn cmdWrite(app: *App, args: [][]const u8) !u8 {
         try app.err.print("nix: jobs/{s}/{s} already exists (with an extension)\n", .{ scope, name });
         return 1;
     }
-    const content = clipboard.readText(app.arena, app.io, app.env) catch |e| {
+    const content = clipboard.readText(app.arena, app.io, app.env()) catch |e| {
         try app.err.print("nix: read clipboard: {s}\n", .{@errorName(e)});
         return 1;
     } orelse {

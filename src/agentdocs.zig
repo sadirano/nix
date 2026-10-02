@@ -498,6 +498,32 @@ pub const specs = [_]Spec{
         .see_also = &.{ "--list", "o" },
     },
     .{
+        .topic = "--history",
+        .args = "[pat]",
+        .summary = "every distinct command line nix ran, with counts",
+        .safety = .safe,
+        .detail =
+        \\With `[history] enabled = true` in config.toml, every nix invocation
+        \\appends its command line to ~/.nix/history (wrappers, `nix` itself and
+        \\[bin] exports alike), quoted for PowerShell. `nix --history` folds the
+        \\file into one row per distinct line (count, a tab, the line), most used
+        \\first; a pattern keeps only lines containing it (case-insensitive).
+        \\
+        \\A line containing any `[history] ignore` word is never written. `q` is
+        \\never recorded; `nix --which` only with `[history] which = true`.
+        ,
+        .agent_use =
+        \\Use it to find real commands to test with: each line pastes back into
+        \\PowerShell as the same invocation. Read-only. Replay against a scratch
+        \\NIX_HOME, never the user's own, when a line writes state.
+        ,
+        .examples = &.{
+            "`nix --history` - every distinct command, most used first",
+            "`nix --history :build` - only lines mentioning :build",
+        },
+        .see_also = &.{ "state", "x" },
+    },
+    .{
         .topic = "--as",
         .args = "<dialect>",
         .summary = "print/copy the path spelled for another tool",

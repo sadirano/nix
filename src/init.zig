@@ -53,9 +53,10 @@ const starter_config =
     \\#   [grep]
     \\#   all = true
     \\#
-    \\# [history] keeps ~/.nix/history: every distinct command line nix ran,
-    \\# with a count, ready to paste back. Off unless enabled. A line holding
-    \\# any `ignore` word (case-insensitive) is never written:
+    \\# [history] appends every command line nix runs to ~/.nix/history;
+    \\# `nix --history` lists each distinct one with a count, ready to paste
+    \\# back. Off unless enabled. A line holding any `ignore` word
+    \\# (case-insensitive) is never written:
     \\#
     \\#   [history]
     \\#   enabled = true
@@ -126,7 +127,7 @@ pub fn cmdSync(app: *App) !u8 {
         // PATH. `bin` comes from app.home, so without this guard every run
         // against a scratch home (the e2e harness) would append a throwaway
         // directory to the user's registry PATH.
-        if (store.isRelocatedHome(app.arena, app.env, app.home)) {
+        if (store.isRelocatedHome(app.arena, app.env(), app.home)) {
             try app.err.print("note: $NIX_HOME is set, so {s} was NOT added to your user PATH\n", .{bin});
         } else if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
             .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),
@@ -222,7 +223,7 @@ pub fn cmdInit(app: *App) !u8 {
         // PATH - see store.isRelocatedHome. `bin` is derived from app.home, so
         // without this every scratch-home run writes a throwaway directory into
         // the user's registry PATH and leaves it there.
-        if (store.isRelocatedHome(app.arena, app.env, app.home)) {
+        if (store.isRelocatedHome(app.arena, app.env(), app.home)) {
             try app.err.print("note: $NIX_HOME is set, so {s} was NOT added to your user PATH\n", .{bin});
         } else if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
             .added => try app.err.print("added {s} to your user PATH (new shells pick it up)\n", .{bin}),

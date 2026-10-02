@@ -437,7 +437,7 @@ fn installContent(app: *App, ex: Export) ?[]const u8 {
         // An action export installs nix itself under the export name; the
         // manifest, not the bytes, says what it runs.
         .copy, .action => readFileMaybe(app, ex.source),
-        .forward => renderForwarder(app.arena, ex.source, proc.psShell(app.arena, app.io, app.env)) catch null,
+        .forward => renderForwarder(app.arena, ex.source, proc.psShell(app.arena, app.io, app.env())) catch null,
     };
 }
 
@@ -447,7 +447,7 @@ fn installContent(app: *App, ex: Export) ?[]const u8 {
 /// (or on any allocation failure): no probe, never a broken sync.
 fn envWithoutOwnBin(app: *App) ?*std.process.Environ.Map {
     const bin = std.fs.path.join(app.arena, &.{ app.home, "bin" }) catch return null;
-    const path_var = app.env.get("PATH") orelse return null;
+    const path_var = app.getEnv("PATH") orelse return null;
     const sep: u8 = if (proc.is_windows) ';' else ':';
     var b: std.ArrayList(u8) = .empty;
     var it = std.mem.splitScalar(u8, path_var, sep);
@@ -460,7 +460,7 @@ fn envWithoutOwnBin(app: *App) ?*std.process.Environ.Map {
         b.appendSlice(app.arena, p) catch return null;
     }
     const copy = app.arena.create(std.process.Environ.Map) catch return null;
-    copy.* = app.env.clone(app.arena) catch return null;
+    copy.* = app.env().clone(app.arena) catch return null;
     copy.put("PATH", b.items) catch return null;
     return copy;
 }

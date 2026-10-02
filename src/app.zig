@@ -24,7 +24,12 @@ pub const App = struct {
     io: Io,
     out: *Io.Writer,
     err: *Io.Writer,
-    env: *std.process.Environ.Map,
+    /// The environment as the OS handed it over. Read single variables with
+    /// getEnv; `env()` builds the mutable map from it on first use.
+    environ: std.process.Environ = .empty,
+    /// Built by env() the first time something needs the whole environment
+    /// (a child process, an injected variable). A plain resolve never does.
+    env_map: ?*std.process.Environ.Map = null,
     home: []const u8,
     /// argv[0] as received — the exePath() fallback.
     argv0: []const u8,
@@ -77,6 +82,45 @@ pub const App = struct {
     job_log: ?[]const u8 = null,
     /// batPath's answer, resolved once per process.
     bat_path: ?[]const u8 = null,
+
+    /// env is the process environment as a mutable map, converted from `environ`
+    /// on first use: converting every variable is wasted on a command that reads
+    /// two or three of them.
+    pub fn env(app: *App) *std.process.Environ.Map {
+        if (app.env_map) |m| return m;
+        const m = app.arena.create(std.process.Environ.Map) catch @panic("out of memory");
+        m.* = std.process.Environ.createMap(app.environ, app.arena) catch @panic("out of memory");
+        app.env_map = m;
+        return m;
+    }
+
+    /// getEnv reads one variable: from the map once it exists (it may hold
+    /// injected values), else straight from the OS block without building it.
+    pub fn getEnv(app: *App, key: []const u8) ?[]const u8 {
+        if (app.env_map) |m| return m.get(key);
+        return lookupEnv(app.arena, app.environ, key);
+    }
+};
+
+/// lookupEnv reads one variable from the OS environment block. Case-insensitive
+/// on Windows, as the OS is.
+pub fn lookupEnv(arena: std.mem.Allocator, environ: std.process.Environ, key: []const u8) ?[]const u8 {
+    if (comptime @import("builtin").os.tag == .windows) {
+        const wkey = std.unicode.wtf8ToWtf16LeAllocZ(arena, key) catch return null;
+        const v = environ.getWindows(wkey) orelse return null;
+        return std.unicode.wtf16LeToWtf8Alloc(arena, v) catch null;
+    }
+    return environ.getPosix(key);
+}
+
+/// EnvLookup gives lookupEnv the `get` shape store.resolveHome takes, for use
+/// before an App exists.
+pub const EnvLookup = struct {
+    arena: std.mem.Allocator,
+    environ: std.process.Environ,
+    pub fn get(e: EnvLookup, key: []const u8) ?[]const u8 {
+        return lookupEnv(e.arena, e.environ, key);
+    }
 };
 
 /// loadConfig is config.loadConfig for this process: read and parsed on the
@@ -100,7 +144,7 @@ pub fn loadConfig(app: *App) !config.Config {
 pub fn batPath(app: *App) ?[]const u8 {
     if (app.bat_path) |cached| return cached;
     const configured = if (loadConfig(app)) |cfg| cfg.picker_bat else |_| "";
-    const found = if (configured.len > 0) configured else proc.findInPath(app.arena, app.io, app.env, "bat") orelse return null;
+    const found = if (configured.len > 0) configured else proc.findInPath(app.arena, app.io, app.env(), "bat") orelse return null;
     const resolved = shimTarget(app, found) orelse found;
     app.bat_path = resolved;
     return resolved;
@@ -157,7 +201,7 @@ pub const SavedVar = struct { key: []const u8, prev: ?[]const u8 };
 /// saveVar records the current value of `key` (duped, since the map's own
 /// storage is rewritten by the put that follows) so restoreVars can put it back.
 pub fn saveVar(app: *App, key: []const u8) !SavedVar {
-    const prev = app.env.get(key);
+    const prev = app.getEnv(key);
     return .{
         .key = key,
         .prev = if (prev) |v| try app.arena.dupe(u8, v) else null,
@@ -172,7 +216,7 @@ pub fn restoreVars(app: *App, saved: []const SavedVar) !void {
     while (i > 0) {
         i -= 1;
         const sv = saved[i];
-        if (sv.prev) |v| try app.env.put(sv.key, v) else _ = app.env.orderedRemove(sv.key);
+        if (sv.prev) |v| try app.env().put(sv.key, v) else _ = app.env().orderedRemove(sv.key);
     }
 }
 
@@ -181,33 +225,33 @@ pub fn restoreVars(app: *App, saved: []const SavedVar) !void {
 /// put without also being restorable.
 pub fn putSaved(app: *App, scope: *std.ArrayList(SavedVar), key: []const u8, value: []const u8) !void {
     try scope.append(app.arena, try saveVar(app, key));
-    try app.env.put(key, value);
+    try app.env().put(key, value);
 }
 
 test "putSaved/restoreVars: a scope undoes exactly what it put" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    var env: std.process.Environ.Map = .init(arena_state.allocator());
-    try env.put("KEEP", "ambient");
-    try env.put("PATH", "orig");
+    var env_m: std.process.Environ.Map = .init(arena_state.allocator());
+    try env_m.put("KEEP", "ambient");
+    try env_m.put("PATH", "orig");
     var app: App = undefined;
     app.arena = arena_state.allocator();
-    app.env = &env;
+    app.env_map = &env_m;
 
     var scope: std.ArrayList(SavedVar) = .empty;
     try putSaved(&app, &scope, "PATH", "scripts;orig");
     try putSaved(&app, &scope, "KEEP", "overridden");
     try putSaved(&app, &scope, "NEW", "one");
     try putSaved(&app, &scope, "NEW", "two"); // twice in one scope
-    try std.testing.expectEqualStrings("two", env.get("NEW").?);
+    try std.testing.expectEqualStrings("two", env_m.get("NEW").?);
 
     try restoreVars(&app, scope.items);
     // The ambient value comes back, not a removal: deleting a variable the
     // user set is the bug the restore exists to prevent.
-    try std.testing.expectEqualStrings("ambient", env.get("KEEP").?);
-    try std.testing.expectEqualStrings("orig", env.get("PATH").?);
+    try std.testing.expectEqualStrings("ambient", env_m.get("KEEP").?);
+    try std.testing.expectEqualStrings("orig", env_m.get("PATH").?);
     // A name that was not there is gone again, even after two puts.
-    try std.testing.expect(env.get("NEW") == null);
+    try std.testing.expect(env_m.get("NEW") == null);
 }
 
 /// exePath returns the real on-disk image path, lazily and cached. Asks the OS
@@ -247,7 +291,7 @@ pub fn hasConsole(app: *App) bool {
 /// release build is not. Without that gate an agent's shell could set the
 /// variable, pipe a `y`, and grant itself `--trust --always`.
 pub fn e2eConsole(app: *App) bool {
-    return app.e2e_hooks and std.mem.eql(u8, app.env.get("NIX_E2E_TTY") orelse "", "1");
+    return app.e2e_hooks and std.mem.eql(u8, app.getEnv("NIX_E2E_TTY") orelse "", "1");
 }
 
 /// isGlobalFlag reports the process-wide flags any sub-parser silently
@@ -289,16 +333,16 @@ pub fn absPath(app: *App, p: []const u8) ![]const u8 {
 /// can recognise a .bat/.cmd. Do NOT wrap it in `cmd.exe /c` - Zig already
 /// does that escaping, and doubling it breaks any path with spaces.
 pub fn resolveEditor(app: *App) ?[]const u8 {
-    if (app.env.get("EDITOR")) |e| {
+    if (app.getEnv("EDITOR")) |e| {
         const t = std.mem.trim(u8, e, " \t");
-        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
+        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env(), t) orelse t;
     }
-    if (app.env.get("VISUAL")) |e| {
+    if (app.getEnv("VISUAL")) |e| {
         const t = std.mem.trim(u8, e, " \t");
-        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env, t) orelse t;
+        if (t.len > 0) return proc.findInPath(app.arena, app.io, app.env(), t) orelse t;
     }
     for ([_][]const u8{ "nvim", "vim", "code", "nano", "notepad" }) |cand| {
-        if (proc.findInPath(app.arena, app.io, app.env, cand)) |p| return p;
+        if (proc.findInPath(app.arena, app.io, app.env(), cand)) |p| return p;
     }
     return null;
 }
@@ -381,14 +425,14 @@ pub fn dispWidth(s: []const u8) usize {
 pub const aliasAction = grammar.aliasAction;
 
 /// fzfEnv themes nix's own fzf children unless the user already themes fzf.
-/// Works on a fresh copy per call: mutating app.env would leak
+/// Works on a fresh copy per call: mutating app.env() would leak
 /// FZF_DEFAULT_OPTS into every later child. Failure falls back to the shared
 /// env - worse theme, never a broken picker.
 pub fn fzfEnv(app: *App) *std.process.Environ.Map {
-    if (app.env.get("FZF_DEFAULT_OPTS") != null) return app.env;
-    const copy = app.arena.create(std.process.Environ.Map) catch return app.env;
-    copy.* = app.env.clone(app.arena) catch return app.env;
-    copy.put("FZF_DEFAULT_OPTS", fzf_tokyonight_theme) catch return app.env;
+    if (app.getEnv("FZF_DEFAULT_OPTS") != null) return app.env();
+    const copy = app.arena.create(std.process.Environ.Map) catch return app.env();
+    copy.* = app.env().clone(app.arena) catch return app.env();
+    copy.put("FZF_DEFAULT_OPTS", fzf_tokyonight_theme) catch return app.env();
     return copy;
 }
 

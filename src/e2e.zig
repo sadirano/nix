@@ -536,24 +536,30 @@ pub fn main(init: std.process.Init) !void {
 
         _ = try c.run(&.{ "pa", "--resolve" });
         _ = try c.run(&.{ "pa", "--resolve" });
-        const h = readFileOr(&c, hpath, "");
+        // The file only appends; --history folds repeats into one counted row.
+        const hr = try c.run(&.{"--history"});
         var counted = false;
-        var it = std.mem.splitScalar(u8, h, '\n');
-        while (it.next()) |l| {
+        var it = std.mem.splitScalar(u8, hr.out, '\n');
+        while (it.next()) |l0| {
+            const l = std.mem.trimEnd(u8, l0, "\r");
             if (std.mem.endsWith(u8, l, line) and std.mem.startsWith(u8, l, "2\t")) counted = true;
         }
-        c.check(counted, "history counts a repeated command once, with its count", null);
+        c.check(hr.code == 0 and counted, "--history counts a repeated command once, with its count", hr);
 
         _ = try c.run(&.{ "pa", "--run", "echo", "two words" });
-        c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "--run echo \"two words\"") != null, "history keeps arguments quoted, ready to paste", null);
+        c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "--run echo 'two words'") != null, "history quotes arguments for PowerShell, ready to paste", null);
 
         _ = try c.run(&.{ "pa", "--run", "echo", "Authorization: x" });
         c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "uthorization") == null, "a line containing an [history] ignore word is not recorded", null);
 
         _ = try c.run(&.{"--which"});
+        _ = try c.run(&.{ "--as", "wsl", "--which" });
         _ = try c.run(&.{ "--quit", "--dry-run" });
         const after = readFileOr(&c, hpath, "");
-        c.check(std.mem.indexOf(u8, after, "--which") == null and std.mem.indexOf(u8, after, "--quit") == null, "--which and q are not recorded", null);
+        c.check(std.mem.indexOf(u8, after, "--which") == null and std.mem.indexOf(u8, after, "--quit") == null, "--which and q are not recorded, even behind a global flag", null);
+
+        const filtered = try c.run(&.{ "--history", "TWO WORDS" });
+        c.check(filtered.code == 0 and std.mem.indexOf(u8, filtered.out, "two words") != null and std.mem.indexOf(u8, filtered.out, "--resolve") == null, "--history <pat> keeps only matching lines", filtered);
     }
 
     // --- actions ---------------------------------------------------------------

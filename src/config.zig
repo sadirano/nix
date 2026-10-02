@@ -97,8 +97,8 @@ pub const Config = struct {
     /// a re-check. Placeholders: {alias} {message} {status} {level}.
     notify_on_paste: []const u8 = "",
     notify_on_yank: []const u8 = "",
-    /// [history] enabled: keep ~/.nix/history, a deduplicated record of every
-    /// command line nix runs. Off unless turned on.
+    /// [history] enabled: append every command line nix runs to
+    /// ~/.nix/history (read back with `nix --history`). Off unless turned on.
     history_enabled: bool = false,
     /// [history] ignore: words that keep a command line out of
     /// ~/.nix/history - any line containing one (case-insensitive) is not
