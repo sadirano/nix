@@ -80,7 +80,6 @@ x acme zig build test                      # run a command at that path
 g acme TODO                                # ripgrep search under the dir → fzf → open the hit in your editor
 g acme invoice --all                       # search inside PDFs/office docs/archives too (ripgrep-all)
 f acme config                              # fuzzy-find files under the dir → fzf → open the selection
-n acme blocked on the API key              # capture a note (n acme reads them back)
 q                                          # close this shell (see below)
 o docs@acme                                # jump to a sub-alias segment (see Sub-aliases below)
 nix acme --env                             # what the project's .nix/env.toml sets, and where each value came from
