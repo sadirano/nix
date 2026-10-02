@@ -53,6 +53,14 @@ const starter_config =
     \\#   [grep]
     \\#   all = true
     \\#
+    \\# [history] keeps ~/.nix/history: every distinct command line nix ran,
+    \\# with a count, ready to paste back. Off unless enabled. A line holding
+    \\# any `ignore` word (case-insensitive) is never written:
+    \\#
+    \\#   [history]
+    \\#   enabled = true
+    \\#   ignore = ["Auth", "token"]
+    \\#
     \\# [picker] tunes the unknown-alias 'o <name>' directory picker. When the
     \\# Everything 'es' CLI is unavailable (or installed but non-functional), the
     \\# picker walks search_roots with fd (then find) instead; unset roots default

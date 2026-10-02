@@ -957,7 +957,8 @@ pub const specs = [_]Spec{
         .safety = .safe,
         .detail =
         \\~/.nix holds aliases.toml (name -> path), config.toml
-        \\([shortcuts], [picker], [grep], [notify], [bin]), segments.toml,
+        \\([shortcuts], [picker], [grep], [notify], [bin], [history]), history
+        \\(distinct command lines, when [history] enabled), segments.toml,
         \\trusted.toml + contexts-cache.toml (context approvals and
         \\their cached results), exports.toml (what --sync-bin installed), env/
         \\(private per-alias environment layers), bin/ (the command wrappers plus

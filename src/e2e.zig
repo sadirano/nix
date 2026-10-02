@@ -516,6 +516,46 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0, "bare --which uses the cwd", r);
     }
 
+    // --- history ---------------------------------------------------------------
+    {
+        const hpath = join(&c, &.{ home, "history" });
+        const cfg_path = join(&c, &.{ home, "config.toml" });
+        const saved_cfg = readFileOr(&c, cfg_path, "");
+        defer writeFile(&c, cfg_path, saved_cfg) catch {};
+        // Off by default: nothing is written without `enabled = true`.
+        try writeFile(&c, cfg_path, "");
+        Io.Dir.cwd().deleteFile(io, hpath) catch {};
+        _ = try c.run(&.{ "pa", "--resolve" });
+        c.check(readFileOr(&c, hpath, "").len == 0, "history is off by default", null);
+
+        try writeFile(&c, cfg_path, "[history]\nenabled = true\nignore = [\"Auth\"]\n");
+        var nb: [64]u8 = undefined;
+        const base = std.fs.path.basename(c.exe);
+        const name = if (std.ascii.endsWithIgnoreCase(base, ".exe")) base[0 .. base.len - 4] else base;
+        const line = std.fmt.bufPrint(&nb, "{s} pa --resolve", .{name}) catch unreachable;
+
+        _ = try c.run(&.{ "pa", "--resolve" });
+        _ = try c.run(&.{ "pa", "--resolve" });
+        const h = readFileOr(&c, hpath, "");
+        var counted = false;
+        var it = std.mem.splitScalar(u8, h, '\n');
+        while (it.next()) |l| {
+            if (std.mem.endsWith(u8, l, line) and std.mem.startsWith(u8, l, "2\t")) counted = true;
+        }
+        c.check(counted, "history counts a repeated command once, with its count", null);
+
+        _ = try c.run(&.{ "pa", "--run", "echo", "two words" });
+        c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "--run echo \"two words\"") != null, "history keeps arguments quoted, ready to paste", null);
+
+        _ = try c.run(&.{ "pa", "--run", "echo", "Authorization: x" });
+        c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "uthorization") == null, "a line containing an [history] ignore word is not recorded", null);
+
+        _ = try c.run(&.{"--which"});
+        _ = try c.run(&.{ "--quit", "--dry-run" });
+        const after = readFileOr(&c, hpath, "");
+        c.check(std.mem.indexOf(u8, after, "--which") == null and std.mem.indexOf(u8, after, "--quit") == null, "--which and q are not recorded", null);
+    }
+
     // --- actions ---------------------------------------------------------------
     {
         try writeActions(&c, "pa", pa, if (proc.is_windows)

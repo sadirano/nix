@@ -19,6 +19,7 @@ pub const agents = @import("agents.zig");
 pub const refs = @import("refs.zig");
 pub const interrupt = @import("interrupt.zig");
 pub const proc = @import("proc.zig");
+pub const history = @import("history.zig");
 pub const hold = @import("hold.zig");
 pub const png = @import("png.zig");
 pub const winpath = @import("winpath.zig");

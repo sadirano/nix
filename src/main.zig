@@ -21,6 +21,7 @@ const app_zig = @import("app.zig");
 const init_zig = @import("init.zig");
 const picker = @import("picker.zig");
 const quit = @import("quit.zig");
+const history = @import("history.zig");
 const hold = @import("hold.zig");
 const doctor = @import("doctor.zig");
 const provenance = @import("provenance.zig");
@@ -156,10 +157,12 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
         // words belong to the action, so they must not pass setGlobalFlags or
         // any of nix's own parsing.
         if (try exports.lookupExport(app.arena, app.io, app.home, base)) |ex| {
+            history.record(app, raw_args, false);
             return run_zig.cmdExport(app, base, ex.alias, ex.action, args);
         }
         break :blk null;
     };
+    history.record(app, raw_args, if (mc_action) |a| eql(a, "quit") else false);
 
     // The colon forms, resolved AFTER argv0: a `[bin]` action export has already
     // returned above, because the caller's words belong to that action - `ship :`
@@ -1026,6 +1029,7 @@ fn writeGrammarRows(w: *Io.Writer, comptime R: type, rows: []const R) !void {
 // references, `zig build test` would only run the tests defined in main.zig.
 test {
     _ = store;
+    _ = history;
     _ = proc;
     _ = clipboard;
     _ = editor;

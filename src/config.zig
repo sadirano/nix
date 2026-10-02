@@ -97,6 +97,16 @@ pub const Config = struct {
     /// a re-check. Placeholders: {alias} {message} {status} {level}.
     notify_on_paste: []const u8 = "",
     notify_on_yank: []const u8 = "",
+    /// [history] enabled: keep ~/.nix/history, a deduplicated record of every
+    /// command line nix runs. Off unless turned on.
+    history_enabled: bool = false,
+    /// [history] ignore: words that keep a command line out of
+    /// ~/.nix/history - any line containing one (case-insensitive) is not
+    /// recorded.
+    history_ignore: []const []const u8 = &.{},
+    /// [history] which: record `nix --which` too. Off by default, because
+    /// prompts poll it.
+    history_which: bool = false,
     /// [bin] foreign: strictness for files in ~/.nix/bin that nix didn't
     /// install (see ForeignPolicy). Default warn.
     bin_foreign: ForeignPolicy = .warn,
@@ -318,6 +328,14 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             }
             if (std.mem.eql(u8, key, "on_paste")) cfg.notify_on_paste = try arena.dupe(u8, toml.unquoteLoose(val_start));
             if (std.mem.eql(u8, key, "on_yank")) cfg.notify_on_yank = try arena.dupe(u8, toml.unquoteLoose(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "history")) {
+            if (std.mem.eql(u8, key, "ignore")) {
+                cfg.history_ignore = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
+            }
+            if (std.mem.eql(u8, key, "enabled")) cfg.history_enabled = parseBool(toml.unquoteLoose(val_start));
+            if (std.mem.eql(u8, key, "which")) cfg.history_which = parseBool(toml.unquoteLoose(val_start));
             continue;
         }
         if (std.mem.eql(u8, section, "hold")) {

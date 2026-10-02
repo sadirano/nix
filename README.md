@@ -204,6 +204,14 @@ all = true
 foreign = "purge"
 ```
 
+`[history]` keeps `~/.nix/history`: every distinct command line nix was started with, one per line with a count, most used first, quoted so it pastes back into a shell (`12	x acme :build`). Exported actions are recorded too, since they run as nix. It is off unless `enabled = true`. A line containing any `ignore` word (case-insensitive) is never written; `q` is never recorded, and `nix --which` only with `which = true`, since prompts poll it. nix only writes the file:
+
+```toml
+[history]
+enabled = true
+ignore = ["Auth", "token"]
+```
+
 `[picker]` filters the unknown-alias directory picker (Everything `es` + fzf), which `o` runs in-process when you navigate to a name that isn't an alias yet. By default it excludes any path component starting with `.`, `_`, or `[`, plus dependency/build/cache trees (`node_modules`, `site-packages`, `cache`, `bin`, `obj`, `build`, `dist`, …), the Windows system trees (`C:\Windows\`, `C:\Program Files`, `AppData`, …), and store-owned install trees (`scoop\apps`, `steamapps`) — so the result cap is spent on directories worth picking.
 
 Setting `exclude` replaces the default list entirely (`exclude = []` turns filtering off); `exclude_extra` extends it — the place for machine-specific noise (TOML literal strings save the backslash-doubling):
