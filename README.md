@@ -204,7 +204,7 @@ all = true
 foreign = "purge"
 ```
 
-`[history]` appends every command line nix is started with to `~/.nix/history`, one per line, quoted for PowerShell so it pastes back unchanged. Exported actions are recorded too, since they run as nix. A run only appends, so recording costs one small write however large the file grows. `nix --history [pat]` folds the file into one row per distinct command with its count, most used first (`12	x acme :build`). It is off unless `enabled = true`. A line containing any `ignore` word (case-insensitive) is never written; `q` is never recorded, and `nix --which` only with `which = true`, since prompts poll it:
+`[history]` appends every command line nix is started with to `~/.nix/history`, one per line, quoted for PowerShell so it pastes back unchanged. Exported actions are recorded too, since they run as nix. A run only appends, so recording costs one small write however large the file grows. `nix --history [pat]` folds the file into one row per distinct command with its count, most used first (`12	x acme :build`). It is off unless `enabled = true`. A line containing any `ignore` word (case-insensitive) is never written; `q` is never recorded, and `nix --which` only with `which = true`, since prompts poll it. A script that calls nix for you (a backup resolving aliases) sets `NIX_NO_HISTORY=1` so its calls stay out:
 
 ```toml
 [history]

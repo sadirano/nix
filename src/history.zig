@@ -12,7 +12,8 @@
 //! Off unless `[history] enabled = true`. `[history] ignore` keeps any line
 //! containing one of its words (case-insensitive) off the disk. `q` is never
 //! recorded: it has nothing to replay. `nix --which` is left out unless
-//! `[history] which = true`: prompts poll it.
+//! `[history] which = true`: prompts poll it. A non-empty NIX_NO_HISTORY
+//! keeps a run out, for scripts that call nix on the user's behalf.
 
 const std = @import("std");
 const app_zig = @import("app.zig");
@@ -31,6 +32,7 @@ pub fn record(app: *App, argv: []const [:0]const u8, kind: Kind) void {
 
 fn recordImpl(app: *App, argv: []const [:0]const u8, kind: Kind) !void {
     if (argv.len == 0 or kind == .quit) return;
+    if (app.getEnv("NIX_NO_HISTORY")) |v| if (v.len > 0) return;
     // No config (or no home at all) reads as defaults, and defaults are off.
     const cfg = try app_zig.loadConfig(app);
     if (!cfg.history_enabled) return;

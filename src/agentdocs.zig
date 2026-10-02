@@ -510,7 +510,9 @@ pub const specs = [_]Spec{
         \\first; a pattern keeps only lines containing it (case-insensitive).
         \\
         \\A line containing any `[history] ignore` word is never written. `q` is
-        \\never recorded; `nix --which` only with `[history] which = true`.
+        \\never recorded; `nix --which` only with `[history] which = true`. A run
+        \\with NIX_NO_HISTORY set (non-empty) is not recorded: set it in scripts
+        \\that call nix, so the history holds what a person ran.
         ,
         .agent_use =
         \\Use it to find real commands to test with: each line pastes back into

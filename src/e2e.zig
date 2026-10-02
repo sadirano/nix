@@ -552,6 +552,11 @@ pub fn main(init: std.process.Init) !void {
         _ = try c.run(&.{ "pa", "--run", "echo", "Authorization: x" });
         c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "uthorization") == null, "a line containing an [history] ignore word is not recorded", null);
 
+        try c.env.put("NIX_NO_HISTORY", "1");
+        _ = try c.run(&.{ "pa", "--run", "echo", "from-a-script" });
+        _ = c.env.orderedRemove("NIX_NO_HISTORY");
+        c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "from-a-script") == null, "a run with NIX_NO_HISTORY set is not recorded", null);
+
         _ = try c.run(&.{"--which"});
         _ = try c.run(&.{ "--as", "wsl", "--which" });
         _ = try c.run(&.{ "--quit", "--dry-run" });
