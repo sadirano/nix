@@ -214,8 +214,7 @@ pub const specs = [_]Spec{
         ,
         .agent_use =
         \\Don't run it. The clipboard belongs to the user and may be holding
-        \\something they're mid-way through using; silently replacing it is the
-        \\kind of thing that loses work.
+        \\something they still need.
         \\
         \\If you want the path, `nix <alias>` prints it. To see what a pattern
         \\would match without touching the clipboard, use
@@ -244,8 +243,7 @@ pub const specs = [_]Spec{
         \\Don't run it. It materializes files from state you can't inspect, into
         \\a directory the user cares about.
         \\
-        \\If you need to create a file, write it directly - you know its contents,
-        \\which is strictly better than pasting something unseen.
+        \\If you need to create a file, write it directly.
         ,
         .suggest = "When the user has just copied something they'll want saved: `${cmd:p} <alias> <name>`.",
         .examples = &.{
@@ -325,8 +323,8 @@ pub const specs = [_]Spec{
         \\shortcut; never add it to a command you run yourself.
         ,
         .agent_use =
-        \\This is the command to reach for. It is safe, it is scriptable, and it
-        \\removes the cd-then-run dance from anything you tell the user to do.
+        \\This is the command to reach for: it is safe and scriptable, and it
+        \\needs no cd first.
         \\
         \\When a project grows a recurring build/test/deploy command, add it to
         \\.nix/actions.toml under [actions] and hand the user `${cmd:x} <alias>
@@ -529,8 +527,7 @@ pub const specs = [_]Spec{
         ,
         .agent_use =
         \\Use it when you are about to hand a path to a tool in another world,
-        \\rather than translating one yourself - a hand-built `/mnt/c/...` is
-        \\the kind of string that looks right and silently addresses nothing.
+        \\rather than translating one yourself.
         \\
         \\An agent running WSL-side gets its native spelling in one call:
         \\`nix acme --as wsl`. Building a markdown link to a local file wants
@@ -552,9 +549,8 @@ pub const specs = [_]Spec{
         .safe_form = "nix --no-prompt --actions [pat]",
         .needs_tools = &.{"fzf"},
         .detail =
-        \\Actions are declared per alias but invoked from anywhere, so the thing
-        \\that gets forgotten is WHICH alias owns one. `nix --actions` gathers
-        \\them all into a single fzf view (`alias  :name  command  description`);
+        \\`nix --actions` gathers every alias's actions into a single fzf view
+        \\(`alias  :name  command  description`);
         \\Enter runs the pick in its own alias dir, exactly as
         \\`nix <alias> --run :<name>` would. An optional pattern pre-filters by
         \\alias, action name, command, or description text - plain
@@ -576,9 +572,8 @@ pub const specs = [_]Spec{
         \\`nix <any-alias> --run :<name>`.
         ,
         .agent_use =
-        \\The safe form is a genuinely useful survey: it prints every action
-        \\wired up on this machine, which is the fastest way to learn what a
-        \\project can already do before writing a command of your own.
+        \\The safe form prints every action wired up on this machine; check it
+        \\before writing a command of your own.
         \\
         \\Don't run the bare form - it blocks on fzf, and a pick RUNS something.
         ,
@@ -603,9 +598,8 @@ pub const specs = [_]Spec{
         \\That -q is doctor's OWN quiet flag, unrelated to --no-prompt.
         ,
         .agent_use =
-        \\Run it when a nix command behaved unexpectedly - a missing tool is the
-        \\usual cause, and doctor names it directly instead of leaving you to
-        \\infer it from a failure.
+        \\Run it when a nix command behaved unexpectedly; it names missing tools
+        \\directly.
         ,
         .examples = &.{
             "`nix --doctor` - the full report",
@@ -627,9 +621,9 @@ pub const specs = [_]Spec{
         \\Write ${secret:NAME} into an action when it needs a credential, and
         \\tell the user to run `nix --secret set NAME` themselves.
         \\
-        \\Never run `--secret set` for them: it would put the value in your
-        \\transcript and in shell history, which is exactly what this indirection
-        \\exists to prevent. `nix --secret list` (names only, no values) is safe.
+        \\Don't run `--secret set` yourself: it reads the value from a console
+        \\with echo off, so only the user can answer it. `nix --secret list`
+        \\(names only, no values) is safe.
         ,
         .suggest = "Tell the user to store it once: `nix --secret set DEPLOY_TOKEN`.",
         .examples = &.{
@@ -757,9 +751,8 @@ pub const specs = [_]Spec{
         \\exactly as `--trust` does, so it is not yours to run either.
         ,
         .agent_use =
-        \\Prefer writing an action over handing the user a command line. It
-        \\survives being forgotten, it works from any directory, and it gives the
-        \\next agent a documented entry point.
+        \\Prefer writing an action over handing the user a command line: it
+        \\works from any directory and is listed for the next agent.
         \\
         \\An action you just wrote in a project is unapproved code like any
         \\other: running it non-interactively refuses with the `--trust`
@@ -769,8 +762,7 @@ pub const specs = [_]Spec{
         \\user.
         \\
         \\Write the comment above it too, especially when the command is long,
-        \\slow, or not reversible - that line is what the user reads in the
-        \\listing months later, and it is the only place the WHY can live.
+        \\slow, or not reversible - it is shown in every listing.
         \\
         \\Creating .nix/actions.toml and .nix/scripts/ inside a project is
         \\encouraged - unlike ~/.nix state, these belong to the repo.
@@ -884,14 +876,12 @@ pub const specs = [_]Spec{
         ,
         .agent_use =
         \\Read it before assuming a command needs configuring: `nix <alias> --env`
-        \\is safe, prints no credentials, and is often the answer to "why does
-        \\this work for them and not in my shell". Inside a command started by
+        \\is safe and prints no credentials. Inside a command started by
         \\`--run`, the variables are simply there - don't re-read the file.
         \\
         \\Writing a project's .nix/env.toml is encouraged, like actions.toml. Put
         \\a ${secret:NAME} reference in it for anything credential-shaped and
-        \\tell the user to run `nix --secret set NAME`; a literal token in a
-        \\committed file is the thing this design exists to prevent.
+        \\tell the user to run `nix --secret set NAME`, never a literal token.
         \\
         \\A file you just wrote is unapproved code like any other: it will not
         \\inject until the user runs --trust, which is theirs to run.
@@ -952,9 +942,8 @@ pub const specs = [_]Spec{
         \\
         \\Do not run `--trust` on the user's behalf - and you cannot: it prints
         \\everything it would approve, asks once, and refuses outright without a
-        \\console, which is the position your shell is in. It is an approval
-        \\gesture, and approving a script you just wrote defeats the check
-        \\entirely. The bare `nix --trust <alias>` form covers the alias's
+        \\console, which is the position your shell is in. The bare
+        \\`nix --trust <alias>` form covers the alias's
         \\project actions and scripts as well as its context sources: it is the
         \\user saying they have read the repo.
         ,
