@@ -37,12 +37,12 @@ zig build run -- --list                    # run the freshly built exe
 
 - **Always use the portable flags for anything a user will run.** A native build
   bakes the dev machine's CPU extensions in and dies with an illegal instruction
-  elsewhere; that is what broke a Scoop install once.
+  on machines without them.
 - **`zig build ci` is the gate**, and `.githooks/pre-push` calls it
   (`git config core.hooksPath .githooks` enables it; `NIX_SKIP_PREPUSH=1` skips
   one push). It runs, in order: `zig fmt --check`, the release-script selftests,
   unit tests, e2e, the portable build, and a linux cross-compile canary. Run it
-  before pushing so `fix: zig fmt` never becomes a commit again.
+  before pushing.
 - `.github/workflows/ci.yml`'s Windows job deliberately has a single
   `zig build ci` step. If a check moves, build.zig and the workflow move together
   or it stops being a gate. A second, ubuntu job runs `zig build test` and
@@ -129,10 +129,8 @@ Anything that arrives with a `git clone` - `.nix/actions.toml`, `.nix/scripts/`,
 the first run shows the command and asks, and **without a console it refuses**.
 An agent's shell is such a console-less case, so an action you just wrote will
 not run for you until the user runs `nix --trust <alias>`. That is the gate
-working. `--trust` is never yours to add - and it will
-not have you either: it is the gate's batch answer, so it prints everything it
-would approve, asks once, and refuses without a console for the same reason
-the gate does.
+working. `--trust` is never yours to run: it prints everything it would
+approve, asks once, and refuses without a console.
 
 ### Other load-bearing modules
 
