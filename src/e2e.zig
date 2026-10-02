@@ -1743,6 +1743,13 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--sync-bin"});
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "call itself") != null, "an export whose action runs the export is refused", r);
 
+        // ...but an action that runs a FILE export (an exe or script, not nix)
+        // is a plain call: `quota = "gaze quota"` over a `gaze` exe export.
+        try writeFile(&c, join(&c, &.{ pa, "tool.cmd" }), "@echo tool %*\r\n");
+        try writeActions(&c, "pa", pa, "[actions]\nwrap = \"tool --x\"\n[bin]\ntool = \"tool.cmd\"\nwrapped = \":wrap\"\n");
+        r = try c.run(&.{"--sync-bin"});
+        c.check(std.mem.indexOf(u8, r.err, "call itself") == null, "an action export running a file export is not called a loop", r);
+
         // Dropping the [bin] table prunes the installed copies.
         try writeActions(&c, "pa", pa, restore);
         r = try c.run(&.{"--sync-bin"});

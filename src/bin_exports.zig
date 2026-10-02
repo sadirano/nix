@@ -388,8 +388,11 @@ pub fn buildPlan(app: *App) !Plan {
             continue;
         }
         const head = firstWord(run.stripSudo(ex.command) orelse ex.command);
+        // Only an ACTION export re-enters nix. A copied exe or a script
+        // forwarder just runs that program, so `quota = 'gaze quota'` over a
+        // `gaze` exe export is a call, not a cycle.
         var loops = false;
-        for (keep.items) |other| if (store.eqlFoldAscii(head, other.name)) {
+        for (keep.items) |other| if (other.kind == .action and store.eqlFoldAscii(head, other.name)) {
             loops = true;
         };
         if (loops) {
