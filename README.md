@@ -37,7 +37,7 @@ The Scoop package pulls in the tools the interactive commands lean on (`bat`, `f
 
 Each tagged release publishes a Windows `.zip` on the [Releases](https://github.com/sadirano/nix/releases) page — download, unpack, put `nix.exe` on your `PATH`, then run `nix --init`.
 
-**Prefer Scoop if you can.** The binaries are unsigned, and a browser download of an unsigned `.zip` is what antivirus scanners weigh hardest; installing through Scoop avoids that path, verifies the published hash for you, and makes `scoop update nix` the way you get the next version. Releases are built entirely in public CI on GitHub-hosted runners by [`.github/workflows/release.yml`](.github/workflows/release.yml), with every build's log public under [Actions](https://github.com/sadirano/nix/actions) — or skip binaries altogether and build it yourself, which is one command.
+**Prefer Scoop if you can.** The binaries are unsigned; Scoop verifies the published hash for you, and makes `scoop update nix` the way you get the next version. Releases are built entirely in public CI on GitHub-hosted runners by [`.github/workflows/release.yml`](.github/workflows/release.yml), with every build's log public under [Actions](https://github.com/sadirano/nix/actions) — or skip binaries altogether and build it yourself, which is one command.
 
 ### Build from source
 
@@ -91,7 +91,7 @@ nix acme --remove                          # forget the alias
 
 An unknown name after `o` runs the directory picker (`es`/`fd` + fzf): pick a directory and it's registered and entered in one step.
 
-**Repointing an existing alias asks first.** The alias file is the only record of where a name pointed, so overwriting one silently is how that path gets lost — a mistyped `o proj .` in the wrong directory, and the original is gone with nothing to restore it from. Registering the path an alias *already* has stays a silent no-op; changing it shows both paths and waits for `y`. Unattended (`--no-prompt`, or a pipe) it refuses rather than guessing; `nix <alias> --remove` first is how a script says it meant it. Registration also refuses an argument that can't name a directory at all, so a stray token can't take an alias down with it.
+**Repointing an existing alias asks first**, since the alias file is the only record of where a name pointed. Registering the path an alias *already* has stays a silent no-op; changing it shows both paths and waits for `y`. Unattended (`--no-prompt`, or a pipe) it refuses rather than guessing; `nix <alias> --remove` first is how a script says it meant it. Registration also refuses an argument that can't name a directory at all, so a stray token can't take an alias down with it.
 
 On Windows every command is a standalone `.exe` wrapper, so they all work from any prompt with no shell glue; `o` stacks a new shell rooted at the target (with the project's `.nix/scripts` on PATH — exit it to land back where you were). On Unix-likes `o` is a shell function that cd's your current shell in place.
 
@@ -141,7 +141,7 @@ nix already waits for the things worth measuring — an `o` session until its su
 
 The ledger is plain text for your own reports to read; nix writes it and never displays it. Detached (`--outside`) and elevated runs record nothing: nix returns as soon as the window is up, so there is no finish to observe.
 
-It is measurement, never inference. A shell left open overnight is logged at its real fourteen hours and marked `*`, with the total given both with and without it — a cap would be tidier and would record a session nobody had. Like `usage`, the ledger is machine-local.
+Durations are written as measured, never capped: a shell left open overnight is logged at its full length. Like `usage`, the ledger is machine-local.
 
 ### Path dialects
 
@@ -268,7 +268,7 @@ Encountering an unknown segment defines it for you (seeded with a `[[contexts]]`
 
 ### Wildcard segments — let the directory tree decide the path
 
-Sometimes the answer is already on disk. Tickets live under clients — `tasks/<client>/<ticket>` — and a ticket number is unique on its own, so asking for the client too is asking you to remember something the folders already know. Put a `*` in the template and nix searches instead of naming:
+When a value is unique within a tree — tickets under per-client folders, `tasks/<client>/<ticket>` — put a `*` in the template and nix searches instead of naming:
 
 ```toml
 # ~/.nix/segments/tasks.toml
@@ -305,7 +305,7 @@ source-template = "/**/${t=*}"
 
 `**` is the one form that can wander, so it is fenced three ways. It never descends into a folder that already matched, so a ticket's own `attachments/1` is not a second ticket 1 and a ticket's contents are never read. `depth` bounds how many levels it goes down. And a search that would open more than 5,000 folders stops and says so, instead of offering a menu (or a "no match") drawn from part of the tree. A `*` needs none of this: each one is exactly one level, so a template is as deep as it is written. Loose files cost little either way — nix reads a folder's entries in 64 KB batches and never asks about a file individually — and a value with no `*` in it (`t:1`) is looked up by name, not by reading the folder at all.
 
-The answer follows the same rule a source's menu does: one match navigates, several open the picker (unattended, they print and exit non-zero; name a more specific value or the parent segment), none is an error that names the pattern. Links and junctions to folders count as folders and are followed, wherever they point — linking a client's share into a project is a normal thing to do, and a menu that skipped it would be cut short; a loop through a link is bounded by `depth` and the 5,000-folder fence. A folder that cannot be read does not stop the search: the rest is still shown, with a note naming the folder whose entries may be missing. `*` never matches a leading `.`, so `.nix` and `.git` never turn up as clients. A `*` that arrives inside a variable's value stays literal, and the pattern is fenced to the alias before anything is listed. Nothing runs, so unlike `run` a wildcard needs no approval.
+The answer follows the same rule a source's menu does: one match navigates, several open the picker (unattended, they print and exit non-zero; name a more specific value or the parent segment), none is an error that names the pattern. Links and junctions to folders count as folders and are followed, wherever they point; a loop through a link is bounded by `depth` and the 5,000-folder fence. A folder that cannot be read does not stop the search: the rest is still shown, with a note naming the folder whose entries may be missing. `*` never matches a leading `.`, so `.nix` and `.git` never turn up as clients. A `*` that arrives inside a variable's value stays literal, and the pattern is fenced to the alias before anything is listed. Nothing runs, so unlike `run` a wildcard needs no approval.
 
 ### Context sources (`run`) — let a script decide the path
 
@@ -324,9 +324,7 @@ x task:123@project agent     # runs set_vars 123 -> client_name=acme
                              # cd <project>/acme/123, then runs `agent` there
 ```
 
-Never having to remember which client ticket 123 belonged to is the point.
-
-**A source can answer with a menu.** Some questions have several right answers — *which* of my open tickets, *which* PR worktree, *which* sprint directory. Write more than one block, separated by a `---` line, and the segment becomes a picker:
+**A source can answer with a menu** (open tickets, PR worktrees, sprint directories). Write more than one block, separated by a `---` line, and the segment becomes a picker:
 
 ```
 _display=PROJ-123  Fix login flow
@@ -342,7 +340,7 @@ client_name=initech
 o ticket@acme     # fzf offers your open tickets; the pick becomes the path
 ```
 
-`_display` is the row you pick by and is never exported as a variable — a block that names none falls back to its first value. **Activation is by count, not by config**: one block navigates silently (which is every source written before this existed), several open the picker, none is an error naming the script. The winning block's variables then behave exactly as a single answer's do — they feed `source-template` and reach the child environment.
+`_display` is the row you pick by and is never exported as a variable — a block that names none falls back to its first value. **Activation is by count, not by config**: one block navigates silently, several open the picker, none is an error naming the script. The winning block's variables then behave exactly as a single answer's do — they feed `source-template` and reach the child environment.
 
 An **inline value never prompts**: `o ticket:123@acme` passes 123 as `$NIX_SEGMENT_VALUE` and the script is expected to answer with that one; if it answers with several anyway, the first is used and the ambiguity is reported rather than hidden. Under `--no-prompt` (or any shell without a console) several candidates print their rows and exit non-zero — the standard show-and-refuse contract, with the inline form named as the way through. Menus are **stateless**: nix never preselects your last pick, because repeating a destination is what the inline form is for.
 
@@ -498,7 +496,7 @@ Write `sudo` in front of the command. That's the whole syntax:
 install = "sudo .\\scripts\\install-service.ps1"
 ```
 
-`x acme :install` raises a UAC prompt and, once you accept, runs the command in an **elevated console of its own** — elevation hands back a process under a different token, and that process cannot write into this terminal, so pretending otherwise would just lose the output. The window opens in the alias directory and stays open so you can read it; nix reports `started acme :install (elevated)` and returns immediately. There's no exit code to wait for and no `[notify]` hook, for the same reason `--outside` has neither.
+`x acme :install` raises a UAC prompt and, once you accept, runs the command in an **elevated console of its own** — elevation hands back a process under a different token, and that process cannot write into this terminal. The window opens in the alias directory and stays open so you can read it; nix reports `started acme :install (elevated)` and returns immediately. There's no exit code to wait for and no `[notify]` hook, for the same reason `--outside` has neither.
 
 The marker has to be the first word — it elevates the command, not one link of a `&&` chain — and it survives into listings, so `x acme :` and the palette both show which actions will prompt. Since the elevated shell is the administrator's session, not yours, nix writes the alias context (`NIX_ALIAS`, `NIX_ALIAS_PATH`, and the `.nix/scripts` directories *prepended* to the admin's `PATH`) into the command as a `set` prelude. Answering "No" to UAC is reported as `elevation declined - nothing was run`. On non-Windows nothing is intercepted: there `sudo` is a real program and the line runs as written.
 
@@ -510,11 +508,11 @@ nix: :install will run as ADMINISTRATOR:
 Run it elevated? [y/N]
 ```
 
-A remembered "yes" would mean an administrator command line nobody has read since the day it was approved, which is exactly the thing worth reading. Unattended — piped, redirected, or under `--no-prompt` — an elevated action refuses rather than running; it could never have answered UAC anyway.
+Unattended — piped, redirected, or under `--no-prompt` — an elevated action refuses rather than running; it could never have answered UAC anyway.
 
 #### Vetted lines: `[confirm] trusted`
 
-That reasoning holds for an action that runs *whatever it is handed* — a passthrough like `sudo = "sudo {args}"` — and buys nothing for a fixed line you wrote once and re-read every time you type its name. `hosts` opens one file; there is no hidden command for the prompt to reveal. List those in `config.toml` and nix stops asking:
+For a fixed line you wrote yourself (`hosts` opens one file), the prompt shows nothing new. List those in `config.toml` and nix stops asking:
 
 ```toml
 [confirm]
@@ -528,7 +526,7 @@ The list lives in `config.toml`, not in an actions file, and that is deliberate:
 
 #### Missing directories: `[confirm] create_dirs`
 
-When a path nix is about to use does not exist (registering `nix acme C:\new`, an alias whose folder was moved, a `seg@alias`), it asks `Create it? [Y/n]`; Enter creates it. Without a console (an agent's shell, a script, `--no-prompt`) it refuses and creates nothing, so a typo cannot quietly become an empty folder that the next write lands in. If you never want the question yourself:
+When a path nix is about to use does not exist (registering `nix acme C:\new`, an alias whose folder was moved, a `seg@alias`), it asks `Create it? [Y/n]`; Enter creates it. Without a console (an agent's shell, a script, `--no-prompt`) it refuses and creates nothing. If you never want the question yourself:
 
 ```toml
 [confirm]
@@ -547,23 +545,23 @@ nix: acme's :ship wants to run:
 Approve these files as they stand, and run? [y/N/e=open in editor]
 ```
 
-**The command is rarely the whole story**, so the prompt names the project files it runs, and `e` opens all of them in your editor before you answer. A one-line command invoking a Python file tells you nothing about what that file does, and a prompt answerable only from the summary trains you to approve summaries. (A GUI editor hands control back immediately rather than when you close the window, so the question returns while the file is still open — nix names the editor it launched instead of pretending it can tell when you've finished reading.)
+The prompt names the project files the command runs, and `e` opens all of them in your editor before you answer. (A GUI editor hands control back immediately rather than when you close the window, so the question returns while the file is still open — nix names the editor it launched instead of pretending it can tell when you've finished reading.)
 
-Those referenced files are part of the approval, not just the display: editing `deploy.py` re-arms the gate even though `actions.toml` never changed. The detection is deliberately shallow, and worth knowing precisely — it sees what the *command line* names, not what those files then call, so a script invoking a second script is one level beyond it. Only files inside the project count; an absolute path or a `..` escape is ignored. At most 8 scripts per command are tracked; a command naming more gets a note in the prompt saying the rest are not covered. And only **reviewable source** counts — `.py`, `.sh`, `.ps1`, `.cmd`, `.js` and friends. Compiled output is excluded on purpose: this repo's own `sync` action runs `zig-out\bin\nix.exe`, and hashing that would re-arm approval on every rebuild, which is precisely how someone learns to hit `y` without looking.
+Those referenced files are part of the approval, not just the display: editing `deploy.py` re-arms the gate even though `actions.toml` never changed. The detection is deliberately shallow, and worth knowing precisely — it sees what the *command line* names, not what those files then call, so a script invoking a second script is one level beyond it. Only files inside the project count; an absolute path or a `..` escape is ignored. At most 8 scripts per command are tracked; a command naming more gets a note in the prompt saying the rest are not covered. And only **reviewable source** counts — `.py`, `.sh`, `.ps1`, `.cmd`, `.js` and friends. Compiled output is excluded on purpose: this repo's own `sync` action runs `zig-out\bin\nix.exe`, and hashing that would re-arm approval on every rebuild.
 
 Approving records those files' **current bytes**, so it runs silently from then on — until a `git pull` rewrites any of them, which re-arms the prompt. That's the same hash discipline context sources and `[bin]` exports already use: what you approved is the text you read, not the filename. `nix --trust <alias>` approves an alias's actions, its `.nix/scripts`, and its context sources in one gesture, which is the sane way to take on a fresh clone; `nix --doctor` lists which aliases are still waiting.
 
-**Approval is per action, and it is of the bytes on disk right now.** Two consequences worth stating plainly. Editing one action re-arms *that* action and leaves its siblings alone — approving `:build` is not a statement about `:deploy`, and a file-wide record would re-arm everything in a project every time any line moved, which is the fastest known way to teach someone to stop reading the prompt. And re-approving *supersedes* the old record rather than adding to it, so reverting a file to a version you once approved still asks: trust means "these bytes now", not "these bytes at some point in the past". Arguments are not part of the record — `x acme :build -- --release` is the same approval as `x acme :build`, because what arrived with the clone is the action, and the arguments came from you.
+**Approval is per action, and it is of the bytes on disk right now.** Editing one action re-arms *that* action and leaves its siblings alone. Re-approving *supersedes* the old record rather than adding to it, so reverting a file to a version you once approved still asks: trust means "these bytes now", not "these bytes at some point in the past". Arguments are not part of the record — `x acme :build -- --release` is the same approval as `x acme :build`, because what arrived with the clone is the action, and the arguments came from you.
 
-**`--trust` is held to the gate's own standard**, because it is the gate's batch answer. It prints every action it would approve with its command text, every script those commands run, `env.toml` and each context source — then asks once, with the same `y/N/e` the inline prompt offers, and writes nothing until you say yes. A batch approval that showed you nothing would be strictly weaker than the `y` it replaces, which at least prints the one command it covers.
+**`--trust` shows what it approves.** It prints every action it would approve with its command text, every script those commands run, `env.toml` and each context source — then asks once, with the same `y/N/e` the inline prompt offers, and writes nothing until you say yes.
 
 Only the layer that travels is gated. `~/.nix/actions/<alias>.toml`, `_default.toml`, `~/.nix/scripts`, a project that lives under `~/.nix`, and anything you type as a literal command (`x acme git status`) run untouched — they're under your home directory or you wrote them just now, and there the provenance is you. Scripts get the same treatment as the actions file beside them, since gating `:build` while leaving `x acme build` open would only move the unreviewed code one filename over.
 
-**Nothing can approve on your behalf** — including `--trust` itself. Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead; run `--trust` in one of those and it refuses too, saying it needs a console because it exists to record that a *person* read this. That's deliberate: an agent approving a repo it just cloned is the check approving itself. It is a consent boundary rather than a security one — anything running as you can append to `trusted.toml` directly — but the ordinary way of granting trust now needs the person whose trust it is.
+**Nothing can approve on your behalf** — including `--trust` itself. Under `--no-prompt`, a pipe, or the palette's parallel fan-out (which has no terminal to ask in), the gate refuses and prints the `--trust` line instead; run `--trust` in one of those and it refuses too, saying it needs a console because it exists to record that a *person* read this. It is a consent boundary rather than a security one — anything running as you can append to `trusted.toml` directly — but the ordinary way of granting trust now needs the person whose trust it is.
 
 #### Standing trust, for repos you write
 
-Everything above is built for code that *arrived*. For a repo you are actively writing, the same discipline inverts: every edit re-arms the gate, so the prompt stops asking a question you don't know the answer to and starts asking one you do, several times a day. That is how `y` becomes a reflex — one project here accounted for 43 of the 100 rows in `trusted.toml`.
+Everything above is built for code that *arrived*. In a repo you are writing yourself, every edit re-arms the gate, so the prompt keeps asking about changes you made.
 
 So an alias can be trusted **by name**, once:
 
@@ -578,11 +576,11 @@ It spells out the reach before asking, and on a yes it writes the name into `~/.
 always = ["jpmine", "jap"]
 ```
 
-From then on that alias never raises the gate — not for its actions, its `.nix/scripts`, its `env.toml` or its context sources; not for edits made after the grant; and not in a shell with no console, which is the part that matters, since most of those edits come from an agent session. Be clear about what you're buying: an agent can edit a script in a standing-trusted repo and then run it without you having seen the change. That is the point for a repo you own, and exactly why the grant is per alias and opt-in rather than per parent directory — a directory would also trust whatever gets cloned into it next year.
+From then on that alias never raises the gate — not for its actions, its `.nix/scripts`, its `env.toml` or its context sources; not for edits made after the grant; and not in a shell with no console. Be clear about what you're buying: an agent can edit a script in a standing-trusted repo and then run it without you having seen the change. That is the point for a repo you own, and exactly why the grant is per alias and opt-in rather than per parent directory — a directory would also trust whatever gets cloned into it next year.
 
 Two things it deliberately does not do. It **does not waive the elevated confirmation**: a `sudo` action still shows its line every run, because UAC names the shell rather than the command and that prompt is the only place the command is ever displayed. (`[confirm] trusted` remains the way to waive that one, for a specific action name.) And it **does not touch the per-file ledger**: delete the name from `config.toml` and the gate comes back exactly as strict as it was, with whatever was approved before still approved.
 
-Granting it needs a console, same as `--trust`, so an agent cannot standing-trust the repo it is editing. `nix --doctor` lists which aliases have it — a grant that outlives the session that made it has to be findable by someone who has forgotten making it.
+Granting it needs a console, same as `--trust`, so an agent cannot standing-trust the repo it is editing. `nix --doctor` lists which aliases have it.
 
 ### Failures don't vanish from a shortcut
 
@@ -609,7 +607,7 @@ The window then waits for a key whatever the outcome, with no timeout, and even 
 
 ### The palette (`nix --actions`)
 
-Actions are declared per alias but invoked from anywhere, so the thing you forget is rarely the command — it's *which alias owns it*. `nix --actions` (`-A`) gathers every alias's actions into one fzf view and runs the pick in its own directory:
+`nix --actions` (`-A`) gathers every alias's actions into one fzf view and runs the pick in its own directory:
 
 ```powershell
 x :                              # the shorthand: any nix command + a bare `:`
@@ -629,7 +627,7 @@ Enter runs the pick exactly as `x <alias> :<name>` would — same three-layer me
 
 **A bare `:` is the shortest way in**, from any command: `x :`, `o :`, `nix :` all open the palette, and anything after it pre-filters (`x : deploy`). It's the alias-less form of `x <alias> :` — the same colon, one scope wider: with an alias in front it opens that project's actions, without one it opens every project's. Nothing was given up to allow it, since `:` was never a legal alias name.
 
-**With an alias in front, every command answers the same.** `o acme :`, `e acme :`, `y acme :` and `x acme :` all open the picker scoped to acme, with Tab multi-select just like the global palette — one pick runs here, several fan out into a window each. The command you happened to type is irrelevant once the colon is the only thing you said about the alias, which is why `o acme :` no longer tries to register `:` as acme's path. A trailing `:` never navigates, either: it answered a question, and stacking a shell on top of that would be two things from one word.
+**With an alias in front, every command answers the same.** `o acme :`, `e acme :`, `y acme :` and `x acme :` all open the picker scoped to acme, with Tab multi-select just like the global palette — one pick runs here, several fan out into a window each. A trailing `:` never navigates or registers a path.
 
 Where nobody can answer a picker — `--no-prompt`, a pipe, a script, an agent's shell — it prints the table instead of opening fzf, which is what `x <alias> :` always did. Same if fzf isn't installed.
 
@@ -653,7 +651,7 @@ on_finish = 'hoot send "{message}" --tag {alias} --level {level}'
 
 The template runs in the alias dir after the action exits, with placeholders expanded: `{alias}`, `{action}`, `{exit}`, `{status}` (`ok`/`fail`), `{duration}` (`850ms`, `12s`, `1m23s`), `{level}` (`info` on success, `warn` on failure — so a level-aware notifier keeps success quiet and toasts failure), and `{message}` (a composed one-liner, e.g. `:build failed (exit 2) after 1m23s`). Like `[nav] terminal`, it's tokenized and spawned directly rather than through a shell, and expansion happens per token — so a bare `{message}` stays a single argument, quoted or not; prefix `cmd /c` (or `sh -c '…'`) if you really want shell operators. The hook also sees `NIX_ALIAS`, `NIX_ACTION`, `NIX_ACTION_EXIT`, and `NIX_ACTION_DURATION_MS` in its environment, so it can just as well be a bare script name from `.nix/scripts`. It's an observer only: its own exit code is ignored and the action's is passed through untouched. Detached runs (`x <alias> -o :serve`) and literal commands (`x <alias> <cmd>`) don't notify — the hook is for the named, repeatable things.
 
-**Not everything deserves a toast.** A hook that fires for a 40ms window-close as eagerly as for a 22-minute build turns the notification channel into noise, and a channel nobody reads costs you the failure reports the feature exists to deliver. Two keys keep it to the things worth hearing about:
+**Filtering.** Two keys limit what reports:
 
 ```toml
 [notify]
@@ -661,9 +659,9 @@ on_finish_min_ms = 2000              # succeeded faster than this? stay quiet
 on_finish_skip   = ["q", "acme:test"]  # never report these at all
 ```
 
-They cover different things. `on_finish_min_ms` is about *cost* — below the threshold, silence — but a **failure always reports however fast it was**, because `:build` dying in 300ms is the most useful notification of the day. `on_finish_skip` is about *identity*: an action on the list is never reported, however long it ran and however it ended, since an irrelevant action's exit code is irrelevant too. A bare name matches that action in every alias (one line silences a `[bin]`-exported action used from everywhere); `alias:action` matches only there, for the project whose own `:q` means something slow and important. `nix --doctor` prints both, so a hook that is firing less than you expected doesn't look like a broken notifier.
+They cover different things. `on_finish_min_ms` is about *cost* — below the threshold, silence — but a **failure always reports however fast it was**. `on_finish_skip` is about *identity*: an action on the list is never reported, however long it ran and however it ended, since an irrelevant action's exit code is irrelevant too. A bare name matches that action in every alias (one line silences a `[bin]`-exported action used from everywhere); `alias:action` matches only there, for the project whose own `:q` means something slow and important. `nix --doctor` prints both, so a hook that is firing less than you expected doesn't look like a broken notifier.
 
-Two sibling keys record what the clipboard commands actually did, for the "wait, what exactly did that copy?" moments — no more re-checking:
+Two sibling keys record what the clipboard commands did:
 
 ```toml
 [notify]
@@ -673,11 +671,11 @@ on_yank  = 'hoot send "{message}" --tag {alias}'   # yanked path C:/work/acme ·
 
 They fire only on success (a failed `p`/`y` already has your eyes on it) with `{alias}`, `{message}`, `{status}` (`ok`), and `{level}` (`info`) — quiet log entries, never toasts, made to be read back later from the notifier's inbox.
 
-For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `x acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and — best of all — **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
+For full scripts rather than one-liners, drop an executable in the alias's `.nix/scripts/` (or the central `~/.nix/scripts/`) and run it by bare name — `x acme build` runs `<acme>/.nix/scripts/build.cmd`. The scripts dir is put on `PATH` in any alias context, so a project `build` shadows a global one, scripts can call each other, and **inside an `o acme` shell the project's own `build`/`clean`/… just work as commands**, with no global versions and scoped to that shell (exit it and they're gone). Project-local first, then central; on Windows the extension (`.cmd`/`.bat`/`.exe`/`.ps1`) is resolved for you.
 
 ## Per-project environment (`.nix/env.toml`)
 
-A project usually needs more than a command: it needs a connection string, a region, an API base URL. Those belong to the *directory*, not to whichever shell you happened to open — which is what direnv solved on Unix and what nothing solved on Windows. nix already runs everything through one place, so the variables go there:
+A project usually needs more than a command: it needs a connection string, a region, an API base URL. Those belong to the *directory*, not to whichever shell you happened to open (direnv's job on Unix):
 
 ```toml
 # <alias-dir>/.nix/env.toml   (commit it with the project)
@@ -713,9 +711,9 @@ env for acme
   DATABASE_URL  central  postgres://box.local:5433/acme
 ```
 
-**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. What nix guarantees is that the secret stays out of plain sight: out of `env.toml` and `actions.toml`, out of your shell history, and out of every listing — `--env` prints the reference (and tells you when nothing is stored under it). Once a command is spawned the value belongs to the program it was handed to, and nix does not try to protect it further. From `env.toml` it arrives as an environment variable; written into an action's command line it becomes part of that command line, which other programs on the machine can read (Task Manager shows it). Prefer `env.toml` when the program reads its credential from the environment, and put `${secret:NAME}` in the command when the program only takes it as an argument — that is a supported use, not a misuse. Manage secret values using `nix --secret set <NAME>` (prompts securely for the value and stores it in the Windows Credential Manager), `nix --secret rm <NAME>`, and `nix --secret list` (lists stored secret names only, never values). On an `x`, an unresolvable name **aborts before the spawn**: a half-configured run is worse than none, because it looks like it worked. On an `o` it warns, drops that one variable, and still takes you there — a session you can't enter is not a safer session.
+**Credentials stay out of the file.** A value is literal text with one exception: `${secret:NAME}` is resolved from the Windows Credential Manager at the moment a command is spawned, exactly as it is in an action's command line. What nix guarantees is that the secret stays out of plain sight: out of `env.toml` and `actions.toml`, out of your shell history, and out of every listing — `--env` prints the reference (and tells you when nothing is stored under it). Once a command is spawned the value belongs to the program it was handed to, and nix does not try to protect it further. From `env.toml` it arrives as an environment variable; written into an action's command line it becomes part of that command line, which other programs on the machine can read (Task Manager shows it). Prefer `env.toml` when the program reads its credential from the environment, and put `${secret:NAME}` in the command when the program only takes it as an argument — that is a supported use, not a misuse. Manage secret values using `nix --secret set <NAME>` (prompts securely for the value and stores it in the Windows Credential Manager), `nix --secret rm <NAME>`, and `nix --secret list` (lists stored secret names only, never values). On an `x`, an unresolvable name **aborts before the spawn**. On an `o` it warns, drops that one variable, and still takes you there.
 
-`PATH`, `PATHEXT`, `COMSPEC` and anything starting with `NIX_` are refused, and say so. PATH is composed by `.nix/scripts` and `[bin]`, which nix rebuilds on every run; a value set here would be both overridden and later removed as stale. Names that aren't shell-referenceable at all (`my key`, `1BAD`) are refused for the same reason: a variable that silently never arrives costs an afternoon.
+`PATH`, `PATHEXT`, `COMSPEC` and anything starting with `NIX_` are refused, and say so. PATH is composed by `.nix/scripts` and `[bin]`, which nix rebuilds on every run; a value set here would be both overridden and later removed as stale. Names that aren't shell-referenceable at all (`my key`, `1BAD`) are refused too.
 
 **The committed file is gated, like everything else that arrives with a clone.** `.nix/env.toml` steers every command the project later runs, so until you approve its bytes it sets nothing — and nix says so once, then runs anyway:
 
@@ -724,7 +722,7 @@ nix: C:\code\acme\.nix\env.toml has not been approved - its variables were NOT s
   read it, then run:  nix --trust acme env
 ```
 
-It never refuses the command or the navigation over an environment file; being unable to reach a directory is a worse outcome than reaching it under-configured, and the message says which it was. `nix --trust acme` approves it along with the project's actions, scripts and context sources; `nix --trust acme env` approves just this file. Any edit re-arms it. The file gets its own approval record on purpose — sharing actions.toml's would mean every unrelated action edit re-armed the environment too, and being asked to re-approve something several times a day is how people learn to answer `y` without looking. The central layer is under `~/.nix` and is never gated: you wrote it.
+It never refuses the command or the navigation over an environment file; the message says the variables were skipped. `nix --trust acme` approves it along with the project's actions, scripts and context sources; `nix --trust acme env` approves just this file. Any edit re-arms it. The file has its own approval record, so editing an action does not re-arm it. The central layer is under `~/.nix` and is never gated: you wrote it.
 
 `nix --doctor` has an Env section listing which aliases have layers, which are waiting for approval, which names were refused, and which referenced secrets have no value stored yet.
 
@@ -732,7 +730,7 @@ An **elevated** (`sudo`) action gets the environment too, secrets included. Elev
 
 ## Global tools (`[bin]` exports)
 
-A tool you build in one aliased project usually wants to be runnable from every other one — without hardcoding absolute paths at call sites or dumping it into some PATH folder that slowly rots. Declare it in the project's committed `.nix/actions.toml`:
+To make a tool built in one project runnable from anywhere, declare it in the project's committed `.nix/actions.toml`:
 
 ```toml
 [bin]
@@ -790,7 +788,7 @@ foreign = "warn"    # default: report it in --sync/--doctor, but never delete it
 
 `nix --doctor` reports the full picture: an export whose alias or source is gone, a new version awaiting your OK, an export edited in place, a declared export not yet installed, and any foreign file in `~/.nix/bin`.
 
-**[The cookbook](COOKBOOK.md)** collects the recipes this pattern is good for — an ad-hoc `sudo`, a `q` that closes the shell you typed it in, a `ps1` runner — plus the handful of things that bite people writing their first `_default.toml`.
+**[The cookbook](COOKBOOK.md)** collects the recipes this pattern is good for — an ad-hoc `sudo`, a `q` that closes the shell you typed it in, a `ps1` runner — plus common mistakes in a first `_default.toml`.
 
 ## Tab completion
 
