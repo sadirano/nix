@@ -159,8 +159,8 @@ pub fn runDetachedEnv(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_win
 /// applies to argv (a `"` becomes `\"`) is not what cmd's parser reads, so a
 /// command containing quotes would arrive mangled. Everything after `/k` is
 /// copied untouched, and cmd sees exactly what the user typed into actions.toml.
-/// `/k` rather than `/c`: the window is the point, and it must survive the
-/// command so its output can still be read.
+/// `/k` rather than `/c`: the window must survive the command so its output
+/// can still be read.
 ///
 /// Elsewhere there is no portable "open a terminal", so the command is simply
 /// detached with its output discarded, the `--outside` shape.
@@ -238,7 +238,7 @@ fn inheritableStdHandle(which: u32) ?*anyopaque {
 ///
 /// `/d` skips the AutoRun registry command. AutoRun sets up an interactive
 /// console (clink, doskey macros); this shell runs one command and exits, and
-/// with AutoRun every action paid ~14 ms and an extra process before starting.
+/// with AutoRun every action would pay an extra process before starting.
 pub fn runShellInherit(
     arena: std.mem.Allocator,
     io: Io,
@@ -319,8 +319,8 @@ extern "kernel32" fn GetLastError() callconv(.winapi) u32;
 /// function returns on its first line, and an inferred set would then hold only
 /// the errors that early return can produce. Callers that name
 /// error.ElevationDeclined (run.zig does, to report a refusal as a decision)
-/// would stop compiling for every non-Windows target - which is exactly what
-/// the linux compile check exists to catch, and did.
+/// would stop compiling for every non-Windows target, which the linux compile
+/// check catches.
 pub const ElevateError = error{
     /// No elevation here: not Windows, or shell32/ShellExecuteExW is missing.
     ElevationUnsupported,
@@ -360,8 +360,7 @@ pub fn spawnElevated(arena: std.mem.Allocator, command: []const u8, cwd: []const
     // it the elevation request can be abandoned with the process that made it.
     // FLAG_NO_UI: the shell must not put up its own error dialog - a modal box
     // nobody asked for blocks the terminal until someone clicks it, and nix
-    // reports the failure itself. It does not touch the UAC consent prompt,
-    // which is the whole point of the call and stays.
+    // reports the failure itself. It does not touch the UAC consent prompt.
     info.fMask = 0x00000100 | 0x00000400; // SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI
     info.lpVerb = (try std.unicode.wtf8ToWtf16LeAllocZ(arena, "runas")).ptr;
     info.lpFile = (try std.unicode.wtf8ToWtf16LeAllocZ(arena, comspec)).ptr;
@@ -423,8 +422,7 @@ extern "kernel32" fn FindClose(hFindFile: isize) callconv(.winapi) i32;
 /// findInDirWindows answers existsExec for one PATH directory with a single
 /// `<dir>\<name>.*` listing instead of one open per PATHEXT entry. A miss is
 /// what every lookup pays in every directory before the one that has the tool,
-/// and at ~20 us per open that was ~9 ms for a tool near the end of a
-/// 38-entry PATH. The answer is the same: an exact name that already has an
+/// so one listing per directory replaces several opens. The answer is the same: an exact name that already has an
 /// extension first, then the first PATHEXT extension present, directories
 /// never.
 fn findInDirWindows(arena: std.mem.Allocator, env: *std.process.Environ.Map, dir: []const u8, name: []const u8) ?[]const u8 {
@@ -495,11 +493,9 @@ pub const FilterResult = struct { output: []const u8, code: u8, forwarded: usize
 
 // ---- the three shared primitives ---------------------------------------------
 //
-// Eight functions below used to hand-roll the same spawn-read-reap sequence,
-// differing only in a small policy each (#29). The interesting rules - what a
-// wait failure means, when a child may be waited on and when it must be killed,
-// how a partial line at EOF is handled - now live in one place each, rather
-// than being re-decided per copy and drifting.
+// The spawn-read-reap rules - what a wait failure means, when a child may be
+// waited on and when it must be killed, how a partial line at EOF is handled -
+// live in one place each (#29).
 
 /// Spawn is what a capture varies: what to run, where, and what happens to the
 /// streams this file does not read.
@@ -515,7 +511,7 @@ const Spawn = struct {
 
 /// exitCode reduces a termination to the number a caller can act on. A signal
 /// or a stop is reported as 1: nothing here can do anything useful with the
-/// distinction, and every caller was already collapsing it this way.
+/// distinction.
 fn exitCode(term: std.process.Child.Term) u8 {
     return switch (term) {
         .exited => |c| c,

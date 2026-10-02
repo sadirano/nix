@@ -59,9 +59,8 @@ pub const Entry = struct {
     source: Source,
 };
 
-/// A declaration that was dropped, and why. Kept rather than silently skipped:
-/// a variable that quietly never arrives is debugged by staring at the wrong
-/// file for an afternoon.
+/// A declaration that was dropped, and why. Kept rather than silently skipped,
+/// so a variable that never arrives is reported.
 pub const Problem = struct {
     key: []const u8,
     source: Source,
@@ -177,9 +176,8 @@ pub fn centralPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8
 /// under a prefix of their own.
 ///
 /// The file gets its OWN record on purpose - it is not an `[env]` section in
-/// actions.toml. Sharing that file would mean every unrelated action edit
-/// re-armed the environment approval, and being asked to re-approve something
-/// several times a day is how people learn to answer `y` without reading.
+/// actions.toml, so an unrelated action edit does not re-arm the environment
+/// approval.
 pub fn trustRecord(arena: std.mem.Allocator, body: []const u8) ![]const u8 {
     return context.sha256Hex(arena, try std.fmt.allocPrint(arena, "env:{s}", .{body}));
 }
@@ -211,8 +209,7 @@ pub const Loaded = struct {
 /// load reads both layers for one alias and merges what may be used.
 ///
 /// An unapproved project file is skipped, not fatal: refusing to navigate over
-/// an environment file would break reachability, which is the one thing nix
-/// never trades away. The caller says so once and carries on with the central
+/// an environment file would break reachability. The caller says so once and carries on with the central
 /// layer, which is the user's own writing either way.
 pub fn load(app: *App, alias: []const u8, dir: []const u8) !Loaded {
     const ppath = try projectPath(app.arena, dir);
@@ -399,8 +396,7 @@ pub fn secretNames(arena: std.mem.Allocator, raw: []const u8) ![]const []const u
 }
 
 /// unsetSecrets is secretNames narrowed to the ones that do not resolve today -
-/// the "you wired this up but never stored the value" case, which is otherwise
-/// only discovered when a deploy fails.
+/// the "you wired this up but never stored the value" case.
 fn unsetSecrets(app: *App, raw: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (try secretNames(app.arena, raw)) |name| {

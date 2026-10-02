@@ -98,22 +98,17 @@ pub fn recordForCommand(app: *App, dir: []const u8, from_project: bool, name: []
 /// contents are not, and so two files cannot swap places unnoticed.
 ///
 /// It hashes THIS action's line rather than the whole declaring file, because
-/// the file is shared and the approval is not. Hashing the file put every other
-/// action's text inside every token, so editing a comment re-armed the lot: on
-/// 2026-09-12 one project had 41 actions, 304 rows in the ledger, and was still
-/// unapproved - the user had answered that prompt seven times over. The module
-/// warns that re-arming on unrelated edits "is how people learn to answer `y`
-/// without looking", and the file-wide hash was doing precisely that.
+/// the file is shared and the approval is not: editing one action, or a comment,
+/// must not re-arm its siblings.
 ///
 /// The declaring file is still read, and still decides whether there is
 /// anything to approve at all - an action that came from a file nix cannot read
 /// is not a refusal, the same as before.
 ///
 /// A referenced file enters the record under its path RELATIVE TO `dir`, not
-/// its basename. Two projects each holding `scripts/deploy.py` with the same
-/// bytes used to hash identically, so approving one approved the other - and a
-/// central action, whose record has no declaring file to anchor it, was nothing
-/// but those basenames. `dir` seeds that case for the same reason the decl path
+/// its basename, so two projects each holding a byte-identical
+/// `scripts/deploy.py` are two approvals. A central action has no declaring
+/// file to anchor its record; `dir` seeds that case for the same reason the decl path
 /// seeds the other: an approval belongs to one place on disk.
 fn combinedRecord(app: *App, dir: []const u8, decl: ?[]const u8, name: []const u8, command: []const u8, refs: []const []const u8) !?[]const u8 {
     var buf: std.ArrayList(u8) = .empty;
@@ -294,11 +289,8 @@ pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) 
 /// only the key is ever matched.
 ///
 /// Superseding rather than appending is what makes approval mean "these bytes,
-/// now". While this appended, every version ever approved stayed trusted
-/// forever, so `git checkout` back to an old actions.toml ran WITHOUT asking -
-/// the opposite of the guarantee the gate is documented to give. It also grew
-/// without bound: on 2026-09-12 that file held 338 rows of which 331 could
-/// never match anything again.
+/// now": a `git checkout` back to an old actions.toml asks again, and the
+/// ledger does not grow without bound.
 ///
 /// Legacy `alias|actions` rows are dropped for the alias being approved. They
 /// predate per-action tokens and cannot be matched by any current action, so
@@ -333,11 +325,9 @@ fn legacyLabelFor(arena: std.mem.Allocator, label: []const u8) !?[]const u8 {
 /// FILE's path, the action's name, and its declared command.
 ///
 /// The path is in there because the token must not collide across projects.
-/// Two repos holding a byte-identical `shown = "echo ..."` produced the same
-/// token without it, so approving one approved the other - and, worse,
-/// superseding one project's row left the other project's row still vouching
-/// for those bytes, which quietly reopened the stale-approval hole this is
-/// meant to close. Canonicalised, so the same file reached through two aliases
+/// Without it, two repos holding a byte-identical `shown = "echo ..."` would
+/// share one approval, and superseding one project's row would leave the
+/// other's still vouching for those bytes. Canonicalised, so the same file reached through two aliases
 /// (`game` and `nix-game` name one directory here) is one approval, not two.
 fn actionRecordInput(arena: std.mem.Allocator, decl: []const u8, name: []const u8, command: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "action:{s}:{s}={s}", .{ try refs_zig.canonPath(arena, decl), name, command });
@@ -449,9 +439,7 @@ pub fn unapproved(app: *App, alias: []const u8, dir: []const u8) bool {
 
 /// Grant is one row `--trust` intends to write, held back until the user has
 /// seen it. Collecting the whole set before writing any is what lets `--trust`
-/// show its full reach in a single question: the gate's inline `y` at least
-/// shows the one command it covers, while `--trust` used to show nothing at
-/// all and approve everything it could reach.
+/// show its full reach in a single question.
 pub const Grant = struct {
     record: []const u8,
     label: []const u8,
@@ -500,9 +488,7 @@ pub const Plan = struct {
 
 /// cmdTrust is the batch form of the gate, and so is held to the gate's own
 /// standard: it asks, once, showing everything the answer covers, and it
-/// refuses where there is nobody to ask. It used to do neither - which made
-/// `--trust` strictly weaker than the `y` it stands in for, since that at
-/// least prints the command it is about to run.
+/// refuses where there is nobody to ask.
 ///
 /// `--trust` exists to record that a PERSON read something, so it refuses where
 /// nobody can answer (app.canAsk): an agent's shell has no console, which is
@@ -603,9 +589,9 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
 /// config.toml's `[trust] always` instead of hashing anything.
 ///
 /// It is held to `--trust`'s own standard and then some. The console check has
-/// already run above, so a shell with nobody in it cannot reach here - which is
-/// the point, since this grant is precisely what lets an agent's shell run
-/// project code unreviewed afterwards. What it adds is that the question spells
+/// already run above, so a shell with nobody in it cannot reach here: this
+/// grant is what lets an agent's shell run project code unreviewed afterwards.
+/// What it adds is that the question spells
 /// out the reach BEFORE asking, because unlike a per-file approval this one
 /// covers bytes that do not exist yet.
 ///
@@ -769,7 +755,7 @@ test "decide: [confirm] trusted waives the prompt, but never over cloned code" {
     // And it never turns a refusal into a run: UAC cannot be answered where
     // nobody is watching, so a non-interactive elevated call still refuses.
     try std.testing.expectEqual(Decision.refuse_elevated, decide(true, false, false, false, false, true, false));
-    // Unlisted is exactly the old behaviour.
+    // Unlisted: confirm.
     try std.testing.expectEqual(Decision.confirm_elevated, decide(true, false, false, false, true, false, false));
 }
 
@@ -787,9 +773,8 @@ test "decide: only unapproved cloned code is gated" {
 }
 
 test "decide: standing trust covers cloned bytes in any shell, but never elevation" {
-    // The friction it exists for: unapproved project code, no console (an
-    // agent's shell), which used to be the refusal nobody saw. Both the
-    // prompting and the non-prompting case now run.
+    // Unapproved project code with no console (an agent's shell) runs, in both
+    // the prompting and the non-prompting case.
     try std.testing.expectEqual(Decision.allow, decide(false, true, false, false, true, false, true));
     try std.testing.expectEqual(Decision.allow, decide(false, true, false, false, false, false, true));
     // It is not a blanket waiver: an elevated action still confirms, and still
@@ -797,8 +782,8 @@ test "decide: standing trust covers cloned bytes in any shell, but never elevati
     // past that one, and standing trust must not become a second one.
     try std.testing.expectEqual(Decision.confirm_elevated, decide(true, true, false, false, true, false, true));
     try std.testing.expectEqual(Decision.refuse_elevated, decide(true, true, false, false, false, false, true));
-    // Without the grant, the same inputs are the old behaviour - so the arm
-    // above is the grant doing it, not some other condition.
+    // Without the grant, the same inputs refuse - so the arm above is the
+    // grant doing it, not some other condition.
     try std.testing.expectEqual(Decision.refuse_unapproved, decide(false, true, false, false, false, false, false));
 }
 
@@ -823,10 +808,8 @@ test "records: the two kinds cannot approve one another" {
 }
 
 test "actionRecordInput: the token's inputs, and only those" {
-    // The regression this guards: the token used to hash the whole
-    // actions.toml, so editing ANY action - or a comment above one - re-armed
-    // every action in the project (41 actions, 304 ledger rows, still
-    // unapproved). Asserted on the readable INPUT rather than on a hash of it,
+    // The token hashes this action's inputs only, so editing another action,
+    // or a comment above one, does not re-arm it. Asserted on the readable INPUT rather than on a hash of it,
     // so a widening shows up as text a reviewer can see. The end-to-end half
     // lives in e2e: "a sibling action does not re-arm an approved one".
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

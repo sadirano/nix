@@ -1,5 +1,4 @@
-//! `[bin]` exports — declarative global tools (the one-bin idea, nix feedback
-//! 2026-07-17): a project's committed `.nix/actions.toml` declares the tools
+//! `[bin]` exports — declarative global tools: a project's committed `.nix/actions.toml` declares the tools
 //! it wants runnable from anywhere —
 //!
 //!     [bin]
@@ -522,8 +521,7 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
         const prior = findInstalled(old, ex.file);
 
         // An unapproved action: keep whatever is already installed and say what
-        // would unblock it. Nothing here can approve on the user's behalf - that
-        // is the provenance gate's whole point.
+        // would unblock it. Nothing here can approve on the user's behalf.
         if (ex.blocked) |why| {
             if (prior) |m| try manifest.append(app.arena, m);
             try blocked.append(app.arena, try std.fmt.allocPrint(app.arena, "{s} ({s})", .{ ex.name, why }));
@@ -592,10 +590,8 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
             //
             // Except for an ACTION export, whose installed bytes are the nix
             // binary itself: rebuilding nix makes every one of them differ while
-            // its fingerprint (owner, action, command) is untouched. Calling
-            // that tampering accused the user of hand-editing their own exports
-            // on every single `:build :sync`, which is both wrong and the kind
-            // of warning people learn to scroll past.
+            // its fingerprint (owner, action, command) is untouched, so that is
+            // not tampering.
             const rebuilt = consented and ex.kind == .action;
             const tampered = consented and !rebuilt;
             writeReplaceAtomic(app, dst, content) catch {
@@ -647,12 +643,10 @@ pub fn syncBin(app: *App, implicit: bool) !u8 {
             try app.err.print("  keeping {s} - {s}'s directory is unreachable (reconnect it, or remove the alias to drop the export)\n", .{ m.file, m.alias });
             continue;
         }
-        // A name that has BECOME a command wrapper is no longer ours to delete.
-        // That is not hypothetical: `q` shipped as a builtin slot, which refuses
-        // the identically-named export above and so drops it from the plan - and
-        // this loop would then delete the wrapper `--sync` had just installed,
-        // leaving the machine without a command it ships. The export record goes
-        // either way; the collision message already said why.
+        // A name that has BECOME a command wrapper is no longer ours to delete:
+        // the collision drops the export from the plan, and deleting the file
+        // here would remove the wrapper `--sync` just installed. The export
+        // record goes either way; the collision message already said why.
         const stem = if (std.mem.lastIndexOfScalar(u8, m.file, '.')) |i| m.file[0..i] else m.file;
         if (isReservedName(app.arena, cfg, stem)) continue;
         const p = try std.fs.path.join(app.arena, &.{ bin, m.file });
@@ -912,10 +906,10 @@ test "isReservedName: wrappers, builtins under rename, canonical nix" {
 
 test "manifest value splits into alias + optional hash" {
     // loadManifest tokenizes each parsed value into "<alias> [<hash>]"; a value
-    // written by an older nix has no hash (empty), which sync adopts silently.
+    // without a hash gets an empty one, which sync adopts silently.
     const cases = [_]struct { value: []const u8, alias: []const u8, hash: []const u8 }{
         .{ .value = "cy 3f8ab2", .alias = "cy", .hash = "3f8ab2" },
-        .{ .value = "tools", .alias = "tools", .hash = "" }, // pre-fingerprint
+        .{ .value = "tools", .alias = "tools", .hash = "" }, // no hash
     };
     for (cases) |c| {
         var it = std.mem.tokenizeScalar(u8, c.value, ' ');

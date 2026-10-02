@@ -93,8 +93,7 @@ pub fn isSelfAlias(name: []const u8) bool {
 
 /// lookupAlias resolves a name to a host path, answering for the built-in
 /// `.nix` before aliases.toml. The built-in wins over a stored entry of the
-/// same name, so a hand-registered one from before it existed cannot keep
-/// resolving to a stale path.
+/// same name, so a hand-registered one cannot resolve to a stale path.
 pub fn lookupAlias(arena: std.mem.Allocator, data: []const u8, name: []const u8, home: []const u8) !?[]const u8 {
     if (isSelfAlias(name)) return try arena.dupe(u8, home);
     return scanForAlias(arena, data, name);
@@ -271,14 +270,13 @@ pub fn validateAliasName(name: []const u8) !void {
     for (name) |c| {
         if (c == '/' or c == '\\') return error.PathSeparatorInName;
         if (c == '@') return error.AtInName;
-        // `+` stays reserved: it was the group sigil, and existing configs may
-        // still hold `pa+projects`-style tokens that must not become names.
+        // `+` stays reserved: existing configs may hold `pa+projects`-style
+        // tokens that must not become names.
         if (c == '+') return error.PlusInName;
         // `:` is the action sigil, and a LEADING one names an action to run in
-        // the current directory (`r :deploy`, main.zig). Reserve it like `@` and
-        // `+`: main.zig's dispatch has always claimed ':' could not be an alias,
-        // and until this check it could - `nix :x <path>` registered one, which
-        // no `:`-leading token could ever have reached again.
+        // the current directory (`x :deploy`, main.zig). Reserved like `@` and
+        // `+`, so an alias named `:x` can never be registered and then be
+        // unreachable.
         if (c == ':') return error.ColonInName;
         // A space gets its own error: it's the most common typo (`nix my app …`)
         // and "ControlInName" reads as gibberish for it.
@@ -295,9 +293,8 @@ pub fn validateAliasName(name: []const u8) !void {
 }
 
 /// validateAliasPath rejects a registration target that cannot name a directory,
-/// BEFORE it is written to aliases.toml. `nix i :` used to resolve `:` against
-/// the cwd, overwrite i's real path with the result, save it, and only then
-/// crash trying to enter it - so a typo cost you the alias.
+/// BEFORE it is written to aliases.toml, so a typo (`nix i :`) never overwrites
+/// an alias's real path.
 ///
 /// The check is on the shape of the path, deliberately, not on whether it
 /// exists: an alias may legitimately point at an unplugged drive or a network
@@ -413,8 +410,6 @@ test "validateAliasPath: accepts real paths, refuses what can't be one" {
     try validateAliasPath("Z:\\offline\\share");
     try std.testing.expectError(error.EmptyPath, validateAliasPath("   "));
     if (is_windows) {
-        // The reported bug: `o i :` resolved ":" against the cwd, overwrote the
-        // alias, saved, and only then crashed entering it.
         try std.testing.expectError(error.BadCharInPath, validateAliasPath(":"));
         try std.testing.expectError(error.BadCharInPath, validateAliasPath("C:\\a\\b:c"));
         try std.testing.expectError(error.BadCharInPath, validateAliasPath("a|b"));
@@ -474,8 +469,7 @@ test "lookupAlias answers for the self alias before aliases.toml, and over it" {
     // aliases.toml has not been created yet.
     try std.testing.expectEqualStrings(home, (try lookupAlias(a, "", ".nix", home)).?);
 
-    // A hand-registered entry from before the name was built in does NOT win -
-    // otherwise an upgrade keeps resolving to wherever ~/.nix used to be.
+    // A hand-registered `.nix` entry does NOT win over the built-in.
     const stale = "[.nix]\npath = 'D:/old/nix-home'\n";
     try std.testing.expectEqualStrings(home, (try lookupAlias(a, stale, ".nix", home)).?);
     // The raw file question still reports what is actually on disk, which is

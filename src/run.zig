@@ -29,8 +29,7 @@ fn eql(a: []const u8, b: []const u8) bool {
 
 /// elapsedMs is the whole-millisecond duration since `t0` (an
 /// `Io.Clock.awake.now(io).nanoseconds` reading), clamped to zero rather than
-/// negative. Three call sites in this file measured a run's duration for
-/// display with this exact formula; collapsed here so it is decided once.
+/// negative.
 fn elapsedMs(io: Io, t0: i128) u64 {
     const ns = Io.Clock.awake.now(io).nanoseconds - t0;
     return if (ns > 0) @intCast(@divTrunc(ns, std.time.ns_per_ms)) else 0;
@@ -320,7 +319,7 @@ fn isActionName(tok: []const u8) bool {
 /// `--` makes everything after it literal, so a word that starts with `:` can
 /// still reach a command. Written straight after a name it is only that marker
 /// and is dropped (`:test -- --json` hands over `--json`); anywhere else it is
-/// also a word of its own, as it always was.
+/// also a word of its own.
 pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
     if (argv.len == 0 or !isActionName(argv[0])) {
         if (argv.len == 1) return .list; // a bare ':' is the listing form
@@ -348,9 +347,8 @@ pub fn parseActionCall(app: *App, argv: [][]const u8) !ParsedCall {
     return .{ .call = .{ .links = links.items } };
 }
 
-/// runCall runs a parsed call: one action exactly as it always ran, or a chain
-/// in order, stopping at the first failure - `&&` semantics, because `&&` is
-/// what you would have typed otherwise. Each link resolves and runs as if it
+/// runCall runs a parsed call: one action, or a chain in order, stopping at the
+/// first failure (`&&` semantics). Each link resolves and runs as if it
 /// had been invoked alone, under a header so a chain's transcript can be read
 /// back afterwards.
 fn runCall(app: *App, call: ActionCall, alias: []const u8, dir: []const u8, outside: bool) !u8 {
@@ -405,9 +403,8 @@ fn joinArgs(arena: std.mem.Allocator, args: []const []const u8) ![]const u8 {
     for (args, 0..) |a, i| {
         if (i > 0) try buf.append(arena, ' ');
         // Whitespace, and the characters cmd reads as structure before the
-        // child ever sees them. An unquoted `&` ENDED the command: `:show --
-        // a&b` ran `echo a` and then `b` as a command of its own, which looks
-        // like the argument was silently truncated.
+        // child ever sees them: an unquoted `&` would end the command and run
+        // the rest as a command of its own.
         //
         // Quoting only. Nothing is escaped INSIDE the quotes, because this
         // string is handed to `cmd /c` (proc.runShellInherit) and cmd does not
@@ -695,10 +692,8 @@ fn inShell(app: *App, shell: actions.Shell, command: []const u8) !?[]const u8 {
 
 /// startWindowed launches a command in a shell of its OWN - a new console
 /// window on Windows - and returns as soon as it is started. Three paths land
-/// here: `--outside`, a palette multi-pick, and every elevated action. It is
-/// what makes "detached, in a new window" true rather than aspirational: the
-/// old detached spawn inherited this console with its output routed to NUL, so
-/// the command ran where nobody could see it.
+/// here: `--outside`, a palette multi-pick, and every elevated action. The
+/// child gets a console of its own, so its output is visible.
 fn startWindowed(app: *App, command: []const u8, alias: []const u8, dir: []const u8, name: []const u8) !u8 {
     const env = (try aliasRunEnv(app, alias, dir, .run)) orelse return 1;
     try app.out.flush();
@@ -815,10 +810,9 @@ pub fn startInNewShell(app: *App, command: []const u8, alias: []const u8, dir: [
     return startWindowed(app, cmd, alias, dir, name);
 }
 
-/// runAction runs a named action (`r <alias> :name`) and, when config.toml has a
-/// `[notify] on_finish` hook, reports the outcome through it — the action-
-/// completion hook (feedback 2026-07-16): every action gets a voice (exit code,
-/// duration) in one place, no `hoot run` boilerplate per command line. Detached
+/// runAction runs a named action (`x <alias> :name`) and, when config.toml has a
+/// `[notify] on_finish` hook, reports the outcome (exit code, duration) through
+/// it. Detached
 /// (`--outside`) runs are exempt — there is no completion to observe. The hook
 /// runs synchronously in the alias dir with the action's env (NIX_ALIAS, scripts
 /// dirs on PATH) plus NIX_ACTION / NIX_ACTION_EXIT / NIX_ACTION_DURATION_MS, and
@@ -965,9 +959,8 @@ test "applyArgs: appended by default, substituted where the command asks" {
         "echo \"already quoted\"",
         try applyArgs(a, "echo", &.{"\"already quoted\""}),
     );
-    // cmd would have read these as structure and ended the command at them.
-    // Measured before the fix: `a&b` reached the child as `a`, and `b` ran as
-    // a command of its own.
+    // Unquoted, cmd would read these as structure: `a&b` would reach the child
+    // as `a`, and `b` would run as a command of its own.
     try std.testing.expectEqualStrings("echo \"a&b\"", try applyArgs(a, "echo", &.{"a&b"}));
     try std.testing.expectEqualStrings("echo \"a|b\"", try applyArgs(a, "echo", &.{"a|b"}));
     try std.testing.expectEqualStrings("echo \"a>b\"", try applyArgs(a, "echo", &.{"a>b"}));

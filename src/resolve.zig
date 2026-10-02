@@ -128,9 +128,8 @@ fn confirmRepoint(app: *App, alias: []const u8, old_slashed: []const u8, new_abs
 /// with `[confirm] create_dirs = false`). `subject` prefixes
 /// the message (`"acme" points at `) so the refusal names what led there.
 ///
-/// Without a console it REFUSES and creates nothing. Silently materializing a
-/// missing directory turned an agent's typo into a plausible empty sibling of
-/// the real one, and whatever wrote next landed there. The refusal names no
+/// Without a console it REFUSES and creates nothing, so a typo never becomes an
+/// empty directory that later writes land in. The refusal names no
 /// flag to retry with on purpose: an agent that means it creates the directory
 /// itself, which is a decision rather than a reflex.
 pub fn ensureDir(app: *App, path: []const u8, subject: []const u8) !bool {
@@ -243,8 +242,7 @@ const SegLookup = struct {
 /// pickCandidate turns a source's answers into the one set of variables the
 /// rest of resolution uses (#19).
 ///
-/// One candidate resolves exactly as it always did - which is every source
-/// written before menus existed. Several open an fzf picker over the display
+/// One candidate resolves directly. Several open an fzf picker over the display
 /// rows. Null means the caller should fail the resolution; a cancelled picker
 /// is such a case, because "no destination" is not a destination.
 ///
@@ -575,8 +573,8 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
         const ps = parsed.segs[i];
         var cd = lookupCtx(sf_local, sf_central, sf_global, ps.name);
         if (cd == null) {
-            // Defining it writes config, so it takes someone to ask: a probe
-            // from an agent's shell used to leave definitions nobody authored.
+            // Defining it writes config, so it takes someone to ask; an agent's
+            // shell must not leave definitions nobody authored.
             if (!app_zig.canAsk(app)) {
                 try app.err.print("nix: segment \"{s}\" is not defined in segments.toml\n", .{ps.name});
                 return null;
@@ -657,8 +655,8 @@ pub fn cmdContexts(app: *App) !u8 {
             }
             env_str = jb.items;
         }
-        // A `run` context is worth seeing at a glance — it is the one kind that
-        // executes something, so show its command line ahead of the template.
+        // A `run` context executes something, so show its command line ahead
+        // of the template.
         const cmd: []const u8 = if (cd.run.len > 0)
             try std.fmt.allocPrint(app.arena, "run={s}", .{cd.run})
         else if (cd.uses.len > 0)

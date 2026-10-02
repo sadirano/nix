@@ -273,8 +273,7 @@ pub fn scan(app: *App, scope: []const u8) ![]Job {
 }
 
 /// Only a selected or listed job needs its header, and it is never more than
-/// the first two lines: one bounded read covers it, so listing a scope costs a
-/// read per script rather than a syscall per byte or the whole of every body.
+/// the first two lines: one bounded read per script covers it.
 pub fn readHeader(app: *App, job: Job) !Header {
     const file = try Io.Dir.cwd().openFile(app.io, job.path, .{});
     defer file.close(app.io);

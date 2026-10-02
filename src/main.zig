@@ -52,9 +52,9 @@ const build_date = @import("build_options").build_date;
 
 pub fn main(init: std.process.Init.Minimal) !void {
     // The full std.process.Init builds its environment map on smp_allocator,
-    // whose 64 KB size-class slabs commit ~2.4 MB for ~100 variables - five
-    // times what the rest of a run needs. Everything here lives for the whole
-    // process, so the arena holds the map too.
+    // whose 64 KB size-class slabs commit far more than the map needs.
+    // Everything here lives for the whole process, so the arena holds the map
+    // too.
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const arena = arena_state.allocator();
     var threaded: Io.Threaded = .init(std.heap.page_allocator, .{
@@ -136,9 +136,8 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     // colon, one scope wider. Checked before multicall desugaring so every
     // wrapper gets it from one place rather than each having to learn it.
     //
-    // Nothing is given up: ':' is not a legal alias name (validateAliasName
-    // refuses it), so this token could not previously mean anything else - it
-    // was an "unknown alias" error.
+    // ':' is not a legal alias name (validateAliasName refuses it), so this
+    // token cannot mean anything else.
     const mc_action = multicallAction(argv0) orelse blk: {
         // Not a builtin wrapper and not `nix` itself: it may be a [shortcuts]
         // rename, whose wrapper is installed under the custom name. Config is
@@ -183,10 +182,8 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     }
     if (leadingActionCall(args)) |argv| {
         setGlobalFlags(app, args);
-        // ...except from the EDITOR, where "run it" was never the sensible
-        // reading. `e :deploy` opens where :deploy is defined, seeding a stub if
-        // it is not defined yet - `u <name>` for actions, which is what the
-        // user\ folder's convenience was.
+        // ...except from the EDITOR: `e :deploy` opens where :deploy is
+        // defined, seeding a stub if it is not defined yet.
         if (mc_action != null and eql(mc_action.?, "edit")) return cmdEditAction(app, argv);
         return run_zig.cmdHere(app, argv);
     }
@@ -273,8 +270,7 @@ fn dispatch(app: *App, args: [][]const u8) !u8 {
     // Global flags may LEAD the command: setGlobalFlags has already read them
     // wherever they sit, so skipping them here makes `nix --no-prompt --list`
     // the same command as `nix --list --no-prompt`. Without this the first
-    // dashed token is taken for the verb, and the natural spelling (modifier
-    // first, the way every other CLI accepts it) died on "unknown flag".
+    // dashed token would be taken for the verb.
     var rest = args;
     while (rest.len > 0 and isGlobalFlag(rest[0])) rest = rest[1..];
     if (rest.len == 0) {
@@ -548,10 +544,7 @@ fn cmdEdit(app: *App, alias: []const u8, files: [][]const u8) !u8 {
 }
 
 /// cmdEditAction opens the file that defines a machine-wide action, seeding a
-/// stub when the name is new: `e :deploy` is `u deploy` for actions. Naming a
-/// thing and getting it open in the editor, created if absent, is the whole
-/// convenience the noir `user\` folder used to provide - the part that did not
-/// survive moving personal scripts into declared actions.
+/// stub when the name is new.
 ///
 /// Machine-wide (`~/.nix/actions/_default.toml`) to match what `nix :<name>`
 /// runs: the pair has to name the same file, or editing would open one command
@@ -597,9 +590,7 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
         final = b.items;
     }
 
-    // Open ON the declaration. Naming an action is a statement about which line
-    // you meant, and a file with thirty of them makes the difference between
-    // editing it and finding it first. A freshly seeded stub lands on its own
+    // Open ON the declaration line. A freshly seeded stub lands on its own
     // empty value, with the cursor where the command goes.
     const line = if (actions.lineOf(final, "actions", name)) |n|
         try std.fmt.allocPrint(app.arena, "{d}", .{n})
@@ -612,9 +603,7 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
 /// commented template when it does not exist yet: `e :` for the machine-wide
 /// file, exactly as `e <alias> :` is for a project's.
 ///
-/// It is the answer to "how do I edit my personal actions" - before this, the
-/// only short way in was `e :<name>` naming an action already in the file, so
-/// the file you had not written yet was the one you could not open.
+/// It opens the file even before it exists.
 fn cmdEditDefaultActions(app: *App) !u8 {
     const path = try actions.defaultPath(app.arena, app.home);
     if (!proc.fileExists(app.io, path)) {
@@ -628,8 +617,8 @@ fn cmdEditDefaultActions(app: *App) !u8 {
 }
 
 /// cmdExplore: bare `s <alias>` opens the dir in the file manager. With args it
-/// mirrors `y <alias> <pat>`: an exact existing file opens directly (the
-/// original `s <alias> <file>` form), anything else runs the `f` picker and
+/// mirrors `y <alias> <pat>`: an exact existing file opens directly, anything
+/// else runs the `f` picker and
 /// opens every selection with the OS handler — pick files to open instead of
 /// files to copy.
 fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
@@ -984,9 +973,8 @@ fn printUsage(app: *App) !void {
     try w.writeByte('\n');
 
     // ACTIONS, COMMANDS and GLOBAL FLAGS render from the grammar tables, the
-    // same way SHORTCUTS renders from the spec table. They used to be heredocs
-    // maintained by hand next to a parser that had its own list, and they
-    // drifted.
+    // same way SHORTCUTS renders from the spec table, so help cannot drift from
+    // the parser.
     try w.writeAll("ACTIONS  (nix <alias> --<action> ...)\n");
     try writeGrammarRows(w, grammar.Action, &grammar.actions);
     try w.writeAll("\nCOMMANDS\n");

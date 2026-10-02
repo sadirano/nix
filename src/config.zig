@@ -66,10 +66,8 @@ pub const Config = struct {
     /// they stand, including edits made later and in shells with no console.
     ///
     /// The provenance gate exists for bytes that arrived with a `git clone`.
-    /// For a repo the user WRITES, every edit re-arms it, so the prompt stops
-    /// asking about provenance and starts training a reflex `y` - one alias
-    /// held 43 of the 100 rows in the ledger. Standing trust says "I own this"
-    /// once instead.
+    /// For a repo the user WRITES, every edit re-arms it. Standing trust says
+    /// "I own this" once instead.
     ///
     /// It lives in config.toml for the same reason `confirm_trusted` does: no
     /// cloned file can reach it. It does NOT waive the elevated confirmation,
@@ -83,12 +81,8 @@ pub const Config = struct {
     /// [notify] on_finish_min_ms: actions that SUCCEED faster than this stay
     /// quiet. 0 (the default) notifies everything, as before.
     ///
-    /// The hook's own documentation always said "so long builds report
-    /// completion"; without a threshold a 40ms window-close is announced as
-    /// eagerly as a 22-minute build, and a channel that cries wolf stops being
-    /// read - which costs the failure reports the feature exists for. A
-    /// FAILURE always notifies however fast it was: `:build` dying in 300ms is
-    /// the most useful toast there is.
+    /// Successes faster than this stay quiet. A FAILURE always notifies however
+    /// fast it was.
     notify_on_finish_min_ms: u64 = 0,
     /// [notify] on_finish_skip: actions never worth reporting, however long
     /// they take or however they end. A bare name (`"q"`) matches that action
@@ -118,10 +112,9 @@ pub const Config = struct {
 /// builtinShortcuts is the default slot→name map (identity).
 ///
 /// The names ARE the slots: `[shortcuts]` keys are these strings, so renaming
-/// a slot renames the config key. The run/search/find slots are `x`, `g` and
-/// `f`; `r` was a pwsh alias for Invoke-History and the one command the shell
-/// silently shadowed. The old spelling is available by name (`[shortcuts] x =
-/// ["x", "r"]`).
+/// a slot renames the config key. The run slot is `x`, not `r`, because pwsh
+/// resolves its `r` alias (Invoke-History) first; `[shortcuts] x = ["x", "r"]`
+/// adds `r` back.
 /// usableShortcutName: a `[shortcuts]` value that can become a wrapper exe -
 /// an alias-safe name, not `nix` (it would shadow the canonical binary), and
 /// not a DOS device.
@@ -226,7 +219,6 @@ pub fn slotList(arena: std.mem.Allocator) ![]const u8 {
 
 /// pickerExcludeDefaults returns the default exclusion fragments (dependency/
 /// build/cache trees, hidden-by-convention prefixes, Windows system trees).
-/// Ported verbatim from config.PickerExcludeDefaults.
 pub fn pickerExcludeDefaults() []const []const u8 {
     return &.{
         "\\.",               "\\_",                       "\\[",
@@ -318,8 +310,8 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             // values are command templates with {placeholders}; may contain '='
             // and spaces, so only the first '=' (found above) splits key/value.
             if (std.mem.eql(u8, key, "on_finish")) cfg.notify_on_finish = try arena.dupe(u8, toml.unquoteLoose(val_start));
-            // A threshold that failed to parse stays 0, which notifies as it
-            // always did: a typo must not silence the hook.
+            // A threshold that failed to parse stays 0: a typo must not silence
+            // the hook.
             if (std.mem.eql(u8, key, "on_finish_min_ms")) cfg.notify_on_finish_min_ms = std.fmt.parseInt(u64, toml.unquoteLoose(val_start), 10) catch 0;
             if (std.mem.eql(u8, key, "on_finish_skip")) {
                 cfg.notify_on_finish_skip = try toml.parseStringArray(arena, try lines.gatherArray(arena, val_start));
@@ -468,8 +460,7 @@ test "multi-name slot: every listed name resolves; first stays primary" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
 
-    // x = ["x", "r"] parses to two entries for the same slot - the way anyone
-    // who wants the pre-x spelling of the run slot back asks for it.
+    // x = ["x", "r"] parses to two entries for the same slot.
     const shortcuts = [_]Shortcut{
         .{ .builtin = "x", .custom = "x" },
         .{ .builtin = "x", .custom = "r" },
@@ -495,8 +486,7 @@ test "a [shortcuts] key naming no slot is inert, reported, and not counted" {
     const a = arena_state.allocator();
 
     // The mapping written backwards: the user meant `x = "r"`. `r` names no
-    // builtin slot (the run slot has been `x` since the x/g/f rename), so the
-    // entry is consulted by nothing.
+    // builtin slot, so the entry is consulted by nothing.
     const backwards = [_]Shortcut{.{ .builtin = "r", .custom = "x" }};
     const cfg: Config = .{ .shortcuts = &backwards };
 

@@ -3,10 +3,8 @@
 //! One Spec per topic feeds three renderings at three depths: `nix --help`
 //! (one line each), ~/.nix/AGENTS.md (the command table plus standing
 //! guidance), and `<cmd> --agent` / `nix --agent <topic>` (the full spec).
-//! Before this table the first two were hand-written copies of the same eight
-//! rows and drifted apart; a new command could ship documented in one and
-//! missing from the other. specForSlot is exhaustive over the shortcut slots
-//! and a test asserts it, so that can't happen again.
+//! specForSlot is exhaustive over the shortcut slots and a test asserts it, so
+//! a command cannot be documented in one rendering and missing from another.
 //!
 //! Agent-facing text uses CANONICAL forms (`nix <alias> --grep <pat>`), never
 //! wrapper names: canonical flags are stable, while a wrapper name is whatever

@@ -262,10 +262,9 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         try d.row(.fail, "fzf", "not found - the picker can't run (install fzf, or set [picker] engine = \"native\")");
     }
 
-    // Every verdict below is ASKED of picker.zig rather than re-derived here.
-    // This section used to carry its own copy of the picker's rules, with
-    // comments saying so ("mirroring pickerSource so the report matches
-    // reality") - and the copies had drifted. See the note above ToolState.
+    // Every verdict below is ASKED of picker.zig rather than re-derived here,
+    // so the report cannot disagree with the picker. See the note above
+    // ToolState.
     const es = picker.esTool(app);
     const fd = picker.fdTool(app);
     const find = picker.findTool(app);
@@ -302,8 +301,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         .find => try d.row(.ok, "=> uses", "find - walks the search roots below"),
         .none => try d.row(.fail, "=> uses", "NONE - no working finder; the picker will fail"),
     }
-    // A walking finder with nothing to walk fails exactly as hard as no finder,
-    // and the report used to say "=> uses fd" for that configuration and stop.
+    // A walking finder with nothing to walk fails exactly as hard as no finder.
     if (chosen != .es and chosen != .none and roots.existing.len == 0) {
         try d.row(.fail, "=> uses", "...but no search root exists, so the picker will find nothing");
     }
@@ -357,9 +355,7 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         if (proc.pathExists(app.io, cfg_path)) {
             try d.row(.ok, "config.toml", cfg_path);
             // Overrides counted by RESOLVED slot, not by raw entry: an entry
-            // whose key names no slot changes nothing, and reporting it as an
-            // override is how this diagnostic used to confirm the mistake it
-            // should have caught.
+            // whose key names no slot changes nothing and is not an override.
             try d.cont(try std.fmt.allocPrint(app.arena, "grep_all={}, shortcut overrides={d}, search_roots={d}", .{ cfg.grep_all, config.shortcutSlotOverrides(cfg), cfg.picker_search_roots.len }));
         } else {
             try d.row(.note, "config.toml", "none - using built-in defaults");
@@ -409,10 +405,8 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         const adata = try store.readAliasesFile(app.arena, app.io, app.home);
         const aliases = try store.loadAliases(app.arena, adata);
         try d.row(.ok, "aliases", try std.fmt.allocPrint(app.arena, "{d} registered  ({s})", .{ aliases.items.len, try store.aliasesPath(app.arena, app.home) }));
-        // A stored `.nix` predates the built-in - the only way to give a hook a
-        // portable path before nix answered for its own home. It is now dead
-        // weight the built-in shadows, and worse than dead if it points
-        // somewhere else, so say so rather than let it sit there looking live.
+        // A stored `.nix` alias is shadowed by the built-in and does nothing;
+        // if it points somewhere else it misleads, so report it.
         for (aliases.items) |a| if (store.isSelfAlias(a.name)) {
             const host = store.fromSlash(app.arena, a.path) catch a.path;
             try d.row(.warn, "aliases", try std.fmt.allocPrint(app.arena, "\"{s}\" is registered but shadowed - it is built in now", .{store.self_alias}));

@@ -94,10 +94,8 @@ pub const display_key = "_display";
 /// now optionally in several blocks separated by a `---` line, one block per
 /// candidate (#19).
 ///
-/// A source that writes no separator returns exactly one candidate, which is
-/// every source written before this existed - the format is a superset, and
-/// "how many answers are there" is read from the file rather than declared in
-/// config.
+/// A source that writes no separator returns exactly one candidate; how many
+/// answers there are is read from the file rather than declared in config.
 ///
 /// `_display` is the row a person picks by. It is stripped here rather than
 /// exported, so a menu's presentation never becomes a variable the path or the
@@ -142,12 +140,10 @@ fn candidateOf(arena: std.mem.Allocator, body: []const u8) !?Candidate {
     return .{ .display = display, .vars = kept.items };
 }
 
-/// isReservedVar reports whether a context source may not define `key`. It is
-/// util's list, not a second one: this used to name PATH and the NIX_ protocol
-/// variables only, so a source could set COMSPEC - which proc.runShellInherit
-/// reads to choose the shell - while env.toml refused it. A source whose OUTPUT
-/// is attacker-influenced (a branch name, a file it reads) could then pick what
-/// every later command ran under.
+/// isReservedVar reports whether a context source may not define `key`, using
+/// util's list. COMSPEC is on it because proc.runShellInherit reads it to choose
+/// the shell, and a source whose OUTPUT is attacker-influenced (a branch name, a
+/// file it reads) must not pick what every later command runs under.
 pub fn isReservedVar(key: []const u8) bool {
     return util.isReservedEnvName(key);
 }
@@ -255,9 +251,8 @@ pub fn trustPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 /// separator half is not cosmetic: the same directory arrives here spelled
 /// differently depending on which resolver produced it - `aliases.toml` stores
 /// forward slashes, a joined path carries the OS separator, and `$NIX_HOME` is
-/// whatever the user typed. While this compared separators literally, the
-/// exemption held or failed based on that spelling alone, so a chain
-/// gated the dependency that a direct run of the same action did not.
+/// whatever the user typed. Separators are folded so the exemption does not
+/// depend on spelling.
 pub fn underHome(home: []const u8, path: []const u8) bool {
     if (path.len < home.len) return false;
     const head = path[0..home.len];
@@ -270,8 +265,7 @@ pub fn underHome(home: []const u8, path: []const u8) bool {
 
 /// trustRecord is the approval token: the declaring file's content hash and the
 /// script's content hash, combined. Approving covers exactly those bytes, so a
-/// `git pull` that rewrites only the script still invalidates the approval —
-/// the whole point, since a filename is not what you reviewed.
+/// `git pull` that rewrites only the script still invalidates the approval.
 pub fn trustRecord(arena: std.mem.Allocator, decl_hash: []const u8, script_hash: []const u8) ![]const u8 {
     return sha256Hex(arena, try std.fmt.allocPrint(arena, "{s}:{s}", .{ decl_hash, script_hash }));
 }
@@ -587,8 +581,8 @@ pub fn run(
 
 /// tmpDir is where a source's $NIX_CONTEXT_OUT file lives for the length of
 /// one run. With neither TEMP nor TMPDIR set it falls back to nix's own home
-/// rather than the current directory: a `.` here used to drop `nix-ctx-*.env`
-/// into whatever project the user was standing in.
+/// rather than the current directory, so `nix-ctx-*.env` never lands in the
+/// project the user is standing in.
 fn tmpDir(app: *App) ![]const u8 {
     if (app.env.get("TEMP")) |t| if (t.len > 0) return t;
     if (app.env.get("TMPDIR")) |t| if (t.len > 0) return t;
@@ -712,13 +706,11 @@ test "isReservedVar: names nix owns, case-insensitively" {
     try std.testing.expect(isReservedVar("NIX_ALIAS"));
     try std.testing.expect(isReservedVar("NIX_CONTEXT_OUT"));
     try std.testing.expect(isReservedVar("NIX_SEGMENT_VALUE"));
-    // COMSPEC and PATHEXT decide what runs; env.toml always refused them and a
-    // context source no longer gets the exception.
+    // COMSPEC and PATHEXT decide what runs.
     try std.testing.expect(isReservedVar("COMSPEC"));
     try std.testing.expect(isReservedVar("PATHEXT"));
-    // The whole NIX_ prefix is nix's namespace now, not an enumerated list.
-    // NIX_SEGMENTS used to be allowed for want of being spelled out; reserving
-    // the prefix is what stops the next protocol variable from being a gap.
+    // The whole NIX_ prefix is nix's namespace, not an enumerated list, so a
+    // new protocol variable is never a gap.
     try std.testing.expect(isReservedVar("NIX_SEGMENTS"));
     // Ordinary context variables, including near-misses, stay allowed.
     try std.testing.expect(!isReservedVar("client_name"));
@@ -796,8 +788,7 @@ test "underHome: inside, outside, boundary, prefix trap" {
     try std.testing.expect(!underHome("C:/Users/x/.nix", "C:/Users/x/.nixon/segments.toml"));
     // Mixed separators name the SAME directory. aliases.toml stores forward
     // slashes while a resolved path carries the OS separator, so both spellings
-    // reach this function for one directory - and while they compared
-    // literally, whichever form did not match $NIX_HOME lost the exemption.
+    // reach this function for one directory.
     if (proc.is_windows) {
         try std.testing.expect(underHome("C:\\Users\\x\\.nix", "C:/Users/x/.nix/lib"));
         try std.testing.expect(underHome("C:/Users/x/.nix", "C:\\Users\\x\\.nix\\lib"));
