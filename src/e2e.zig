@@ -747,7 +747,7 @@ pub fn main(init: std.process.Init) !void {
             try writeFile(&c, join(&c, &.{ pa, ".nix", "scripts", "greet.ps1" }), "Write-Output \"greet $args\"\n");
             try writeActions(&c, "pa", pa, "[actions]\n" ++
                 "greet = \"greet there\"\n" ++
-                "long = \"powershell -NoProfile -ExecutionPolicy Bypass -File .nix/scripts/greet.ps1 there\"\n");
+                "long = \"pwsh -NoProfile -ExecutionPolicy Bypass -File .nix/scripts/greet.ps1 there\"\n");
             r = try c.run(&.{ "pa", "--run", ":greet" });
             c.check(r.code == 0 and hasLineFold(r.out, "greet there"), "a .ps1 script runs by bare name inside an action", r);
             r = try c.run(&.{ "pa", "--run", ":long" });
@@ -759,7 +759,7 @@ pub fn main(init: std.process.Init) !void {
             try writeActions(&c, "pa", pa, "[actions]\n" ++
                 "slashed = \"tools/tool.cmd there\"\n" ++
                 "ps1path = \"tools/hi.ps1 there\"\n" ++
-                "longpath = \"powershell -NoProfile -File tools/hi.ps1 there\"\n");
+                "longpath = \"pwsh -NoProfile -File tools/hi.ps1 there\"\n");
             r = try c.run(&.{ "pa", "--run", ":slashed" });
             c.check(r.code == 0 and hasLineFold(r.out, "tool there"), "a relative path written with / runs under cmd", r);
             r = try c.run(&.{ "pa", "--run", ":ps1path" });
@@ -2303,8 +2303,7 @@ pub fn main(init: std.process.Init) !void {
 
     // --- install lifecycle (release checklist sections 2 and 3) ---
     if (c.windowsOnly("--init preserves the registry PATH and PowerShell profiles")) {
-        const shell = if (c.has("pwsh")) "pwsh" else "powershell.exe";
-        const docs_result = try c.runCommand(&.{ shell, "-NoProfile", "-Command", "[Environment]::GetFolderPath('MyDocuments')" }, null);
+        const docs_result = try c.runCommand(&.{ "pwsh", "-NoProfile", "-Command", "[Environment]::GetFolderPath('MyDocuments')" }, null);
         if (docs_result.code != 0 or trim(docs_result.out).len == 0) return error.DocumentsPathUnavailable;
         const documents = trim(docs_result.out);
         const profile_paths = [_][]const u8{
@@ -2427,15 +2426,14 @@ pub fn main(init: std.process.Init) !void {
 
         const started_file = join(&c, &.{ pa, "e2e-wrapper-started.txt" });
         const finished_file = join(&c, &.{ pa, "e2e-wrapper-finished.txt" });
-        Io.Dir.cwd().deleteFile(io, started_file) catch {};
-        Io.Dir.cwd().deleteFile(io, finished_file) catch {};
-        defer {
-            Io.Dir.cwd().deleteFile(io, started_file) catch {};
-            Io.Dir.cwd().deleteFile(io, finished_file) catch {};
-        }
-        const command = "Set-Content -LiteralPath 'e2e-wrapper-started.txt' -Value started; Start-Sleep -Seconds 6; Set-Content -LiteralPath 'e2e-wrapper-finished.txt' -Value finished";
+        // The old image keeps running until the test creates this file, after
+        // the --sync checks below.
+        const release_file = join(&c, &.{ pa, "e2e-wrapper-release.txt" });
+        for ([_][]const u8{ started_file, finished_file, release_file }) |f| Io.Dir.cwd().deleteFile(io, f) catch {};
+        defer for ([_][]const u8{ started_file, finished_file, release_file }) |f| Io.Dir.cwd().deleteFile(io, f) catch {};
+        const command = "Set-Content -LiteralPath 'e2e-wrapper-started.txt' -Value started; while (-not (Test-Path -LiteralPath 'e2e-wrapper-release.txt')) { Start-Sleep -Milliseconds 50 }; Set-Content -LiteralPath 'e2e-wrapper-finished.txt' -Value finished";
         var child = try std.process.spawn(io, .{
-            .argv = &.{ x_exe, "pa", "powershell.exe", "-NoProfile", "-Command", command },
+            .argv = &.{ x_exe, "pa", "pwsh", "-NoProfile", "-Command", command },
             .cwd = .{ .path = c.work },
             .stdin = .ignore,
             .stdout = .ignore,
@@ -2467,6 +2465,7 @@ pub fn main(init: std.process.Init) !void {
             const fresh = try c.run(&.{"--agent"});
             c.exe = real_exe;
             c.check(fresh.code == 0 and std.mem.indexOf(u8, fresh.out, "run a command at the alias dir") != null, "a fresh x wrapper invocation works while the old one finishes", fresh);
+            try writeFile(&c, release_file, "go\n");
             const finish_wait = Io.Clock.awake.now(io).nanoseconds;
             while (!proc.pathExists(io, finished_file) and Io.Clock.awake.now(io).nanoseconds - finish_wait < 15 * std.time.ns_per_s) {
                 try io.sleep(.{ .nanoseconds = 100 * std.time.ns_per_ms }, .awake);
