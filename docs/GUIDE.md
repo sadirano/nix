@@ -664,6 +664,7 @@ x t:1@tasks claude           # start an agent there; $client is set to A
 ```
 
 - `*` matches directory names, one level per component (`1-*` works too).
+  Links and junctions to folders count as folders, wherever they point.
 - `**` matches any number of levels, for clients that nest differently
   (`tasks/A/1`, `tasks/B/2024/2`): `source-template = "/**/${t=*}"`. It never
   descends into a match, stops at `depth` levels (default 4; set

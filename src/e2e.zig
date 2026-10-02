@@ -2053,6 +2053,18 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "no directory") != null, "`depth` stops `**` from reaching deeper folders", r);
         r = try c.run(&.{ "rel@pa", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "escaped") != null, "a wildcard pattern cannot search outside its alias", r);
+        // A junction to a folder elsewhere is a folder here: people link a
+        // client's share into a project on purpose, and `*` must list it.
+        if (c.windowsOnly("a `*` segment lists a junction like a folder")) {
+            const share = join(&c, &.{ pa, "..", "pa-share" });
+            try util.mkdirAll(io, join(&c, &.{ share, "7" }));
+            const mk = try c.runCommand(&.{ "cmd", "/c", "mklink", "/J", join(&c, &.{ wt, "D" }), share }, null);
+            c.check(mk.code == 0, "scratch junction fixture is created", mk);
+            if (mk.code == 0) {
+                r = try c.run(&.{ "t:7@pa", "--resolve" });
+                c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ wt, "D", "7" })), "a `*` segment lists a junction like a folder", r);
+            }
+        }
         try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"docs\"\nsource-template = \"/documentation\"\n");
     }
 

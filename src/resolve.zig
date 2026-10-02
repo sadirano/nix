@@ -482,6 +482,12 @@ fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: []
         try app.err.print("nix: segment \"{s}\": stopped after opening {d} folders under {s} while matching {s}; narrow the template or lower its `depth`\n", .{ cd.segment, lim.budget, try store.fromSlash(app.arena, at), shown.items });
         return error.ContextSourceFailed;
     }
+    // A folder that could not be read does not stop the search - what was
+    // found elsewhere is still shown - but the answer says it may be missing
+    // entries, rather than passing as the whole tree.
+    for (w.unreadable) |rel| {
+        try app.err.print("nix: segment \"{s}\": could not read {s}; matches inside it may be missing\n", .{ cd.segment, try store.fromSlash(app.arena, try std.fmt.allocPrint(app.arena, "{s}{s}", .{ at, rel })) });
+    }
     if (w.matches.len == 0) {
         try app.err.print("nix: segment \"{s}\": no directory under {s} matches {s}\n", .{ cd.segment, try store.fromSlash(app.arena, at), shown.items });
         return error.ContextSourceFailed;

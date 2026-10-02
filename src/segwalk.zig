@@ -134,7 +134,10 @@ pub const default_budget: usize = 5000;
 
 /// Walk is the result of a search: the matches, and whether a limit cut it
 /// short. Either is reported rather than silently shown as the whole answer.
-pub const Walk = struct { matches: []Match, truncated: bool, exhausted: bool };
+/// `unreadable` names folders that could not be listed in full: the walk goes
+/// on past them, and the caller says which, so a menu missing their entries
+/// does not pass as complete.
+pub const Walk = struct { matches: []Match, truncated: bool, exhausted: bool, unreadable: []const []const u8 = &.{} };
 
 /// walk resolves components against the filesystem under `root` (slash form).
 ///
@@ -152,7 +155,7 @@ pub fn walk(arena: std.mem.Allocator, io: Io, root: []const u8, comps: []const C
     w.buf = try arena.alignedAlloc(u8, .of(usize), read_buffer_len);
     try w.go(0, "", &.{}, 0);
     std.mem.sort(Match, w.out.items, {}, lessMatch);
-    return .{ .matches = w.out.items, .truncated = w.truncated, .exhausted = w.exhausted };
+    return .{ .matches = w.out.items, .truncated = w.truncated, .exhausted = w.exhausted, .unreadable = w.unreadable.items };
 }
 
 /// The directory read buffer. Zig's convenience iterator uses 2 KB - roughly
@@ -171,6 +174,7 @@ const Walker = struct {
     opened: usize = 0,
     truncated: bool = false,
     exhausted: bool = false,
+    unreadable: std.ArrayList([]const u8) = .empty,
 
     fn stopped(w: *Walker) bool {
         return w.truncated or w.exhausted;
@@ -220,15 +224,33 @@ const Walker = struct {
     fn list(w: *Walker, rel: []const u8, pat: []const u8) ![][]const u8 {
         var names: std.ArrayList([]const u8) = .empty;
         if (!w.charge()) return names.items;
-        var dir = Io.Dir.cwd().openDir(w.io, try w.host(rel), .{ .iterate = true }) catch return names.items;
+        var dir = Io.Dir.cwd().openDir(w.io, try w.host(rel), .{ .iterate = true }) catch |e| switch (e) {
+            error.FileNotFound, error.NotDir => return names.items,
+            else => {
+                try w.unreadable.append(w.arena, rel);
+                return names.items;
+            },
+        };
         defer dir.close(w.io);
         var r: Io.Dir.Reader = .init(dir, w.buf);
         var batch: [64]Io.Dir.Entry = undefined;
         while (true) {
-            const n = r.read(w.io, &batch) catch break;
+            // A read that fails partway keeps what it got and the walk goes on
+            // to the next folder; the caller names this one as incomplete.
+            const n = r.read(w.io, &batch) catch {
+                try w.unreadable.append(w.arena, rel);
+                break;
+            };
             for (batch[0..n]) |ent| {
-                if (ent.kind != .directory) continue;
                 if (!globMatch(pat, ent.name)) continue;
+                // Links and junctions to folders count as folders: people link
+                // a client's share into a project on purpose, and a menu that
+                // skipped them would cut the tree short. A loop through a link
+                // is bounded by `depth` and the opened-folder budget.
+                if (ent.kind != .directory) {
+                    if (ent.kind != .sym_link and ent.kind != .unknown) continue;
+                    if (!try w.isDir(try w.join(rel, ent.name))) continue;
+                }
                 try names.append(w.arena, try w.arena.dupe(u8, ent.name));
             }
             if (n == 0 and r.state == .finished) break;
