@@ -112,7 +112,7 @@ const Ctx = struct {
     /// windowsOnly gates a check or a block whose subject is Windows itself.
     /// True on Windows; elsewhere it records the skip and answers false, so
     /// the caller writes `if (c.windowsOnly("...")) { ... }` and the run stays
-    /// green on a POSIX box with fewer, honestly counted, checks.
+    /// green on a POSIX box with fewer checks, each skip counted.
     fn windowsOnly(c: *Ctx, name: []const u8) bool {
         if (proc.is_windows) return true;
         c.platform_skips += 1;
@@ -320,8 +320,7 @@ pub fn main(init: std.process.Init) !void {
     // --- alias basics -------------------------------------------------------
     {
         // A directory that does not exist is never created behind anyone's
-        // back: an agent's typo used to become a plausible empty sibling of the
-        // real folder. With nobody to ask it refuses and registers nothing.
+        // back. With nobody to ask it refuses and registers nothing.
         try c.env.put("NIX_E2E_TTY", "0");
         var r = try c.run(&.{ "pa", pa });
         try c.env.put("NIX_E2E_TTY", "1");
@@ -356,8 +355,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and pathEql(trim(r.out), pa), "alias lookup is case-insensitive", r);
 
         // Repointing an existing alias destroys the only record of where it
-        // pointed, so unattended it REFUSES rather than silently overwriting -
-        // `o i :` used to cost people the alias.
+        // pointed, so unattended it REFUSES rather than silently overwriting.
         try c.env.put("NIX_E2E_TTY", "0");
         r = try c.run(&.{ "pa", pa2 });
         try c.env.put("NIX_E2E_TTY", "1");
@@ -384,9 +382,7 @@ pub fn main(init: std.process.Init) !void {
         _ = try c.run(&.{ "pa", "--remove" }); // point it back
         _ = try c.run(&.{ "pa", pa });
 
-        // A token that cannot be a path never reaches aliases.toml. `o i :` used
-        // to resolve ":" against the cwd, overwrite, save, and only THEN crash
-        // trying to enter it.
+        // A token that cannot be a path never reaches aliases.toml.
         if (c.windowsOnly("a non-path argument is refused and leaves the alias intact")) {
             r = try c.run(&.{ "pa", "we|rd" });
             r2 = try c.run(&.{ "pa", "--resolve" });
@@ -421,9 +417,7 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--list-names"});
         c.check(r.code == 0 and hasLine(r.out, "pa") and hasLine(r.out, "pb"), "--list-names prints bare names", r);
 
-        // A global flag may lead the command, not only trail it: the first
-        // dashed token used to be taken for the verb, so the natural spelling
-        // died on "unknown flag --no-prompt".
+        // A global flag may lead the command, not only trail it.
         r = try c.run(&.{ "--no-prompt", "--list-names" });
         c.check(r.code == 0 and hasLine(r.out, "pa"), "a leading global flag doesn't shadow the command", r);
 
@@ -459,8 +453,8 @@ pub fn main(init: std.process.Init) !void {
 
     // --- the built-in .nix self-alias ----------------------------------------
     {
-        // Resolves to nix's own home without ever being registered - the whole
-        // point: config that must reach into ~/.nix needs a name, not a path.
+        // Resolves to nix's own home without ever being registered: config that
+        // must reach into ~/.nix needs a name, not a path.
         var r = try c.run(&.{ ".nix", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), home), ".nix resolves to nix's own home", r);
 
@@ -538,8 +532,7 @@ pub fn main(init: std.process.Init) !void {
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=%NIX_ALIAS% path=%NIX_ALIAS_PATH%\"\n"
         else
             "[actions]\nhello = \"echo from-project\"\nwhoami = \"echo alias=$NIX_ALIAS path=$NIX_ALIAS_PATH\"\n");
-        // Central: written, never approved. It never needs to be - that is the
-        // half of the gate this file proves by never mentioning it again.
+        // Central: written, never approved, and it never needs to be.
         try writeFile(&c, join(&c, &.{ home, "actions", "pa.toml" }), "[actions]\nhello = \"echo from-central\"\nonly = \"echo central-only\"\n");
 
         var r = try c.run(&.{ "pa", "--run", ":hello" });
@@ -1042,8 +1035,8 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "built") == null and
             std.mem.indexOf(u8, r.err, "not been approved") != null and
             std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "an unapproved project action refuses and says how to approve", r);
-        // The refusal shows the command, which is the point: the thing being
-        // approved is the text, not the name that was typed.
+        // The refusal shows the command: the thing being approved is the text,
+        // not the name that was typed.
         c.check(std.mem.indexOf(u8, r.err, "echo built") != null, "the refusal shows the command it withheld", r);
 
         r = try c.trust(&.{"pg"});
@@ -1356,8 +1349,7 @@ pub fn main(init: std.process.Init) !void {
 
     // --- a bare `:` is the palette, from any command ----------------------------
     {
-        // What the hand types when the question is "what can I run". Reads as the
-        // alias-less form of `r <alias> :`: the same colon, one scope wider.
+        // The alias-less form of `x <alias> :`: the same colon, one scope wider.
         var r = try c.run(&.{ "--no-prompt", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ALIAS") != null and
             std.mem.indexOf(u8, r.out, ":hello") != null, "a bare `:` opens the action palette", r);
@@ -1377,20 +1369,19 @@ pub fn main(init: std.process.Init) !void {
             std.mem.indexOf(u8, r.out, "ALIAS") == null, "`<alias> --run :` lists just that alias", r);
         // And it is the SAME answer from any command - the routing happens
         // before any command's own handler, so `o pa :` cannot mean "register
-        // ':' as pa's path" the way it once did.
+        // ':' as pa's path".
         const via_run = r.out;
         for ([_][]const u8{ "--edit", "--explore", "--yank", "--grep", "--find" }) |verb| {
             r = try c.run(&.{ "pa", verb, ":" });
             c.check(r.code == 0 and std.mem.eql(u8, r.out, via_run), "a trailing `:` answers the same through every command", r);
         }
-        // Bare `nix <alias> :` (no verb at all) is the form that used to hit the
-        // add path and register ":" as a directory.
+        // Bare `nix <alias> :` (no verb at all) must not register ":" as a
+        // directory either.
         r = try c.run(&.{ "pa", ":" });
         c.check(r.code == 0 and std.mem.eql(u8, r.out, via_run), "a trailing `:` with no verb lists too", r);
         // A picker needs somebody who can answer it. Unattended (the harness
-        // pipes stdout and ignores stdin) it must PRINT, never open fzf - that
-        // is what `r <alias> :` did before it became a picker, and a hang here
-        // would strand every script that lists actions.
+        // pipes stdout and ignores stdin) it must PRINT, never open fzf: a hang
+        // here would strand every script that lists actions.
         r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ACTION") != null, "an unattended `:` prints instead of opening the picker", r);
     }
@@ -1456,8 +1447,7 @@ pub fn main(init: std.process.Init) !void {
         // into the blank padding of a column it has nothing to put in.
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "echo undocumented\n") != null, "an undescribed row ends at its command", r);
 
-        // The palette shows them too, and its pattern searches the prose - the
-        // whole point of writing a description.
+        // The palette shows them too, and its pattern searches the prose.
         r = try c.run(&.{ "--no-prompt", "--actions", "runnable" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, ":hello") != null and
             std.mem.indexOf(u8, r.out, ":plain") == null, "--actions matches on description text alone", r);
@@ -1533,8 +1523,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(copied.len > 0 and std.mem.indexOf(u8, r.out, copied) != null, "the yank lands on the clipboard (redirected to a file, never the runner's)", r);
 
         // Quiet keys (#50). A threshold high enough that `echo` can never beat
-        // it silences the success, and the failure still gets through - the
-        // whole point of making the threshold cost-based rather than absolute.
+        // it silences the success, and the failure still gets through.
         try writeFile(&c, join(&c, &.{ home, "config.toml" }), try std.fmt.allocPrint(arena, "[notify]\non_finish = \"{s}\"\non_finish_min_ms = 600000\n", .{hook}));
         r = try c.run(&.{ "pa", "--run", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null and
@@ -1679,7 +1668,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(std.mem.indexOf(u8, man, ":ship") != null and std.mem.indexOf(u8, man, "pa ") != null, "the manifest records the alias and action an export runs", r);
 
         // The action listing says which actions are also global, and under what
-        // name - the question `r pa :` could not answer before.
+        // name.
         r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "GLOBAL") != null and
             std.mem.indexOf(u8, r.out, "send") != null, "the action listing marks which actions are global commands", r);
@@ -1769,9 +1758,9 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and proc.pathExists(io, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "risky{s}", .{ext}) })), "--trust unblocks the export, and sync-bin installs it", r);
 
         // A sibling running a script BELOW the project root. aliases.toml spells
-        // the dir with `/`, the joined script path carries `\`, and the export
-        // check used to name the script by basename where --trust named it by
-        // its place in the project: approved, and still reported unapproved.
+        // the dir with `/`, the joined script path carries `\`; the export check
+        // and --trust must name the script the same way, or an approved script
+        // is reported unapproved.
         try writeFile(&c, join(&c, &.{ pg, "tools", "img.py" }), "print(1)\n");
         try writeFile(&c, pg_actions, "[actions]\nrisky = \"echo cloned\"\nimg = \"python tools/img.py\"\n[bin]\nrisky = \":risky\"\n");
         _ = try c.trust(&.{"pg"});
@@ -1781,9 +1770,7 @@ pub fn main(init: std.process.Init) !void {
 
         // An export whose name BECOMES a command wrapper is refused - and the
         // prune pass must not then delete the wrapper as an undeclared export
-        // it once owned. That is how a real machine lost `q.exe`: the export
-        // was declared before `q` was a builtin, so the manifest still credited
-        // the name to _default.
+        // it once owned, while the manifest still credits the name to _default.
         const q_file = join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "q{s}", .{ext}) });
         const def_pre = join(&c, &.{ home, "actions", "_default.toml" });
         const def_pre_restore = readFileOr(&c, def_pre, "");
@@ -1847,10 +1834,8 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{":brandnew"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "added a stub") != null and
             std.mem.indexOf(u8, readFileOr(&c, def_actions, ""), "brandnew") != null, "`e :name` seeds a stub for a new action", r);
-        // …and opens AT the declaration: naming an action says which line you
-        // meant, and a file of thirty of them makes the difference between
-        // editing it and finding it first. The stub's own line is what the
-        // editor is handed.
+        // …and opens AT the declaration: the stub's own line is what the editor
+        // is handed.
         {
             const seeded = readFileOr(&c, def_actions, "");
             var want: usize = 0;
@@ -1963,8 +1948,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a renamed wrapper ([shortcuts]) desugars via argv0", r);
 
         // A multi-name slot: `x = ["x", "r"]` — the extra spelling desugars to
-        // the same slot, which is how anyone keeps typing `r` for the run
-        // command now that the slot itself is named `x`.
+        // the same slot.
         const r_exe = join(&c, &.{ root, "r.exe" });
         try writeFile(&c, r_exe, exe_bytes);
         try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nx = [\"x\", \"r\"]\n");
@@ -1974,9 +1958,8 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "a multi-name slot's extra wrapper desugars via argv0", r);
 
         // The mapping written backwards: `r = "x"` names no builtin slot, so it
-        // installs nothing and renames nothing. The bug was that it looked like
-        // it had - doctor counted the dead entry as an active override, which
-        // is the one command you would run to check the belief.
+        // installs nothing and renames nothing, and doctor must not count it as
+        // an active override.
         try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nr = \"x\"\n");
         r = try c.run(&.{"--doctor"});
         c.check(std.mem.indexOf(u8, r.out, "shortcut overrides=0") != null, "a [shortcuts] key naming no builtin is not counted as an override", r);
@@ -1986,7 +1969,7 @@ pub fn main(init: std.process.Init) !void {
 
         // A REAL slot given an unusable value stays silent on purpose: the
         // builtin survives under its own name, which is the right outcome, and
-        // it must not start tripping the new warning.
+        // it must not trip the warning.
         try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[shortcuts]\nx = \"nix\"\n");
         r = try c.run(&.{"--doctor"});
         c.check(std.mem.indexOf(u8, r.out, "names no builtin") == null, "an unusable VALUE on a real slot stays silent", r);
@@ -2192,8 +2175,7 @@ pub fn main(init: std.process.Init) !void {
         const r = try c.run(&.{ "pc", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), pc) and !proc.pathExists(io, pc), "--resolve never re-creates a deleted dir", r);
 
-        // Every other command used to mkdir it back silently. With nobody to
-        // ask, a vanished dir is an error that names the alias, not a new
+        // With nobody to ask, a vanished dir is an error that names the alias, not a new
         // empty folder the next write lands in.
         try c.env.put("NIX_E2E_TTY", "0");
         const r2 = try c.run(&.{ "pc", "--run", "echo", "ran" });
@@ -2263,10 +2245,9 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // --- $NIX_HOME never touches the machine's persistent PATH --------------------------
-    // This harness runs --sync and --init against a scratch home, and both used
-    // to append <scratch>/bin to the user's REAL registry PATH - one dead entry
-    // per run, accumulating silently. The guard is store.isRelocatedHome; these
-    // are the checks that keep it.
+    // This harness runs --sync and --init against a scratch home, which must
+    // never append <scratch>/bin to the user's REAL registry PATH. The guard is
+    // store.isRelocatedHome; these are the checks that keep it.
     if (c.windowsOnly("the registry user PATH under $NIX_HOME")) {
         // The absent string is the POSITIVE report, not the substring "added" -
         // the note itself says "NOT added", so a naive check passes for the
@@ -2552,7 +2533,7 @@ pub fn main(init: std.process.Init) !void {
     // --- candidate menus (issue #19) ---------------------------------------------------
     // A source that returns several blocks turns the segment into a menu. The
     // picker itself is interactive and cannot be driven here; what these check
-    // is everything around it - that one block still behaves exactly as before,
+    // is everything around it - that one block resolves directly,
     // that several are offered and refused unattended, that an inline value
     // never prompts, and that the list survives a cache round-trip.
     if (c.windowsOnly("candidate menus (.cmd fixtures)")) {
@@ -2615,7 +2596,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(std.mem.indexOf(u8, r.out, "PROJ-123  Fix login flow") != null and
             std.mem.indexOf(u8, r.out, "PROJ-140  Rate limiter") != null, "the cached list replays in the source's order", r);
 
-        // One block is the old behaviour, unchanged - the format is a superset.
+        // One block resolves directly - the format is a superset.
         try writeFile(&c, join(&c, &.{ scripts, "tickets.cmd" }),
             \\@echo off
             \\>>"%NIX_CONTEXT_OUT%" echo task=7
@@ -2715,10 +2696,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // --- crossings (issue #38) ---------------------------------------------------------
-    // The per-feature walk above proves each feature alone. The risk that grew
-    // as actions, provenance, env and [bin] landed within six weeks of
-    // each other is in the places they MEET, where the machinery exists and
-    // nothing exercises it end to end. Own aliases, so nothing here depends on
+    // The per-feature walk above proves each feature alone; this checks where
+    // actions, provenance, env and [bin] MEET, end to end. Own aliases, so nothing here depends on
     // state an earlier section left behind.
     {
         const ka = join(&c, &.{ root, "proj", "ka" });
@@ -2788,9 +2767,7 @@ pub fn main(init: std.process.Init) !void {
         //
         // Approval is per ACTION, not per file. Adding a sibling action leaves
         // :shown's own line untouched, so :shown stays approved and only the new
-        // one is unapproved. While the token hashed the whole actions.toml, one
-        // added line re-armed everything in the file: 41 actions in a real
-        // project meant 41 prompts, 304 ledger rows, and a gate nobody read.
+        // one is unapproved.
         try writeFile(&c, join(&c, &.{ kb, ".nix", "actions.toml" }), try std.fmt.allocPrint(arena, "[actions]\n{s}\nextra = \"echo added-later\"\n", .{show}));
         r = try c.run(&.{ "kb", "--run", ":shown" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "who=[kb]") != null, "a sibling action does not re-arm an approved one", r);
