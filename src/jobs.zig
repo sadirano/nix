@@ -244,7 +244,7 @@ pub fn scan(app: *App, scope: []const u8) ![]Job {
 /// Only a selected or listed job needs its header, and it is never more than
 /// the first two lines: one bounded read per script covers it.
 pub fn readHeader(app: *App, job: Job) !Header {
-    const file = try Io.Dir.cwd().openFile(app.io, job.path, .{});
+    const file = try util.openRead(app.arena, app.io, job.path);
     defer file.close(app.io);
     var buffer: [header_limit]u8 = undefined;
     var used: usize = 0;

@@ -29,6 +29,24 @@ pub fn appendFile(arena: std.mem.Allocator, io: Io, path: []const u8, data: []co
     try file.writeStreamingAll(io, data);
 }
 
+/// openRead opens an existing file for reading. On Windows a file another
+/// process holds without read sharing fails at once with error.FileBusy: the
+/// std open retries a sharing violation for about four seconds (a workaround
+/// for executables just closed), and a locked script is not one.
+pub fn openRead(arena: std.mem.Allocator, io: Io, path: []const u8) !Io.File {
+    if (comptime !is_windows) return Io.Dir.cwd().openFile(io, path, .{});
+    const wide = try std.unicode.wtf8ToWtf16LeAllocZ(arena, path);
+    // GENERIC_READ, share read|write|delete, OPEN_EXISTING.
+    const handle = CreateFileW(wide.ptr, 0x80000000, 0x0007, null, 3, 0x80, null);
+    if (handle == std.os.windows.INVALID_HANDLE_VALUE) return switch (std.os.windows.GetLastError()) {
+        .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.FileNotFound,
+        .SHARING_VIOLATION, .LOCK_VIOLATION => error.FileBusy,
+        .ACCESS_DENIED => error.AccessDenied,
+        else => error.Unexpected,
+    };
+    return .{ .handle = handle, .flags = .{ .nonblocking = false } };
+}
+
 extern "kernel32" fn CreateFileW(
     path: [*:0]const u16,
     access: u32,
