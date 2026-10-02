@@ -67,6 +67,9 @@ fn checkPasteSegment(segment: []const u8) ?[]const u8 {
         return "contains a dot path segment";
     // The Windows limit is 255 UTF-16 units, not bytes: 130 accented letters
     // take 260 bytes and still fit.
+    // Validate first: calcWtf16LeLen slices a whole sequence before decoding
+    // it, so a cut-off one ("x\xc3") would read past the segment.
+    if (!std.unicode.wtf8ValidateSlice(segment)) return "is not valid UTF-8";
     const units = std.unicode.calcWtf16LeLen(segment) catch return "is not valid UTF-8";
     if (units > 255) return "has a path segment longer than 255 characters";
     // Windows silently removes a trailing dot or space from a path component.
@@ -228,10 +231,11 @@ test "checkPasteName accepts relative names and ordinary stems" {
 
 test "checkPasteName refuses escaping and Windows-mangled names" {
     for ([_][]const u8{
-        "..",       "../x",   "..\\x",    "a/../b",  "/x",    "\\x",           "\\\\srv\\s\\x",
-        "C:x",      "C:\\x",  "a//b",     "a/",      "./x",   "x.md:ads",      "a<b",
-        "a?b",      "x.",     "nul",      "NUL.txt", "con",   "com1.md",       "lpt9",
-        "a" ** 256, "a\x01b", " NUL.txt", "\tcon ",  " ../x", "\u{e9}" ** 256,
+        "..",          "../x",   "..\\x",    "a/../b",  "/x",    "\\x",           "\\\\srv\\s\\x",
+        "C:x",         "C:\\x",  "a//b",     "a/",      "./x",   "x.md:ads",      "a<b",
+        "a?b",         "x.",     "nul",      "NUL.txt", "con",   "com1.md",       "lpt9",
+        "a" ** 256,    "a\x01b", " NUL.txt", "\tcon ",  " ../x", "\u{e9}" ** 256, "x\xc3",
+        "a\xe2\x82/b",
     }) |name| {
         try std.testing.expect(checkPasteName(name) != null);
     }
