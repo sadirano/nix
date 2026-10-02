@@ -135,14 +135,6 @@ You can hand-edit the file (`nix --list` and resolve pick up changes immediately
 
 One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
 
-### Time per project
-
-nix already waits for the things worth measuring — an `o` session until its subshell exits, a foreground `x` until the command returns — so each one writes a line to `~/.nix/time`: alias, start, duration, and which of the three it was (`session`, `run`, `action`). No tracker to remember to start, nothing to sign into, nothing leaving the machine.
-
-The ledger is plain text for your own reports to read; nix writes it and never displays it. Detached (`--outside`) and elevated runs record nothing: nix returns as soon as the window is up, so there is no finish to observe.
-
-Durations are written as measured, never capped: a shell left open overnight is logged at its full length. Like `usage`, the ledger is machine-local.
-
 ### Path dialects
 
 `--as <dialect>` changes the *spelling* of the path a command prints or copies - the same directory, written the way whichever tool is about to read it expects:

@@ -2460,52 +2460,6 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // --- time ledger (issue #20) -----------------------------------------------
-    {
-        const pt = join(&c, &.{ root, "proj", "pt" });
-        util.mkdirAll(io, pt) catch {};
-        _ = try c.run(&.{ "pt", pt });
-        const ledger = join(&c, &.{ home, "time" });
-
-        // The action waits deliberately: a boundary under a second rounds to
-        // zero and is dropped, so an instant `echo` would prove nothing.
-        try writeActions(&c, "pt", pt, if (proc.is_windows)
-            \\[actions]
-            \\wait = "ping -n 3 127.0.0.1 > NUL"
-            \\
-        else
-            \\[actions]
-            \\wait = "sleep 2"
-            \\
-        );
-        const r = try c.run(&.{ "pt", "--run", ":wait" });
-        // pt's line, wherever it sits: on a slow runner an EARLIER alias's
-        // action can cross the one-second line too and write a line of its own
-        // above this one, which is that alias's business and not a failure here.
-        var pt_lines: usize = 0;
-        var tagged = false;
-        var it = std.mem.splitScalar(u8, readFileOr(&c, ledger, ""), '\n');
-        while (it.next()) |l0| {
-            const l = trim(l0);
-            if (!std.mem.startsWith(u8, l, "pt ")) continue;
-            pt_lines += 1;
-            tagged = std.mem.endsWith(u8, l, " action");
-        }
-        c.check(r.code == 0 and pt_lines == 1 and tagged, "a finished action writes one ledger line, tagged action", r);
-
-        // Detached runs are inherently untimeable - nix returns as soon as the
-        // child is started, so there is no finish to observe. Checked on the
-        // LITERAL form deliberately: a detached ACTION gets a console window of
-        // its own, and a test suite must not leave one open on the desktop of
-        // whoever ran it.
-        const before = readFileOr(&c, ledger, "").len;
-        _ = if (proc.is_windows)
-            try c.run(&.{ "pt", "--run", "--outside", "cmd", "/c", "echo detached" })
-        else
-            try c.run(&.{ "pt", "--run", "--outside", "sh", "-c", "echo detached" });
-        c.check(readFileOr(&c, ledger, "").len == before, "an --outside run records no time", null);
-    }
-
     // --- context source bounds (issue #15) ---------------------------------------------
     // Everything a source returns is kept: it lands in the arena, is written to
     // contexts-cache.toml (rewritten whole on every put), and is exported into

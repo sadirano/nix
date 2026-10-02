@@ -11,7 +11,6 @@ const actions = @import("actions.zig");
 const resolve = @import("resolve.zig");
 const config = @import("config.zig");
 const notify = @import("notify.zig");
-const timelog = @import("timelog.zig");
 const secret = @import("secret.zig");
 const segments = @import("segments.zig");
 const provenance = @import("provenance.zig");
@@ -124,16 +123,10 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
         };
         return 0;
     }
-    // The other foreground boundary the time ledger records: a literal command
-    // is spawned as an argv here rather than through runShellString, so the
-    // named-action site there would never see it.
-    const span = timelog.Boundary.begin(app.io);
-    const code = proc.runInheritEnv(app.io, resolved, target, env) catch |e| {
+    return proc.runInheritEnv(app.io, resolved, target, env) catch |e| {
         try app.err.print("nix: run {s}: {s}\n", .{ exe, @errorName(e) });
         return 1;
     };
-    span.finish(app, alias, .run);
-    return code;
 }
 
 /// The environment variable that stops an exported action from re-entering
@@ -649,29 +642,21 @@ pub fn runShellString(app: *App, command: []const u8, alias: []const u8, dir: []
     if (outside or stripSudo(cmd) != null) return startWindowed(app, cmd, alias, dir, name);
     const env = (try aliasRunEnv(app, alias, dir, .run)) orelse return 1;
     try app.out.flush();
-    // Every foreground run is a boundary the time ledger records, named after
-    // what it was: an action's time is the project's build time, a literal
-    // command's is not (timelog.zig). The detached and elevated forms returned
-    // above are exempt - there is no finish here to time.
-    const span = timelog.Boundary.begin(app.io);
-    const kind: timelog.Kind = if (name.len > 0) .action else .run;
     if (name.len > 0) {
         app.last_alias = alias;
         app.last_action = name;
     }
     // Ctrl-C is intercepted for exactly the length of the child's run, so that
-    // an abandoned build still writes its ledger line and its
-    // notification instead of taking nix down mid-sentence. Disarmed on the way
+    // an abandoned build still fires its notification instead of taking nix
+    // down mid-sentence. Disarmed on the way
     // out, including the error paths - outside this window Ctrl-C keeps meaning
     // "stop now", which is what it should mean at a picker or a prompt.
     interrupt.arm();
     defer interrupt.disarm();
-    const code = proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
+    return proc.runShellInherit(app.arena, app.io, cmd, dir, env) catch |e| {
         try app.err.print("nix: run action: {s}\n", .{@errorName(e)});
         return 1;
     };
-    span.finish(app, alias, kind);
-    return code;
 }
 
 /// inShell turns a `[bash]` or `[pwsh]` action into a platform-shell command

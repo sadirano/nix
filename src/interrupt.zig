@@ -1,18 +1,14 @@
 //! Ctrl-C during a foreground run, without losing the run.
 //!
-//! nix does its bookkeeping AFTER the child wait returns - the ledger line and
-//! `[notify] on_finish`. With no console handler
-//! registered, Windows' default action for Ctrl-C is to
-//! terminate the process, so an abandoned `x nix :build` was nine minutes that
-//! never happened as far as the time ledger was concerned.
+//! nix fires `[notify] on_finish` AFTER the child wait returns. With no
+//! console handler registered, Windows' default action for Ctrl-C is to
+//! terminate the process, so an abandoned run would never report.
 //!
 //! The handler here does ONE thing: set an event. It does not touch the App,
 //! the arena, or any file - it runs on a thread the OS creates, concurrently
 //! with the main thread sitting in the wait, and the arena is not thread-safe.
 //! The main thread wakes on that event and takes its ORDINARY completion path,
-//! so the duration it writes is one it actually observed. timelog's header asks
-//! for "measurement, never inference", and reconstructing an end nobody saw
-//! would be inference.
+//! so the duration it reports is one it actually observed.
 //!
 //! Armed only around a child wait (run.zig), never process-wide. Everywhere
 //! else Ctrl-C keeps its default meaning, so a picker or a long `--grep` still
