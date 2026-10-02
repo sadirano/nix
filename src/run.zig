@@ -556,7 +556,7 @@ pub const Resolved = struct {
 pub fn resolveAction(app: *App, alias: []const u8, dir: []const u8, name: []const u8) !?Resolved {
     const raw = (try compose.lookupRaw(app, alias, dir, name)) orelse return null;
     var problem: []const u8 = "";
-    return compose.expandAction(app, alias, dir, raw, 0, &problem) catch |e| {
+    return compose.expandAction(app, alias, dir, raw, &.{}, &problem) catch |e| {
         if (e == error.BadActionReference) try app.err.print("nix: {s}\n", .{problem});
         return e;
     };

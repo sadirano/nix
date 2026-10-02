@@ -19,8 +19,9 @@ const jobs = @import("jobs.zig");
 
 const App = app_zig.App;
 
-/// Deepest a reference may nest before it is called a loop. Far past any real
-/// file; a cycle reaches it in a handful of steps.
+/// Deepest a reference may nest. Far past any real file. A loop is caught
+/// before this, by name (expandAction's `chain`), so reaching it means a long
+/// chain, not a cycle.
 pub const max_depth: u8 = 8;
 
 /// expandedCommand is one project action's command as the gate will see it,
@@ -28,7 +29,7 @@ pub const max_depth: u8 = 8;
 /// cannot expand is null: it cannot run, so there is nothing to approve.
 pub fn expandedCommand(app: *App, alias: []const u8, dir: []const u8, a: actions.Action) ?[]const u8 {
     var problem: []const u8 = "";
-    const r = expandAction(app, alias, dir, .{ .action = a, .from_project = true }, 0, &problem) catch return null;
+    const r = expandAction(app, alias, dir, .{ .action = a, .from_project = true }, &.{}, &problem) catch return null;
     return r.command;
 }
 
@@ -36,7 +37,7 @@ pub fn expandedCommand(app: *App, alias: []const u8, dir: []const u8, a: actions
 /// when it can - for `nix --doctor`, which reports it instead of running it.
 pub fn referenceProblem(app: *App, alias: []const u8, dir: []const u8, a: actions.Action) !?[]const u8 {
     var problem: []const u8 = "";
-    _ = expandAction(app, alias, dir, .{ .action = a, .from_project = true }, 0, &problem) catch |e| {
+    _ = expandAction(app, alias, dir, .{ .action = a, .from_project = true }, &.{}, &problem) catch |e| {
         if (e == error.BadActionReference) return problem;
         return e;
     };
@@ -68,7 +69,7 @@ pub fn lookupRaw(app: *App, alias: []const u8, dir: []const u8, name: []const u8
 /// up in the same alias, and a leading `.ps1` script name into its PowerShell
 /// invocation. A reference to a project action is a project action: from_project
 /// is set if any link came from the repo, so the gate asks for all of it.
-pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, depth: u8, problem: *[]const u8) !run.Resolved {
+pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, chain: []const []const u8, problem: *[]const u8) !run.Resolved {
     const a = raw.action;
     const refs = (try parseRefs(app.arena, a.command)) orelse return .{
         .command = try scriptForm(app, dir, a.command, a.shell),
@@ -77,10 +78,20 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
         .written = if (raw.job != null) "" else a.command,
         .job = raw.job,
     };
-    if (depth >= max_depth) {
-        problem.* = try std.fmt.allocPrint(app.arena, ":{s} leads back to itself through other actions", .{a.name});
+    // `chain` is the actions being expanded above this one. Meeting one of
+    // them again is a loop, and the message names it; only a chain with no
+    // repeat can reach max_depth, and that is said as what it is.
+    for (chain, 0..) |prev, i| if (std.mem.eql(u8, prev, a.name)) {
+        var path: std.ArrayList(u8) = .empty;
+        for (chain[i..]) |n| try path.print(app.arena, ":{s} -> ", .{n});
+        problem.* = try std.fmt.allocPrint(app.arena, ":{s} leads back to itself: {s}:{s}", .{ a.name, path.items, a.name });
+        return error.BadActionReference;
+    };
+    if (chain.len >= max_depth) {
+        problem.* = try std.fmt.allocPrint(app.arena, ":{s} nests actions more than {d} deep (:{s} -> ...)", .{ a.name, max_depth, chain[0] });
         return error.BadActionReference;
     }
+    const below = try std.mem.concat(app.arena, []const u8, &.{ chain, &.{a.name} });
     var parts: std.ArrayList([]const u8) = .empty;
     var from_project = raw.from_project;
     for (refs, 0..) |link, i| {
@@ -99,7 +110,7 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, dep
             problem.* = try std.fmt.allocPrint(app.arena, ":{s} and :{s} run in different shells - an action can only refer to one declared in the same table", .{ a.name, ref });
             return error.BadActionReference;
         }
-        const sub = try expandAction(app, alias, dir, hit, depth + 1, problem);
+        const sub = try expandAction(app, alias, dir, hit, below, problem);
         from_project = from_project or sub.from_project;
         // The caller's words go to the last link, so an earlier one keeps only
         // what the value wrote after it.

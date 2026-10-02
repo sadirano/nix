@@ -684,7 +684,10 @@ pub fn main(init: std.process.Init) !void {
             "copy = \"echo a-long-prefix more\"\n" ++
             "gone = \":nope\"\n" ++
             "l1 = \":l2\"\n" ++
-            "l2 = \":l1\"\n");
+            "l2 = \":l1\"\n" ++
+            // Nine links, no repeat: deep, not a loop.
+            "d0 = \":d1\"\nd1 = \":d2\"\nd2 = \":d3\"\nd3 = \":d4\"\nd4 = \":d5\"\n" ++
+            "d5 = \":d6\"\nd6 = \":d7\"\nd7 = \":d8\"\nd8 = \":d9\"\nd9 = \"echo deep\"\n");
         r = try c.run(&.{ "pa", "--run", ":list", "--", "X" });
         c.check(r.code == 0 and hasLineFold(r.out, "a-long-prefix list X"), "a :name value runs that action with its words, then the caller's", r);
         r = try c.run(&.{ "pa", "--run", ":both" });
@@ -696,7 +699,12 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{"--doctor"});
         c.check(std.mem.indexOf(u8, r.out, ":gone refers to :nope") != null and std.mem.indexOf(u8, r.out, "copy = \":base more\"") != null, "--doctor lists broken references and long forms", r);
         r = try c.run(&.{ "pa", "--run", ":l1" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "leads back") != null, "a reference loop is refused, not followed", r);
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, ":l1 -> :l2 -> :l1") != null, "a reference loop is refused, and named", r);
+        r = try c.run(&.{ "pa", "--run", ":d0" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "more than 8 deep") != null and
+            std.mem.indexOf(u8, r.err, "leads back") == null, "a long chain without a loop is called deep, not a loop", r);
+        r = try c.run(&.{ "pa", "--run", ":d1" });
+        c.check(r.code == 0 and hasLineFold(r.out, "deep"), "eight levels of references still run", r);
         r = try c.run(&.{ "pa", "--run", ":copy" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "copy = \":base more\"") != null, "an action restating a sibling is told the shorter form", r);
 
