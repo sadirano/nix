@@ -120,7 +120,7 @@ The native engine is Windows-only for now (elsewhere fzf stays the engine) and p
 
 Which is exactly why it checks first. `q` refuses unless the process above it really is a shell (`cmd`, `powershell`, `pwsh`, `bash`, `sh`, `zsh`, `fish`, `nu`): started from Windows Terminal, an IDE, or a `.lnk`, the process above can be the terminal host itself, and closing *that* takes every other tab down with it. It also refuses when the parent is already gone — a pid is reused the moment its process ends, and a "parent" that started *after* you is somebody else holding the number. `q --dry-run` names the target and touches nothing.
 
-It's a hard kill, so a shell holding unflushed state (clink's history, for one) can lose it. Windows-only: on a POSIX shell, nix's integration is a shell function and `exit` already does this properly.
+It's a hard kill, deliberately: typing `exit` into the shell instead would leave a visible ` exit` line behind whenever shells are nested (`o` opens one inside another). History survives it in practice — PSReadLine saves each command as it runs, and clink merges a killed session's history file the next time it starts. Windows-only: on a POSIX shell, nix's integration is a shell function and `exit` already does this properly.
 
 ## Configuration
 

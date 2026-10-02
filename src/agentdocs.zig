@@ -425,9 +425,11 @@ pub const specs = [_]Spec{
         \\soon as its process ends, so a parent whose start time is LATER than
         \\this process's is somebody else holding the number.
         \\
-        \\A hard kill, so a shell holding unflushed state (a history file, say)
-        \\can lose it. Windows-only: a POSIX shell integration is a function,
-        \\where `exit` already does this properly.
+        \\A hard kill, on purpose: typing `exit` into the shell would leave a
+        \\visible line behind in nested shells. History survives it (PSReadLine
+        \\saves per command; clink merges a killed session's file at its next
+        \\start). Windows-only: a POSIX shell integration is a function, where
+        \\`exit` already does this properly.
         ,
         .agent_use =
         \\Never run it. It closes the terminal you are running in - which, in a
