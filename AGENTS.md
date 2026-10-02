@@ -37,6 +37,12 @@ relevant section before changing a subsystem.
 
 ## Conventions
 
+**Docs and comments state facts, never stories.** Write what nix does and the
+rule behind it. No anecdotes ("broke a Scoop install once"), no invented or
+one-off numbers ("43 of 100 rows"), no rhetoric ("the fastest known way
+to..."), no history of what the code used to do. A claim the code or a test
+can't back gets cut, not softened.
+
 ASCII in anything emitted (the README and COOKBOOK are exempt). Comments
 explain the decision. Commit subjects are a sentence about behavior
 (`feat: ...`, `(#NN)` when closing an issue). Work on `main`. Design lives in

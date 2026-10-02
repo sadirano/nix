@@ -154,9 +154,9 @@ lines and config, where `"dir C:\new"` must stay a backslash and an `n`.
   help, generated files, commit messages. A Windows console on a legacy code page
   renders an em dash as `ΓÇö`. (The README and COOKBOOK are the exception - they
   are read on GitHub.)
-- **Comments explain the decision, not the mechanism.** The existing density is
-  high and deliberate: nearly every non-obvious branch carries the failure that
-  motivated it. Match it.
+- **Comments explain the decision, not the mechanism.** A non-obvious branch
+  says what it guards against, as a fact about the code - not a story about
+  when it went wrong, a one-off number, or what the code used to do.
 - **Commit subjects read as a sentence about behavior**, not a component name:
   `feat: an exported action learns the name it was invoked under`, `fix:
   registering a path never destroys an alias by accident`. Conventional-commit
