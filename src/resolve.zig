@@ -63,7 +63,7 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
     // Checked BEFORE anything is written: a path that cannot name a directory
     // must never reach aliases.toml, least of all by overwriting a good one.
     try store.validateAliasPath(p);
-    const expanded = try store.expandTilde(app.arena, app.env(), p);
+    const expanded = try store.expandTilde(app.arena, app.lookup(), p);
     const abs = try absPath(app, expanded);
     // Also before the save: a mistyped path must not leave an alias pointing
     // at a directory nobody agreed to create.
@@ -727,7 +727,7 @@ pub fn cmdWhich(app: *App, args: [][]const u8) !u8 {
         const n = try std.process.currentPath(app.io, &buf);
         break :blk try app.arena.dupe(u8, buf[0..n]);
     };
-    const expanded = try store.expandTilde(app.arena, app.env(), std.mem.trim(u8, raw, " \t"));
+    const expanded = try store.expandTilde(app.arena, app.lookup(), std.mem.trim(u8, raw, " \t"));
     const abs = try absPath(app, expanded);
 
     const data = try store.readAliasesFile(app.arena, app.io, app.home);

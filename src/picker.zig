@@ -129,7 +129,7 @@ pub fn resolveRoots(app: *App, cfg: config.Config) !Roots {
         for (cfg.picker_search_roots) |r| {
             const t = std.mem.trim(u8, r, " \t");
             if (t.len == 0) continue;
-            try all.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.env(), t)));
+            try all.append(app.arena, try absPath(app, try store.expandTilde(app.arena, app.lookup(), t)));
         }
     } else {
         const drives = try proc.fixedDriveRoots(app.arena);

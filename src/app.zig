@@ -26,7 +26,7 @@ pub const App = struct {
     err: *Io.Writer,
     /// The environment as the OS handed it over. Read single variables with
     /// getEnv; `env()` builds the mutable map from it on first use.
-    environ: std.process.Environ = .empty,
+    environ: std.process.Environ,
     /// Built by env() the first time something needs the whole environment
     /// (a child process, an injected variable). A plain resolve never does.
     env_map: ?*std.process.Environ.Map = null,
@@ -100,10 +100,25 @@ pub const App = struct {
         if (app.env_map) |m| return m.get(key);
         return lookupEnv(app.arena, app.environ, key);
     }
+
+    /// lookup is getEnv in the `get` shape store.expandTilde and
+    /// store.isRelocatedHome take, so reading USERPROFILE does not build the map.
+    pub fn lookup(app: *App) AppLookup {
+        return .{ .app = app };
+    }
+};
+
+pub const AppLookup = struct {
+    app: *App,
+    pub fn get(l: AppLookup, key: []const u8) ?[]const u8 {
+        return l.app.getEnv(key);
+    }
 };
 
 /// lookupEnv reads one variable from the OS environment block. Case-insensitive
-/// on Windows, as the OS is.
+/// on Windows, as the OS is. A block holding one name twice in different case
+/// (some Cygwin/MSYS parents pass `TMP` and `tmp`) answers with the first here,
+/// and with the last once env() has built the map.
 pub fn lookupEnv(arena: std.mem.Allocator, environ: std.process.Environ, key: []const u8) ?[]const u8 {
     if (comptime @import("builtin").os.tag == .windows) {
         const wkey = std.unicode.wtf8ToWtf16LeAllocZ(arena, key) catch return null;

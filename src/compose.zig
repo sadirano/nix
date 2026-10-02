@@ -447,7 +447,7 @@ test "resolving and linting a toml action leaves the job log unloaded" {
     var env: std.process.Environ.Map = .init(arena_state.allocator());
     var err_buf: [1024]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&err_buf);
-    var app: App = .{ .arena = arena_state.allocator(), .io = io, .out = &writer, .err = &writer, .env_map = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
+    var app: App = .{ .arena = arena_state.allocator(), .io = io, .out = &writer, .err = &writer, .environ = .empty, .env_map = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
     try std.testing.expect((try jobs.lookup(&app, "pa", "budget")).?.header.uses != null);
     const resolved = (try run.resolveAction(&app, "pa", home, "hello")).?;
     try std.testing.expectEqualStrings("echo hello", resolved.command);
@@ -472,7 +472,7 @@ test "shorterForm never suggests a reference to a script action" {
     var env: std.process.Environ.Map = .init(arena_state.allocator());
     var err_buf: [1024]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&err_buf);
-    var app: App = .{ .arena = arena_state.allocator(), .io = io, .out = &writer, .err = &writer, .env_map = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
+    var app: App = .{ .arena = arena_state.allocator(), .io = io, .out = &writer, .err = &writer, .environ = .empty, .env_map = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
     const job = (try jobs.lookup(&app, "pa", "task")).?;
     const written = try std.fmt.allocPrint(app.arena, "{s} --dry-run", .{(try jobs.asAction(&app, job)).command});
     try std.testing.expect((try shorterForm(&app, "pa", home, "preview", written)) == null);
