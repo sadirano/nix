@@ -7,7 +7,6 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const store = @import("store.zig");
 const proc = @import("proc.zig");
-const usage = @import("usage.zig");
 const resolve = @import("resolve.zig");
 const util = @import("util.zig");
 const config = @import("config.zig");
@@ -54,7 +53,7 @@ pub fn cmdAdd(app: *App, alias: []const u8, raw_path: []const u8) !u8 {
 }
 
 /// cmdRemove forgets an alias entry. It takes no extra arguments — `nix
-/// <alias> --remove` (or `--rm`) drops the alias from aliases.toml and usage.
+/// <alias> --remove` (or `--rm`) drops the alias from aliases.toml.
 pub fn cmdRemove(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     if (args.len > 0) {
         try app.err.print("nix: --remove takes no arguments (it forgets the alias); got \"{s}\"\n", .{args[0]});
@@ -85,7 +84,6 @@ pub fn removeAliasEntry(app: *App, alias: []const u8) !u8 {
         return 1;
     }
     try store.saveAliases(app.arena, app.io, app.home, kept.items);
-    usage.remove(app.arena, app.io, app.home, &.{lower}) catch {};
     try app.err.print("removed {s}\n", .{lower});
     return 0;
 }

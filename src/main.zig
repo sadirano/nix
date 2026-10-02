@@ -4,7 +4,6 @@ const Io = std.Io;
 const store = @import("store.zig");
 const dialects = @import("dialects.zig");
 const cmd_registry = @import("cmd_registry.zig");
-const usage = @import("usage.zig");
 const proc = @import("proc.zig");
 const clipboard = @import("clipboard.zig");
 const editor = @import("editor.zig");
@@ -479,8 +478,6 @@ fn cmdResolve(app: *App, name: []const u8) !u8 {
         const path = (try resolveSegmented(app, name)) orelse return 1;
         try app.out.print("{s}\n", .{path});
         try app.out.flush();
-        const parsed = try segments.parseSegmentedAlias(app.arena, name);
-        usage.record(app.arena, app.io, app.home, parsed.alias) catch {};
         return 0;
     }
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
@@ -491,7 +488,6 @@ fn cmdResolve(app: *App, name: []const u8) !u8 {
     const shown = (try spell(app, path)) orelse return 1;
     try app.out.print("{s}\n", .{shown});
     try app.out.flush();
-    usage.record(app.arena, app.io, app.home, name) catch {};
     return 0;
 }
 
@@ -1030,7 +1026,6 @@ fn writeGrammarRows(w: *Io.Writer, comptime R: type, rows: []const R) !void {
 // references, `zig build test` would only run the tests defined in main.zig.
 test {
     _ = store;
-    _ = usage;
     _ = proc;
     _ = clipboard;
     _ = editor;

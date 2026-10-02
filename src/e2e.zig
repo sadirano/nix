@@ -516,16 +516,6 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0, "bare --which uses the cwd", r);
     }
 
-    // --- usage ---------------------------------------------------------------
-    {
-        const upath = join(&c, &.{ home, "usage" });
-        // Age pa's entry far past the debounce window, so the bump lands.
-        try writeFile(&c, upath, "pa 5 1000\n");
-        const r = try c.run(&.{ "pa", "--resolve" });
-        const udata2 = readFileOr(&c, upath, "");
-        c.check(r.code == 0 and std.mem.indexOf(u8, udata2, "pa 6 ") != null, "a resolve bumps the alias's usage", r);
-    }
-
     // --- actions ---------------------------------------------------------------
     {
         try writeActions(&c, "pa", pa, if (proc.is_windows)

@@ -6,7 +6,6 @@ const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
 const store = @import("store.zig");
-const usage = @import("usage.zig");
 const segments = @import("segments.zig");
 const segwalk = @import("segwalk.zig");
 const context = @import("context.zig");
@@ -54,8 +53,8 @@ pub fn pathErrorText(e: anyerror) ?[]const u8 {
     };
 }
 
-/// addAlias registers (or updates) alias→path, creating the directory and
-/// recording usage, and prints the confirmation (path on stdout,
+/// addAlias registers (or updates) alias→path, creating the directory, and
+/// prints the confirmation (path on stdout,
 /// "registered …" on stderr). Returns the absolute host path. Shared by the
 /// add form and the directory picker.
 pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 {
@@ -97,7 +96,6 @@ pub fn addAlias(app: *App, alias: []const u8, raw_path: []const u8) ![]const u8 
 
     try app.err.print("registered {s} -> {s}\n", .{ lower, abs });
     try app.out.print("{s}\n", .{abs});
-    usage.record(app.arena, app.io, app.home, alias) catch {};
     return abs;
 }
 
@@ -177,16 +175,14 @@ fn readAnswer(app: *App, default_yes: bool) !bool {
     return yes;
 }
 
-/// resolveAliasPath resolves an alias to its directory and records usage - the
-/// shared entry point for every action. A registered directory that has gone
+/// resolveAliasPath resolves an alias to its directory - the shared entry
+/// point for every action. A registered directory that has gone
 /// missing goes through ensureDir rather than being recreated behind the
 /// caller's back.
 pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     if (std.mem.indexOfScalar(u8, name, '@') != null) {
         const path = (try resolveSegmented(app, name)) orelse return null;
         if (!try ensureDir(app, path, "")) return null;
-        const parsed = try segments.parseSegmentedAlias(app.arena, name);
-        usage.record(app.arena, app.io, app.home, parsed.alias) catch {};
         return path;
     }
     // The built-in `.nix` is answered before the file is read, so it works on
@@ -194,13 +190,11 @@ pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     // nix's own home and something is very wrong if it is missing - creating it
     // here would paper over that.
     if (store.isSelfAlias(name)) {
-        usage.record(app.arena, app.io, app.home, name) catch {};
         return try app.arena.dupe(u8, app.home);
     }
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
     if (try store.scanForAlias(app.arena, data, name)) |path| {
         if (!try ensureDir(app, path, try std.fmt.allocPrint(app.arena, "\"{s}\" points at ", .{name}))) return null;
-        usage.record(app.arena, app.io, app.home, name) catch {};
         return path;
     }
     // Unknown plain alias: offer the directory picker (register-on-the-fly).
@@ -712,8 +706,8 @@ pub fn cmdContexts(app: *App) !u8 {
 /// cmdWhich prints the alias whose directory contains a path — the reverse of
 /// `nix <alias>`. The path is the optional argument (default: the current
 /// directory); the deepest registered dir wins. Read-only by design: it's meant
-/// to be polled by prompts and status lines, so it must not record usage (that
-/// would drown the real navigation signal) or create directories.
+/// to be polled by prompts and status lines, so it must not create
+/// directories.
 pub fn cmdWhich(app: *App, args: [][]const u8) !u8 {
     var query: ?[]const u8 = null;
     for (args) |a| {

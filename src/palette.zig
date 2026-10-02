@@ -342,9 +342,8 @@ fn padInto(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8, wid
     if (s.len >= width) try buf.appendSlice(arena, "  ");
 }
 
-/// runPicked runs the selected entry the way `r <alias> :<name>` would: through
-/// resolveAliasPath (so usage is recorded and a missing dir is materialized
-/// exactly as a direct run does) and then runAction (so [notify] fires).
+/// runPicked runs the selected entry the way `x <alias> :<name>` would: through
+/// resolveAliasPath (so a missing dir is handled exactly as a direct run does) and then runAction (so [notify] fires).
 fn runPicked(app: *App, e: Entry) !u8 {
     const dir = (try resolve.resolveAliasPath(app, e.alias)) orelse return 1;
     const r = (try freshCommand(app, e, dir)) orelse return 1;

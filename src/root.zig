@@ -12,7 +12,6 @@ pub const actions = @import("actions.zig");
 pub const jobs = @import("jobs.zig");
 pub const provenance = @import("provenance.zig");
 pub const config = @import("config.zig");
-pub const usage = @import("usage.zig");
 pub const clipboard = @import("clipboard.zig");
 pub const editor = @import("editor.zig");
 pub const snippet = @import("snippet.zig");

@@ -957,8 +957,7 @@ pub const specs = [_]Spec{
         .safety = .safe,
         .detail =
         \\~/.nix holds aliases.toml (name -> path), config.toml
-        \\([shortcuts], [picker], [grep], [notify], [bin]), usage
-        \\(per-alias counts for your own reports), segments.toml,
+        \\([shortcuts], [picker], [grep], [notify], [bin]), segments.toml,
         \\trusted.toml + contexts-cache.toml (context approvals and
         \\their cached results), exports.toml (what --sync-bin installed), env/
         \\(private per-alias environment layers), bin/ (the command wrappers plus
@@ -972,7 +971,7 @@ pub const specs = [_]Spec{
         .agent_use =
         \\Read these freely; don't write them. Registering an alias is `nix
         \\<name> <path>`, not an edit to aliases.toml - going through the command
-        \\keeps usage and the wrapper set consistent.
+        \\keeps the wrapper set consistent.
         \\
         \\Never delete or hand-edit ~/.nix contents unless the user explicitly
         \\asks. Project-local .nix/ directories are the opposite: creating

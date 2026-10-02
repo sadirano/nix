@@ -2,7 +2,7 @@
 
 A directory alias manager for the command line. Give a project a short name once, then jump to it, search it, run commands in it, or move files in and out of it from any prompt — `o acme` and your shell is at the project root.
 
-One TOML file holds every alias, one binary serves every command. State lives in `~/.nix` (`aliases.toml`, `config.toml`, usage data, and the segment / action / script files); override the location with `$NIX_HOME`.
+One TOML file holds every alias, one binary serves every command. State lives in `~/.nix` (`aliases.toml`, `config.toml`, and the segment / action / script files); override the location with `$NIX_HOME`.
 
 New to nix? **[The Guide](docs/GUIDE.md)** walks through every use, from the daily one-letter commands to complete workflows; this README is the reference behind it.
 
@@ -615,7 +615,7 @@ acme   :test     zig build test
 beta   :deploy   npm run deploy && echo shipped
 ```
 
-Enter runs the pick exactly as `x <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks and usage recording apply and the palette can never disagree with what `x` would run. The pattern is a plain case-insensitive substring across every column, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `x <any-alias> :<name>`).
+Enter runs the pick exactly as `x <alias> :<name>` would — same three-layer merge, same directory, so `[notify]` hooks apply and the palette can never disagree with what `x` would run. The pattern is a plain case-insensitive substring across every column, not a fuzzy match; fzf is still there to narrow further. Machine-wide `_default` actions are deliberately left out: the palette is a map of deliberate per-project wiring, and a default would otherwise repeat under every alias (they stay reachable as `x <any-alias> :<name>`).
 
 **A bare `:` is the shortest way in**, from any command: `x :`, `o :`, `nix :` all open the palette, and anything after it pre-filters (`x : deploy`). It's the alias-less form of `x <alias> :` — the same colon, one scope wider: with an alias in front it opens that project's actions, without one it opens every project's. Nothing was given up to allow it, since `:` was never a legal alias name.
 
@@ -808,7 +808,7 @@ Other tools can point at the same file wherever they take custom instructions.
 
 `nix --doctor` (`-D`) is a read-only health check for when the `o <name>` picker misbehaves: build and wrapper state (stale wrappers, `~/.nix/bin` missing from PATH), which finder the picker will actually use and why, the resolved search roots, the optional tools (`bat`/`rg`/`rga`/editor), your config/alias state, the per-project `[env]` layers, and `[bin]` export drift. It exits non-zero if any core check fails, so `nix --doctor && …` works in scripts.
 
-`nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no usage recording, no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `x <alias> <cmd>`, a `:action` — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
+`nix --which [path]` (`-w`) is resolve in reverse: it prints the alias whose directory contains the path (default: the current directory), deepest registered dir winning — made for prompts and status-line scripts that want to show "where am I, in alias terms". It's strictly read-only (no dir creation) and exits non-zero with empty stdout when no alias contains the path, so it's cheap and safe to poll. Often you don't even need it: every alias context nix starts — the `o <alias>` subshell, `x <alias> <cmd>`, a `:action` — already carries `NIX_ALIAS` (the alias name) and `NIX_ALIAS_PATH` (its directory) in the environment, computed once at launch.
 
 ## License
 
