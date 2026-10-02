@@ -200,9 +200,25 @@ const Walker = struct {
 
     fn isDir(w: *Walker, rel: []const u8) !bool {
         if (!w.charge()) return false;
-        var d = Io.Dir.cwd().openDir(w.io, try w.host(rel), .{}) catch return false;
+        var d = Io.Dir.cwd().openDir(w.io, try w.host(rel), .{}) catch |e| switch (e) {
+            // Absent, or a file: an answer, not a failure.
+            error.FileNotFound, error.NotDir => return false,
+            // Anything else (access denied on a link's target, a dropped
+            // share) is a folder we could not look at - say so.
+            else => {
+                try w.noteUnreadable(rel);
+                return false;
+            },
+        };
         d.close(w.io);
         return true;
+    }
+
+    /// noteUnreadable records a folder once: `**` can reach the same one both
+    /// as a candidate and as a place to descend.
+    fn noteUnreadable(w: *Walker, rel: []const u8) !void {
+        for (w.unreadable.items) |u| if (std.mem.eql(u8, u, rel)) return;
+        try w.unreadable.append(w.arena, rel);
     }
 
     fn isMatch(w: *Walker, rel: []const u8) bool {
@@ -227,7 +243,7 @@ const Walker = struct {
         var dir = Io.Dir.cwd().openDir(w.io, try w.host(rel), .{ .iterate = true }) catch |e| switch (e) {
             error.FileNotFound, error.NotDir => return names.items,
             else => {
-                try w.unreadable.append(w.arena, rel);
+                try w.noteUnreadable(rel);
                 return names.items;
             },
         };
@@ -238,7 +254,7 @@ const Walker = struct {
             // A read that fails partway keeps what it got and the walk goes on
             // to the next folder; the caller names this one as incomplete.
             const n = r.read(w.io, &batch) catch {
-                try w.unreadable.append(w.arena, rel);
+                try w.noteUnreadable(rel);
                 break;
             };
             for (batch[0..n]) |ent| {
