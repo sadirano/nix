@@ -272,7 +272,7 @@ extern "kernel32" fn MoveFileExW(lpExistingFileName: [*:0]const u16, lpNewFileNa
 /// moveFile renames via MoveFileExW on Windows: the Io.Dir.rename path opens
 /// the source with access a RUNNING exe's image lock denies (FileBusy), while
 /// MoveFileExW performs the same-volume rename the OS explicitly permits for
-/// live images — the whole point of the move-aside strategy. POSIX renames
+/// live images, which the move-aside strategy depends on. POSIX renames
 /// have no such lock and use the portable path.
 fn moveFile(arena: std.mem.Allocator, io: Io, from: []const u8, to: []const u8) !void {
     if (!is_windows) return Io.Dir.cwd().rename(from, Io.Dir.cwd(), to, io);

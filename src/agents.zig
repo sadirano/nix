@@ -1,18 +1,14 @@
 //! ~/.nix/AGENTS.md generation — an agent-facing guide to the installed
 //! command surface, written by --init/--sync alongside the shell snippet.
 //!
-//! The guide is an *installed artifact*, and what it describes is why: a whole
-//! MACHINE's command surface. Instructions for driving someone's machine have
-//! no business arriving in a clone, auto-read by their agent the moment they
-//! fetch a directory alias manager - that is the wrong consent model, and it
-//! reads as prompt injection. So this one is written by --init and exists only
-//! on machines whose owner installed nix, with --sync keeping it honest about
-//! [shortcuts] renames. nix never wires it into any agent's config - the README
-//! shows the one-line import users add themselves.
+//! The guide describes a whole MACHINE's command surface, so it is an installed
+//! artifact: written by --init on machines whose owner installed nix, kept in
+//! step with [shortcuts] renames by --sync, and never shipped in a clone, where
+//! an agent would read it without the owner's consent. nix never wires it into
+//! an agent's config; the README shows the one-line import.
 //!
-//! The repo's own AGENTS.md is a different thing and not a contradiction: it is
-//! contributor documentation, scoped to this repository, no wider than the
-//! checkout it travels in. The rule is about SCOPE, not about the filename.
+//! The repo's own AGENTS.md is contributor documentation scoped to this
+//! repository.
 
 const std = @import("std");
 const Io = std.Io;
@@ -31,9 +27,8 @@ pub fn write(arena: std.mem.Allocator, io: Io, home: []const u8, cfg: config.Con
 
 /// commandTable renders the command rows from the agentdocs spec table, so this
 /// guide and `nix --help` describe the same commands the same way. The safety
-/// tier rides along: it is the one thing an agent needs before deciding whether
-/// to run something, and it belongs in the always-loaded guide rather than only
-/// in the on-demand spec.
+/// tier is included here, in the always-loaded guide, not only in the
+/// on-demand spec.
 fn commandTable(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
     var b: std.ArrayList(u8) = .empty;
     try b.appendSlice(arena, "| Command | Meaning | Agent |\n|---|---|---|\n");

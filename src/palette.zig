@@ -38,8 +38,8 @@ const Entry = struct {
 /// matches reports whether an entry should survive the `[pat]` pre-filter.
 /// Substring, case-insensitive, over every column INCLUDING the description:
 /// `nix --actions release` should find the action whose prose says "release"
-/// even when neither its name nor its command contains the word - that is most
-/// of the point of writing descriptions. Deliberately NOT fuzzy: nix resolves
+/// even when neither its name nor its command contains the word. Deliberately
+/// NOT fuzzy: nix resolves
 /// what you typed, and fzf is still there to narrow interactively.
 fn matches(e: Entry, pat: []const u8) bool {
     if (pat.len == 0) return true;
@@ -168,12 +168,11 @@ fn seedAndEdit(app: *App, dir: []const u8, path: []const u8) !u8 {
 /// A picker needs somebody able to answer it, so it opens only when there IS
 /// one: not under --no-prompt, and not when stdin is a pipe or a redirect - the
 /// same test the failure hold and the provenance gate use. Without that check a
-/// scripted `r <alias> :`, which merely PRINTED before this became a picker,
-/// hangs on an fzf nobody can see.
+/// scripted `x <alias> :` would hang on an fzf nobody can see.
 ///
 /// `missing_fzf` decides what "no fzf, but somebody is there" means: the global
 /// palette has nothing to show instead of picking, so it says so; an alias
-/// listing just prints, which is what it always did.
+/// listing just prints.
 fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fzf: []const u8) !u8 {
     const can_ask = app_zig.hasConsole(app);
     const native = glean_pick.enabled(app);
@@ -188,8 +187,8 @@ fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fz
     }
 
     // --header-lines pins the column header inside fzf. --multi is on because
-    // "run these three" is a real ask (Tab marks them): one pick runs here, in
-    // this terminal, as it always has; several fan out into a window each.
+    // Tab marks several: one pick runs here, in this terminal; several fan out
+    // into a window each.
     // --delimiter/--with-nth hide the leading key field from both the display
     // and the search, so it never shows up in a row or matches a query.
     const fzf_argv = [_][]const u8{
@@ -256,7 +255,7 @@ fn collect(app: *App, pat: []const u8) ![]Entry {
 /// [DESCRIPTION]` table and records each line back onto its entry. The header is
 /// a row too: fzf keeps it pinned via --header-lines, and a plain listing wants
 /// it anyway. The DESCRIPTION and GLOBAL columns appear only when some action
-/// carries one, so a machine with neither sees exactly the table it saw before.
+/// carries one.
 ///
 /// The command is what you scan for and the description is the footnote, so the
 /// prose goes last - and a row that has none simply ends at its command instead
@@ -416,10 +415,8 @@ test "matches: substring over alias, name and command, case-insensitive" {
 }
 
 test "render/keyOf: a selection round-trips by key, not by matching text" {
-    // The invariant the pick depends on. It used to be "the returned line must
-    // equal the rendered row byte-for-byte", which made every column
-    // load-bearing; now it is only "the key field survives", so padding,
-    // ellipsis and new columns cannot break a selection.
+    // The invariant the pick depends on: only the key field must survive, so
+    // padding, ellipsis and new columns cannot break a selection.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();

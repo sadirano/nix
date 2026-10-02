@@ -2,12 +2,7 @@
 //! env files, config.toml, segments.toml, the trust ledger, the exports and
 //! wrapper manifests, and the context cache.
 //!
-//! Before this file each of those had a reader of its own - six line loops
-//! that agreed on `[section]` and `key = value` and disagreed on everything
-//! else: which escapes a double-quoted string decoded (`\"` and `\\` here,
-//! `\n` and `\t` there, nothing at all in a third), whether a bare unquoted
-//! value counted, and how a header with a stray `]` in it read. The same bytes
-//! meant different things depending on which file they sat in.
+//! One reader, so the same bytes mean the same thing in every file.
 //!
 //! What is read is a SUBSET of TOML, on purpose: sections (`[x]`, `[[x]]`),
 //! `key = value` pairs, `#` comments, single-line and multi-line string
@@ -37,7 +32,7 @@
 const std = @import("std");
 
 /// A `[name]` or `[[name]]` line. `name` is everything up to the FIRST `]`,
-/// so `[a]b]` reads as `a` - the same thing a hand edit produced before.
+/// so `[a]b]` reads as `a`.
 pub const Header = struct { name: []const u8, array: bool };
 
 /// A `key = value` line: the key trimmed, the value's text as written after
@@ -274,7 +269,7 @@ test "classify: the four line shapes, and what a stray bracket reads as" {
     const hh = classify("[[contexts]]").header;
     try std.testing.expectEqualStrings("contexts", hh.name);
     try std.testing.expect(hh.array);
-    // Up to the FIRST `]`, as every reader already did.
+    // Up to the FIRST `]`.
     try std.testing.expectEqualStrings("a", classify("[a]b]").header.name);
     try std.testing.expectEqualStrings("", classify("[]").header.name);
     try std.testing.expect(classify("[open") == .other);
@@ -346,7 +341,7 @@ test "appendString round-trips through unquote, and a newline cannot forge a sec
         try std.testing.expect(std.mem.indexOfScalar(u8, b.items, '\r') == null);
         try std.testing.expectEqualStrings(c, (try unquote(a, b.items)).?);
     }
-    // A path is written the way aliases.toml has always written it.
+    // A path is written the way aliases.toml stores it.
     var b: std.ArrayList(u8) = .empty;
     try appendString(a, &b, "C:/proj/acme");
     try std.testing.expectEqualStrings("'C:/proj/acme'", b.items);

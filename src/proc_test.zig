@@ -9,9 +9,8 @@ const std = @import("std");
 const proc = @import("proc.zig");
 
 /// Collector drives pumpLines through forEachLine against a REAL child, the
-/// only way to exercise how a child's output actually ends. Each of the three
-/// copies this loop replaced had to get that right on its own, untested (#29),
-/// and the extraction's first draft dropped the last line of every producer.
+/// only way to exercise how a child's output actually ends, including its last
+/// line.
 const Collector = struct {
     arena: std.mem.Allocator,
     lines: std.ArrayList([]const u8) = .empty,

@@ -91,16 +91,13 @@ pub fn expandTemplate(arena: std.mem.Allocator, template: []const u8, pairs: []c
     return out.items;
 }
 
-/// silenced decides whether `on_finish` stays quiet for a finished action -
-/// the gate that turns the hook from "every action" into "the ones worth
-/// hearing about" (issue #50).
+/// silenced decides whether `on_finish` stays quiet for a finished action
+/// (issue #50).
 ///
 /// Two rules, and they are not redundant. The SKIP LIST is identity-based and
 /// absolute: an action on it is never reported, however long it ran and
-/// however it ended, because an irrelevant action's exit code is irrelevant
-/// too. The THRESHOLD is cost-based and exempts failures: something that
-/// succeeded in 40ms is noise, while something that failed in 40ms is often
-/// the most useful toast of the day.
+/// however it ended. The THRESHOLD is cost-based and exempts failures: a fast
+/// success is silenced, a fast failure still reports.
 ///
 /// A skip entry containing ':' is an `alias:action` pair matched whole; a bare
 /// entry matches that action name in any alias, which is what silences an
@@ -187,7 +184,7 @@ test "expandTemplate: substitution, unknown tokens survive" {
 
 test "silenced: the threshold is cost-based and lets failures through" {
     const none: []const []const u8 = &.{};
-    // Nothing configured is the old behaviour: everything notifies.
+    // Nothing configured: everything notifies.
     try std.testing.expect(!silenced(none, 0, "acme", "q", 40, true));
     try std.testing.expect(!silenced(none, 2000, "acme", "build", 5000, true));
     try std.testing.expect(silenced(none, 2000, "acme", "build", 40, true));

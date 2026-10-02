@@ -116,8 +116,8 @@ pub fn cmdSync(app: *App) !u8 {
     if (proc.is_windows) {
         // A relocated home ($NIX_HOME) never touches the machine's persistent
         // PATH. `bin` comes from app.home, so without this guard every run
-        // against a scratch home - the e2e harness does this dozens of times -
-        // appends a throwaway directory to the user's registry PATH forever.
+        // against a scratch home (the e2e harness) would append a throwaway
+        // directory to the user's registry PATH.
         if (store.isRelocatedHome(app.arena, app.env, app.home)) {
             try app.err.print("note: $NIX_HOME is set, so {s} was NOT added to your user PATH\n", .{bin});
         } else if (winpath.ensureUserPath(app.arena, bin)) |r| switch (r) {
@@ -173,8 +173,8 @@ fn removeLegacyPwshSnippet(app: *App) !void {
 }
 
 /// warnStaleWrappers reports wrappers regenerate couldn't replace (locked by a
-/// running process) that still hold an OLD binary — silently skipping these is
-/// how a shim ends up answering with last week's version.
+/// running process) that still hold an OLD binary, so a stale wrapper is never
+/// silent.
 fn warnStaleWrappers(app: *App, stale: []const []const u8) !void {
     if (stale.len == 0) return;
     try app.err.writeAll("warning: in use, still the OLD version:");

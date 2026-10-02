@@ -63,10 +63,8 @@ pub const App = struct {
     /// Every name aliasRunEnv put into the child environment on its last call
     /// (PATH, NIX_ALIAS, env.toml, context variables), with whatever was under
     /// each. Restored before the next injection, so one link of a chain never
-    /// hands its environment to the next. One list, because there used to be
-    /// three - PATH kept an original to rebuild from, env.toml and context
-    /// variables each kept their own undo list - and each was a place the
-    /// discipline could be forgotten.
+    /// hands its environment to the next. One list for every kind of
+    /// injection.
     injected: []const SavedVar = &.{},
     /// Whether this process has already reported an env.toml problem (an
     /// unapproved project layer, a refused name). A chain injects once per link,
@@ -82,11 +80,8 @@ pub const App = struct {
 };
 
 /// loadConfig is config.loadConfig for this process: read and parsed on the
-/// first call, then served from App. Twenty-odd call sites used to re-read the
-/// file on every decision - one gated chain link parsed it five times (the
-/// gate, the env layers, the elevated exemption, the shell table, the notify
-/// hook) - for a file nothing writes mid-process except `--trust --always`,
-/// which calls forgetConfig after it does.
+/// first call, then served from App. Nothing writes the file mid-process
+/// except `--trust --always`, which calls forgetConfig after it does.
 ///
 /// Only a SUCCESSFUL parse is cached. A read that fails keeps failing on every
 /// call, so each site's own answer to that ("not listed", "defaults", refuse)
@@ -225,10 +220,8 @@ pub fn exePath(app: *App) []const u8 {
     return p;
 }
 
-/// The two "is anyone there" questions, in one place. They used to be spelled
-/// inline in six modules with three different answers, so which prompts
-/// honoured the harness and which refused under --no-prompt was a matter of
-/// which file you were reading.
+/// The two "is anyone there" questions, in one place, so every prompt answers
+/// them the same way.
 ///
 /// canAsk: a yes/no typed on stdin can be read. An agent's shell, a script and
 /// --no-prompt all answer no; the e2e harness's piped stdin answers yes (see
@@ -251,7 +244,7 @@ pub fn hasConsole(app: *App) bool {
 /// would refuse. It grants the console half only - the `y` still has to
 /// arrive on stdin - and it is not a general escape hatch: the variable is
 /// read only by a binary compiled with the hook (App.e2e_hooks), which the
-/// release build is not. Before that gate an agent's shell could set the
+/// release build is not. Without that gate an agent's shell could set the
 /// variable, pipe a `y`, and grant itself `--trust --always`.
 pub fn e2eConsole(app: *App) bool {
     return app.e2e_hooks and std.mem.eql(u8, app.env.get("NIX_E2E_TTY") orelse "", "1");

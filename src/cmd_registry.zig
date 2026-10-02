@@ -1,9 +1,6 @@
 //! The alias registry's leaf commands: register, forget and list.
 //!
-//! Split out of main.zig, which had grown to hold three unrelated jobs -
-//! argv dispatch, the grammar/multicall bridge, and these. Nothing here is
-//! reached except from the dispatcher, so the seam is where the file already
-//! wanted to be cut (#39).
+//! Reached only from the dispatcher in main.zig.
 
 const std = @import("std");
 const Io = std.Io;

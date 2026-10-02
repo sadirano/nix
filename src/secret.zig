@@ -186,8 +186,8 @@ fn usageError(app: *App) !u8 {
 /// referenceable reports whether `${secret:NAME}` can name this secret at all.
 /// expandSecrets ends the placeholder at the first '}', so a name containing
 /// one could be stored and listed but never used - a credential the user
-/// believes is wired up and silently is not. Checked on `set` only: `rm` and
-/// `list` must still reach a name stored before this rule existed.
+/// believes is wired up and silently is not. Checked on `set` only, so `rm`
+/// and `list` still reach any name already stored.
 pub fn referenceable(name: []const u8) bool {
     return name.len > 0 and std.mem.indexOfScalar(u8, name, '}') == null;
 }

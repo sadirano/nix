@@ -67,7 +67,7 @@ pub fn arm() void {
 }
 
 /// disarm restores the default meaning of Ctrl-C. The event handle is kept for
-/// the next run of a chain, and one handle costs nothing.
+/// the next run of a chain.
 pub fn disarm() void {
     if (!proc.is_windows) return;
     if (!armed) return;
@@ -83,8 +83,7 @@ pub fn fired() bool {
 }
 
 /// handle is the event for proc's wait to watch alongside the child, or null
-/// when nothing is armed - in which case the wait keeps its old single-handle
-/// shape.
+/// when nothing is armed, in which case the wait is on the child alone.
 pub fn handle() ?*anyopaque {
     if (!proc.is_windows) return null;
     return if (armed) event else null;

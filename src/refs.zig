@@ -1,8 +1,7 @@
 //! How the gate reads a command line: which project files it names, and what
 //! those files are called inside an approval token.
 //!
-//! Split out of provenance.zig, which is the policy - this is the parsing under
-//! it. Pure but for the two calls that ask the filesystem whether a named file
+//! provenance.zig is the policy; this is the parsing under it. Pure but for the two calls that ask the filesystem whether a named file
 //! is really there.
 
 const std = @import("std");
@@ -53,9 +52,7 @@ pub fn referencedFiles(app: *App, dir: []const u8, command: []const u8) ![]const
 
 /// overCap: `refs` (referencedFiles' answer for `command`) stopped at the cap
 /// and the command names at least one more. Those are neither shown nor
-/// covered by approval, so the prompt says so. Measured on 2026-10-01: no
-/// action in 26 projects named more than 3, so this is a warning, not a
-/// refusal.
+/// covered by approval, so the prompt warns rather than refusing.
 pub fn overCap(app: *App, dir: []const u8, command: []const u8, refs: []const []const u8) !bool {
     if (refs.len < max_refs) return false;
     return (try collect(app, dir, command, max_refs + 1)).len > max_refs;
@@ -88,12 +85,8 @@ fn collect(app: *App, dir: []const u8, command: []const u8, limit: usize) ![]con
 /// dedup the same way without importing util.zig just for this.
 pub const containsFold = util.containsFold;
 
-/// QuotedTokens splits a command line on whitespace, except inside quotes.
-///
-/// Plain whitespace tokenizing tore `"tools/my script.py"` into two halves,
-/// neither of which named a file, so the script was left out of the approval
-/// entirely - editing it did not re-arm the gate. A path with a space in it is
-/// the ordinary case on Windows, not an exotic one.
+/// QuotedTokens splits a command line on whitespace, except inside quotes, so
+/// `"tools/my script.py"` stays one token and its edits re-arm the gate.
 const QuotedTokens = struct {
     s: []const u8,
     i: usize = 0,
@@ -146,8 +139,7 @@ pub fn escapes(rel: []const u8) bool {
 
 /// relativeTo strips `dir` from the front of an absolute path so the record
 /// names the file's place in the project rather than its place on this machine.
-/// Falls back to the basename when the path is not under dir, which is what the
-/// record used to hold for every file.
+/// Falls back to the basename when the path is not under dir.
 pub fn relativeTo(dir: []const u8, path: []const u8) []const u8 {
     if (path.len > dir.len and util.eqlPathAscii(path[0..dir.len], dir)) {
         var r = path[dir.len..];
@@ -202,13 +194,11 @@ test "stripDotSlash: a leading ./ or .\\ is not part of the path" {
 test "QuotedTokens: a quoted path with a space stays one token" {
     var it = QuotedTokens{ .s = "python \"tools/my script.py\" --flag" };
     try std.testing.expectEqualStrings("python", it.next().?);
-    // Whitespace tokenizing split this into `"tools/my` and `script.py"`,
-    // neither of which named a file, so the script never entered the approval.
     try std.testing.expectEqualStrings("\"tools/my script.py\"", it.next().?);
     try std.testing.expectEqualStrings("--flag", it.next().?);
     try std.testing.expect(it.next() == null);
 
-    // Single quotes too, and runs of whitespace collapse like the old splitter.
+    // Single quotes too, and runs of whitespace collapse.
     var q = QuotedTokens{ .s = "sh  'a b.sh'\t x.py" };
     try std.testing.expectEqualStrings("sh", q.next().?);
     try std.testing.expectEqualStrings("'a b.sh'", q.next().?);
@@ -230,10 +220,9 @@ test "relativeTo: a referenced file is named by its place in the project" {
     // which is what makes one file reached two ways one approval.
     try std.testing.expectEqualStrings("scripts\\deploy.py", relativeTo("C:\\a", "C:\\a\\scripts\\deploy.py"));
     // aliases.toml spells dir with `/` while the joined path carries `\`: still
-    // under dir. Falling back to the basename here gave `--sync-bin` a different
-    // record than `--trust` for any script below the project root.
+    // under dir, so `--sync-bin` and `--trust` record the same name.
     try std.testing.expectEqualStrings("tools\\img.py", relativeTo("C:/a", "C:\\a\\tools\\img.py"));
-    // Not under dir: the basename, which is what every record used to hold.
+    // Not under dir: the basename.
     try std.testing.expectEqualStrings("deploy.py", relativeTo("C:/a", "D:/other/deploy.py"));
     // dir itself is not a file under dir.
     try std.testing.expectEqualStrings("a", relativeTo("C:/a", "C:/a"));

@@ -25,8 +25,7 @@ pub fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     return findIn(app, target, args);
 }
 
-/// findIn runs `f` in one alias dir. fd leads (portable, instant on a
-/// subtree); a Windows box without fd uses es; POSIX find is the last resort.
+/// findIn runs `f` in one alias dir. fd leads (portable); a Windows box without fd uses es; POSIX find is the last resort.
 pub fn findIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
     return switch (try findPick(app, dir, args)) {
         .selected => |sel| openFindSelections(app, dir, sel),

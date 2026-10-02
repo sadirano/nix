@@ -61,7 +61,7 @@ const GMEM_MOVEABLE: UINT = 0x0002;
 // table — using them adds no startup cost. The clipboard functions live in
 // user32, which a console app does NOT otherwise load. Importing them
 // statically would force user32.dll (+ gdi32 …) to load on EVERY invocation,
-// adding ~2ms to the resolve hot path. So we load user32 lazily via
+// adding startup cost to the resolve hot path. So we load user32 lazily via
 // LoadLibraryA/GetProcAddress (both kernel32) only when --yank/--paste runs
 // (secret.zig and winpath.zig make the same trade-off).
 extern "kernel32" fn GlobalAlloc(uFlags: UINT, dwBytes: usize) callconv(.winapi) ?HANDLE;

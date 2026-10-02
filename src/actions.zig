@@ -31,9 +31,7 @@ pub fn namesAction(list: []const []const u8, alias: []const u8, action: []const 
 
 /// One named action. `description` is prose explaining WHY the action exists -
 /// the command already says what it does. It carries no syntax of its own: the
-/// comment block written immediately above the action is its description, which
-/// is how people document these files anyway (this project's own actions.toml
-/// included), so every existing file gains descriptions without being touched.
+/// comment block written immediately above the action is its description.
 pub const Shell = enum { default, bash, pwsh };
 pub const Action = struct { name: []const u8, command: []const u8, description: []const u8 = "", shell: Shell = .default };
 
@@ -43,9 +41,7 @@ pub fn projectPath(arena: std.mem.Allocator, alias_dir: []const u8) ![]const u8 
 }
 
 /// project_template seeds a project's first `.nix/actions.toml`, written by
-/// `e <alias> :` when the alias has no actions yet: naming the file and leaving
-/// the user to create it was the one half of `e :<name>`'s convenience that the
-/// list form never had.
+/// `e <alias> :` when the alias has no actions yet.
 ///
 /// Inert like the `--init` starter config: every line is commented out, so the
 /// file declares nothing until it is edited. That matters more here than there,
@@ -257,7 +253,7 @@ pub fn hasKey(data: []const u8, section: []const u8, name: []const u8) bool {
 
 /// lineOf is hasKey with the answer editors need: the 1-based line the entry is
 /// declared on, so `e :deploy` can open the file AT the command instead of at
-/// the top of a file that may hold thirty of them.
+/// the top of the file.
 ///
 /// The declaration line, not its comment block: the command is the thing you
 /// came to change, and a description above it is still on screen from there.

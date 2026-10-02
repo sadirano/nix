@@ -22,7 +22,7 @@ pub const allowances = [_]Allowance{
     .{ .file = "run.zig", .max = 1100 },
     .{ .file = "proc.zig", .max = 961 },
     .{ .file = "bin_exports.zig", .max = 1000 }, // sync + drift want splitting
-    .{ .file = "context.zig", .max = 810 }, // the result cache moved to ctxcache.zig, `--trust` to provenance.zig
+    .{ .file = "context.zig", .max = 810 },
 };
 
 /// `listed` and `max` are separate questions: an exempt file is listed with no

@@ -1,8 +1,6 @@
 //! The context result cache (`~/.nix/contexts-cache.toml`).
 //!
-//! Split out of context.zig when candidate menus landed (#19): a source may now
-//! return several blocks, so an entry is a LIST and the storage grew its own
-//! shape. Keyed on the fully expanded command line plus the script's content
+//! A source may return several blocks, so an entry is a LIST. Keyed on the fully expanded command line plus the script's content
 //! hash (context.cacheKey), so every input that mattered is in the key by
 //! construction.
 //!
@@ -38,9 +36,7 @@ pub const max_cache_entries: usize = 512;
 const display_row = "_display";
 
 /// `at` is when the entry was stored; `ttl` is the lifetime it was stored
-/// under, kept so the reap can drop exactly the expired rows. Without it the
-/// janitor had to guess, and a fixed one-day guess silently capped every
-/// longer TTL.
+/// under, kept so the reap drops exactly the expired rows.
 const CacheEntry = struct {
     /// The section name as written: `<key>` or `<key>~<i>`.
     section: []const u8,
@@ -211,7 +207,7 @@ test "reapable: judged against the entry's OWN ttl, not a fixed age" {
     const day: u64 = 86400;
     const long = CacheEntry{ .section = "k", .at = 1000, .ttl = 30 * day };
     // Two days on, a 30-day entry is still live — an unrelated write must not
-    // evict it (the bug a hardcoded one-day reap caused).
+    // evict it.
     try std.testing.expect(!reapable(1000 + 2 * day, long));
     try std.testing.expect(reapable(1000 + 31 * day, long));
     const short = CacheEntry{ .section = "k", .at = 1000, .ttl = 600 };

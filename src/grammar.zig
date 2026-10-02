@@ -1,11 +1,6 @@
 //! The CLI grammar: every flag nix accepts, in one table per surface.
 //!
-//! Before this file a command existed in four places - the parser's flag map,
-//! the hand-written `--help` heredoc, the agentdocs spec table, and the README
-//! - and only the wrapper slots had anything keeping them in step. They
-//! drifted: commands shipped and never reached `nix --help` at all.
-//!
-//! Now the parser and the help text read the same rows. A flag that is not in a
+//! The parser and the help text read the same rows. A flag that is not in a
 //! table does not parse, so the binary can no longer know about a command its
 //! own help does not, and `verb` is an ENUM: the dispatcher switches on it
 //! exhaustively, so adding a row without wiring a handler is a compile error
@@ -85,7 +80,7 @@ pub fn Row(comptime Verb: type) type {
         /// The agentdocs topic carrying this command's full spec, or "" for the
         /// ones that only ever get a help line. Deliberately has NO default:
         /// adding a command makes you decide whether an agent needs a spec for
-        /// it, which is the one call nobody remembers to make later. A test
+        /// it. A test
         /// checks both directions of this against the spec table.
         spec: []const u8,
         visibility: Visibility = .public,
@@ -296,7 +291,7 @@ test "every flag resolves to its verb, unknown flags to null" {
     try std.testing.expectEqual(SystemVerb.list, systemVerb("--list").?);
     try std.testing.expectEqual(SystemVerb.list, systemVerb("-l").?);
     try std.testing.expect(systemVerb("--bogus") == null);
-    // File deletion was removed: --remove/--rm are actions, never system verbs.
+    // --remove/--rm are actions, never system verbs.
     try std.testing.expect(systemVerb("--remove") == null);
     try std.testing.expect(systemVerb("--rm") == null);
 

@@ -7,10 +7,8 @@
 //! what this does, with the guard that makes it safe to type: it refuses
 //! unless the process above really is a shell.
 //!
-//! Ported from the `qkill.ps1` cookbook recipe, minus the process walk. The
-//! recipe needed one because a `[bin]` action export runs through `cmd /c` and
-//! a PowerShell host; `q` is a wrapper copy of nix, spawned directly by the
-//! shell, so its parent IS the target.
+//! `q` is a wrapper copy of nix, spawned directly by the shell, so its parent
+//! IS the target; no process walk is needed.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -56,9 +54,7 @@ pub fn cmdQuit(app: *App, rest: [][]const u8) !u8 {
     }
     if (!proc.is_windows) {
         // A POSIX shell integration is a shell FUNCTION, so there `q` would be
-        // a plain `exit` in the generated snippet rather than this. Saying so
-        // beats terminating a process on a platform whose install has a way to
-        // do it properly.
+        // a plain `exit` in the generated snippet rather than this.
         try app.err.writeAll("nix: --quit is Windows-only (on a POSIX shell, `exit` already does this)\n");
         return 1;
     }

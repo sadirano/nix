@@ -1,6 +1,5 @@
-//! Small helpers shared across modules. These were once re-implemented
-//! per-module (lowerDup in five places, the sort comparator in six, ...); keeping
-//! the single copy here means a fix lands everywhere at once.
+//! Small helpers shared across modules. One copy each, so a fix lands
+//! everywhere at once.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -25,32 +24,24 @@ pub fn eqlFoldAscii(a: []const u8, b: []const u8) bool {
 }
 
 /// containsFold reports whether list already holds an entry equal to item,
-/// ASCII case-insensitive. Two call sites had this under different names with
-/// provably identical folds (eqlFoldAscii here, std.ascii.eqlIgnoreCase there
-/// - both length-then-per-byte toLower): the trust gate's file-listing dedup,
-/// where entries are already-`nativeSep`'d paths (no separator normalisation
-/// needed), and shortcut/wrapper names, compared without regard to case
-/// everywhere they appear.
+/// ASCII case-insensitive. Used for the trust gate's file-listing dedup (paths
+/// already `nativeSep`'d, so no separator normalisation) and for shortcut and
+/// wrapper names.
 pub fn containsFold(list: []const []const u8, item: []const u8) bool {
     for (list) |o| if (eqlFoldAscii(o, item)) return true;
     return false;
 }
 
 /// lessThanStr is std.mem.sort's comparator for ascending byte order over
-/// plain strings - written out as its own three-line anonymous struct in half
-/// a dozen modules (config, logs, resolve, store, secret) for exactly the same
-/// sort. Pass it directly: `std.mem.sort([]const u8, items, {}, lessThanStr)`.
+/// plain strings. Pass it directly: `std.mem.sort([]const u8, items, {}, lessThanStr)`.
 pub fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
 /// centralFile is where a feature keeps its per-alias file under ~/.nix:
-/// <home>/<feature>/<alias>.toml. Three modules each spelled this out for
-/// themselves - actions, env and segments - which is how the third came to
-/// lowercase the alias while the other two did not.
+/// <home>/<feature>/<alias>.toml, shared by actions, env and segments.
 ///
-/// Lowercasing is the version that survived, because it is the one that
-/// matches how the name is stored: store lowercases an alias both when
+/// The alias is lowercased to match how the name is stored: store lowercases an alias both when
 /// registering it and when reading it back out of aliases.toml, so a caller
 /// holding a raw `docs@ACME` segment still lands on the same file the
 /// registry would. On Windows the two spellings are the same file anyway.
@@ -59,10 +50,8 @@ pub fn centralFile(arena: std.mem.Allocator, home: []const u8, feature: []const 
     return std.fs.path.join(arena, &.{ home, feature, file });
 }
 
-/// sortByName sorts items ascending by their `name` field's byte order - the
-/// one-key sort that cmd_registry's Alias listing (twice), store.saveAliases
-/// and usage.save each wrote as their own anonymous-struct comparator. Works for
-/// any T with a `name: []const u8` field.
+/// sortByName sorts items ascending by their `name` field's byte order. Works
+/// for any T with a `name: []const u8` field.
 pub fn sortByName(comptime T: type, items: []T) void {
     std.mem.sort(T, items, {}, struct {
         fn lt(_: void, a: T, b: T) bool {
@@ -99,9 +88,8 @@ pub fn eqlPathAscii(a: []const u8, b: []const u8) bool {
 /// NIX_CONTEXT_OUT, ...); redefining those is talking back over the input
 /// channel.
 ///
-/// One list, because two were the bug: env.toml refused COMSPEC and context
-/// sources did not, so the same name was reserved or not depending on which
-/// file it arrived in.
+/// One list for env.toml and context sources, so a name is reserved the same
+/// way whichever file it arrives in.
 const reserved_env_names = [_][]const u8{ "PATH", "PATHEXT", "COMSPEC" };
 pub const reserved_env_prefix = "NIX_";
 
@@ -198,8 +186,7 @@ test centralFile {
     try std.testing.expectEqualStrings(try std.fs.path.join(a, &.{ "H", "actions", "acme.toml" }), acts);
     try std.testing.expectEqualStrings(try std.fs.path.join(a, &.{ "H", "env", "acme.toml" }), envs);
 
-    // A raw alias spelling lands on the same file the registry stores it under,
-    // which is what segments.zig alone used to get right.
+    // A raw alias spelling lands on the same file the registry stores it under.
     try std.testing.expectEqualStrings(acts, try centralFile(a, "H", "actions", "ACME"));
     try std.testing.expectEqualStrings(acts, try centralFile(a, "H", "actions", "aCmE"));
 }

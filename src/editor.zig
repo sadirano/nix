@@ -13,8 +13,7 @@ const Family = enum { vim, goto, plus };
 /// classify maps an editor binary to its argument family by base name,
 /// ignoring the directory and any extension. We must strip the FULL extension
 /// (not just ".exe"): the VS Code launcher shipped on Windows is `code.cmd`,
-/// so dropping only ".exe" left it matching nothing and falling through to the
-/// vim dialect — the exact "code is treated as vim" bug.
+/// and must not fall through to the vim dialect.
 pub fn classify(editor: []const u8) Family {
     var base = std.fs.path.basename(std.mem.trim(u8, editor, " \t"));
     const ext = std.fs.path.extension(base);

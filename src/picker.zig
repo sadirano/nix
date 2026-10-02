@@ -138,9 +138,7 @@ pub fn resolveRoots(app: *App, cfg: config.Config) !Roots {
             try all.appendSlice(app.arena, drives);
         } else {
             origin = .home;
-            // USERPROFILE first, then HOME - the order resolveHome uses. Reading
-            // only HOME (as the report copy did) reports "no roots" on a machine
-            // where the picker works.
+            // USERPROFILE first, then HOME - the order resolveHome uses.
             if (app.env.get("USERPROFILE") orelse app.env.get("HOME")) |h| try all.append(app.arena, h);
         }
     }
@@ -193,10 +191,9 @@ pub const picker_prune_globs = [_][]const u8{
 /// walk is run by the streaming caller, not here. Returns .none only when neither
 /// fd nor find is installed (or no configured root exists).
 fn pickerStreamArgv(app: *App, cfg: config.Config, name: []const u8) !PickerSource {
-    // Same decision the diagnostic renders - and stricter than this function
-    // used to be: an fd that resolves to a .cmd shim is no longer accepted just
-    // for being on PATH, because its argv below is fd's and a shim takes none
-    // of it. --doctor has always reported that shim; now the picker acts on it.
+    // Same decision the diagnostic renders: an fd that resolves to a .cmd shim
+    // is not accepted, because its argv below is fd's and a shim takes none of
+    // it.
     const fd = fdTool(app);
     const find = findTool(app);
     const have_fd = fd.state == .ok;
@@ -369,8 +366,8 @@ test "isScriptShim: scripts vs real executables" {
 }
 
 test "chooseFinder: es wins, then fd, then find, else none" {
-    // The fallback order, pinned as a pure function - this is the ranking both
-    // the picker and --doctor now read, and the thing that used to exist twice.
+    // The fallback order, pinned as a pure function read by both the picker and
+    // --doctor.
     try std.testing.expectEqual(Finder.es, chooseFinder(.ok, .ok, .ok));
     try std.testing.expectEqual(Finder.fd, chooseFinder(.broken, .ok, .ok));
     try std.testing.expectEqual(Finder.find, chooseFinder(.missing, .missing, .ok));
@@ -379,8 +376,7 @@ test "chooseFinder: es wins, then fd, then find, else none" {
     // A dead es does not shadow a working finder: es.exe installs fine where
     // the Everything service cannot, and returns nothing rather than failing.
     try std.testing.expectEqual(Finder.fd, chooseFinder(.broken, .ok, .missing));
-    // Neither does a shim named fd - the state the picker used to accept for
-    // being on PATH, and would then have handed fd's argv to.
+    // Neither does a shim named fd, which cannot take fd's argv.
     try std.testing.expectEqual(Finder.find, chooseFinder(.missing, .shim, .ok));
     try std.testing.expectEqual(Finder.none, chooseFinder(.missing, .shim, .missing));
 }

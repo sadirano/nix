@@ -19,7 +19,7 @@ const toml = @import("toml.zig");
 pub const Var = struct { key: []const u8, value: []const u8, secret: bool = false };
 
 /// One answer a context source returned (#19). A source that knows the answer
-/// returns exactly one and the segment resolves as it always has; a source
+/// returns exactly one and the segment resolves directly; a source
 /// answering a question with several valid answers ("which of my open
 /// tickets?") returns one per candidate and the segment becomes a menu.
 ///

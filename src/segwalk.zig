@@ -4,10 +4,8 @@
 //! The case it exists for is a layout whose middle level you should not have
 //! to remember. Tickets live under clients - `tasks/<client>/<ticket>` - and a
 //! ticket number is unique on its own, so `o t:1@tasks` has exactly one right
-//! answer even though it never says which client. Before this, the only way
-//! to get there was a context source: a script whose whole job was to list a
-//! directory. The directory tree already IS the lookup table, so reading it is
-//! nix's job:
+//! answer even though it never says which client. The directory tree is the
+//! lookup table, so no context source is needed:
 //!
 //!     [[contexts]]
 //!     segment = "t"
@@ -158,9 +156,8 @@ pub fn walk(arena: std.mem.Allocator, io: Io, root: []const u8, comps: []const C
     return .{ .matches = w.out.items, .truncated = w.truncated, .exhausted = w.exhausted, .unreadable = w.unreadable.items };
 }
 
-/// The directory read buffer. Zig's convenience iterator uses 2 KB - roughly
-/// 20 entries per kernel call; 64 KB takes a 10,000-entry folder in about 20
-/// calls instead of 600.
+/// The directory read buffer. Zig's convenience iterator uses 2 KB; 64 KB
+/// reads many more entries per kernel call.
 const read_buffer_len = 64 * 1024;
 
 const Walker = struct {

@@ -3,8 +3,7 @@
 //!
 //! A value opening with `:name` IS that action: `list = ":run list"` runs
 //! `:run`'s command with `list` as its arguments, and `ship = ":close :deploy"`
-//! runs both in order. The alternative was the same forty characters on seven
-//! lines, which drift apart the first time one of them is edited.
+//! runs both in order, so a shared prefix is written once.
 //!
 //! The lookup and expansion live here; run.zig asks for a resolved action and
 //! runs what comes back. The parsing helpers further down are pure.
@@ -131,7 +130,7 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, cha
 /// - A `.ps1`, by path or by bare name from the scripts dirs (as
 ///   `x <alias> <script>` already could): cmd reaches a `.cmd`, `.bat` or
 ///   `.exe` there through the PATH aliasRunEnv sets up, but never a `.ps1`. It
-///   gets the PowerShell line every such action used to spell out.
+///   gets the PowerShell line.
 ///
 /// Only a path naming a file that exists is touched, so a word that merely
 /// looks like one is left as written. A project script stays RELATIVE to the
@@ -265,8 +264,8 @@ pub fn splice(arena: std.mem.Allocator, command: []const u8, tail: []const u8) !
     return std.mem.replaceOwned(u8, arena, command, "{args}", t);
 }
 
-/// LongPs1 is `powershell -NoProfile ... -File <path>.ps1 <rest>`: what every
-/// `.ps1` action had to say before a script could open the line by itself.
+/// LongPs1 is `powershell -NoProfile ... -File <path>.ps1 <rest>`, the long
+/// form a bare script name replaces.
 pub const LongPs1 = struct { path: []const u8, stem: []const u8, rest: []const u8 };
 
 /// Flags the bare-name form passes anyway. Anything else on the line is a

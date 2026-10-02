@@ -5,8 +5,7 @@
 //!
 //! The PNG uses uncompressed ("stored") DEFLATE blocks — a valid zlib stream
 //! that needs no compressor. Files are larger than a compressed PNG but open
-//! everywhere; pasted screenshots are throwaway captures where simplicity and
-//! zero extra dependencies win.
+//! everywhere, with no compressor dependency.
 
 const std = @import("std");
 const flate = std.compress.flate;
@@ -187,8 +186,8 @@ test "encodeDibToPng: rejects malformed and hostile headers" {
     d8[14] = 8;
     try std.testing.expect((try encodeDibToPng(a, &d8)) == null);
 
-    // clr_used = 0xFFFFFFFF — `clr_used * 4` would overflow u32 (panic in Debug)
-    // before the widening fix. Must just return null now.
+    // clr_used = 0xFFFFFFFF: `clr_used * 4` must not overflow u32; it returns
+    // null.
     var dclr = [_]u8{0} ** 44;
     dclr[0] = 40;
     dclr[4] = 1;
