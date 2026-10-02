@@ -2,7 +2,7 @@
 
 From the first alias to fully wired workflows: everything nix can do, organized
 by how far you want to take it. Each level builds on the one before, but every
-level is useful on its own - plenty of people never go past Level 2.
+level is useful on its own.
 
 The [README](../README.md) is the reference: exact semantics, edge cases and the
 reasoning behind each decision. The [Cookbook](../COOKBOOK.md) collects small
@@ -96,8 +96,7 @@ the long form and the system-command entry point (`nix --list`, `nix --doctor`).
 
 ## Level 1 - Daily driving
 
-Nothing to configure: register a few aliases and these commands pay for
-themselves the first day.
+Nothing to configure beyond registering a few aliases.
 
 ### 1.1 Set up once
 
@@ -170,8 +169,7 @@ s acme report.pdf         # a file with its default app
 s acme invoice            # fzf-pick every file matching "invoice" -> open each
 ```
 
-`s <alias> <pattern>` is the fastest way to open "that PDF in the contracts
-folder" without knowing its exact name.
+`s <alias> <pattern>` opens a file whose exact name you don't remember.
 
 ### 1.5 Search and find: `g` and `f`
 
@@ -461,8 +459,6 @@ C:\code\acme\.nix\scripts\seed-db.ps1   ->   x acme seed-db --small
 
 ### 2.9 The palette: every action on the machine
 
-You'll forget *which project* owns a command long before you forget the command.
-
 ```powershell
 x :                       # every project's actions in one fzf view
 x : deploy                # pre-filtered (alias, name, command or description)
@@ -499,8 +495,7 @@ trusted = ["hosts"]
 ## Level 3 - Per-project environment and secrets
 
 Connection strings, API bases and tokens belong to the *project*, not to
-whatever shell you happened to open. nix is direnv for Windows, without
-sourcing anything.
+whatever shell you happened to open. Nothing to source.
 
 ```toml
 # C:\code\acme\.nix\env.toml   (committed: the defaults that work for everyone)
@@ -674,8 +669,8 @@ x t:1@tasks claude           # start an agent there; $client is set to A
   command, like a context source's output.
 - One match navigates, several open a picker, none is an error naming the
   pattern. Unattended, several matches print and exit non-zero.
-- Dot-directories (`.nix`, `.git`) never match `*`; links aren't followed; it
-  runs nothing, so it needs no `--trust`.
+- Dot-directories (`.nix`, `.git`) never match `*`. It runs nothing, so it
+  needs no `--trust`.
 
 Reach for a script (next section) only when the answer is *not* on disk.
 
@@ -729,9 +724,7 @@ o task@work               # fzf over your open tickets; the pick is the destinat
 o task:140@work           # inline value: no menu, straight there
 ```
 
-One block navigates silently, several open the menu, none is an error. Great
-sources: your open tickets, PR worktrees, today's log directories, the
-customers you're on call for.
+One block navigates silently, several open the menu, none is an error.
 
 ### 4.6 Named producers
 
@@ -772,8 +765,8 @@ o shared@acme             # see what it left you
 
 ## Level 5 - Global commands (`[bin]` exports)
 
-Turn a project's tool, or a saved action, into a command on your PATH - no PATH
-edits, no loose `.cmd` files rotting in some folder.
+Turn a project's tool, or a saved action, into a command on your PATH without
+editing PATH.
 
 **Export a file:**
 
@@ -824,8 +817,7 @@ su notepad C:\Windows\System32\drivers\etc\hosts
 cc                        # copy the current directory
 ```
 
-This one file replaces your PowerShell profile functions *and* your cmd
-doskeys, and works identically in both. The [Cookbook](../COOKBOOK.md) has more.
+These work the same in cmd and PowerShell. The [Cookbook](../COOKBOOK.md) has more.
 
 Rules of the road:
 
