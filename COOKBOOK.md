@@ -16,7 +16,7 @@ function, and a manual PATH entry — and works the same in cmd and PowerShell.
   - [`cc` — copy the current directory](#cc--copy-the-current-directory)
   - [`pause` — hold a window open](#pause--hold-a-window-open)
   - [Stop nix asking about a vetted elevated command](#stop-nix-asking-about-a-vetted-elevated-command)
-- [Things that will bite you](#things-that-will-bite-you)
+- [Common mistakes](#common-mistakes)
 
 ## Recipes
 
@@ -60,11 +60,6 @@ started it, refusing unless that process really is a shell (cmd, powershell,
 pwsh, bash, sh, zsh, fish, nu) - from Windows Terminal, an IDE or a shortcut the
 process above can be the terminal host itself, and closing that would take every
 other tab with it. `q --dry-run` names the target without touching it.
-
-The recipe that used to live here walked the process tree from a `[bin]` export
-up to the shell. That walk was only needed because an exported action runs
-through `cmd /c` and a PowerShell host; the built-in is a wrapper copy of nix,
-spawned by the shell directly, so its parent IS the target.
 
 ### `ps1` — run a PowerShell script
 
@@ -123,9 +118,8 @@ succeeded — to read an *error*, launch via `cmd /k`, which holds either way.
 ### Stop nix asking about a vetted elevated command
 
 An elevated action confirms every time, because the UAC dialog names the *shell*
-rather than the command line it was handed. That is worth it for a passthrough
-like `sudo {args}`, which runs anything, and worth nothing for a fixed line you
-wrote once and re-read every time you type its name.
+rather than the command line it was handed. For a fixed line you wrote yourself,
+you can skip nix's question:
 
 ```toml
 # ~/.nix/config.toml
@@ -138,7 +132,7 @@ It waives nix's prompt and nothing else: UAC still asks, an unattended run still
 refuses, and a listed name is ignored the moment the command touches project
 files — so listing `deploy` exempts yours, never a cloned repo's.
 
-## Things that will bite you
+## Common mistakes
 
 **nix does not interpret TOML escapes.** Action values are literal, so `\\`
 stays doubled and reaches the command as two backslashes. Use a single-quoted
@@ -149,14 +143,8 @@ good = 'pwsh -File "%USERPROFILE%/.nix/scripts/thing.ps1"'
 bad  = "pwsh -File \"%USERPROFILE%\\.nix\\scripts\\thing.ps1\""
 ```
 
-**A `.ps1` named in an action opens in your editor.** Action commands go to
-`cmd /c`, which uses the file association — so `build = "build.ps1"` renders the
-script's source and exits 0, looking like success. Use `.nix/scripts/` and a bare
-name, or the `ps1` recipe above.
-
-**`exit` in an action exits nix's child shell, not yours.** `q = "exit"` looks
-reasonable and does nothing at all - an action runs in a child, and a child
-cannot make its parent return. That is what the built-in `q` is for.
+**`exit` in an action exits nix's child shell, not yours.** `q = "exit"` does
+nothing: an action runs in a child, and a child cannot make its parent return. That is what the built-in `q` is for.
 
 **Check a name before you take it.** `ps` is `Get-Process` in PowerShell and `r`
 is `Invoke-History`; a shell's own alias always wins over an exe on PATH:
@@ -168,6 +156,7 @@ Get-Command <name> -All
 `nix --sync-bin` warns when an export collides with something else on PATH, and
 `nix --doctor` reports drift, but a shell builtin is invisible to both.
 
-**Rebuilding nix re-arms consent for exports.** An export's fingerprint covers
-the binary, so `zig build deploy` (or any nix upgrade) makes `--sync-bin` ask
-again. That is the gate working; run `nix --sync-bin` and it clears.
+**Rebuilding a file export re-arms consent.** A file export's fingerprint is the
+source file's bytes, so a rebuilt `.exe` makes `--sync-bin` ask again; run it
+and it clears. An action export is fingerprinted by its command text, so it
+only asks again when that changes.

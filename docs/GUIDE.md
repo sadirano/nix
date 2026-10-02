@@ -1192,9 +1192,8 @@ not consent to the *command*. So:
 |---|---|
 | Anything odd | `nix --doctor` (tools found, PATH, wrappers, env layers, exports, pending approvals) |
 | Renamed a shortcut / changed `[picker]` | `nix --sync`, restart the shell |
-| Rebuilt or upgraded nix, exports ask again | `nix --sync-bin` - the fingerprint covers the binary, by design |
+| Rebuilt a tool, its export asks again | `nix --sync-bin` - a file export's fingerprint is its bytes |
 | `o <name>` picker slow or missing dirs | install `everything-cli`, or set `[picker] search_roots`; tune `exclude_extra` |
-| An action "succeeds" but only prints a `.ps1` | a `.ps1` named in `[actions]` opens via file association; use `.nix/scripts/` or the `ps1` recipe |
 | `\\` in a command reaches it doubled | use single-quoted TOML strings and forward slashes |
 | `exit` in an action does nothing | an action runs in a child shell; use the built-in `q` |
 | A short name doesn't answer in PowerShell | a pwsh alias shadows it: `Get-Command <name> -All` |
