@@ -267,6 +267,14 @@ pub fn validateAliasName(name: []const u8) !void {
     // name the tool answers for itself, and the entry could then be repointed
     // at a directory that is not ~/.nix.
     if (eqlFoldAscii(t, self_alias)) return error.ReservedSelfName;
+    try validateNameChars(name);
+}
+
+/// validateNameChars is the character half of validateAliasName, without the
+/// reserved names. Segment names take it alone: a segment named `.nix` shadows
+/// no alias.
+pub fn validateNameChars(name: []const u8) !void {
+    if (std.mem.trim(u8, name, " \t\r\n").len == 0) return error.EmptyName;
     for (name) |c| {
         if (c == '/' or c == '\\') return error.PathSeparatorInName;
         if (c == '@') return error.AtInName;
@@ -457,6 +465,15 @@ test "the self alias is reserved, but a leading dot still isn't" {
     try std.testing.expect(isSelfAlias(".NiX"));
     try std.testing.expect(!isSelfAlias("nix"));
     try std.testing.expect(!isSelfAlias(".nixrc"));
+}
+
+test "segment names keep the character rules but not the reserved names" {
+    try validateNameChars(".nix");
+    try validateNameChars("_default");
+    try validateNameChars("_global");
+    try std.testing.expectError(error.EmptyName, validateNameChars("  "));
+    try std.testing.expectError(error.AtInName, validateNameChars("a@b"));
+    try std.testing.expectError(error.TomlMetaInName, validateNameChars("a\"b"));
 }
 
 test "lookupAlias answers for the self alias before aliases.toml, and over it" {

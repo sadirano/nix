@@ -609,7 +609,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
 /// autoDefineSegment appends a [[contexts]] entry for an unknown segment to the
 /// central per-alias file (no editor in the loop).
 fn autoDefineSegment(app: *App, alias: []const u8, ps: segments.ParsedSegment) !void {
-    try store.validateAliasName(ps.name); // same rules as segment names
+    try store.validateNameChars(ps.name);
     const template = if (ps.has_value)
         try std.fmt.allocPrint(app.arena, "/${{{s}}}/", .{ps.name})
     else
