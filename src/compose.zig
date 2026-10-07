@@ -161,6 +161,17 @@ fn scriptForm(app: *App, alias: []const u8, dir: []const u8, command: []const u8
     return std.fmt.allocPrint(app.arena, "{s}{s} -NoProfile -ExecutionPolicy Bypass -File {s}{s}", .{ sudo, proc.psShell(app.arena, app.io, app.env()), shown, t[end..] });
 }
 
+/// sameFile: the bare name finds the very script the long form names. Several
+/// scripts dirs may hold one stem, and a shorter form that runs a different
+/// file is not shorter. A path nix cannot expand (%VAR%, ~) never matches.
+fn sameFile(app: *App, dir: []const u8, written: []const u8, found: []const u8) !bool {
+    if (std.mem.indexOfAny(u8, written, "%~") != null) return false;
+    const full = if (std.fs.path.isAbsoluteWindows(written) or dir.len == 0) written else try std.fs.path.join(app.arena, &.{ dir, written });
+    const a = try std.mem.replaceOwned(u8, app.arena, full, "/", "\\");
+    const b = try std.mem.replaceOwned(u8, app.arena, found, "/", "\\");
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
 /// localPath: a word written as a path relative to where the action runs - no
 /// quotes, no drive or root, no %VAR% for cmd to expand into one first.
 fn localPath(word: []const u8) bool {
@@ -179,7 +190,7 @@ pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const 
         const sep = if (hit.rest.len > 0) " " else "";
         const parent = std.fs.path.basenameWindows(std.fs.path.dirnameWindows(hit.path) orelse "");
         if (std.ascii.eqlIgnoreCase(parent, "scripts")) {
-            if (run.resolveScript(app, alias, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
+            if (run.resolveScript(app, alias, dir, hit.stem)) |p| if (try sameFile(app, dir, hit.path, p)) {
                 return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a .ps1 in the scripts dir runs by bare name)", .{ name, hit.stem, sep, hit.rest });
             };
         }

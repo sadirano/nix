@@ -609,6 +609,9 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
         }
         try target.appendSlice(app.arena, fragment);
     }
+    // A root lost its separator to the trim above, and `E:` alone is that
+    // drive's current directory, not its root.
+    if (target.items.len == 0 or (target.items.len == 2 and target.items[1] == ':')) try target.append(app.arena, '/');
     return try store.fromSlash(app.arena, target.items);
 }
 

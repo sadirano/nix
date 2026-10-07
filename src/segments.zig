@@ -301,6 +301,13 @@ pub fn expandTarget(
         try err.print("nix: segment \"{s}\": `target` is honored only in {s}, never in a project's or the global segments file\n", .{ cd.segment, central });
         return null;
     }
+    // The target is expanded before a source runs, so a source's variables
+    // could never reach it; refusing says so instead of quietly using an
+    // environment variable of the same name.
+    if (cd.run.len > 0 or cd.uses.len > 0) {
+        try err.print("nix: segment \"{s}\": `target` cannot be combined with `run` or `uses`\n", .{cd.segment});
+        return null;
+    }
     // Every segment to its right already named a place inside the alias, and
     // a target would silently throw that away.
     if (!next_to_alias) {

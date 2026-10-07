@@ -757,6 +757,15 @@ pub fn main(init: std.process.Init) !void {
             c.check(r.code == 0 and hasLineFold(r.out, "greet there"), "a .ps1 script runs by bare name inside an action", r);
             r = try c.run(&.{ "pa", "--run", ":long" });
             c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "long = \"greet there\"") != null, "the PowerShell long form is told the bare name", r);
+            try writeActions(&c, "pa", pa, "[actions]\nlong = \"pwsh -NoProfile -ExecutionPolicy Bypass -File .nix/scripts/greet.ps1 there\"\n");
+            try writeFile(&c, join(&c, &.{ home, "scripts", "pa", "greet.ps1" }), "Write-Output \"private $args\"\n");
+            r = try c.run(&.{"--doctor"});
+            c.check(std.mem.indexOf(u8, r.out, "long = \"greet there\"") != null, "the bare name is offered while it finds the same script", r);
+            Io.Dir.cwd().deleteFile(io, join(&c, &.{ pa, ".nix", "scripts", "greet.ps1" })) catch {};
+            r = try c.run(&.{"--doctor"});
+            c.check(std.mem.indexOf(u8, r.out, "long = \"greet there\"") == null, "no bare name is offered when it would run a different script", r);
+            Io.Dir.cwd().deleteTree(io, join(&c, &.{ home, "scripts", "pa" })) catch {};
+            try writeFile(&c, join(&c, &.{ pa, ".nix", "scripts", "greet.ps1" }), "Write-Output \"greet $args\"\n");
 
             // ~/.nix/scripts/<alias> sits between the project and ~/.nix/scripts,
             // and only its own alias sees it.
@@ -2092,6 +2101,15 @@ pub fn main(init: std.process.Init) !void {
         c.check(r2.code == 0 and pathEql(trim(r2.out), join(&c, &.{ home, "appdata", "pa", "logs" })), "segments left of a target build on it", r2);
         const r3 = try c.run(&.{ "data@logs@pa", "--resolve" });
         c.check(r3.code != 0, "a target must sit next to the alias", r3);
+
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"data\"\nrun = \"src\"\ntarget = \"${NIX_E2E_DATA}/pa\"\n");
+        const r5 = try c.run(&.{ "data@pa", "--resolve" });
+        c.check(r5.code != 0 and std.mem.indexOf(u8, r5.err, "cannot be combined") != null, "a target refuses a run source it could not use", r5);
+        if (c.windowsOnly("a drive-root target keeps its root")) {
+            try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"root\"\ntarget = \"C:/\"\n");
+            const r6 = try c.run(&.{ "root@pa", "--resolve" });
+            c.check(r6.code == 0 and std.mem.eql(u8, trim(r6.out), "C:\\"), "a drive-root target keeps its root", r6);
+        }
 
         try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "");
         try writeFile(&c, join(&c, &.{ pa, ".nix", "segments.toml" }), "[[contexts]]\nsegment = \"data\"\ntarget = \"${NIX_E2E_DATA}/pa\"\n");
