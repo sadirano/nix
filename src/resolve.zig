@@ -533,7 +533,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
     }
     // Resolve the base alias (forward-slash storage form).
     const data = try store.readAliasesFile(app.arena, app.io, app.home);
-    const aliases = try store.loadAliases(app.arena, data);
+    const aliases = try store.loadAliasesWithSelf(app.arena, data, app.home);
     const lower = try lowerDup(app.arena, parsed.alias);
     var base: ?[]const u8 = null;
     for (aliases.items) |a| if (std.mem.eql(u8, a.name, lower)) {

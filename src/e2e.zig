@@ -2036,6 +2036,8 @@ pub fn main(init: std.process.Init) !void {
         // shared@ needs no config, and a segments file may still redefine it.
         const sr = try c.run(&.{ "shared@pa", "--resolve" });
         c.check(sr.code == 0 and pathEql(trim(sr.out), join(&c, &.{ pa, ".nix", "shared" })), "shared@ is built in", sr);
+        const sn = try c.run(&.{ "shared@.nix", "--resolve" });
+        c.check(sn.code == 0 and pathEql(trim(sn.out), join(&c, &.{ home, ".nix", "shared" })), "the built-in .nix alias takes segments", sn);
         try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"docs\"\nsource-template = \"/documentation\"\n[[contexts]]\nsegment = \"shared\"\nsource-template = \"/handoff\"\n");
         const so = try c.run(&.{ "shared@pa", "--resolve" });
         c.check(so.code == 0 and pathEql(trim(so.out), join(&c, &.{ pa, "handoff" })), "a segments file overrides the built-in shared@", so);
