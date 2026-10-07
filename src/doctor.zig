@@ -516,6 +516,13 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         var any = false;
         if (store.loadAliases(app.arena, adata)) |al| {
             for (al.items) |a| {
+                const paths = try run_zig.actionPaths(app, a.name, a.path);
+                const project = actions.loadFile(app.arena, app.io, paths[0]) catch &.{};
+                for (actions.loadFile(app.arena, app.io, paths[1]) catch &.{}) |priv| {
+                    if (actions.find(project, priv.name) == null) continue;
+                    try d.row(.warn, a.name, try std.fmt.allocPrint(app.arena, ":{s} in {s} never runs - the project's .nix/actions.toml defines it too and wins; rename one", .{ priv.name, paths[1] }));
+                    any = true;
+                }
                 for (run_zig.mergedActions(app, a.name, a.path, false, false) catch &.{}) |act| {
                     if (try compose.referenceProblem(app, a.name, a.path, act)) |why| {
                         try d.row(.warn, a.name, why);

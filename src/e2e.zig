@@ -581,6 +581,8 @@ pub fn main(init: std.process.Init) !void {
 
         var r = try c.run(&.{ "pa", "--run", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "from-project") != null, "project-local action wins over central", r);
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, ":hello in ") != null and std.mem.indexOf(u8, r.out, "never runs") != null, "--doctor names a private action the project's shadows", r);
 
         // Match a line, not the whole stdout: a machine's cmd AutoRun (doskey/
         // clink) may prepend noise to every `cmd /c` run.
