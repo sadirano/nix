@@ -443,8 +443,9 @@ pwsh = 'C:/Program Files/PowerShell/7/pwsh.exe'
 
 ### 2.8 Scripts in `.nix/scripts/`
 
-When a one-liner outgrows TOML, put a script in `<project>/.nix/scripts/` (or
-`~/.nix/scripts/` for your own) and run it by bare name:
+When a one-liner outgrows TOML, put a script in `<project>/.nix/scripts/` (or,
+for your own, `~/.nix/scripts/<alias>/` for one project and `~/.nix/scripts/` for
+all of them) and run it by bare name:
 
 ```
 C:\code\acme\.nix\scripts\seed-db.ps1   ->   x acme seed-db --small
@@ -454,7 +455,8 @@ C:\code\acme\.nix\scripts\seed-db.ps1   ->   x acme seed-db --small
   through pwsh with `-NoProfile -ExecutionPolicy Bypass`.
 - The scripts dir is on PATH in every alias context, so scripts can call each
   other, and **inside an `o acme` shell you just type `seed-db`**.
-- Project scripts shadow central ones of the same name.
+- The project's scripts win over your per-alias ones, which win over
+  `~/.nix/scripts/`.
 
 ### 2.9 The palette: every action on the machine
 

@@ -758,6 +758,20 @@ pub fn main(init: std.process.Init) !void {
             r = try c.run(&.{ "pa", "--run", ":long" });
             c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "long = \"greet there\"") != null, "the PowerShell long form is told the bare name", r);
 
+            // ~/.nix/scripts/<alias> sits between the project and ~/.nix/scripts,
+            // and only its own alias sees it.
+            try writeFile(&c, join(&c, &.{ home, "scripts", "who.cmd" }), "@echo who-everyone\r\n");
+            try writeFile(&c, join(&c, &.{ home, "scripts", "pa", "who.cmd" }), "@echo who-pa\r\n");
+            r = try c.run(&.{ "pa", "--run", "who" });
+            c.check(r.code == 0 and hasLineFold(r.out, "who-pa"), "a private per-alias script wins over ~/.nix/scripts", r);
+            try writeActions(&c, "pa", pa, "[actions]\nwho = \"who\"\n");
+            r = try c.run(&.{ "pa", "--run", ":who" });
+            c.check(r.code == 0 and hasLineFold(r.out, "who-pa"), "an action reaches a private per-alias script by bare name", r);
+            r = try c.run(&.{ "pb", "--run", "who" });
+            c.check(r.code == 0 and hasLineFold(r.out, "who-everyone"), "another alias does not see a per-alias script", r);
+            Io.Dir.cwd().deleteTree(io, join(&c, &.{ home, "scripts", "pa" })) catch {};
+            Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "scripts", "who.cmd" })) catch {};
+
             // cmd reads the first `/` of a relative path as a switch; nix hands it `\`.
             try writeFile(&c, join(&c, &.{ pa, "tools", "tool.cmd" }), "@echo tool %*\r\n");
             try writeFile(&c, join(&c, &.{ pa, "tools", "hi.ps1" }), "Write-Output \"hi $args\"\n");

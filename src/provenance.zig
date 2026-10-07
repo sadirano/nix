@@ -553,7 +553,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
             break :blk try context.fromProducer(app.arena, p, &cd);
         } else continue;
 
-        const r = (try context.locate(app, src, dir)) orelse continue;
+        const r = (try context.locate(app, src, alias, dir)) orelse continue;
         if (r.implicit_trust) {
             try app.out.print("{s}: already trusted (declared and scripted under {s})\n", .{ cd.segment, app.home });
             continue;

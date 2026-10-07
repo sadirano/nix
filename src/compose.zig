@@ -71,7 +71,7 @@ pub fn lookupRaw(app: *App, alias: []const u8, dir: []const u8, name: []const u8
 pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, chain: []const []const u8, problem: *[]const u8) !run.Resolved {
     const a = raw.action;
     const refs = (try parseRefs(app.arena, a.command)) orelse return .{
-        .command = try scriptForm(app, dir, a.command, a.shell),
+        .command = try scriptForm(app, alias, dir, a.command, a.shell),
         .from_project = raw.from_project,
         .shell = a.shell,
         .written = if (raw.job != null) "" else a.command,
@@ -136,7 +136,7 @@ pub fn expandAction(app: *App, alias: []const u8, dir: []const u8, raw: Raw, cha
 /// looks like one is left as written. A project script stays RELATIVE to the
 /// alias dir, the way a hand-written line names it, so the gate still counts it
 /// among the files it hashes.
-fn scriptForm(app: *App, dir: []const u8, command: []const u8, shell: actions.Shell) ![]const u8 {
+fn scriptForm(app: *App, alias: []const u8, dir: []const u8, command: []const u8, shell: actions.Shell) ![]const u8 {
     if (!proc.is_windows or shell != .default) return command;
     const body = run.stripSudo(command) orelse command;
     const t = std.mem.trimStart(u8, body, " \t");
@@ -150,7 +150,7 @@ fn scriptForm(app: *App, dir: []const u8, command: []const u8, shell: actions.Sh
         if (!proc.fileExists(app.io, if (dir.len > 0) try std.fs.path.join(app.arena, &.{ dir, rel }) else rel)) return command;
         if (!is_ps1) return std.fmt.allocPrint(app.arena, "{s}{s}{s}", .{ sudo, rel, t[end..] });
     } else {
-        const path = run.resolveScript(app, dir, word) orelse return command;
+        const path = run.resolveScript(app, alias, dir, word) orelse return command;
         if (!std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".ps1")) return command;
         rel = if (dir.len > 0 and path.len > dir.len + 1 and std.mem.startsWith(u8, path, dir) and (path[dir.len] == '\\' or path[dir.len] == '/'))
             path[dir.len + 1 ..]
@@ -179,7 +179,7 @@ pub fn shorterForm(app: *App, alias: []const u8, dir: []const u8, name: []const 
         const sep = if (hit.rest.len > 0) " " else "";
         const parent = std.fs.path.basenameWindows(std.fs.path.dirnameWindows(hit.path) orelse "");
         if (std.ascii.eqlIgnoreCase(parent, "scripts")) {
-            if (run.resolveScript(app, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
+            if (run.resolveScript(app, alias, dir, hit.stem)) |p| if (std.ascii.eqlIgnoreCase(std.fs.path.extension(p), ".ps1")) {
                 return try std.fmt.allocPrint(app.arena, "{s} = \"{s}{s}{s}\" (a .ps1 in the scripts dir runs by bare name)", .{ name, hit.stem, sep, hit.rest });
             };
         }

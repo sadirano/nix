@@ -725,7 +725,9 @@ pub const specs = [_]Spec{
         \\it.
         \\
         \\They run as `nix <alias> --run :test`. Longer scripts go in
-        \\.nix/scripts/ and run by bare name (`nix <alias> --run build`).
+        \\.nix/scripts/ and run by bare name (`nix <alias> --run build`);
+        \\~/.nix/scripts/<alias>/ holds private ones for that alias only, and
+        \\~/.nix/scripts/ ones for every alias, in that order after the project.
         \\Machine-wide personal actions live in ~/.nix/actions/_default.toml at
         \\lowest precedence, so they're available through any alias. Values may
         \\reference ${secret:NAME}; see `--agent --secret`.

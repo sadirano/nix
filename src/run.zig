@@ -7,6 +7,7 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
 const store = @import("store.zig");
+const lowerDup = @import("util.zig").lowerDup;
 const actions = @import("actions.zig");
 const resolve = @import("resolve.zig");
 const config = @import("config.zig");
@@ -86,12 +87,12 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
         };
         return runCall(app, call, alias, target, outside);
     }
-    // Resolve the command: a project script in `.nix/scripts` (then central
-    // `~/.nix/scripts`) wins, so `r <alias> build` runs the project's build;
+    // Resolve the command: a project script in `.nix/scripts` (then the private
+    // `~/.nix/scripts/<alias>`, then `~/.nix/scripts`) wins, so `r <alias> build` runs the project's build;
     // else the legacy alias-root bare-exe probe (Windows); else PATH.
     var resolved = try app.arena.dupe([]const u8, argv);
     const exe = argv[0];
-    if (resolveScript(app, target, exe)) |s| {
+    if (resolveScript(app, alias, target, exe)) |s| {
         // A project script is cloned code reached by bare name - the same
         // provenance question its actions.toml sibling answers. (A script under
         // $home, central or otherwise, is waved through inside the gate.)
@@ -436,7 +437,7 @@ pub fn stripSudo(command: []const u8) ?[]const u8 {
 }
 
 /// aliasRunEnv returns the environment for running in an alias context: the
-/// process env with `<dir>/.nix/scripts` and `~/.nix/scripts` prepended to
+/// process env with the scriptDirs prepended to
 /// PATH, NIX_ALIAS/NIX_ALIAS_PATH so children know their context, and the
 /// project's own environment (env.zig).
 ///
@@ -458,10 +459,8 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.
     defer app.injected = scope.items;
 
     const sep = if (proc.is_windows) ";" else ":";
-    const local = try std.fs.path.join(app.arena, &.{ dir, ".nix", "scripts" });
-    const central = try std.fs.path.join(app.arena, &.{ app.home, "scripts" });
     const orig = app.getEnv("PATH") orelse "";
-    const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}{s}{s}", .{ local, sep, central, sep, orig });
+    const newpath = try std.fmt.allocPrint(app.arena, "{s}{s}{s}", .{ try scriptPath(app.arena, app.home, alias, dir, sep), sep, orig });
     try app_zig.putSaved(app, &scope, "PATH", newpath);
     if (alias.len > 0) {
         try app_zig.putSaved(app, &scope, "NIX_ALIAS", alias);
@@ -478,17 +477,30 @@ pub fn aliasRunEnv(app: *App, alias: []const u8, dir: []const u8, mode: env_zig.
     return app.env();
 }
 
-/// resolveScript resolves a bare command to a project script in
-/// `<dir>/.nix/scripts` (local wins) or `~/.nix/scripts`, returning its
+/// scriptDirs lists where a bare command is looked up, nearest first: the
+/// project's `.nix/scripts` (travels with the repo), the private
+/// `~/.nix/scripts/<alias>` (this alias only), then `~/.nix/scripts` (every
+/// alias). No alias means no per-alias folder.
+pub fn scriptDirs(arena: std.mem.Allocator, home: []const u8, alias: []const u8, dir: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    try out.append(arena, try std.fs.path.join(arena, &.{ dir, ".nix", "scripts" }));
+    if (alias.len > 0) try out.append(arena, try std.fs.path.join(arena, &.{ home, "scripts", try lowerDup(arena, alias) }));
+    try out.append(arena, try std.fs.path.join(arena, &.{ home, "scripts" }));
+    return out.items;
+}
+
+/// scriptPath joins scriptDirs with `sep`, for a PATH prefix.
+fn scriptPath(arena: std.mem.Allocator, home: []const u8, alias: []const u8, dir: []const u8, sep: []const u8) ![]const u8 {
+    return std.mem.join(arena, sep, try scriptDirs(arena, home, alias, dir));
+}
+
+/// resolveScript resolves a bare command to the first match in scriptDirs, returning its
 /// absolute path. Needed for a direct run: spawn looks argv[0] up against the
 /// real PATH, not aliasRunEnv's injected one. Extension-probed; a command with
 /// a path separator is left as-is.
-pub fn resolveScript(app: *App, dir: []const u8, cmd: []const u8) ?[]const u8 {
+pub fn resolveScript(app: *App, alias: []const u8, dir: []const u8, cmd: []const u8) ?[]const u8 {
     if (cmd.len == 0 or std.mem.indexOfAny(u8, cmd, "/\\") != null) return null;
-    const dirs = [_][]const u8{
-        std.fs.path.join(app.arena, &.{ dir, ".nix", "scripts" }) catch return null,
-        std.fs.path.join(app.arena, &.{ app.home, "scripts" }) catch return null,
-    };
+    const dirs = scriptDirs(app.arena, app.home, alias, dir) catch return null;
     const exts: []const []const u8 = if (proc.is_windows)
         &.{ ".cmd", ".bat", ".exe", ".ps1" }
     else
@@ -748,9 +760,7 @@ fn elevatedCommand(
     dir: []const u8,
 ) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    const local = try std.fs.path.join(arena, &.{ dir, ".nix", "scripts" });
-    const central = try std.fs.path.join(arena, &.{ home, "scripts" });
-    try setVar(arena, &buf, "PATH", try std.fmt.allocPrint(arena, "{s};{s};%PATH%", .{ local, central }));
+    try setVar(arena, &buf, "PATH", try std.fmt.allocPrint(arena, "{s};%PATH%", .{try scriptPath(arena, home, alias, dir, ";")}));
     if (alias.len > 0) {
         try setVar(arena, &buf, "NIX_ALIAS", alias);
         try setVar(arena, &buf, "NIX_ALIAS_PATH", dir);

@@ -369,7 +369,7 @@ pub fn fromProducer(arena: std.mem.Allocator, p: *const segments.ProducerDef, cd
 /// other; a name containing a separator is taken relative to the alias dir.
 /// `.ps1` is wrapped through PowerShell by the caller, as CreateProcess cannot
 /// launch one directly.
-pub fn locate(app: *App, src: Source, dir: []const u8) !?Located {
+pub fn locate(app: *App, src: Source, alias: []const u8, dir: []const u8) !?Located {
     const tokens = try splitRunLine(app.arena, src.run);
     if (tokens.len == 0) return null;
     // Only token 0 is needed here, and a run target naming itself through a
@@ -379,11 +379,12 @@ pub fn locate(app: *App, src: Source, dir: []const u8) !?Located {
         try app.err.print("nix: {s}: the run target itself may not be a variable (\"{s}\")\n", .{ src.label, name });
         return null;
     }
-    const script = run_zig.resolveScript(app, dir, name) orelse blk: {
+    const script = run_zig.resolveScript(app, alias, dir, name) orelse blk: {
         const rel = std.fs.path.join(app.arena, &.{ dir, name }) catch return null;
         if (proc.fileExists(app.io, rel)) break :blk rel;
         try app.err.print("nix: {s}: run target \"{s}\" not found\n", .{ src.label, name });
-        try app.err.print("  (looked in {s}{c}.nix{c}scripts, {s}{c}scripts, and {s})\n", .{ dir, std.fs.path.sep, std.fs.path.sep, app.home, std.fs.path.sep, dir });
+        const dirs = run_zig.scriptDirs(app.arena, app.home, alias, dir) catch return null;
+        try app.err.print("  (looked in {s}, and {s})\n", .{ std.mem.join(app.arena, ", ", dirs) catch return null, dir });
         return null;
     };
     const script_hash = try sha256Hex(app.arena, app_zig.readFileMaybe(app, script) orelse "");
@@ -441,7 +442,7 @@ pub fn run(
     high: []const Var,
     low: []const Var,
 ) !?[]Candidate {
-    const r = (try locate(app, src, dir)) orelse return null;
+    const r = (try locate(app, src, alias, dir)) orelse return null;
 
     // Trust is checked BEFORE the cache, deliberately. A cached value is
     // legitimate (an approved run of this exact command produced it), but
