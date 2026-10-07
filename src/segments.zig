@@ -245,6 +245,13 @@ pub const builtin_contexts = [_]ContextDef{
     .{ .segment = "shared", .scope = "global", .source_template = "/.nix/shared" },
 };
 
+/// builtin_self_contexts replace builtin_contexts for the built-in `.nix`
+/// alias: nix's home is itself the `.nix` folder, so its drop is
+/// `~/.nix/shared`, not `~/.nix/.nix/shared`.
+pub const builtin_self_contexts = [_]ContextDef{
+    .{ .segment = "shared", .scope = "global", .source_template = "/shared" },
+};
+
 pub fn lookupGlobalContext(contexts: []const ContextDef, name: []const u8) ?*const ContextDef {
     for (contexts) |*cd| {
         if (eqlFold(cd.segment, name) and eqlFold(cd.scope, "global")) return cd;

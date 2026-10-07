@@ -500,11 +500,11 @@ fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: []
 
 /// lookupCtx finds a segment's [[contexts]] block across the three files in
 /// the same local -> central -> global precedence contexts get elsewhere.
-fn lookupCtx(sf_local: segments.SegFile, sf_central: segments.SegFile, sf_global: segments.SegFile, name: []const u8) ?*const segments.ContextDef {
+fn lookupCtx(sf_local: segments.SegFile, sf_central: segments.SegFile, sf_global: segments.SegFile, name: []const u8, self: bool) ?*const segments.ContextDef {
     return segments.lookupContext(sf_local.contexts, name) orelse
         segments.lookupContext(sf_central.contexts, name) orelse
         segments.lookupGlobalContext(sf_global.contexts, name) orelse
-        segments.lookupGlobalContext(&segments.builtin_contexts, name);
+        segments.lookupGlobalContext(if (self) &segments.builtin_self_contexts else &segments.builtin_contexts, name);
 }
 
 /// mergeProducers flattens the three segment files' `[[producers]]` blocks by
@@ -565,7 +565,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
     while (i > 0) {
         i -= 1;
         const ps = parsed.segs[i];
-        var cd = lookupCtx(sf_local, sf_central, sf_global, ps.name);
+        var cd = lookupCtx(sf_local, sf_central, sf_global, ps.name, store.isSelfAlias(parsed.alias));
         if (cd == null) {
             // Defining it writes config, so it takes someone to ask; an agent's
             // shell must not leave definitions nobody authored.
@@ -581,7 +581,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
             sf_central = try segments.loadSegmentsFile(app.arena, app.io, cpath);
             sf_global = try segments.loadSegmentsFile(app.arena, app.io, gpath);
             producers = try mergeProducers(app, sf_local, sf_central, sf_global);
-            cd = lookupCtx(sf_local, sf_central, sf_global, ps.name);
+            cd = lookupCtx(sf_local, sf_central, sf_global, ps.name, store.isSelfAlias(parsed.alias));
             if (cd == null) {
                 try app.err.print("nix: segment \"{s}\": defined but not loadable\n", .{ps.name});
                 return null;
