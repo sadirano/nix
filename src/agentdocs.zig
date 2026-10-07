@@ -953,6 +953,11 @@ pub const specs = [_]Spec{
         \\`**` matches any number of levels, bounded by the context's `depth`
         \\(default 4), never descending into a match, and refusing once it has
         \\opened 5000 folders rather than answering from part of the tree.
+        \\
+        \\`target = "${APPDATA}/<tool>"` points a segment outside its alias (a
+        \\tool's data or logs). It must expand to an absolute path, its segment
+        \\must sit next to the alias, and only the private
+        \\`~/.nix/segments/<alias>.toml` may set it.
         ,
         .agent_use =
         \\`nix <seg>@<alias>` resolves and prints, like any alias. `nix

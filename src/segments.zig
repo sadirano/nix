@@ -55,6 +55,13 @@ pub const ContextDef = struct {
     /// `depth` bounds how many levels a `**` in source-template may descend
     /// (segwalk.zig). Empty means the default.
     depth: []const u8 = "",
+    /// `target` replaces the alias directory as the base this segment and the
+    /// ones to its left build on, so a project's data, logs or config outside
+    /// its repo (`${APPDATA}/<tool>`) answer under the project's name. Honored
+    /// only from the private per-alias file: a cloned `.nix/segments.toml` must
+    /// never point outside its own repo, and the global file has no alias to
+    /// own it.
+    target: []const u8 = "",
     /// origin is the file this block was read from — carried so the trust
     /// ledger can hash the exact declaration that asked to run something.
     origin: []const u8 = "",
@@ -209,6 +216,8 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
             contexts.items[idx].uses = val;
         } else if (std.mem.eql(u8, key, "depth")) {
             contexts.items[idx].depth = val;
+        } else if (std.mem.eql(u8, key, "target")) {
+            contexts.items[idx].target = val;
         }
     }
     return .{ .contexts = contexts.items, .producers = producers.items };
@@ -273,6 +282,42 @@ pub fn expandTemplate(
         i += 2 + rel + 1;
     }
     return b.items;
+}
+
+/// expandTarget expands a context's `target` into the absolute, forward-slashed
+/// base it replaces the alias directory with. Null means refused, already
+/// reported on `err`.
+pub fn expandTarget(
+    arena: std.mem.Allocator,
+    err: *Io.Writer,
+    cd: *const ContextDef,
+    typed: []const u8,
+    central: []const u8,
+    next_to_alias: bool,
+    ctx: anytype,
+    comptime lookup: fn (@TypeOf(ctx), []const u8) ?[]const u8,
+) !?[]const u8 {
+    if (!std.mem.eql(u8, cd.origin, central)) {
+        try err.print("nix: segment \"{s}\": `target` is honored only in {s}, never in a project's or the global segments file\n", .{ cd.segment, central });
+        return null;
+    }
+    // Every segment to its right already named a place inside the alias, and
+    // a target would silently throw that away.
+    if (!next_to_alias) {
+        try err.print("nix: segment \"{s}\": it sets `target`, so it must sit next to the alias ({s}@<alias>)\n", .{ cd.segment, typed });
+        return null;
+    }
+    const raw = expandTemplate(arena, cd.target, ctx, lookup) catch |e| {
+        try err.print("nix: segment \"{s}\": target \"{s}\": {s}\n", .{ cd.segment, cd.target, @errorName(e) });
+        return null;
+    };
+    const slashed = try arena.dupe(u8, raw);
+    std.mem.replaceScalar(u8, slashed, '\\', '/');
+    if (!std.fs.path.isAbsolute(slashed) or std.mem.indexOfScalar(u8, slashed, 0) != null) {
+        try err.print("nix: segment \"{s}\": target \"{s}\" is not an absolute path\n", .{ cd.segment, raw });
+        return null;
+    }
+    return std.mem.trimEnd(u8, slashed, "/");
 }
 
 /// guardFragment rejects a fragment that would escape the alias dir.

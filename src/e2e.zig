@@ -2048,6 +2048,34 @@ pub fn main(init: std.process.Init) !void {
         c.check(r3.code != 0 and std.mem.indexOf(u8, readFileOr(&c, join(&c, &.{ home, "segments", "pa.toml" }), ""), "nosuch") == null, "an undefined segment is not auto-defined without a console", r3);
     }
 
+    // --- segment target ---------------------------------------------------------
+    // A private per-alias file may point a segment outside the alias (a tool's
+    // data folder); a project's own segments file may not.
+    {
+        try c.env.put("NIX_E2E_DATA", join(&c, &.{ home, "appdata" }));
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }),
+            \\[[contexts]]
+            \\segment = "data"
+            \\target = "${NIX_E2E_DATA}/pa"
+            \\[[contexts]]
+            \\segment = "logs"
+            \\source-template = "/logs"
+            \\
+        );
+        const r = try c.run(&.{ "data@pa", "--resolve" });
+        c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ home, "appdata", "pa" })), "a private segment target leaves the alias", r);
+        const r2 = try c.run(&.{ "logs@data@pa", "--resolve" });
+        c.check(r2.code == 0 and pathEql(trim(r2.out), join(&c, &.{ home, "appdata", "pa", "logs" })), "segments left of a target build on it", r2);
+        const r3 = try c.run(&.{ "data@logs@pa", "--resolve" });
+        c.check(r3.code != 0, "a target must sit next to the alias", r3);
+
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "");
+        try writeFile(&c, join(&c, &.{ pa, ".nix", "segments.toml" }), "[[contexts]]\nsegment = \"data\"\ntarget = \"${NIX_E2E_DATA}/pa\"\n");
+        const r4 = try c.run(&.{ "data@pa", "--resolve" });
+        c.check(r4.code != 0 and std.mem.indexOf(u8, r4.err, "honored only") != null, "a project's segments file cannot set a target", r4);
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ pa, ".nix", "segments.toml" })) catch {};
+    }
+
     // --- wildcard segments ------------------------------------------------------
     // The layout is the lookup table: tasks/<client>/<ticket>, ticket numbers
     // unique, and `t:<n>@` finds the client without being told it. Pure

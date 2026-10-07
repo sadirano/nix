@@ -262,6 +262,17 @@ source-template = "/tickets/${tasks}"   # ${tasks} binds to the inline value
 
 Per-alias files need **no** `scope` — every entry there is implicitly scoped to that alias. Only the shared global file requires the opt-in.
 
+A segment in your private per-alias file may leave the alias with `target`, so a tool's data, logs or config answer under the project's name:
+
+```toml
+# ~/.nix/segments/kowalski.toml
+[[contexts]]
+segment = "data"
+target = "${APPDATA}/sadirano/kowalski"   # o data@kowalski, o logs@data@kowalski
+```
+
+`target` expands like a template and must come out absolute. It replaces the alias directory as the base, so its segment sits next to the alias and the segments to its left build on it. A project's `.nix/segments.toml` and the global file cannot set it: a cloned repo never points outside itself.
+
 A segment resolves through its `source-template`: a string with `${VAR}` references. For each `${name}`, nix looks up, in order, (1) the segment's inline value (`seg:value`), bound under `${<segment>}` — or `${param}` if the context sets `param`; (2) variables a `run` source produced (see below); (3) the process environment; (4) the context's `[contexts.vars]` table, the last-resort default. Templates own their separators — `"/foo"` appends as a subdirectory, `"_${task}.md"` appends as a filename suffix.
 
 Encountering an unknown segment defines it for you (seeded with a `[[contexts]]` skeleton in the central per-alias file). Lookups are case-insensitive, and `nix --contexts` prints the contexts defined in the global `~/.nix/segments.toml`.

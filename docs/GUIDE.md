@@ -603,6 +603,21 @@ source-template = "/tests"
 ```
 
 Now `o src@acme`, `f tests@lib`, `g src@api "panic"` work everywhere.
+
+A project's data often lives outside its repo. In the private per-alias file,
+`target` points a segment there instead of inside the alias:
+
+```toml
+# ~/.nix/segments/kowalski.toml
+[[contexts]]
+segment = "data"
+target = "${APPDATA}/sadirano/kowalski"
+```
+
+`o data@kowalski` lands in the data folder, and `o logs@data@kowalski` builds on
+it. The target must expand to an absolute path, its segment must sit next to the
+alias, and only `~/.nix/segments/<alias>.toml` may set one: a project's
+`.nix/segments.toml` and the global file are refused.
 Using a segment nobody defined yet seeds a skeleton for you in
 `~/.nix/segments/<alias>.toml`. `nix --contexts` lists the global ones.
 

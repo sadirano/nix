@@ -587,6 +587,12 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
                 return null;
             }
         }
+        if (cd.?.target.len > 0) {
+            const lk: SegLookup = .{ .app = app, .cd = cd.?, .ps = ps, .param = if (cd.?.param.len > 0) cd.?.param else cd.?.segment };
+            const base_path = (try segments.expandTarget(app.arena, app.err, cd.?, ps.name, cpath, i + 1 == parsed.segs.len, lk, SegLookup.get)) orelse return null;
+            target.clearRetainingCapacity();
+            try target.appendSlice(app.arena, base_path);
+        }
         const fragment = evalSegment(app, cd.?, producers, ps, parsed.alias, run_dir, target.items) catch |e| {
             // A failed context source has already explained itself in detail
             // (untrusted, missing script, non-zero exit); don't bury that under
