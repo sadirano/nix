@@ -412,7 +412,8 @@ fn dispatchAlias(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
     // Exhaustive over grammar.ActionVerb: a new action cannot reach here
     // unhandled, so there is no "unknown action" arm left to write.
     return switch (act) {
-        .resolve => cmdResolve(app, alias),
+        .resolve => cmdResolve(app, alias, false),
+        .exists => cmdResolve(app, alias, true),
         .remove => cmd_registry.cmdRemove(app, alias, action_args),
         .edit => cmdEdit(app, alias, action_args),
         .explore => cmdExplore(app, alias, action_args),
@@ -462,7 +463,7 @@ fn aliasAddOrResolve(app: *App, alias: []const u8, rest: [][]const u8) !u8 {
         path = a;
     }
     if (path) |p| return cmd_registry.cmdAdd(app, alias, p);
-    return cmdResolve(app, alias);
+    return cmdResolve(app, alias, false);
 }
 
 // Short names for the handlers main dispatches to. Only what main.zig itself
@@ -492,9 +493,13 @@ const enterDir = nav.enterDir;
 // cmdResolve prints the alias's path WITHOUT creating the directory — resolve
 // is the read-only query form (scripts and agents probe with it); only the
 // navigation/action paths (resolveAliasPath) offer to create missing dirs.
-fn cmdResolve(app: *App, name: []const u8) !u8 {
+/// cmdResolve prints where a name points. `must_exist` (--exists) refuses a
+/// path with nothing there, so a caller can tell a real place from a composed
+/// string: a segment resolves whether or not its folder exists.
+fn cmdResolve(app: *App, name: []const u8, must_exist: bool) !u8 {
     if (std.mem.indexOfScalar(u8, name, '@') != null) {
         const path = (try resolveSegmented(app, name)) orelse return 1;
+        if (must_exist and !proc.pathExists(app.io, path)) return notThere(app, path);
         try app.out.print("{s}\n", .{path});
         try app.out.flush();
         return 0;
@@ -504,10 +509,16 @@ fn cmdResolve(app: *App, name: []const u8) !u8 {
         try app.err.print("nix: unknown alias \"{s}\"\n", .{name});
         return 1;
     };
+    if (must_exist and !proc.pathExists(app.io, path)) return notThere(app, path);
     const shown = (try spell(app, path)) orelse return 1;
     try app.out.print("{s}\n", .{shown});
     try app.out.flush();
     return 0;
+}
+
+fn notThere(app: *App, path: []const u8) !u8 {
+    try app.err.print("nix: {s} does not exist\n", .{path});
+    return 1;
 }
 
 /// spell renders a resolved path in the requested `--as` dialect, or unchanged

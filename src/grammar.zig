@@ -46,6 +46,7 @@ pub const SystemVerb = enum {
 /// between the two (see main.actionFlag).
 pub const ActionVerb = enum {
     resolve,
+    exists,
     edit,
     explore,
     yank,
@@ -124,6 +125,7 @@ pub const system = [_]System{
 
 pub const actions = [_]Action{
     .{ .flags = &.{"--resolve"}, .verb = .resolve, .help = "print the resolved path", .spec = "" },
+    .{ .flags = &.{"--exists"}, .verb = .exists, .help = "print the resolved path if something is there; exit 1 if not", .spec = "" },
     .{ .flags = &.{ "--edit", "-e" }, .verb = .edit, .args = "[file]", .help = "open in your editor", .spec = "e" },
     .{ .flags = &.{ "--explore", "-x" }, .verb = .explore, .args = "[pat]", .help = "open in the file manager; with a pattern, pick files -> open them", .spec = "s" },
     .{ .flags = &.{ "--yank", "-y" }, .verb = .yank, .args = "[pat]", .help = "copy the path; with a pattern, pick files -> copy the files", .spec = "y" },

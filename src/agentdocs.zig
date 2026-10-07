@@ -962,7 +962,9 @@ pub const specs = [_]Spec{
         \\`~/.nix/segments/<alias>.toml` may set it.
         ,
         .agent_use =
-        \\`nix <seg>@<alias>` resolves and prints, like any alias. `nix
+        \\`nix <seg>@<alias>` resolves and prints, like any alias, whether or
+        \\not the folder exists; `nix <seg>@<alias> --exists` exits 1 when
+        \\nothing is there. `nix
         \\--contexts` lists the global segments.
         \\
         \\A segment whose source offers several candidates cannot be resolved

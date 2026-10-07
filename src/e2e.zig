@@ -2048,6 +2048,12 @@ pub fn main(init: std.process.Init) !void {
         const r = try c.run(&.{ "docs@pa", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), expected), "@-segment resolves through its template", r);
         c.check(!proc.pathExists(io, expected), "segmented --resolve does not create the directory", r);
+        const ex = try c.run(&.{ "docs@pa", "--exists" });
+        c.check(ex.code != 0 and trim(ex.out).len == 0 and std.mem.indexOf(u8, ex.err, "does not exist") != null, "--exists refuses a segment with nothing there", ex);
+        try util.mkdirAll(io, expected);
+        const ex2 = try c.run(&.{ "docs@pa", "--exists" });
+        c.check(ex2.code == 0 and pathEql(trim(ex2.out), expected), "--exists prints a segment that is there", ex2);
+        Io.Dir.cwd().deleteTree(io, expected) catch {};
 
         // shared@ needs no config, and a segments file may still redefine it.
         const sr = try c.run(&.{ "shared@pa", "--resolve" });
