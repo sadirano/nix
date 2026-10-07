@@ -305,6 +305,9 @@ pub fn main(init: std.process.Init) !void {
     // still asserted, no longer the runner's own clipboard.
     const clip = try std.fs.path.join(arena, &.{ root, "clipboard.txt" });
     try init.environ_map.put("NIX_CLIPBOARD_FILE", clip);
+    // An agent's shell sets NIX_NO_HISTORY, which would silence the history
+    // checks when the suite runs from there.
+    _ = init.environ_map.orderedRemove("NIX_NO_HISTORY");
 
     // The build runner hands a zig-cache-relative exe path; children run in
     // the scratch dir, so make it absolute first.
