@@ -265,10 +265,10 @@ Per-alias files need **no** `scope` — every entry there is implicitly scoped t
 A segment in your private per-alias file may leave the alias with `target`, so a tool's data, logs or config answer under the project's name:
 
 ```toml
-# ~/.nix/segments/kowalski.toml
+# ~/.nix/segments/acme.toml
 [[contexts]]
 segment = "data"
-target = "${APPDATA}/sadirano/kowalski"   # o data@kowalski, o logs@data@kowalski
+target = "${APPDATA}/acme"   # o data@acme, o logs@data@acme
 ```
 
 `target` expands like a template (inline value, environment, `[contexts.vars]`; it cannot be combined with `run` or `uses`) and must come out absolute. It replaces the alias directory as the base, so its segment sits next to the alias and the segments to its left build on it. A project's `.nix/segments.toml` and the global file cannot set it: a cloned repo never points outside itself.

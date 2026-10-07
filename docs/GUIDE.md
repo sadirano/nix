@@ -610,13 +610,13 @@ A project's data often lives outside its repo. In the private per-alias file,
 `target` points a segment there instead of inside the alias:
 
 ```toml
-# ~/.nix/segments/kowalski.toml
+# ~/.nix/segments/acme.toml
 [[contexts]]
 segment = "data"
-target = "${APPDATA}/sadirano/kowalski"
+target = "${APPDATA}/acme"
 ```
 
-`o data@kowalski` lands in the data folder, and `o logs@data@kowalski` builds on
+`o data@acme` lands in the data folder, and `o logs@data@acme` builds on
 it. The target must expand to an absolute path, its segment must sit next to the
 alias, and only `~/.nix/segments/<alias>.toml` may set one: a project's
 `.nix/segments.toml` and the global file are refused.
