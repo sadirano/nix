@@ -167,8 +167,12 @@ fn readFileOr(c: *Ctx, path: []const u8, fallback: []const u8) []const u8 {
 }
 
 fn hookPaste(c: *Ctx, clip: []const u8, text_input: []const u8, typed: ?[]const u8) !RunResult {
+    return hookPasteAlias(c, "ph", clip, text_input, typed);
+}
+
+fn hookPasteAlias(c: *Ctx, alias: []const u8, clip: []const u8, text_input: []const u8, typed: ?[]const u8) !RunResult {
     try writeFile(c, clip, text_input);
-    return if (typed) |name| c.run(&.{ "ph", "--paste", name }) else c.run(&.{ "ph", "--paste" });
+    return if (typed) |name| c.run(&.{ alias, "--paste", name }) else c.run(&.{ alias, "--paste" });
 }
 
 fn hookSavedAt(c: *Ctx, r: RunResult, path: []const u8, input: []const u8) bool {
@@ -200,6 +204,23 @@ fn hookStageEmpty(c: *Ctx, temp: []const u8) !bool {
         if (std.mem.startsWith(u8, entry.name, "nix-hook-")) return false;
     }
     return true;
+}
+
+fn hookTargetEmpty(c: *Ctx, target: []const u8) !bool {
+    var dir = try Io.Dir.cwd().openDir(c.io, target, .{ .iterate = true });
+    defer dir.close(c.io);
+    var it = dir.iterate();
+    return (try it.next(c.io)) == null;
+}
+
+fn hookAborted(c: *Ctx, r: RunResult, target: []const u8, clip: []const u8, input: []const u8, marker: []const u8, temp: []const u8) !bool {
+    return r.code == 1 and trim(r.out).len == 0 and
+        std.mem.startsWith(u8, r.err, "nix: paste hook \"namer\" failed: ") and
+        std.mem.endsWith(u8, trim(r.err), " - nothing saved (on_failure = abort)") and
+        std.mem.count(u8, r.err, "\n") == 1 and
+        std.mem.eql(u8, readFileOr(c, clip, ""), input) and
+        !proc.pathExists(c.io, marker) and try hookTargetEmpty(c, target) and
+        try hookStageEmpty(c, temp);
 }
 
 fn writeFile(c: *Ctx, path: []const u8, data: []const u8) !void {
@@ -3041,7 +3062,7 @@ pub fn main(init: std.process.Init) !void {
             "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo bad-json\r\n",
             "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{},{}]}\r\n",
             "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"../x\"}]}\r\n",
-            "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"x\",\"file\":\"y\"}]}\r\n",
+            "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"x\",\"extra\":\"y\"}]}\r\n",
         };
         const failure_labels = [_][]const u8{
             "nonzero hook exit",    "invalid result JSON", "two outputs",
@@ -3073,9 +3094,10 @@ pub fn main(init: std.process.Init) !void {
         c.check(hookSavedDefault(&c, r, target, body) and !proc.pathExists(io, marker), "alias off overrides the fallback hook", r);
 
         try writeFile(&c, hooks_file, cfg);
+        Io.Dir.cwd().deleteFile(io, marker) catch {};
         r = try hookPaste(&c, clip, body, "typed.md");
         c.check(hookSavedAt(&c, r, join(&c, &.{ target, "typed.md" }), body) and
-            !proc.pathExists(io, marker), "typed paste name bypasses the M1 hook", r);
+            proc.pathExists(io, marker), "typed paste name runs the hook", r);
 
         const request_copy = join(&c, &.{ hook_temp, "hook-request.json" });
         try writeFile(&c, hook_file,
@@ -3192,6 +3214,185 @@ pub fn main(init: std.process.Init) !void {
         );
         r = try hookPaste(&c, clip, body, null);
         c.check(hookSavedAt(&c, r, join(&c, &.{ target, "from-ps1.json" }), body), "ps1 hook launches through PowerShell and names JSON", r);
+
+        const replacement = "replacement\r\nraw:\xe9\r\n";
+        try writeFile(&c, join(&c, &.{ hook_temp, "replacement.dat" }), replacement);
+        try writeFile(&c, hooks_file, cfg);
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\copy /b "%TEMP%\replacement.dat" out.txt >nul
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"file":"out.txt"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedDefault(&c, r, target, replacement), "hook file replaces text with exact CRLF and raw bytes", r);
+
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\copy /b "%TEMP%\replacement.dat" out.txt >nul
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"name":"both.bin","file":"out.txt"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "both.bin" }), replacement), "hook file and name both apply", r);
+
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\type nul > out.txt
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"name":"empty.bin","file":"out.txt"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        const empty_path = join(&c, &.{ target, "empty.bin" });
+        c.check(hookSavedAt(&c, r, empty_path, "") and proc.pathExists(io, empty_path), "zero-byte hook output is saved as an empty file", r);
+
+        for ([_][]const u8{ "missing.txt", "input.txt", "INPUT.TXT", "sub\\x", "outdir" }) |file_name| {
+            const result_json = try std.json.Stringify.valueAlloc(arena, .{ .version = 1, .status = "ok", .outputs = .{.{ .file = file_name }} }, .{});
+            const script = try std.mem.concat(arena, u8, &.{ "@echo off\r\n", if (std.mem.eql(u8, file_name, "outdir")) "mkdir outdir\r\n" else "", "> \"%NIX_HOOK_RESULT%\" echo ", result_json, "\r\n" });
+            try writeFile(&c, hook_file, script);
+            r = try hookPaste(&c, clip, body, null);
+            const label = try std.fmt.allocPrint(arena, "invalid hook file {s} falls back with clipboard bytes", .{file_name});
+            c.check(hookSavedDefault(&c, r, target, body) and
+                std.mem.count(u8, r.err, "paste hook \"namer\" failed:") == 1, label, r);
+        }
+
+        const size_cfg =
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\max_output_mb = 1
+            \\[paste]
+            \\ph = 'namer'
+        ;
+        try writeFile(&c, hooks_file, size_cfg);
+        const large = try arena.alloc(u8, 1048577);
+        @memset(large, 'A');
+        large[1048576] = 'B';
+        try writeFile(&c, join(&c, &.{ hook_temp, "one-mib.dat" }), large[0..1048576]);
+        try writeFile(&c, join(&c, &.{ hook_temp, "over-mib.dat" }), large);
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\copy /b "%TEMP%\one-mib.dat" out.txt >nul
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"name":"size-ok.bin","file":"out.txt"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "size-ok.bin" }), large[0..1048576]), "hook output at max_output_mb saves exactly", r);
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\copy /b "%TEMP%\over-mib.dat" out.txt >nul
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"name":"size-too-big.bin","file":"out.txt"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedDefault(&c, r, target, body) and
+            std.mem.count(u8, r.err, "paste hook \"namer\" failed:") == 1 and
+            !proc.pathExists(io, join(&c, &.{ target, "size-too-big.bin" })), "hook output above max_output_mb falls back without partial save", r);
+
+        const abort_target = join(&c, &.{ root, "abort-target" });
+        try util.mkdirAll(io, abort_target);
+        const abort_registration = try c.run(&.{ "phabort", abort_target });
+        c.check(abort_registration.code == 0, "abort fixture registers its empty target", abort_registration);
+        const notify_marker = join(&c, &.{ hook_temp, "on-paste-marker.txt" });
+        try writeFile(&c, join(&c, &.{ home, "config.toml" }), "[notify]\non_paste = \"cmd /d /c echo fired>%TEMP%\\on-paste-marker.txt\"\n");
+        const abort_cfg =
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\on_failure = 'abort'
+            \\[paste]
+            \\phabort = 'namer'
+        ;
+        try writeFile(&c, hooks_file, abort_cfg);
+        try writeFile(&c, hook_file, "@echo off\r\nexit /b 7\r\n");
+        r = try hookPasteAlias(&c, "phabort", clip, body, null);
+        c.check(try hookAborted(&c, r, abort_target, clip, body, notify_marker, hook_temp), "abort on nonzero exit leaves destination, clipboard, and notifier untouched", r);
+
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\timeout = 1
+            \\on_failure = 'abort'
+            \\[paste]
+            \\phabort = 'namer'
+        );
+        try writeFile(&c, hook_file, "@echo off\r\nping -n 4 127.0.0.1 >nul\r\n");
+        r = try hookPasteAlias(&c, "phabort", clip, body, null);
+        c.check(try hookAborted(&c, r, abort_target, clip, body, notify_marker, hook_temp), "abort on timeout saves nothing", r);
+
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\unknown = 1
+            \\on_failure = 'abort'
+            \\run = '.nix:hooks/namer.cmd'
+            \\[paste]
+            \\phabort = 'namer'
+        );
+        r = try hookPasteAlias(&c, "phabort", clip, body, null);
+        c.check(try hookAborted(&c, r, abort_target, clip, body, notify_marker, hook_temp), "abort policy applies before an unknown hook key", r);
+
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\on_failure = 'maybe'
+            \\[paste]
+            \\phabort = 'namer'
+        );
+        r = try hookPasteAlias(&c, "phabort", clip, body, null);
+        c.check(try hookAborted(&c, r, abort_target, clip, body, notify_marker, hook_temp), "unreadable failure policy aborts", r);
+
+        try writeFile(&c, hooks_file, abort_cfg);
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"decline"}
+            \\
+        );
+        r = try hookPasteAlias(&c, "phabort", clip, body, null);
+        c.check(hookSavedDefault(&c, r, abort_target, body) and r.err.len == 0 and
+            proc.pathExists(io, notify_marker), "decline under abort policy saves clipboard text and fires on_paste", r);
+        Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "config.toml" })) catch {};
+
+        try writeFile(&c, hooks_file, cfg);
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\copy /y "%NIX_HOOK_REQUEST%" "%TEMP%\hook-request.json" >nul
+            \\copy /b "%TEMP%\replacement.dat" out.txt >nul
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"name":"other.md","file":"out.txt"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, "x.md");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "x.md" }), replacement) and
+            !proc.pathExists(io, join(&c, &.{ target, "other.md" })), "typed name wins over hook name while file content applies", r);
+        const typed_raw = readFileOr(&c, request_copy, "");
+        const typed_request: ?std.json.Value = std.json.parseFromSliceLeaky(std.json.Value, arena, typed_raw, .{}) catch null;
+        const typed_ok = if (typed_request) |v| blk: {
+            if (v != .object) break :blk false;
+            const value = v.object.get("typed_name") orelse break :blk false;
+            break :blk value == .string and std.mem.eql(u8, value.string, "x.md");
+        } else false;
+        c.check(typed_ok, "hook request includes trimmed typed_name", r);
+
+        try writeFile(&c, hook_file, "@echo off\r\nexit /b 7\r\n");
+        r = try hookPaste(&c, clip, body, "fallback.md");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "fallback.md" }), body) and
+            std.mem.count(u8, r.err, "paste hook \"namer\" failed:") == 1, "typed name survives a fallback failure", r);
+
+        const link_marker = join(&c, &.{ hook_temp, "link-created.txt" });
+        try writeFile(&c, join(&c, &.{ hook_temp, "outside.dat" }), "outside");
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\mklink out.txt "%TEMP%\outside.dat" >nul 2>nul
+            \\if not errorlevel 1 > "%TEMP%\link-created.txt" echo yes
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"file":"out.txt"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        if (proc.pathExists(io, link_marker)) {
+            c.check(hookSavedDefault(&c, r, target, body) and
+                std.mem.count(u8, r.err, "paste hook \"namer\" failed:") == 1, "hook output symlink outside staging falls back", r);
+        } else {
+            c.platform_skips += 1;
+            std.debug.print("skip hook output symlink outside staging (mklink refused)\n", .{});
+        }
+        c.check(try hookStageEmpty(&c, hook_temp), "M2 hook staging is removed", null);
     }
 
     // --- doctor: full, quiet, json -----------------------------------------------------

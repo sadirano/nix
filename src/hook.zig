@@ -13,6 +13,8 @@ const run = @import("run.zig");
 const paste_name = @import("paste_name.zig");
 const clipboard = @import("clipboard.zig");
 
+const OnFailure = enum { fallback, abort };
+
 const Config = struct {
     name: []const u8,
     run: []const u8 = "",
@@ -20,6 +22,8 @@ const Config = struct {
     timeout: u16 = 10,
     sample_lines: u16 = 10,
     sample_bytes: u32 = 4096,
+    on_failure: OnFailure = .fallback,
+    max_output_mb: u16 = 64,
 };
 
 const Section = struct {
@@ -27,30 +31,41 @@ const Section = struct {
     pairs: std.ArrayList(toml.Pair) = .empty,
 };
 
-/// A hook only supplies a name. Every failure returns the ordinary timestamp
-/// path to the existing paste writer after one diagnostic.
-pub fn pasteName(app: *App, alias: []const u8, target: []const u8, input: []const u8) ![]const u8 {
+pub const Save = struct { name: []const u8, content: ?[]const u8 = null };
+pub const Outcome = union(enum) { save: Save, abort };
+
+/// The selected hook may replace the clipboard bytes or refuse the save.
+pub fn pasteName(app: *App, alias: []const u8, target: []const u8, input: []const u8, typed_name: []const u8) !Outcome {
+    const default: Outcome = .{ .save = .{ .name = typed_name } };
     const path = try std.fs.path.join(app.arena, &.{ app.home, "hooks.toml" });
     const data = Io.Dir.cwd().readFileAlloc(app.io, path, app.arena, .unlimited) catch |e| switch (e) {
-        error.FileNotFound => return "",
+        error.FileNotFound => return default,
         else => {
             warn(app, "hooks.toml", @errorName(e), "");
-            return "";
+            return default;
         },
     };
     var selected: []const u8 = "hooks.toml";
-    const cfg = parseConfig(app.arena, data, alias, &selected) catch |e| {
-        warn(app, selected, @errorName(e), "");
-        return "";
-    } orelse return "";
+    var policy: OnFailure = .fallback;
+    const cfg = parseConfig(app.arena, data, alias, &selected, &policy) catch |e| {
+        return failure(app, selected, policy, @errorName(e), "", default);
+    } orelse return default;
     var stderr_tail: []const u8 = "";
-    return invoke(app, cfg, alias, target, input, &stderr_tail) catch |e| {
-        warn(app, cfg.name, @errorName(e), stderr_tail);
-        return "";
+    return invoke(app, cfg, alias, target, input, typed_name, &stderr_tail) catch |e| {
+        return failure(app, cfg.name, cfg.on_failure, @errorName(e), stderr_tail, default);
     };
 }
 
-fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, selected: *[]const u8) !?Config {
+fn failure(app: *App, name: []const u8, policy: OnFailure, reason: []const u8, tail: []const u8, default: Outcome) Outcome {
+    if (policy == .abort) {
+        abortWarn(app, name, reason, tail);
+        return .abort;
+    }
+    warn(app, name, reason, tail);
+    return default;
+}
+
+fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, selected: *[]const u8, policy: *OnFailure) !?Config {
     var sections: std.ArrayList(Section) = .empty;
     var lines = toml.Lines.init(data);
     var cur: ?usize = null;
@@ -100,6 +115,20 @@ fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, se
     var found = false;
     var cfg = Config{ .name = name };
     var fields: std.ArrayList([]const u8) = .empty;
+    // Read the selected table's failure policy before any other field can fail.
+    for (sections.items) |section| {
+        if (!std.mem.eql(u8, section.name, table_name)) continue;
+        for (section.pairs.items) |pair| {
+            if (!std.mem.eql(u8, pair.key, "on_failure")) continue;
+            const prior_abort = policy.* == .abort;
+            policy.* = .abort;
+            const value = (try configString(arena, pair.raw, true)) orelse return error.BadOnFailure;
+            if (std.mem.eql(u8, value, "abort")) continue;
+            if (!std.mem.eql(u8, value, "fallback")) return error.BadOnFailure;
+            if (!prior_abort) policy.* = .fallback;
+        }
+    }
+    cfg.on_failure = policy.*;
     for (sections.items) |section| {
         if (!std.mem.eql(u8, section.name, table_name)) continue;
         if (found) return error.DuplicateHookTable;
@@ -117,6 +146,10 @@ fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, se
                 cfg.sample_lines = try optionInt(u16, pair.raw, 1, 1000);
             } else if (std.mem.eql(u8, pair.key, "sample_bytes")) {
                 cfg.sample_bytes = try optionInt(u32, pair.raw, 256, 65536);
+            } else if (std.mem.eql(u8, pair.key, "on_failure")) {
+                // Already validated before the table's other fields.
+            } else if (std.mem.eql(u8, pair.key, "max_output_mb")) {
+                cfg.max_output_mb = try optionInt(u16, pair.raw, 1, 1024);
             } else return error.UnknownHookKey;
         }
     }
@@ -211,7 +244,7 @@ fn sampleText(input: []const u8, line_limit: usize, byte_limit: usize) Sample {
     return .{ .value = input[0..end], .truncated = end < input.len, .lines = lines };
 }
 
-fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: []const u8, stderr_tail: *[]const u8) ![]const u8 {
+fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: []const u8, typed_name: []const u8, stderr_tail: *[]const u8) !Outcome {
     const colon = std.mem.indexOfScalar(u8, cfg.run, ':') orelse return error.BadRun;
     const owner = cfg.run[0..colon];
     const relative = cfg.run[colon + 1 ..];
@@ -248,6 +281,7 @@ fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: 
         .sample = sample.value,
         .truncated = sample.truncated,
         .default_name = default_name,
+        .typed_name = typed_name,
     };
     const json = try std.json.Stringify.valueAlloc(app.arena, request, .{});
     try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = request_path, .data = json });
@@ -263,7 +297,9 @@ fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: 
     const code = launch(app, argv, stage, stderr_path, &env, cfg.timeout, stderr_tail) catch |e| return e;
     if (code != 0) return error.HookExitedNonzero;
     const result = try readResult(app, result_path);
-    return (try parseResult(app.arena, result)) orelse "";
+    const output = (try parseResult(app.arena, result)) orelse return .{ .save = .{ .name = typed_name } };
+    const content = if (output.file) |file| try readOutput(app, stage, file, cfg.max_output_mb) else null;
+    return .{ .save = .{ .name = if (typed_name.len > 0) typed_name else output.name, .content = content } };
 }
 
 fn readResult(app: *App, path: []const u8) ![]const u8 {
@@ -297,7 +333,9 @@ fn createStage(app: *App) ![]const u8 {
     return error.StageCollision;
 }
 
-fn parseResult(arena: std.mem.Allocator, data: []const u8) !?[]const u8 {
+const ResultOutput = struct { name: []const u8 = "", file: ?[]const u8 = null };
+
+fn parseResult(arena: std.mem.Allocator, data: []const u8) !?ResultOutput {
     if (data.len > 65536) return error.ResultTooLarge;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch return error.BadResultJson;
     if (parsed != .object) return error.BadResultSchema;
@@ -313,14 +351,83 @@ fn parseResult(arena: std.mem.Allocator, data: []const u8) !?[]const u8 {
     const outputs = parsed.object.get("outputs") orelse return error.BadResultSchema;
     if (outputs != .array or outputs.array.items.len != 1) return error.BadResultSchema;
     const output = outputs.array.items[0];
-    if (output != .object or output.object.count() > 1) return error.BadResultSchema;
-    const name = output.object.get("name") orelse {
-        if (output.object.count() != 0) return error.BadResultSchema;
-        return "";
-    };
-    if (name != .string) return error.BadResultSchema;
-    if (paste_name.checkPasteName(name.string) != null) return error.BadResultName;
-    return name.string;
+    if (output != .object) return error.BadResultSchema;
+    var result = ResultOutput{};
+    var known: usize = 0;
+    if (output.object.get("name")) |name| {
+        known += 1;
+        if (name != .string) return error.BadResultSchema;
+        if (paste_name.checkPasteName(name.string) != null) return error.BadResultName;
+        result.name = name.string;
+    }
+    if (output.object.get("file")) |file| {
+        known += 1;
+        if (file != .string) return error.BadResultSchema;
+        try checkOutputFile(file.string);
+        result.file = file.string;
+    }
+    if (output.object.count() != known) return error.BadResultSchema;
+    return result;
+}
+
+fn checkOutputFile(file: []const u8) !void {
+    if (file.len == 0 or !std.mem.eql(u8, file, std.mem.trim(u8, file, " \t")) or
+        std.mem.indexOfAny(u8, file, "/\\") != null or paste_name.checkPasteName(file) != null)
+        return error.BadResultFile;
+    for ([_][]const u8{ "input.txt", "request.json", "result.json", "stderr.txt" }) |reserved| {
+        if (std.ascii.eqlIgnoreCase(file, reserved)) return error.BadResultFile;
+    }
+}
+
+const FileTime = extern struct { low: u32, high: u32 };
+const HandleFileInfo = extern struct {
+    attributes: u32,
+    created: FileTime,
+    accessed: FileTime,
+    written: FileTime,
+    volume_serial: u32,
+    size_high: u32,
+    size_low: u32,
+    links: u32,
+    index_high: u32,
+    index_low: u32,
+};
+
+extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*const anyopaque, u32, u32, ?std.os.windows.HANDLE) callconv(.winapi) std.os.windows.HANDLE;
+extern "kernel32" fn GetFileInformationByHandle(std.os.windows.HANDLE, *HandleFileInfo) callconv(.winapi) i32;
+
+fn openOutput(app: *App, path: []const u8) !Io.File {
+    if (comptime proc.is_windows) {
+        const wide = try std.unicode.wtf8ToWtf16LeAllocZ(app.arena, path);
+        // OPEN_REPARSE_POINT keeps the handle on the link itself.
+        const handle = CreateFileW(wide.ptr, 0x80000000, 0x0007, null, 3, 0x02000000 | 0x00200000, null);
+        if (handle == std.os.windows.INVALID_HANDLE_VALUE) return error.OutputUnreadable;
+        const file: Io.File = .{ .handle = handle, .flags = .{ .nonblocking = false } };
+        errdefer file.close(app.io);
+        var info: HandleFileInfo = undefined;
+        if (GetFileInformationByHandle(handle, &info) == 0) return error.OutputUnreadable;
+        if (info.attributes & (0x400 | 0x10) != 0) return error.BadOutputFile;
+        return file;
+    } else return Io.Dir.cwd().openFile(app.io, path, .{}) catch error.OutputUnreadable;
+}
+
+fn readOutput(app: *App, stage: []const u8, name: []const u8, max_mb: u16) ![]const u8 {
+    const limit = try std.math.mul(usize, @as(usize, max_mb), 1024 * 1024);
+    const sentinel = try std.math.add(usize, limit, 1);
+    const path = try std.fs.path.join(app.arena, &.{ stage, name });
+    const file = try openOutput(app, path);
+    defer file.close(app.io);
+    const stat = file.stat(app.io) catch return error.OutputUnreadable;
+    if (stat.size > limit) return error.OutputTooLarge;
+    var bytes: std.ArrayList(u8) = .empty;
+    var chunk: [8192]u8 = undefined;
+    while (true) {
+        const want = @min(chunk.len, sentinel - bytes.items.len);
+        const n = file.readPositional(app.io, &.{chunk[0..want]}, bytes.items.len) catch return error.OutputUnreadable;
+        if (n == 0) return bytes.items;
+        try bytes.appendSlice(app.arena, chunk[0..n]);
+        if (bytes.items.len > limit) return error.OutputTooLarge;
+    }
 }
 
 fn escaped(arena: std.mem.Allocator, source: []const u8, limit: usize) ![]const u8 {
@@ -345,14 +452,19 @@ fn escaped(arena: std.mem.Allocator, source: []const u8, limit: usize) ![]const 
 
 /// Best effort: a stderr that cannot be written must not stop the default save.
 fn warn(app: *App, name: []const u8, reason: []const u8, stderr_tail: []const u8) void {
-    warnTo(app, name, reason, stderr_tail) catch {};
+    warnTo(app, name, reason, stderr_tail, .fallback) catch {};
 }
 
-fn warnTo(app: *App, name: []const u8, reason: []const u8, stderr_tail: []const u8) !void {
+fn abortWarn(app: *App, name: []const u8, reason: []const u8, stderr_tail: []const u8) void {
+    warnTo(app, name, reason, stderr_tail, .abort) catch {};
+}
+
+fn warnTo(app: *App, name: []const u8, reason: []const u8, stderr_tail: []const u8, policy: OnFailure) !void {
     const safe_name = try escaped(app.arena, name, 512);
     const safe_reason = try escaped(app.arena, reason, 512);
+    const suffix = if (policy == .abort) "nothing saved (on_failure = abort)" else "using the default save";
     if (stderr_tail.len == 0) {
-        try app.err.print("nix: paste hook \"{s}\" failed: {s} - using the default save\n", .{ safe_name, safe_reason });
+        try app.err.print("nix: paste hook \"{s}\" failed: {s} - {s}\n", .{ safe_name, safe_reason, suffix });
     } else {
         var tail = std.mem.trimEnd(u8, stderr_tail, "\r\n");
         var newlines: usize = 0;
@@ -367,8 +479,8 @@ fn warnTo(app: *App, name: []const u8, reason: []const u8, stderr_tail: []const 
                 }
             }
         }
-        try app.err.print("nix: paste hook \"{s}\" failed: {s} ({s}) - using the default save\n", .{
-            safe_name, safe_reason, try escaped(app.arena, tail, 300),
+        try app.err.print("nix: paste hook \"{s}\" failed: {s} ({s}) - {s}\n", .{
+            safe_name, safe_reason, try escaped(app.arena, tail, 300), suffix,
         });
     }
 }
@@ -561,6 +673,7 @@ test "config selection and deferred hook validation" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     var selected: []const u8 = "hooks.toml";
+    var policy: OnFailure = .fallback;
     const data =
         \\[hook.namer]
         \\run = '.nix:hooks/name.cmd'
@@ -575,7 +688,7 @@ test "config selection and deferred hook validation" {
         \\Work = "off"
         \\seg@work = "other"
     ;
-    const cfg = (try parseConfig(a, data, "misc", &selected)).?;
+    const cfg = (try parseConfig(a, data, "misc", &selected, &policy)).?;
     try std.testing.expectEqualStrings("namer", cfg.name);
     try std.testing.expectEqual(@as(u16, 20), cfg.timeout);
     try std.testing.expectEqual(@as(u32, 256), cfg.sample_bytes);
@@ -587,11 +700,11 @@ test "config selection and deferred hook validation" {
         \\[paste]
         \\work = 'n'
     ;
-    const with_quote = (try parseConfig(a, escaped_arg, "work", &selected)).?;
+    const with_quote = (try parseConfig(a, escaped_arg, "work", &selected, &policy)).?;
     try std.testing.expectEqualStrings("a\"b", with_quote.args[0]);
     try std.testing.expectEqualStrings("tail", with_quote.args[1]);
-    try std.testing.expect((try parseConfig(a, data, "wOrK", &selected)) == null);
-    try std.testing.expect((try parseConfig(a, "[paste]\nother = 'namer'\n", "work", &selected)) == null);
+    try std.testing.expect((try parseConfig(a, data, "wOrK", &selected, &policy)) == null);
+    try std.testing.expect((try parseConfig(a, "[paste]\nother = 'namer'\n", "work", &selected, &policy)) == null);
 }
 
 test "config rejects syntax, duplicates, missing tables, bad values, and unknown keys" {
@@ -620,8 +733,50 @@ test "config rejects syntax, duplicates, missing tables, bad values, and unknown
     };
     for (cases) |case| {
         var selected: []const u8 = "hooks.toml";
-        try std.testing.expectError(case.err, parseConfig(a, case.data, "work", &selected));
+        var policy: OnFailure = .fallback;
+        try std.testing.expectError(case.err, parseConfig(a, case.data, "work", &selected, &policy));
     }
+}
+
+test "failure policy precedes selected hook validation and size is bounded" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const prefix = "[paste]\nwork = 'n'\n[hook.n]\n";
+    var selected: []const u8 = "hooks.toml";
+    var policy: OnFailure = .fallback;
+    const cfg = (try parseConfig(a, prefix ++ "run = 'x:y.cmd'\non_failure = 'abort'\nmax_output_mb = 1024\n", "work", &selected, &policy)).?;
+    try std.testing.expectEqual(OnFailure.abort, cfg.on_failure);
+    try std.testing.expectEqual(@as(u16, 1024), cfg.max_output_mb);
+    try std.testing.expectEqual(OnFailure.abort, policy);
+    for ([_][]const u8{
+        prefix ++ "unknown = 1\non_failure = 'abort'\nrun = 'x:y.cmd'\n",
+        prefix ++ "on_failure = 'abort'\nmax_output_mb = 0\nrun = 'x:y.cmd'\n",
+    }) |data| {
+        policy = .fallback;
+        const expected: anyerror = if (std.mem.indexOf(u8, data, "unknown") != null) error.UnknownHookKey else error.BadHookInteger;
+        try std.testing.expectError(expected, parseConfig(a, data, "work", &selected, &policy));
+        try std.testing.expectEqual(OnFailure.abort, policy);
+    }
+    for ([_][]const u8{ "maybe", "Abort", "" }) |value| {
+        const data = try std.fmt.allocPrint(a, "{s}run = 'x:y.cmd'\non_failure = '{s}'\n", .{ prefix, value });
+        policy = .fallback;
+        try std.testing.expectError(error.BadOnFailure, parseConfig(a, data, "work", &selected, &policy));
+        try std.testing.expectEqual(OnFailure.abort, policy);
+    }
+    for ([_][]const u8{ "0", "1025", "1.5", "'1'" }) |value| {
+        const data = try std.fmt.allocPrint(a, "{s}run = 'x:y.cmd'\nmax_output_mb = {s}\n", .{ prefix, value });
+        policy = .fallback;
+        try std.testing.expectError(error.BadHookInteger, parseConfig(a, data, "work", &selected, &policy));
+        try std.testing.expectEqual(OnFailure.fallback, policy);
+    }
+    policy = .fallback;
+    const minimum = (try parseConfig(a, prefix ++ "run = 'x:y.cmd'\nmax_output_mb = 1\non_failure = 'fallback'\n", "work", &selected, &policy)).?;
+    try std.testing.expectEqual(@as(u16, 1), minimum.max_output_mb);
+    try std.testing.expectEqual(OnFailure.fallback, minimum.on_failure);
+    policy = .fallback;
+    try std.testing.expectError(error.BadConfigSyntax, parseConfig(a, prefix ++ "on_failure = 'abort'\n[bad\n", "work", &selected, &policy));
+    try std.testing.expectEqual(OnFailure.fallback, policy);
 }
 
 test "sample keeps complete UTF-8 and line endings" {
@@ -638,22 +793,29 @@ test "sample keeps complete UTF-8 and line endings" {
     try std.testing.expect(!all.truncated);
 }
 
-test "result accepts only the M1 schema" {
+test "result accepts names and plain file names only" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    try std.testing.expectEqualStrings("logs/app.log", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"logs/app.log\"}]}")).?);
-    try std.testing.expectEqualStrings("", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{}]}")).?);
+    try std.testing.expectEqualStrings("logs/app.log", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"logs/app.log\"}]}")).?.name);
+    try std.testing.expectEqualStrings("", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{}]}")).?.name);
+    try std.testing.expectEqualStrings("out.txt", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"x.md\",\"file\":\"out.txt\"}]}")).?.file.?);
     try std.testing.expect((try parseResult(a, "{\"version\":1,\"status\":\"decline\"}")) == null);
     const bad_schema = [_][]const u8{
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[]}",
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[{},{}]}",
-        "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":\"x\"}]}",
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":null}]}",
+        "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":null}]}",
+        "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":4}]}",
+        "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":\"out.txt\",\"extra\":1}]}",
         "{\"version\":1,\"status\":\"decline\",\"outputs\":[]}",
         "{\"version\":2,\"status\":\"decline\"}",
     };
     for (bad_schema) |data| try std.testing.expectError(error.BadResultSchema, parseResult(a, data));
+    for ([_][]const u8{ "a/b", "a\\b", "..", "input.txt", "INPUT.TXT", "request.json", "result.json", "stderr.txt", " out.txt", "out.txt\t", "" }) |file| {
+        const data = try std.json.Stringify.valueAlloc(a, .{ .version = 1, .status = "ok", .outputs = .{.{ .file = file }} }, .{});
+        try std.testing.expectError(error.BadResultFile, parseResult(a, data));
+    }
     try std.testing.expectError(error.BadResultName, parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"../x\"}]}"));
     try std.testing.expectError(error.BadResultJson, parseResult(a, "{\"version\":1,\"version\":1,\"status\":\"decline\"}"));
     try std.testing.expectError(error.BadResultJson, parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"a\",\"name\":\"b\"}]}"));

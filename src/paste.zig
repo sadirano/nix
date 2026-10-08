@@ -104,8 +104,10 @@ pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name
         return pasteContent(app, alias, target, safe_name, img, ".png");
     }
     if (try clipboard.readText(app.arena, app.io, app.env())) |text| {
-        const text_name = if (safe_name.len == 0) try hook.pasteName(app, alias, target, text) else safe_name;
-        return pasteContent(app, alias, target, text_name, text, ".md");
+        return switch (try hook.pasteName(app, alias, target, text, safe_name)) {
+            .save => |save| pasteContent(app, alias, target, save.name, save.content orelse text, ".md"),
+            .abort => 1,
+        };
     }
     try app.err.writeAll("nix: clipboard holds no files, image, or text to paste\n");
     return 1;
