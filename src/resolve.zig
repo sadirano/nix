@@ -206,6 +206,14 @@ pub fn resolveAliasPath(app: *App, name: []const u8) !?[]const u8 {
     return try addAlias(app, name, pick);
 }
 
+/// Hook lookup never prints, prompts, or creates a missing alias target.
+pub fn resolveAliasPathQuiet(app: *App, name: []const u8) !?[]const u8 {
+    if (store.isSelfAlias(name)) return app.home;
+    store.validateAliasName(name) catch return null;
+    const path = (try store.scanForAlias(app.arena, try store.readAliasesFile(app.arena, app.io, app.home), name)) orelse return null;
+    return if (proc.pathExists(app.io, path)) path else null;
+}
+
 /// SegLookup is the variable-resolution context for a source-template, highest
 /// priority first: the inline value (bound to the segment's param), variables a
 /// `run` source produced, the process environment, then the block's static

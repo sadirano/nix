@@ -13,6 +13,7 @@ pub const jobs = @import("jobs.zig");
 pub const provenance = @import("provenance.zig");
 pub const config = @import("config.zig");
 pub const clipboard = @import("clipboard.zig");
+pub const hook = @import("hook.zig");
 pub const editor = @import("editor.zig");
 pub const snippet = @import("snippet.zig");
 pub const agents = @import("agents.zig");

@@ -12,6 +12,8 @@ const proc = @import("proc.zig");
 const config = @import("config.zig");
 const notify = @import("notify.zig");
 const dialects = @import("dialects.zig");
+const paste_name = @import("paste_name.zig");
+const hook = @import("hook.zig");
 
 const App = app_zig.App;
 
@@ -35,57 +37,7 @@ fn isDir(app: *App, p: []const u8) bool {
     } else |_| return false;
 }
 
-/// Return a short reason when a user-supplied paste name is unsafe. Checks the
-/// name as it will be used: pasteFilename trims blanks, so " NUL.txt" must be
-/// judged as "NUL.txt".
-///
-/// The name is NOT checked against links: a junction or symlink inside the
-/// alias is followed, even out of it. Somebody made that link so files would
-/// land where it points, and refusing it would take its meaning away.
-pub fn checkPasteName(raw: []const u8) ?[]const u8 {
-    const name = std.mem.trim(u8, raw, " \t");
-    if (name.len == 0) return null;
-    if (name[0] == '/' or name[0] == '\\') return "must be relative";
-    if (name.len >= 2 and name[1] == ':') return "must not be drive-qualified";
-
-    // Both separator spellings can become directory boundaries on Windows.
-    var start: usize = 0;
-    for (name, 0..) |c, i| {
-        if (c < 0x20 or std.mem.indexOfScalar(u8, "<>:\"|?*", c) != null)
-            return "contains a Windows-invalid character";
-        if (c == '/' or c == '\\') {
-            if (checkPasteSegment(name[start..i])) |reason| return reason;
-            start = i + 1;
-        }
-    }
-    return checkPasteSegment(name[start..]);
-}
-
-fn checkPasteSegment(segment: []const u8) ?[]const u8 {
-    if (segment.len == 0) return "has an empty path segment";
-    if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, ".."))
-        return "contains a dot path segment";
-    // The Windows limit is 255 UTF-16 units, not bytes: 130 accented letters
-    // take 260 bytes and still fit.
-    // Validate first: calcWtf16LeLen slices a whole sequence before decoding
-    // it, so a cut-off one ("x\xc3") would read past the segment.
-    if (!std.unicode.wtf8ValidateSlice(segment)) return "is not valid UTF-8";
-    const units = std.unicode.calcWtf16LeLen(segment) catch return "is not valid UTF-8";
-    if (units > 255) return "has a path segment longer than 255 characters";
-    // Windows silently removes a trailing dot or space from a path component.
-    if (segment[segment.len - 1] == '.' or segment[segment.len - 1] == ' ')
-        return "has a path segment ending in dot or space";
-
-    // Windows device names remain reserved when followed by an extension.
-    const stem = segment[0 .. std.mem.indexOfScalar(u8, segment, '.') orelse segment.len];
-    for ([_][]const u8{ "CON", "PRN", "AUX", "NUL" }) |reserved| {
-        if (std.ascii.eqlIgnoreCase(stem, reserved)) return "uses a Windows device name";
-    }
-    if (stem.len == 4 and stem[3] >= '1' and stem[3] <= '9' and
-        (std.ascii.eqlIgnoreCase(stem[0..3], "COM") or std.ascii.eqlIgnoreCase(stem[0..3], "LPT")))
-        return "uses a Windows device name";
-    return null;
-}
+pub const checkPasteName = paste_name.checkPasteName;
 
 /// pasteFilename builds the destination filename: explicit extension honoured,
 /// else defaultExt appended, else a local timestamp.
@@ -152,7 +104,8 @@ pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name
         return pasteContent(app, alias, target, safe_name, img, ".png");
     }
     if (try clipboard.readText(app.arena, app.io, app.env())) |text| {
-        return pasteContent(app, alias, target, safe_name, text, ".md");
+        const text_name = if (safe_name.len == 0) try hook.pasteName(app, alias, target, text) else safe_name;
+        return pasteContent(app, alias, target, text_name, text, ".md");
     }
     try app.err.writeAll("nix: clipboard holds no files, image, or text to paste\n");
     return 1;

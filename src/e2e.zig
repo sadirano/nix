@@ -166,6 +166,42 @@ fn readFileOr(c: *Ctx, path: []const u8, fallback: []const u8) []const u8 {
     return Io.Dir.cwd().readFileAlloc(c.io, path, c.arena, .unlimited) catch fallback;
 }
 
+fn hookPaste(c: *Ctx, clip: []const u8, text_input: []const u8, typed: ?[]const u8) !RunResult {
+    try writeFile(c, clip, text_input);
+    return if (typed) |name| c.run(&.{ "ph", "--paste", name }) else c.run(&.{ "ph", "--paste" });
+}
+
+fn hookSavedAt(c: *Ctx, r: RunResult, path: []const u8, input: []const u8) bool {
+    const printed = trim(r.out);
+    if (printed.len != path.len) return false;
+    for (printed, path) |left, right| {
+        const a = std.ascii.toLower(if (left == '\\') '/' else left);
+        const b = std.ascii.toLower(if (right == '\\') '/' else right);
+        if (a != b) return false;
+    }
+    return r.code == 0 and
+        std.mem.eql(u8, readFileOr(c, path, ""), input);
+}
+
+fn hookSavedDefault(c: *Ctx, r: RunResult, target: []const u8, input: []const u8) bool {
+    const path = trim(r.out);
+    const base = std.fs.path.basename(path);
+    return r.code == 0 and std.mem.endsWith(u8, base, ".md") and
+        std.mem.indexOfScalar(u8, base, '_') != null and
+        pathEql(std.fs.path.dirname(path) orelse "", target) and
+        std.mem.eql(u8, readFileOr(c, path, ""), input);
+}
+
+fn hookStageEmpty(c: *Ctx, temp: []const u8) !bool {
+    var dir = try Io.Dir.cwd().openDir(c.io, temp, .{ .iterate = true });
+    defer dir.close(c.io);
+    var it = dir.iterate();
+    while (try it.next(c.io)) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "nix-hook-")) return false;
+    }
+    return true;
+}
+
 fn writeFile(c: *Ctx, path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |d| try util.mkdirAll(c.io, d);
     // A POSIX script fixture, or a copy of the exe under a wrapper name, needs
@@ -2940,6 +2976,222 @@ pub fn main(init: std.process.Init) !void {
         // Leave nothing behind: --doctor below reports on the whole store.
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "ka.toml" })) catch {};
         Io.Dir.cwd().deleteFile(io, join(&c, &.{ home, "env", "kb.toml" })) catch {};
+    }
+
+    // --- private paste hooks ---------------------------------------------------------
+    if (c.windowsOnly("paste hooks use Windows script fixtures and Job Objects")) {
+        const target = join(&c, &.{ root, "paste-target" });
+        const hooks_file = join(&c, &.{ home, "hooks.toml" });
+        const hook_dir = join(&c, &.{ home, "hooks" });
+        const hook_file = join(&c, &.{ hook_dir, "namer.cmd" });
+        const hook_temp = join(&c, &.{ root, "hook-temp" });
+        const old_temp = if (c.env.get("TEMP")) |v| try arena.dupe(u8, v) else null;
+        try util.mkdirAll(io, target);
+        try util.mkdirAll(io, hook_dir);
+        try util.mkdirAll(io, hook_temp);
+        try c.env.put("TEMP", hook_temp);
+        defer {
+            if (old_temp) |v| {
+                c.env.put("TEMP", v) catch {};
+            } else {
+                _ = c.env.orderedRemove("TEMP");
+            }
+        }
+        _ = try c.run(&.{ "ph", target });
+        const body = "first\r\nsecond\r\n";
+        var r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedDefault(&c, r, target, body), "text paste without hooks.toml keeps the timestamped md save", r);
+
+        const cfg =
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\[paste]
+            \\ph = 'namer'
+        ;
+        try writeFile(&c, hooks_file, cfg);
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"name":"logs/app.log"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "logs", "app.log" }), body), "hook names a nested output and preserves CRLF bytes", r);
+        c.check(try hookStageEmpty(&c, hook_temp), "staging is removed after hook success", null);
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "logs", "app-1.log" }), body), "a repeated hook name uses uniquePath once", r);
+
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"ok","outputs":[{"name":"notes/draft"}]}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "notes", "draft.md" }), body), "hook name without an extension gains md", r);
+
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"decline"}
+            \\
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedDefault(&c, r, target, body) and std.mem.indexOf(u8, r.err, "paste hook") == null, "decline saves the default without a warning", r);
+
+        const failures = [_][]const u8{
+            "@echo off\r\nexit /b 7\r\n",
+            "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo bad-json\r\n",
+            "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{},{}]}\r\n",
+            "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"../x\"}]}\r\n",
+            "@echo off\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"x\",\"file\":\"y\"}]}\r\n",
+        };
+        const failure_labels = [_][]const u8{
+            "nonzero hook exit",    "invalid result JSON", "two outputs",
+            "escaping output name", "unknown result key",
+        };
+        for (failures, failure_labels) |script, label| {
+            try writeFile(&c, hook_file, script);
+            r = try hookPaste(&c, clip, body, null);
+            c.check(hookSavedDefault(&c, r, target, body) and
+                std.mem.count(u8, r.err, "paste hook \"namer\" failed:") == 1, label, r);
+        }
+        c.check(try hookStageEmpty(&c, hook_temp), "staging is removed after hook failures", null);
+
+        const marker = join(&c, &.{ hook_temp, "marker.txt" });
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\> "%TEMP%\marker.txt" echo ran
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"decline"}
+            \\
+        );
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\[paste]
+            \\"*" = 'namer'
+            \\ph = 'off'
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedDefault(&c, r, target, body) and !proc.pathExists(io, marker), "alias off overrides the fallback hook", r);
+
+        try writeFile(&c, hooks_file, cfg);
+        r = try hookPaste(&c, clip, body, "typed.md");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "typed.md" }), body) and
+            !proc.pathExists(io, marker), "typed paste name bypasses the M1 hook", r);
+
+        const request_copy = join(&c, &.{ hook_temp, "hook-request.json" });
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\copy /y "%NIX_HOOK_REQUEST%" "%TEMP%\hook-request.json" >nul
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"decline"}
+            \\
+        );
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\sample_lines = 1
+            \\[paste]
+            \\ph = 'namer'
+        );
+        const request_input = "first\nsecond";
+        r = try hookPaste(&c, clip, request_input, null);
+        const request_raw = readFileOr(&c, request_copy, "");
+        const request: ?std.json.Value = std.json.parseFromSliceLeaky(std.json.Value, arena, request_raw, .{}) catch null;
+        const request_ok = if (request) |v| blk: {
+            if (v != .object) break :blk false;
+            const a = v.object.get("alias") orelse break :blk false;
+            const kind = v.object.get("kind") orelse break :blk false;
+            const name = v.object.get("default_name") orelse break :blk false;
+            const sample = v.object.get("sample") orelse break :blk false;
+            const truncated = v.object.get("truncated") orelse break :blk false;
+            const lines = v.object.get("lines") orelse break :blk false;
+            const bytes = v.object.get("bytes") orelse break :blk false;
+            break :blk a == .string and std.mem.eql(u8, a.string, "ph") and
+                kind == .string and std.mem.eql(u8, kind.string, "text") and
+                name == .string and std.mem.endsWith(u8, name.string, ".md") and
+                sample == .string and std.mem.eql(u8, sample.string, "first\n") and
+                truncated == .bool and truncated.bool and lines == .integer and lines.integer == 2 and
+                bytes == .integer and bytes.integer == request_input.len;
+        } else false;
+        c.check(hookSavedDefault(&c, r, target, request_input) and request_ok, "request JSON carries alias, kind, default name, byte and sample fields", r);
+
+        const late_script = join(&c, &.{ hook_temp, "late.cmd" });
+        const late_marker = join(&c, &.{ hook_temp, "late.txt" });
+        try writeFile(&c, late_script,
+            \\@echo off
+            \\ping -n 4 127.0.0.1 >nul
+            \\> "%TEMP%\late.txt" echo late
+            \\
+        );
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\start "" /b cmd /d /c call "%TEMP%\late.cmd"
+            \\ping -n 6 127.0.0.1 >nul
+            \\
+        );
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\timeout = 1
+            \\[paste]
+            \\ph = 'namer'
+        );
+        const started = Io.Clock.awake.now(io).nanoseconds;
+        r = try hookPaste(&c, clip, body, null);
+        const elapsed = Io.Clock.awake.now(io).nanoseconds - started;
+        c.check(hookSavedDefault(&c, r, target, body) and elapsed < 4 * std.time.ns_per_s and
+            std.mem.count(u8, r.err, "paste hook \"namer\" failed:") == 1, "timeout returns promptly and uses the default save", r);
+        Io.sleep(io, .{ .nanoseconds = 4 * std.time.ns_per_s }, .awake) catch {};
+        c.check(!proc.pathExists(io, late_marker) and try hookStageEmpty(&c, hook_temp), "timeout kills descendants and removes staging", null);
+
+        const untrusted = join(&c, &.{ target, "untrusted.cmd" });
+        try writeFile(&c, untrusted,
+            \\@echo off
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"decline"}
+            \\
+        );
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = 'ph:untrusted.cmd'
+            \\[paste]
+            \\ph = 'namer'
+        );
+        try c.env.put("NIX_E2E_TTY", "0");
+        r = try hookPaste(&c, clip, body, null);
+        try c.env.put("NIX_E2E_TTY", "1");
+        c.check(hookSavedDefault(&c, r, target, body) and
+            std.mem.indexOf(u8, r.err, "--trust ph") != null and
+            std.mem.count(u8, r.err, "paste hook \"namer\" failed:") == 1, "an unapproved hook outside home refuses without a console", r);
+
+        try writeFile(&c, hook_file,
+            \\@echo off
+            \\set "arg=%~1"
+            \\> "%TEMP%\hook-args.txt" set arg
+            \\> "%NIX_HOOK_RESULT%" echo {"version":1,"status":"decline"}
+            \\
+        );
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.cmd'
+            \\args = ['hello & %TEMP%']
+            \\[paste]
+            \\ph = 'namer'
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedDefault(&c, r, target, body) and
+            std.mem.eql(u8, trim(readFileOr(&c, join(&c, &.{ hook_temp, "hook-args.txt" }), "")), "arg=hello & %TEMP%"), "cmd hook receives one argument with space, ampersand and percent unchanged", r);
+
+        const ps1 = join(&c, &.{ hook_dir, "namer.ps1" });
+        try writeFile(&c, ps1,
+            \\[System.IO.File]::WriteAllText($env:NIX_HOOK_RESULT, '{"version":1,"status":"ok","outputs":[{"name":"from-ps1.json"}]}')
+            \\
+        );
+        try writeFile(&c, hooks_file,
+            \\[hook.namer]
+            \\run = '.nix:hooks/namer.ps1'
+            \\[paste]
+            \\ph = 'namer'
+        );
+        r = try hookPaste(&c, clip, body, null);
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "from-ps1.json" }), body), "ps1 hook launches through PowerShell and names JSON", r);
     }
 
     // --- doctor: full, quiet, json -----------------------------------------------------

@@ -108,7 +108,47 @@ pub const Lines = struct {
         }
         return buf.items;
     }
+
+    /// Hook argv uses decoded TOML strings. Its array scan keeps escaped
+    /// quotes inside basic strings from exposing brackets or comments.
+    pub fn gatherStringArray(self: *Lines, arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
+        var buf: std.ArrayList(u8) = .empty;
+        var depth: usize = 0;
+        try appendStringArrayPart(arena, &buf, raw, &depth);
+        while (depth > 0) {
+            const line = self.it.next() orelse return error.UnterminatedArray;
+            self.line_no += 1;
+            try buf.append(arena, ' ');
+            try appendStringArrayPart(arena, &buf, std.mem.trim(u8, line, " \t\r"), &depth);
+        }
+        return buf.items;
+    }
 };
+
+fn appendStringArrayPart(arena: std.mem.Allocator, buf: *std.ArrayList(u8), line: []const u8, depth: *usize) !void {
+    var quote: u8 = 0;
+    var escaped = false;
+    for (line) |c| {
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (quote == '"' and c == '\\') {
+                escaped = true;
+            } else if (c == quote) {
+                quote = 0;
+            }
+        } else switch (c) {
+            '#' => break,
+            '"', '\'' => quote = c,
+            '[' => depth.* += 1,
+            ']' => if (depth.* > 0) {
+                depth.* -= 1;
+            },
+            else => {},
+        }
+        try buf.append(arena, c);
+    }
+}
 
 /// ArrayScan follows how deep a line-by-line read is inside an inline array,
 /// counting only brackets that are TOML syntax: a `]` inside a quoted string
