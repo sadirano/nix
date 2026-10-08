@@ -16,6 +16,7 @@
 //! keeps a run out, for scripts that call nix on the user's behalf.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const app_zig = @import("app.zig");
 const util = @import("util.zig");
 
@@ -146,7 +147,8 @@ test "commandLine: base name without .exe, PowerShell quoting" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    try std.testing.expectEqualStrings("x acme :build", try commandLine(a, &.{ "C:\\u\\.nix\\bin\\x.exe", "acme", ":build" }));
+    const exe = if (builtin.os.tag == .windows) "C:\\u\\.nix\\bin\\x.exe" else "/u/.nix/bin/x.exe";
+    try std.testing.expectEqualStrings("x acme :build", try commandLine(a, &.{ exe, "acme", ":build" }));
     try std.testing.expectEqualStrings(
         "x acme :commit -- -m 'two words' '' 'it''s' '$HOME' 'a;b' '@x'",
         try commandLine(a, &.{ "x", "acme", ":commit", "--", "-m", "two words", "", "it's", "$HOME", "a;b", "@x" }),
