@@ -134,6 +134,18 @@ fn liveChildren(comptime exe: []const u8) !usize {
     return n;
 }
 
+/// A killed and waited child can stay in the snapshot briefly; a stranded one
+/// blocks on stdin and stays for the whole 2 s.
+fn settledChildren(comptime exe: []const u8, want: usize) !usize {
+    var n = try liveChildren(exe);
+    var tries: usize = 0;
+    while (n > want and tries < 40) : (tries += 1) {
+        try std.testing.io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .awake);
+        n = try liveChildren(exe);
+    }
+    return n;
+}
+
 test "a producer that cannot start leaves no filter process behind" {
     if (!proc.is_windows) return error.SkipZigTest; // findstr + toolhelp
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -147,7 +159,7 @@ test "a producer that cannot start leaves no filter process behind" {
     const missing = &.{"nix-test-no-such-producer"};
     const before = try liveChildren("findstr.exe");
     try std.testing.expectError(error.FileNotFound, proc.runPipeline(a, std.testing.io, missing, &.{ "findstr", "x" }, ".", null));
-    try std.testing.expectEqual(before, try liveChildren("findstr.exe"));
+    try std.testing.expectEqual(before, try settledChildren("findstr.exe", before));
 
     try std.testing.expectError(error.FileNotFound, proc.runPipelineFiltered(
         a,
@@ -160,5 +172,5 @@ test "a producer that cannot start leaves no filter process behind" {
         0,
         true,
     ));
-    try std.testing.expectEqual(before, try liveChildren("findstr.exe"));
+    try std.testing.expectEqual(before, try settledChildren("findstr.exe", before));
 }
