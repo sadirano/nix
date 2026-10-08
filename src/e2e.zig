@@ -196,6 +196,16 @@ fn hookSavedDefault(c: *Ctx, r: RunResult, target: []const u8, input: []const u8
         std.mem.eql(u8, readFileOr(c, path, ""), input);
 }
 
+fn hookRequestHas(c: *Ctx, path: []const u8, alias: []const u8, key: []const u8) bool {
+    const raw = readFileOr(c, path, "");
+    const value = std.json.parseFromSliceLeaky(std.json.Value, c.arena, raw, .{}) catch return false;
+    if (value != .object) return false;
+    const request_alias = value.object.get("alias") orelse return false;
+    const hook_key = value.object.get("hook_key") orelse return false;
+    return request_alias == .string and std.mem.eql(u8, request_alias.string, alias) and
+        hook_key == .string and std.mem.eql(u8, hook_key.string, key);
+}
+
 fn hookStageEmpty(c: *Ctx, temp: []const u8) !bool {
     var dir = try Io.Dir.cwd().openDir(c.io, temp, .{ .iterate = true });
     defer dir.close(c.io);
@@ -3393,6 +3403,147 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("skip hook output symlink outside staging (mklink refused)\n", .{});
         }
         c.check(try hookStageEmpty(&c, hook_temp), "M2 hook staging is removed", null);
+
+        const work_target = join(&c, &.{ root, "hook-work" });
+        const logs_target = join(&c, &.{ work_target, "logs" });
+        const two_target = join(&c, &.{ logs_target, "a" });
+        const tmp_target = join(&c, &.{ work_target, "tmp" });
+        for ([_][]const u8{ work_target, logs_target, two_target, tmp_target }) |dir| try util.mkdirAll(io, dir);
+        const work_registration = try c.run(&.{ "work", work_target });
+        c.check(work_registration.code == 0, "segment hook fixture registers work", work_registration);
+        try writeFile(&c, join(&c, &.{ home, "segments", "work.toml" }),
+            \\[[contexts]]
+            \\segment = "logs"
+            \\source-template = "/logs"
+            \\[[contexts]]
+            \\segment = "a"
+            \\source-template = "/a"
+            \\[[contexts]]
+            \\segment = "tmp"
+            \\source-template = "/tmp"
+            \\
+        );
+        const chain_file = join(&c, &.{ hook_dir, "chain.cmd" });
+        const plain_file = join(&c, &.{ hook_dir, "plain.cmd" });
+        const star_file = join(&c, &.{ hook_dir, "star.cmd" });
+        const two_file = join(&c, &.{ hook_dir, "two.cmd" });
+        const chain_marker = join(&c, &.{ hook_temp, "h3-chain.txt" });
+        const plain_marker = join(&c, &.{ hook_temp, "h3-plain.txt" });
+        const star_marker = join(&c, &.{ hook_temp, "h3-star.txt" });
+        const two_marker = join(&c, &.{ hook_temp, "h3-two.txt" });
+        const chain_request = join(&c, &.{ hook_temp, "h3-request.json" });
+        const chain_start = "@echo off\r\n> \"%TEMP%\\h3-chain.txt\" echo ran\r\n";
+        try writeFile(&c, chain_file, chain_start ++
+            "copy /y \"%NIX_HOOK_REQUEST%\" \"%TEMP%\\h3-request.json\" >nul\r\n" ++
+            "> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"decline\"}\r\n");
+        try writeFile(&c, plain_file, "@echo off\r\n> \"%TEMP%\\h3-plain.txt\" echo ran\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"decline\"}\r\n");
+        try writeFile(&c, star_file, "@echo off\r\n> \"%TEMP%\\h3-star.txt\" echo ran\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"decline\"}\r\n");
+        try writeFile(&c, two_file, "@echo off\r\n> \"%TEMP%\\h3-two.txt\" echo ran\r\n> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"decline\"}\r\n");
+        const other_hooks =
+            \\[hook.plain]
+            \\run = '.nix:hooks/plain.cmd'
+            \\[hook.star]
+            \\run = '.nix:hooks/star.cmd'
+            \\[hook.two]
+            \\run = '.nix:hooks/two.cmd'
+            \\
+        ;
+        const chain_hooks = try std.mem.concat(arena, u8, &.{ "[hook.chain]\nrun = '.nix:hooks/chain.cmd'\n", other_hooks });
+        const chain_paste = "[paste]\n\"logs@work\" = 'chain'\nwork = 'plain'\n\"*\" = 'star'\n";
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{ chain_hooks, chain_paste }));
+        r = try hookPasteAlias(&c, "logs@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, logs_target, body) and proc.pathExists(io, chain_marker) and
+            !proc.pathExists(io, plain_marker) and !proc.pathExists(io, star_marker), "chain key wins over alias and wildcard", r);
+        c.check(hookRequestHas(&c, chain_request, "logs@work", "logs@work"), "request carries the exact segment alias and hook key", r);
+
+        Io.Dir.cwd().deleteFile(io, chain_marker) catch {};
+        r = try hookPasteAlias(&c, "logs:2026@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, logs_target, body) and proc.pathExists(io, chain_marker) and
+            !proc.pathExists(io, plain_marker) and !proc.pathExists(io, star_marker) and
+            hookRequestHas(&c, chain_request, "logs:2026@work", "logs@work"), "segment value is dropped for selection and retained in the request", r);
+
+        Io.Dir.cwd().deleteFile(io, chain_marker) catch {};
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{
+            chain_hooks,
+            "[paste]\n\"a@logs@work\" = 'two'\n\"logs@work\" = 'chain'\nwork = 'plain'\n\"*\" = 'star'\n",
+        }));
+        r = try hookPasteAlias(&c, "a@logs@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, two_target, body) and proc.pathExists(io, two_marker) and
+            !proc.pathExists(io, chain_marker) and !proc.pathExists(io, plain_marker), "the full two-segment chain wins without matching a suffix chain", r);
+
+        Io.Dir.cwd().deleteFile(io, two_marker) catch {};
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{
+            chain_hooks,
+            "[paste]\n\"tmp@work\" = 'off'\nwork = 'plain'\n\"*\" = 'star'\n",
+        }));
+        r = try hookPasteAlias(&c, "tmp@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, tmp_target, body) and !proc.pathExists(io, chain_marker) and
+            !proc.pathExists(io, plain_marker) and !proc.pathExists(io, star_marker), "off at the chain key prevents hook fallthrough", r);
+
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{ chain_hooks, "[paste]\nwork = 'plain'\n\"*\" = 'star'\n" }));
+        r = try hookPasteAlias(&c, "logs@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, logs_target, body) and proc.pathExists(io, plain_marker) and
+            !proc.pathExists(io, chain_marker) and !proc.pathExists(io, star_marker), "a missing chain key selects the plain alias", r);
+
+        Io.Dir.cwd().deleteFile(io, plain_marker) catch {};
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{ chain_hooks, chain_paste }));
+        try writeFile(&c, chain_file, chain_start ++
+            "> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"forced.log\",\"enforce\":true}]}\r\n");
+        r = try hookPasteAlias(&c, "logs@work", clip, body, "typed-h3.md");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ logs_target, "forced.log" }), body) and
+            !proc.pathExists(io, join(&c, &.{ logs_target, "typed-h3.md" })), "enforce true replaces a typed paste name", r);
+
+        try writeFile(&c, chain_file, chain_start ++
+            "> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"ignored.log\",\"enforce\":false}]}\r\n");
+        r = try hookPasteAlias(&c, "logs@work", clip, body, "typed-false.md");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ logs_target, "typed-false.md" }), body) and
+            !proc.pathExists(io, join(&c, &.{ logs_target, "ignored.log" })), "enforce false keeps the typed paste name", r);
+
+        try writeFile(&c, chain_file, chain_start ++
+            "> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"enforce\":true}]}\r\n");
+        r = try hookPasteAlias(&c, "logs@work", clip, body, "typed-fallback.md");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ logs_target, "typed-fallback.md" }), body) and
+            std.mem.count(u8, r.err, "paste hook \"chain\" failed: MissingEnforcedName") == 1 and
+            std.mem.count(u8, r.err, "\n") == 1 and !proc.pathExists(io, plain_marker) and !proc.pathExists(io, star_marker), "missing enforced name falls back once without another hook", r);
+
+        const abort_chain_hooks = try std.mem.concat(arena, u8, &.{
+            "[hook.chain]\nrun = '.nix:hooks/chain.cmd'\non_failure = 'abort'\n", other_hooks,
+        });
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{ abort_chain_hooks, chain_paste }));
+        r = try hookPasteAlias(&c, "logs@work", clip, body, "typed-abort.md");
+        c.check(r.code == 1 and trim(r.out).len == 0 and
+            !proc.pathExists(io, join(&c, &.{ logs_target, "typed-abort.md" })) and
+            std.mem.count(u8, r.err, "paste hook \"chain\" failed: MissingEnforcedName") == 1 and
+            std.mem.count(u8, r.err, "\n") == 1 and !proc.pathExists(io, plain_marker) and !proc.pathExists(io, star_marker), "missing enforced name aborts without a save or another hook", r);
+
+        try writeFile(&c, chain_file, chain_start ++
+            "copy /y \"%NIX_HOOK_REQUEST%\" \"%TEMP%\\h3-request.json\" >nul\r\n" ++
+            "> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"decline\"}\r\n");
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{
+            chain_hooks,
+            "[paste]\n\"LOGS@Work\" = 'chain'\nwork = 'plain'\n\"*\" = 'star'\n",
+        }));
+        r = try hookPasteAlias(&c, "logs@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, logs_target, body) and
+            hookRequestHas(&c, chain_request, "logs@work", "LOGS@Work"), "request hook key preserves config spelling after folded matching", r);
+
+        try writeFile(&c, chain_file, chain_start ++
+            "copy /b \"%TEMP%\\replacement.dat\" out.txt >nul\r\n" ++
+            "> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":\"out.txt\",\"enforce\":true}]}\r\n");
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{ chain_hooks, chain_paste }));
+        r = try hookPasteAlias(&c, "logs@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, logs_target, replacement), "enforce without a typed name accepts a file and the default name", r);
+
+        Io.Dir.cwd().deleteFile(io, chain_marker) catch {};
+        try writeFile(&c, hooks_file, try std.mem.concat(arena, u8, &.{
+            chain_hooks,
+            "[paste]\n\"logs:2026@work\" = 'chain'\nwork = 'plain'\n",
+        }));
+        r = try hookPasteAlias(&c, "logs@work", clip, body, null);
+        c.check(hookSavedDefault(&c, r, logs_target, body) and !proc.pathExists(io, chain_marker) and
+            !proc.pathExists(io, plain_marker) and
+            std.mem.count(u8, r.err, "paste hook \"hooks.toml\" failed: BadPasteKey") == 1, "invalid segment key falls back with the hooks.toml label", r);
+        c.check(try hookStageEmpty(&c, hook_temp), "M3 hook staging is removed", null);
     }
 
     // --- doctor: full, quiet, json -----------------------------------------------------

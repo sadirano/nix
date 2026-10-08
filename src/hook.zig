@@ -12,11 +12,14 @@ const provenance = @import("provenance.zig");
 const run = @import("run.zig");
 const paste_name = @import("paste_name.zig");
 const clipboard = @import("clipboard.zig");
+const segments = @import("segments.zig");
+const hook_proc = @import("hook_proc.zig");
 
 const OnFailure = enum { fallback, abort };
 
 const Config = struct {
     name: []const u8,
+    hook_key: []const u8,
     run: []const u8 = "",
     args: []const []const u8 = &.{},
     timeout: u16 = 10,
@@ -65,6 +68,36 @@ fn failure(app: *App, name: []const u8, policy: OnFailure, reason: []const u8, t
     return default;
 }
 
+const PasteLookupKeys = struct { chain: ?[]const u8, plain: []const u8 };
+const PasteSelection = struct { key: []const u8, hook_name: []const u8 };
+
+fn lowerKey(arena: std.mem.Allocator, source: []const u8) ![]const u8 {
+    const key = try arena.dupe(u8, source);
+    for (key) |*c| c.* = std.ascii.toLower(c.*);
+    return key;
+}
+
+fn pasteLookupKeys(arena: std.mem.Allocator, alias: []const u8) !PasteLookupKeys {
+    const parsed = try segments.parseSegmentedAlias(arena, alias);
+    const plain = try lowerKey(arena, parsed.alias);
+    if (parsed.segs.len == 0) return .{ .chain = null, .plain = plain };
+    var chain: std.ArrayList(u8) = .empty;
+    for (parsed.segs) |segment| {
+        for (segment.name) |c| try chain.append(arena, std.ascii.toLower(c));
+        try chain.append(arena, '@');
+    }
+    try chain.appendSlice(arena, plain);
+    return .{ .chain = chain.items, .plain = plain };
+}
+
+fn checkPasteKey(key: []const u8) !void {
+    if (std.mem.indexOfScalar(u8, key, '@') == null) return;
+    var parts = std.mem.splitScalar(u8, key, '@');
+    while (parts.next()) |part| {
+        if (part.len == 0 or std.mem.indexOfScalar(u8, part, ':') != null) return error.BadPasteKey;
+    }
+}
+
 fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, selected: *[]const u8, policy: *OnFailure) !?Config {
     var sections: std.ArrayList(Section) = .empty;
     var lines = toml.Lines.init(data);
@@ -87,22 +120,29 @@ fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, se
         },
     };
 
+    const lookup = try pasteLookupKeys(arena, alias);
     var names: std.ArrayList([]const u8) = .empty;
-    var exact: ?[]const u8 = null;
-    var fallback: ?[]const u8 = null;
+    var chain: ?PasteSelection = null;
+    var exact: ?PasteSelection = null;
+    var fallback: ?PasteSelection = null;
     for (sections.items) |section| {
         if (!std.mem.eql(u8, section.name, "paste")) continue;
         for (section.pairs.items) |pair| {
             const key = try configKey(arena, pair.key);
+            try checkPasteKey(key);
             for (names.items) |old| if (std.ascii.eqlIgnoreCase(old, key)) return error.DuplicatePasteKey;
             try names.append(arena, key);
-            if (std.mem.indexOfScalar(u8, key, '@') != null) continue;
             const value = (try configString(arena, pair.raw, true)) orelse return error.BadPasteValue;
-            if (std.ascii.eqlIgnoreCase(key, alias)) exact = value;
-            if (std.mem.eql(u8, key, "*")) fallback = value;
+            const candidate = PasteSelection{ .key = key, .hook_name = value };
+            if (lookup.chain) |full| if (std.ascii.eqlIgnoreCase(key, full)) {
+                chain = candidate;
+            };
+            if (std.ascii.eqlIgnoreCase(key, lookup.plain)) exact = candidate;
+            if (std.mem.eql(u8, key, "*")) fallback = candidate;
         }
     }
-    const name = exact orelse fallback orelse return null;
+    const choice = chain orelse exact orelse fallback orelse return null;
+    const name = choice.hook_name;
     selected.* = name;
     if (std.mem.eql(u8, name, "off")) {
         for (sections.items) |section| {
@@ -113,7 +153,7 @@ fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, se
     if (name.len == 0) return error.BadHookName;
     const table_name = try std.fmt.allocPrint(arena, "hook.{s}", .{name});
     var found = false;
-    var cfg = Config{ .name = name };
+    var cfg = Config{ .name = name, .hook_key = choice.key };
     var fields: std.ArrayList([]const u8) = .empty;
     // Read the selected table's failure policy before any other field can fail.
     for (sections.items) |section| {
@@ -273,6 +313,7 @@ fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: 
         .stage = "paste",
         .kind = "text",
         .alias = alias,
+        .hook_key = cfg.hook_key,
         .target = try store.toSlash(app.arena, target),
         .input = input_path,
         .result = result_path,
@@ -294,12 +335,20 @@ fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: 
     var env = try app.env().clone(app.arena);
     try env.put("NIX_HOOK_REQUEST", request_path);
     try env.put("NIX_HOOK_RESULT", result_path);
-    const code = launch(app, argv, stage, stderr_path, &env, cfg.timeout, stderr_tail) catch |e| return e;
+    const code = hook_proc.launch(app, argv, stage, stderr_path, &env, cfg.timeout, stderr_tail) catch |e| return e;
     if (code != 0) return error.HookExitedNonzero;
     const result = try readResult(app, result_path);
     const output = (try parseResult(app.arena, result)) orelse return .{ .save = .{ .name = typed_name } };
-    const content = if (output.file) |file| try readOutput(app, stage, file, cfg.max_output_mb) else null;
-    return .{ .save = .{ .name = if (typed_name.len > 0) typed_name else output.name, .content = content } };
+    const name = try resultName(output, typed_name);
+    const content = if (output.file) |file| try hook_proc.readOutput(app, stage, file, cfg.max_output_mb) else null;
+    return .{ .save = .{ .name = name, .content = content } };
+}
+
+fn resultName(output: ResultOutput, typed_name: []const u8) ![]const u8 {
+    if (typed_name.len == 0) return output.name;
+    if (!output.enforce) return typed_name;
+    if (output.name.len == 0) return error.MissingEnforcedName;
+    return output.name;
 }
 
 fn readResult(app: *App, path: []const u8) ![]const u8 {
@@ -333,7 +382,7 @@ fn createStage(app: *App) ![]const u8 {
     return error.StageCollision;
 }
 
-const ResultOutput = struct { name: []const u8 = "", file: ?[]const u8 = null };
+const ResultOutput = struct { name: []const u8 = "", file: ?[]const u8 = null, enforce: bool = false };
 
 fn parseResult(arena: std.mem.Allocator, data: []const u8) !?ResultOutput {
     if (data.len > 65536) return error.ResultTooLarge;
@@ -366,6 +415,11 @@ fn parseResult(arena: std.mem.Allocator, data: []const u8) !?ResultOutput {
         try checkOutputFile(file.string);
         result.file = file.string;
     }
+    if (output.object.get("enforce")) |enforce| {
+        known += 1;
+        if (enforce != .bool) return error.BadResultSchema;
+        result.enforce = enforce.bool;
+    }
     if (output.object.count() != known) return error.BadResultSchema;
     return result;
 }
@@ -376,57 +430,6 @@ fn checkOutputFile(file: []const u8) !void {
         return error.BadResultFile;
     for ([_][]const u8{ "input.txt", "request.json", "result.json", "stderr.txt" }) |reserved| {
         if (std.ascii.eqlIgnoreCase(file, reserved)) return error.BadResultFile;
-    }
-}
-
-const FileTime = extern struct { low: u32, high: u32 };
-const HandleFileInfo = extern struct {
-    attributes: u32,
-    created: FileTime,
-    accessed: FileTime,
-    written: FileTime,
-    volume_serial: u32,
-    size_high: u32,
-    size_low: u32,
-    links: u32,
-    index_high: u32,
-    index_low: u32,
-};
-
-extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*const anyopaque, u32, u32, ?std.os.windows.HANDLE) callconv(.winapi) std.os.windows.HANDLE;
-extern "kernel32" fn GetFileInformationByHandle(std.os.windows.HANDLE, *HandleFileInfo) callconv(.winapi) i32;
-
-fn openOutput(app: *App, path: []const u8) !Io.File {
-    if (comptime proc.is_windows) {
-        const wide = try std.unicode.wtf8ToWtf16LeAllocZ(app.arena, path);
-        // OPEN_REPARSE_POINT keeps the handle on the link itself.
-        const handle = CreateFileW(wide.ptr, 0x80000000, 0x0007, null, 3, 0x02000000 | 0x00200000, null);
-        if (handle == std.os.windows.INVALID_HANDLE_VALUE) return error.OutputUnreadable;
-        const file: Io.File = .{ .handle = handle, .flags = .{ .nonblocking = false } };
-        errdefer file.close(app.io);
-        var info: HandleFileInfo = undefined;
-        if (GetFileInformationByHandle(handle, &info) == 0) return error.OutputUnreadable;
-        if (info.attributes & (0x400 | 0x10) != 0) return error.BadOutputFile;
-        return file;
-    } else return Io.Dir.cwd().openFile(app.io, path, .{}) catch error.OutputUnreadable;
-}
-
-fn readOutput(app: *App, stage: []const u8, name: []const u8, max_mb: u16) ![]const u8 {
-    const limit = try std.math.mul(usize, @as(usize, max_mb), 1024 * 1024);
-    const sentinel = try std.math.add(usize, limit, 1);
-    const path = try std.fs.path.join(app.arena, &.{ stage, name });
-    const file = try openOutput(app, path);
-    defer file.close(app.io);
-    const stat = file.stat(app.io) catch return error.OutputUnreadable;
-    if (stat.size > limit) return error.OutputTooLarge;
-    var bytes: std.ArrayList(u8) = .empty;
-    var chunk: [8192]u8 = undefined;
-    while (true) {
-        const want = @min(chunk.len, sentinel - bytes.items.len);
-        const n = file.readPositional(app.io, &.{chunk[0..want]}, bytes.items.len) catch return error.OutputUnreadable;
-        if (n == 0) return bytes.items;
-        try bytes.appendSlice(app.arena, chunk[0..n]);
-        if (bytes.items.len > limit) return error.OutputTooLarge;
     }
 }
 
@@ -491,183 +494,6 @@ fn warnCleanup(app: *App, path: []const u8, e: anyerror) !void {
     });
 }
 
-const BasicJobLimits = extern struct {
-    per_process_user_time: i64 = 0,
-    per_job_user_time: i64 = 0,
-    flags: u32 = 0,
-    minimum_working_set: usize = 0,
-    maximum_working_set: usize = 0,
-    active_process_limit: u32 = 0,
-    affinity: usize = 0,
-    priority_class: u32 = 0,
-    scheduling_class: u32 = 0,
-};
-const IoCounters = extern struct {
-    read_operations: u64 = 0,
-    write_operations: u64 = 0,
-    other_operations: u64 = 0,
-    read_bytes: u64 = 0,
-    write_bytes: u64 = 0,
-    other_bytes: u64 = 0,
-};
-const BasicAccounting = extern struct {
-    total_user_time: i64 = 0,
-    total_kernel_time: i64 = 0,
-    this_period_user_time: i64 = 0,
-    this_period_kernel_time: i64 = 0,
-    total_page_faults: u32 = 0,
-    total_processes: u32 = 0,
-    active_processes: u32 = 0,
-    total_terminated: u32 = 0,
-};
-const ExtendedJobLimits = extern struct {
-    basic: BasicJobLimits = .{},
-    io: IoCounters = .{},
-    process_memory: usize = 0,
-    job_memory: usize = 0,
-    peak_process_memory: usize = 0,
-    peak_job_memory: usize = 0,
-};
-
-extern "kernel32" fn CreateJobObjectW(?*anyopaque, ?[*:0]const u16) callconv(.winapi) ?std.os.windows.HANDLE;
-extern "kernel32" fn SetInformationJobObject(std.os.windows.HANDLE, u32, *const ExtendedJobLimits, u32) callconv(.winapi) i32;
-extern "kernel32" fn AssignProcessToJobObject(std.os.windows.HANDLE, std.os.windows.HANDLE) callconv(.winapi) i32;
-extern "kernel32" fn TerminateJobObject(std.os.windows.HANDLE, u32) callconv(.winapi) i32;
-extern "kernel32" fn ResumeThread(std.os.windows.HANDLE) callconv(.winapi) u32;
-extern "kernel32" fn QueryInformationJobObject(std.os.windows.HANDLE, u32, *BasicAccounting, u32, ?*u32) callconv(.winapi) i32;
-extern "kernel32" fn WaitForSingleObject(std.os.windows.HANDLE, u32) callconv(.winapi) u32;
-
-fn launch(
-    app: *App,
-    argv: []const []const u8,
-    cwd: []const u8,
-    stderr_path: []const u8,
-    env: *const std.process.Environ.Map,
-    timeout: u16,
-    tail: *[]const u8,
-) !u8 {
-    var stderr_file = try Io.Dir.cwd().createFile(app.io, stderr_path, .{ .exclusive = true });
-    var stderr_open = true;
-    defer if (stderr_open) stderr_file.close(app.io);
-    if (comptime proc.is_windows) {
-        const job = CreateJobObjectW(null, null) orelse return error.JobCreationFailed;
-        var job_open = true;
-        defer if (job_open) std.os.windows.CloseHandle(job);
-        var limits = ExtendedJobLimits{};
-        limits.basic.flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        if (SetInformationJobObject(job, 9, &limits, @sizeOf(ExtendedJobLimits)) == 0)
-            return error.JobConfigurationFailed;
-        var child = try std.process.spawn(app.io, .{
-            .argv = argv,
-            .cwd = .{ .path = cwd },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .{ .file = stderr_file },
-            .environ_map = env,
-            .start_suspended = true,
-        });
-        stderr_file.close(app.io);
-        stderr_open = false;
-        if (AssignProcessToJobObject(job, child.id.?) == 0) {
-            child.kill(app.io);
-            return error.JobAssignmentFailed;
-        }
-        if (ResumeThread(child.thread_handle) == std.math.maxInt(u32)) {
-            _ = TerminateJobObject(job, 1);
-            child.kill(app.io);
-            return error.HookResumeFailed;
-        }
-        const started = Io.Clock.awake.now(app.io).nanoseconds;
-        var timed_out = false;
-        while (true) {
-            const status = WaitForSingleObject(child.id.?, 25);
-            if (status == 0) break; // WAIT_OBJECT_0
-            if (status != 258) {
-                _ = TerminateJobObject(job, 1);
-                child.kill(app.io);
-                return error.HookWaitFailed;
-            }
-            if (Io.Clock.awake.now(app.io).nanoseconds - started >= @as(i96, timeout) * std.time.ns_per_s) {
-                timed_out = true;
-                // A failed job kill must still not leave child.wait blocking on
-                // a running root.
-                if (TerminateJobObject(job, 1) == 0) child.kill(app.io);
-                break;
-            }
-        }
-        // child.kill already reaped the root (id is null) and wait would assert.
-        const term: ?std.process.Child.Term = if (child.id != null) try child.wait(app.io) else null;
-        // Stray descendants may hold staging open: end them and wait (bounded)
-        // for the job to empty before the result read and the cleanup.
-        _ = TerminateJobObject(job, 1);
-        drainJob(app, job);
-        std.os.windows.CloseHandle(job);
-        job_open = false;
-        tail.* = readStderrTail(app, stderr_path);
-        if (timed_out) return error.HookTimedOut;
-        return switch (term orelse return 255) {
-            .exited => |code| code,
-            else => 255,
-        };
-    } else {
-        var child = try std.process.spawn(app.io, .{
-            .argv = argv,
-            .cwd = .{ .path = cwd },
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .{ .file = stderr_file },
-            .environ_map = env,
-        });
-        stderr_file.close(app.io);
-        stderr_open = false;
-        const started = Io.Clock.awake.now(app.io).nanoseconds;
-        var code: u8 = 255;
-        while (true) {
-            var status: if (@import("builtin").link_libc) c_int else u32 = 0;
-            const pid = child.id.?;
-            const rc = std.posix.system.waitpid(pid, &status, std.posix.W.NOHANG);
-            if (std.posix.errno(rc) != .SUCCESS) {
-                child.kill(app.io);
-                return error.HookWaitFailed;
-            }
-            if (rc != 0) {
-                child.id = null; // waitpid reaped it; no child handles remain.
-                const raw: u32 = @bitCast(status);
-                if (std.posix.W.IFEXITED(raw)) code = std.posix.W.EXITSTATUS(raw);
-                break;
-            }
-            if (Io.Clock.awake.now(app.io).nanoseconds - started >= @as(i96, timeout) * std.time.ns_per_s) {
-                child.kill(app.io);
-                tail.* = readStderrTail(app, stderr_path);
-                return error.HookTimedOut;
-            }
-            Io.sleep(app.io, .{ .nanoseconds = 25 * std.time.ns_per_ms }, .awake) catch {};
-        }
-        tail.* = readStderrTail(app, stderr_path);
-        return code;
-    }
-}
-
-/// drainJob waits up to 2s for every process in `job` to be gone.
-fn drainJob(app: *App, job: std.os.windows.HANDLE) void {
-    for (0..80) |_| {
-        var info = BasicAccounting{};
-        if (QueryInformationJobObject(job, 1, &info, @sizeOf(BasicAccounting), null) == 0) return;
-        if (info.active_processes == 0) return;
-        Io.sleep(app.io, .{ .nanoseconds = 25 * std.time.ns_per_ms }, .awake) catch return;
-    }
-}
-
-fn readStderrTail(app: *App, path: []const u8) []const u8 {
-    const file = Io.Dir.cwd().openFile(app.io, path, .{}) catch return "";
-    defer file.close(app.io);
-    const stat = file.stat(app.io) catch return "";
-    const n: usize = @intCast(@min(stat.size, 8192));
-    const buffer = app.arena.alloc(u8, n) catch return "";
-    const read = file.readPositionalAll(app.io, buffer, stat.size - n) catch return "";
-    return buffer[0..read];
-}
-
 test "config selection and deferred hook validation" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -707,6 +533,59 @@ test "config selection and deferred hook validation" {
     try std.testing.expect((try parseConfig(a, "[paste]\nother = 'namer'\n", "work", &selected, &policy)) == null);
 }
 
+test "segmented paste lookup drops values and folds ASCII case" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const one = try pasteLookupKeys(a, "LoGs:2026@WoRk");
+    try std.testing.expectEqualStrings("logs@work", one.chain.?);
+    try std.testing.expectEqualStrings("work", one.plain);
+    const two = try pasteLookupKeys(a, "A@LoGs@WoRk");
+    try std.testing.expectEqualStrings("a@logs@work", two.chain.?);
+    const plain = try pasteLookupKeys(a, "WoRk");
+    try std.testing.expect(plain.chain == null);
+    try std.testing.expectEqualStrings("work", plain.plain);
+}
+
+test "segment chain outranks alias and wildcard without partial matching" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const data =
+        \\[paste]
+        \\"*" = 'wild'
+        \\work = 'plain'
+        \\"LOGS@Work" = 'chain'
+        \\[hook.wild]
+        \\run = '.nix:hooks/wild.cmd'
+        \\[hook.plain]
+        \\run = '.nix:hooks/plain.cmd'
+        \\[hook.chain]
+        \\run = '.nix:hooks/chain.cmd'
+    ;
+    var selected: []const u8 = "hooks.toml";
+    var policy: OnFailure = .fallback;
+    const chain = (try parseConfig(a, data, "logs:2026@work", &selected, &policy)).?;
+    try std.testing.expectEqualStrings("chain", chain.name);
+    try std.testing.expectEqualStrings("LOGS@Work", chain.hook_key);
+    const plain = (try parseConfig(a, data, "a@logs@work", &selected, &policy)).?;
+    try std.testing.expectEqualStrings("plain", plain.name);
+    try std.testing.expectEqualStrings("work", plain.hook_key);
+    const wild = (try parseConfig(a, data, "other", &selected, &policy)).?;
+    try std.testing.expectEqualStrings("wild", wild.name);
+    try std.testing.expectEqualStrings("*", wild.hook_key);
+}
+
+test "off at the chain key stops selection" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var selected: []const u8 = "hooks.toml";
+    var policy: OnFailure = .fallback;
+    const data = "[paste]\n\"logs@work\" = 'off'\nwork = 'plain'\n[hook.plain]\nrun = '.nix:hooks/plain.cmd'\n";
+    try std.testing.expect((try parseConfig(a, data, "logs@work", &selected, &policy)) == null);
+}
+
 test "config rejects syntax, duplicates, missing tables, bad values, and unknown keys" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
@@ -718,6 +597,12 @@ test "config rejects syntax, duplicates, missing tables, bad values, and unknown
         .{ .data = "[paste]\nwork = 'n'junk\n", .err = error.BadPasteValue },
         .{ .data = "[paste]\n\"work\"junk = 'n'\n", .err = error.BadPasteKey },
         .{ .data = "[paste]\nwork = 'n'\nWORK = 'n'\n", .err = error.DuplicatePasteKey },
+        .{ .data = "[paste]\n\"logs@work\" = 'n'\n\"LOGS@Work\" = 'n'\n", .err = error.DuplicatePasteKey },
+        .{ .data = "[paste]\n\"@work\" = 'n'\n", .err = error.BadPasteKey },
+        .{ .data = "[paste]\n\"logs@\" = 'n'\n", .err = error.BadPasteKey },
+        .{ .data = "[paste]\n\"logs@@work\" = 'n'\n", .err = error.BadPasteKey },
+        .{ .data = "[paste]\n\"logs:2026@work\" = 'n'\n", .err = error.BadPasteKey },
+        .{ .data = "[paste]\n\"logs@work:2026\" = 'n'\n", .err = error.BadPasteKey },
         .{ .data = "[paste]\nwork = 'n'\n", .err = error.MissingHookTable },
         .{ .data = "[paste]\nwork = 'n'\n[hook.n]\nargs = []\n", .err = error.MissingRun },
         .{ .data = "[paste]\nwork = 'n'\n[hook.n]\nrun = 1\n", .err = error.BadRun },
@@ -800,6 +685,8 @@ test "result accepts names and plain file names only" {
     try std.testing.expectEqualStrings("logs/app.log", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"logs/app.log\"}]}")).?.name);
     try std.testing.expectEqualStrings("", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{}]}")).?.name);
     try std.testing.expectEqualStrings("out.txt", (try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"x.md\",\"file\":\"out.txt\"}]}")).?.file.?);
+    try std.testing.expect((try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":\"forced.log\",\"enforce\":true}]}")).?.enforce);
+    try std.testing.expect(!(try parseResult(a, "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"enforce\":false}]}")).?.enforce);
     try std.testing.expect((try parseResult(a, "{\"version\":1,\"status\":\"decline\"}")) == null);
     const bad_schema = [_][]const u8{
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[]}",
@@ -807,6 +694,9 @@ test "result accepts names and plain file names only" {
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"name\":null}]}",
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":null}]}",
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":4}]}",
+        "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"enforce\":null}]}",
+        "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"enforce\":\"true\"}]}",
+        "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"enforce\":1}]}",
         "{\"version\":1,\"status\":\"ok\",\"outputs\":[{\"file\":\"out.txt\",\"extra\":1}]}",
         "{\"version\":1,\"status\":\"decline\",\"outputs\":[]}",
         "{\"version\":2,\"status\":\"decline\"}",
@@ -822,4 +712,13 @@ test "result accepts names and plain file names only" {
     const huge = try a.alloc(u8, 65537);
     @memset(huge, ' ');
     try std.testing.expectError(error.ResultTooLarge, parseResult(a, huge));
+}
+
+test "invoke name selection enforces only with a typed name" {
+    try std.testing.expectEqualStrings("forced.log", try resultName(.{ .name = "forced.log", .enforce = true }, "typed.md"));
+    try std.testing.expectEqualStrings("typed.md", try resultName(.{ .name = "forced.log" }, "typed.md"));
+    try std.testing.expectEqualStrings("typed.md", try resultName(.{ .name = "forced.log", .enforce = false }, "typed.md"));
+    try std.testing.expectError(error.MissingEnforcedName, resultName(.{ .enforce = true }, "typed.md"));
+    try std.testing.expectEqualStrings("", try resultName(.{ .file = "out.txt", .enforce = true }, ""));
+    try std.testing.expectEqualStrings("forced.log", try resultName(.{ .name = "forced.log", .enforce = true }, ""));
 }
