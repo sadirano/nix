@@ -3034,7 +3034,7 @@ pub fn main(init: std.process.Init) !void {
             \\
         );
         r = try hookPaste(&c, clip, body, null);
-        c.check(hookSavedDefault(&c, r, target, body) and std.mem.indexOf(u8, r.err, "paste hook") == null, "decline saves the default without a warning", r);
+        c.check(hookSavedDefault(&c, r, target, body) and r.err.len == 0, "decline saves the default without a warning", r);
 
         const failures = [_][]const u8{
             "@echo off\r\nexit /b 7\r\n",

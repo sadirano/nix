@@ -483,7 +483,8 @@ fn launch(
                 break;
             }
         }
-        const term = try child.wait(app.io);
+        // child.kill already reaped the root (id is null) and wait would assert.
+        const term: ?std.process.Child.Term = if (child.id != null) try child.wait(app.io) else null;
         // Stray descendants may hold staging open: end them and wait (bounded)
         // for the job to empty before the result read and the cleanup.
         _ = TerminateJobObject(job, 1);
@@ -492,7 +493,7 @@ fn launch(
         job_open = false;
         tail.* = readStderrTail(app, stderr_path);
         if (timed_out) return error.HookTimedOut;
-        return switch (term) {
+        return switch (term orelse return 255) {
             .exited => |code| code,
             else => 255,
         };
