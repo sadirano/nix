@@ -164,7 +164,8 @@ lines and config, where `"dir C:\new"` must stay a backslash and an `n`.
   issue.
 - Work happens directly on `main`; no feature branches. Design decisions live in
   GitHub issues (there is no ROADMAP.md).
-- Release: a pre-release tag (`v0.11.0-pre1`) opens the checklist issue, a stable
-  tag refuses to publish until every box is ticked (fail-closed, no issue means
-  no release), and publishing archives it. `bash .github/scripts/release-checklist.sh status`
+- Release: minor and patch tags publish on CI alone. For a major version
+  (vN.0.0), a pre-release tag (`v1.0.0-pre1`) opens the checklist issue, the
+  stable tag refuses to publish until every box is ticked (fail-closed, no issue
+  means no release), and publishing archives it. `bash .github/scripts/release-checklist.sh status`
   shows what is still open.

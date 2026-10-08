@@ -7,8 +7,9 @@ on:
 permissions:
   contents: write
   # The manual verification checklist is a GitHub issue (see
-  # .github/scripts/release-checklist.sh): a pre-release tag opens it, a stable
-  # tag refuses to publish until it is complete, and publishing closes it.
+  # .github/scripts/release-checklist.sh), for major versions only (vN.0.0): a
+  # pre-release tag opens it, a stable tag refuses to publish until it is
+  # complete, and publishing closes it.
   issues: write
 
 jobs:
@@ -34,23 +35,35 @@ jobs:
         with:
           version: 0.16.0
 
+      # Only a major version (vN.0.0, N >= 1, or one of its pre-releases) runs
+      # the manual checklist; minor and patch releases ship on CI alone.
+      - name: Does this release need the checklist
+        id: checklist
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" =~ ^v[1-9][0-9]*\.0\.0(-.*)?$ ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # A pre-release tag (v*-pre, v*-rc1, ...) is the build the manual
       # checklist gets run against, so it opens the issue - or, when one is
       # already open for this version, re-stamps it with the new candidate so
       # the verification can never silently describe an older build.
       - name: Open or re-stamp the release checklist
-        if: contains(github.ref_name, '-')
+        if: steps.checklist.outputs.value == 'true' && contains(github.ref_name, '-')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/release-checklist.sh open "$GITHUB_REF_NAME" "$GITHUB_SHA"
 
-      # A stable tag must have a complete checklist issue, verified against a
+      # A stable major tag must have a complete checklist issue, verified against a
       # build whose source is this one. FAIL-CLOSED: no issue, no release. The
       # file this replaced passed when it was missing, which is the state the
       # repo has been in since v0.10.0 shipped.
       - name: Verify the release checklist
-        if: "!contains(github.ref_name, '-')"
+        if: steps.checklist.outputs.value == 'true' && !contains(github.ref_name, '-')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,7 +138,7 @@ jobs:
       # The checklist's evidence outlives the issue: an issue body can be
       # edited afterwards, the release notes are what the tag shipped with.
       - name: Archive and close the release checklist
-        if: "!contains(github.ref_name, '-')"
+        if: steps.checklist.outputs.value == 'true' && !contains(github.ref_name, '-')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

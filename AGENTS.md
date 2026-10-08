@@ -46,5 +46,6 @@ can't back gets cut, not softened.
 ASCII in anything emitted (the README and COOKBOOK are exempt). Comments
 explain the decision. Commit subjects are a sentence about behavior
 (`feat: ...`, `(#NN)` when closing an issue). Work on `main`. Design lives in
-GitHub issues. Releases use the fail-closed checklist
-(`bash .github/scripts/release-checklist.sh status`).
+GitHub issues. Major releases (vN.0.0) use the fail-closed checklist
+(`bash .github/scripts/release-checklist.sh status`); minor and patch releases
+ship on CI alone.
