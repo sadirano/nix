@@ -135,6 +135,19 @@ You can hand-edit the file (`nix --list` and resolve pick up changes immediately
 
 One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
 
+### Paste hooks
+
+Paste hooks are private programs that may name or clean text before `p` saves it. In `~/.nix/hooks.toml`, a hook table names the program and `[paste]` selects it:
+
+```toml
+[hook.json]
+run = '.nix:hooks/json.ps1'
+[paste]
+"*" = 'json'
+```
+
+See [Paste hooks in the guide](docs/GUIDE.md#16a-paste-hooks) for selection, trust, limits, and the result format.
+
 ### Path dialects
 
 `--as <dialect>` changes the *spelling* of the path a command prints or copies - the same directory, written the way whichever tool is about to read it expects:

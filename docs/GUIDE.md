@@ -25,6 +25,7 @@ under `[shortcuts]` (see [1.9](#19-rename-the-commands)), substitute yours.
   - [1.4 Open: `e` and `s`](#14-open-e-and-s)
   - [1.5 Search and find: `g` and `f`](#15-search-and-find-g-and-f)
   - [1.6 The clipboard: `y` and `p`](#16-the-clipboard-y-and-p)
+  - [1.6a Paste hooks](#16a-paste-hooks)
   - [1.7 Run something there: `x`](#17-run-something-there-x)
   - [1.8 Close the shell: `q`](#18-close-the-shell-q)
   - [1.9 Rename the commands](#19-rename-the-commands)
@@ -221,6 +222,81 @@ land there.
   clipboard ready to paste into a ticket.
 - Copy an error message, `p scratch trace` - it's saved, not lost to the next copy.
 - `y acme` then paste into a "Browse..." dialog instead of clicking through folders.
+
+### 1.6a Paste hooks
+
+A paste hook is a private program that names a text paste and may clean its
+contents before nix saves it. Configure hooks in `~/.nix/hooks.toml`:
+
+```toml
+[hook.json]
+run = '.nix:hooks/json.ps1'
+args = []
+timeout = 10
+sample_lines = 10
+sample_bytes = 4096
+on_failure = 'fallback'
+max_output_mb = 64
+
+[paste]
+"*" = 'json'
+acme = 'json'
+"logs@acme" = 'json'
+scratch = 'off'
+```
+
+`run` names an alias and a `.exe`, `.cmd`, `.bat`, or `.ps1` file beneath it.
+The `[paste]` keys are `"*"`, an alias, or a segment chain such as
+`"logs@acme"`; `"off"` disables hooks for that key. Nix checks the full
+segment chain with inline values dropped, then the plain alias, then `"*"`.
+An `off` selection stops there. A hook answer of decline also stops there.
+Hooks run only for text; images and copied files keep their normal paste path.
+
+A typed name still runs the selected hook. The typed name wins over the hook's
+name unless the result sets `enforce` to `true`. On a hook failure,
+`on_failure = 'fallback'` warns and saves the original text with the usual
+name; `on_failure = 'abort'` saves nothing and exits 1. A hook program outside
+the nix home needs approval through `nix --trust <alias>` unless that alias is
+in `[trust] always`. `nix --doctor` checks every configured mapping and hook
+without launching it.
+
+The hook receives `NIX_HOOK_REQUEST` (a JSON request path) and
+`NIX_HOOK_RESULT` (the JSON result path). The request has `version: 1`,
+`stage: "paste"`, `kind: "text"`, `alias`, `hook_key`, `target`, `input`,
+`result`, `bytes`, `lines`, `sample`, `truncated`, `default_name`, and
+`typed_name`. `input` is the staged full text; `sample` is bounded by the
+configured limits. The program writes either
+`{"version":1,"status":"ok","outputs":[{"name":"file.md","file":"out.txt","enforce":false}]}`
+with exactly one output object, or `{"version":1,"status":"decline"}`.
+Within an output, `name`, `file`, and `enforce` are optional; `file` names a
+replacement file in staging. The program exits 0 for either answer.
+
+The configurable limits are `timeout` in seconds (1-600, default 10),
+`sample_lines` (1-1000, default 10), `sample_bytes` (256-65536, default
+4096), and `max_output_mb` (1-1024, default 64). Timeout kills the whole
+process tree. The fixed limit for `result.json` is 65536 bytes. Nix creates
+staging in `%TEMP%` and deletes it afterwards.
+
+This complete `json.ps1` names JSON pastes `json/<stamp>.json` and declines
+other text:
+
+```powershell
+$request = Get-Content -LiteralPath $env:NIX_HOOK_REQUEST -Raw | ConvertFrom-Json
+$text = Get-Content -LiteralPath $request.input -Raw
+try {
+    $null = $text | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    @{ version = 1; status = 'decline' } |
+        ConvertTo-Json -Compress |
+        Set-Content -LiteralPath $env:NIX_HOOK_RESULT -Encoding ascii
+    exit 0
+}
+$stamp = [IO.Path]::GetFileNameWithoutExtension($request.default_name)
+@{ version = 1; status = 'ok'; outputs = @(@{ name = "json/$stamp.json" }) } |
+    ConvertTo-Json -Depth 4 -Compress |
+    Set-Content -LiteralPath $env:NIX_HOOK_RESULT -Encoding ascii
+exit 0
+```
 
 ### 1.7 Run something there: `x`
 

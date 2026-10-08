@@ -117,7 +117,7 @@ pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name
 /// prints the path, and copies it back to the clipboard.
 fn pasteContent(app: *App, alias: []const u8, target: []const u8, name: []const u8, data: []const u8, default_ext: []const u8) !u8 {
     const fname = try pasteFilename(app, name, default_ext);
-    const dest = try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname }));
+    const dest = try store.fromSlash(app.arena, try uniquePath(app, try std.fs.path.join(app.arena, &.{ target, fname })));
     try store.mkdirAll(app.io, std.fs.path.dirname(dest).?);
     try Io.Dir.cwd().writeFile(app.io, .{ .sub_path = dest, .data = data });
     try app.out.print("{s}\n", .{dest});

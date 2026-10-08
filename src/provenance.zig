@@ -266,12 +266,23 @@ const over_cap_note = std.fmt.comptimePrint("note: names more than {d} project s
 /// the actions file but not the scripts beside it would move the unreviewed
 /// code one filename over. Approval is per script; a script carries no `sudo`
 /// marker, so there is no elevated case here.
-pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) !bool {
-    if (context.underHome(app.home, script)) return true; // ~/.nix/scripts, or a project under $home
-    if (context.standing(app, alias)) return true; // `[trust] always` - the user owns this repo
-    const body = app_zig.readFileMaybe(app, script) orelse return true;
+pub const ScriptApproval = union(enum) { approved, unapproved: []const u8 };
+
+/// Inspect current script bytes under the same policy used by gateScript.
+/// Read errors are returned so non-interactive callers can report them.
+pub fn evaluateScript(app: *App, alias: []const u8, script: []const u8) !ScriptApproval {
+    if (context.underHome(app.home, script) or context.standing(app, alias)) return .approved;
+    const body = try Io.Dir.cwd().readFileAlloc(app.io, script, app.arena, .unlimited);
     const record = try scriptRecord(app.arena, body);
-    if (context.isTrusted(app, record)) return true;
+    return if (context.isTrusted(app, record)) .approved else .{ .unapproved = record };
+}
+
+pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) !bool {
+    const approval = try evaluateScript(app, alias, script);
+    const record = switch (approval) {
+        .approved => return true,
+        .unapproved => |token| token,
+    };
     if (!canPrompt(app, mode)) {
         try app.err.print("nix: {s}'s project script has not been approved: {s}\n", .{ alias, script });
         try app.err.print("  Review it, then run:\n    nix --trust {s}\n", .{alias});

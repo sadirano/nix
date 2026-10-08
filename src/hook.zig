@@ -15,9 +15,9 @@ const clipboard = @import("clipboard.zig");
 const segments = @import("segments.zig");
 const hook_proc = @import("hook_proc.zig");
 
-const OnFailure = enum { fallback, abort };
+pub const OnFailure = enum { fallback, abort };
 
-const Config = struct {
+pub const Config = struct {
     name: []const u8,
     hook_key: []const u8,
     run: []const u8 = "",
@@ -29,10 +29,13 @@ const Config = struct {
     max_output_mb: u16 = 64,
 };
 
-const Section = struct {
+pub const Section = struct {
     name: []const u8,
     pairs: std.ArrayList(toml.Pair) = .empty,
 };
+
+pub const PasteEntry = struct { key: []const u8, hook_name: []const u8 };
+pub const Program = struct { owner: []const u8, path: []const u8 };
 
 pub const Save = struct { name: []const u8, content: ?[]const u8 = null };
 pub const Outcome = union(enum) { save: Save, abort };
@@ -44,18 +47,18 @@ pub fn pasteName(app: *App, alias: []const u8, target: []const u8, input: []cons
     const data = Io.Dir.cwd().readFileAlloc(app.io, path, app.arena, .unlimited) catch |e| switch (e) {
         error.FileNotFound => return default,
         else => {
-            warn(app, "hooks.toml", @errorName(e), "");
+            warn(app, "hooks.toml", errorText(e), "");
             return default;
         },
     };
     var selected: []const u8 = "hooks.toml";
     var policy: OnFailure = .fallback;
     const cfg = parseConfig(app.arena, data, alias, &selected, &policy) catch |e| {
-        return failure(app, selected, policy, @errorName(e), "", default);
+        return failure(app, selected, policy, errorText(e), "", default);
     } orelse return default;
     var stderr_tail: []const u8 = "";
     return invoke(app, cfg, alias, target, input, typed_name, &stderr_tail) catch |e| {
-        return failure(app, cfg.name, cfg.on_failure, @errorName(e), stderr_tail, default);
+        return failure(app, cfg.name, cfg.on_failure, errorText(e), stderr_tail, default);
     };
 }
 
@@ -98,7 +101,8 @@ fn checkPasteKey(key: []const u8) !void {
     }
 }
 
-fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, selected: *[]const u8, policy: *OnFailure) !?Config {
+/// Syntax is parsed once; callers validate paste entries and hook tables independently.
+pub fn parseSections(arena: std.mem.Allocator, data: []const u8) ![]Section {
     var sections: std.ArrayList(Section) = .empty;
     var lines = toml.Lines.init(data);
     var cur: ?usize = null;
@@ -120,20 +124,39 @@ fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, se
         },
     };
 
+    return sections.items;
+}
+
+/// Validate one mapping without consulting another mapping or hook table.
+/// pasteKey decodes and checks a [paste] key alone, so a caller can catch a
+/// duplicate even when that entry's value is invalid.
+pub fn pasteKey(arena: std.mem.Allocator, pair: toml.Pair) ![]const u8 {
+    const key = try configKey(arena, pair.key);
+    try checkPasteKey(key);
+    return key;
+}
+
+pub fn validatePasteEntry(arena: std.mem.Allocator, pair: toml.Pair) !PasteEntry {
+    const key = try pasteKey(arena, pair);
+    const value = (try configString(arena, pair.raw, true)) orelse return error.BadPasteValue;
+    return .{ .key = key, .hook_name = value };
+}
+
+fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, selected: *[]const u8, policy: *OnFailure) !?Config {
+    const sections = try parseSections(arena, data);
     const lookup = try pasteLookupKeys(arena, alias);
     var names: std.ArrayList([]const u8) = .empty;
     var chain: ?PasteSelection = null;
     var exact: ?PasteSelection = null;
     var fallback: ?PasteSelection = null;
-    for (sections.items) |section| {
+    for (sections) |section| {
         if (!std.mem.eql(u8, section.name, "paste")) continue;
         for (section.pairs.items) |pair| {
-            const key = try configKey(arena, pair.key);
-            try checkPasteKey(key);
+            const entry = try validatePasteEntry(arena, pair);
+            const key = entry.key;
             for (names.items) |old| if (std.ascii.eqlIgnoreCase(old, key)) return error.DuplicatePasteKey;
             try names.append(arena, key);
-            const value = (try configString(arena, pair.raw, true)) orelse return error.BadPasteValue;
-            const candidate = PasteSelection{ .key = key, .hook_name = value };
+            const candidate = PasteSelection{ .key = key, .hook_name = entry.hook_name };
             if (lookup.chain) |full| if (std.ascii.eqlIgnoreCase(key, full)) {
                 chain = candidate;
             };
@@ -145,18 +168,25 @@ fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, se
     const name = choice.hook_name;
     selected.* = name;
     if (std.mem.eql(u8, name, "off")) {
-        for (sections.items) |section| {
+        for (sections) |section| {
             if (std.mem.eql(u8, section.name, "hook.off")) return error.ReservedHookName;
         }
         return null;
     }
     if (name.len == 0) return error.BadHookName;
+    return try validateHookTable(arena, sections, name, choice.key, policy);
+}
+
+/// Validate every field of one hook table. The policy output preserves abort on
+/// a malformed field so the runtime can apply the selected table's policy.
+pub fn validateHookTable(arena: std.mem.Allocator, sections: []const Section, name: []const u8, hook_key: []const u8, policy: *OnFailure) !Config {
+    if (std.mem.eql(u8, name, "off")) return error.ReservedHookName;
     const table_name = try std.fmt.allocPrint(arena, "hook.{s}", .{name});
     var found = false;
-    var cfg = Config{ .name = name, .hook_key = choice.key };
+    var cfg = Config{ .name = name, .hook_key = hook_key };
     var fields: std.ArrayList([]const u8) = .empty;
     // Read the selected table's failure policy before any other field can fail.
-    for (sections.items) |section| {
+    for (sections) |section| {
         if (!std.mem.eql(u8, section.name, table_name)) continue;
         for (section.pairs.items) |pair| {
             if (!std.mem.eql(u8, pair.key, "on_failure")) continue;
@@ -169,7 +199,7 @@ fn parseConfig(arena: std.mem.Allocator, data: []const u8, alias: []const u8, se
         }
     }
     cfg.on_failure = policy.*;
-    for (sections.items) |section| {
+    for (sections) |section| {
         if (!std.mem.eql(u8, section.name, table_name)) continue;
         if (found) return error.DuplicateHookTable;
         found = true;
@@ -284,10 +314,11 @@ fn sampleText(input: []const u8, line_limit: usize, byte_limit: usize) Sample {
     return .{ .value = input[0..end], .truncated = end < input.len, .lines = lines };
 }
 
-fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: []const u8, typed_name: []const u8, stderr_tail: *[]const u8) !Outcome {
-    const colon = std.mem.indexOfScalar(u8, cfg.run, ':') orelse return error.BadRun;
-    const owner = cfg.run[0..colon];
-    const relative = cfg.run[colon + 1 ..];
+/// Resolve a hook program without printing, prompting, or starting it.
+pub fn resolveProgram(app: *App, run_line: []const u8) !Program {
+    const colon = std.mem.indexOfScalar(u8, run_line, ':') orelse return error.BadRun;
+    const owner = run_line[0..colon];
+    const relative = run_line[colon + 1 ..];
     if (owner.len == 0 or relative.len == 0) return error.BadRun;
     if (paste_name.checkPasteName(relative) != null) return error.BadRunPath;
     const base = (try resolve.resolveAliasPathQuiet(app, owner)) orelse return error.UnknownHookAlias;
@@ -296,7 +327,13 @@ fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: 
     if (!std.ascii.eqlIgnoreCase(ext, ".exe") and !std.ascii.eqlIgnoreCase(ext, ".cmd") and
         !std.ascii.eqlIgnoreCase(ext, ".bat") and !std.ascii.eqlIgnoreCase(ext, ".ps1")) return error.BadHookExtension;
     if (!proc.fileExists(app.io, program)) return error.MissingHookFile;
-    if (!try provenance.gateScript(app, owner, program, .may_prompt)) return error.TrustRefused;
+    return .{ .owner = owner, .path = program };
+}
+
+fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: []const u8, typed_name: []const u8, stderr_tail: *[]const u8) !Outcome {
+    const program_info = try resolveProgram(app, cfg.run);
+    const program = program_info.path;
+    if (!try provenance.gateScript(app, program_info.owner, program, .may_prompt)) return error.TrustRefused;
 
     const stage = try createStage(app);
     defer Io.Dir.cwd().deleteTree(app.io, stage) catch |e| warnCleanup(app, stage, e) catch {};
@@ -433,6 +470,46 @@ fn checkOutputFile(file: []const u8) !void {
     }
 }
 
+/// errorText is the text a paste warning and `--doctor` show for a hook error;
+/// an error without an entry falls back to its name.
+pub fn errorText(e: anyerror) []const u8 {
+    return switch (e) {
+        error.BadConfigSyntax => "syntax error",
+        error.BadPasteKey => "bad [paste] key (no empty parts, no ':')",
+        error.BadPasteValue => "[paste] value must be a string",
+        error.DuplicatePasteKey => "duplicate [paste] key",
+        error.BadHookName => "empty hook name",
+        error.ReservedHookName => "\"off\" is reserved, not a hook name",
+        error.MissingHookTable => "no such [hook.<name>] table",
+        error.DuplicateHookTable => "the hook table is defined twice",
+        error.DuplicateHookKey => "a key is set twice in the hook table",
+        error.UnknownHookKey => "unknown key in the hook table",
+        error.MissingRun => "no run",
+        error.BadRun, error.BadRunPath => "run must be \"<alias>:<relative path>\"",
+        error.BadArgs => "args must be an array of strings",
+        error.BadHookInteger => "a number is out of range",
+        error.BadOnFailure => "on_failure must be \"fallback\" or \"abort\"",
+        error.UnknownHookAlias => "run names an unknown alias",
+        error.MissingHookFile => "the program does not exist",
+        error.BadHookExtension => "the program must be .exe, .cmd, .bat or .ps1",
+        error.TrustRefused => "the program is not approved (nix --trust <alias>)",
+        error.MissingTemp => "neither TEMP nor TMP is set",
+        error.HookTimedOut => "timed out",
+        error.HookExitedNonzero => "exited non-zero",
+        error.ResultUnreadable => "no readable result.json",
+        error.ResultTooLarge => "result.json is over 65536 bytes",
+        error.BadResultJson => "result.json is not valid JSON",
+        error.BadResultSchema => "result.json does not match the schema",
+        error.BadResultName => "the returned name is not allowed",
+        error.BadResultFile => "the returned file is not a plain staging file name",
+        error.BadOutputFile => "the returned file is a link or a folder",
+        error.OutputUnreadable => "the returned file cannot be read",
+        error.OutputTooLarge => "the returned file is over max_output_mb",
+        error.MissingEnforcedName => "enforce without a name",
+        else => @errorName(e),
+    };
+}
+
 fn escaped(arena: std.mem.Allocator, source: []const u8, limit: usize) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     const hex = "0123456789ABCDEF";
@@ -531,6 +608,33 @@ test "config selection and deferred hook validation" {
     try std.testing.expectEqualStrings("tail", with_quote.args[1]);
     try std.testing.expect((try parseConfig(a, data, "wOrK", &selected, &policy)) == null);
     try std.testing.expect((try parseConfig(a, "[paste]\nother = 'namer'\n", "work", &selected, &policy)) == null);
+}
+
+test "public hook validation checks entries independently" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const sections = try parseSections(a,
+        \\[paste]
+        \\good = 'valid'
+        \\"bad@" = 'invalid'
+        \\[hook.valid]
+        \\run = '.nix:hooks/name.cmd'
+        \\[hook.invalid]
+        \\run = '.nix:hooks/name.cmd'
+        \\sample_bytes = 1
+    );
+    const good = try validatePasteEntry(a, sections[0].pairs.items[0]);
+    try std.testing.expectEqualStrings("good", good.key);
+    try std.testing.expectEqualStrings("valid", good.hook_name);
+    try std.testing.expectError(error.BadPasteKey, validatePasteEntry(a, sections[0].pairs.items[1]));
+    var policy: OnFailure = .fallback;
+    const valid = try validateHookTable(a, sections, "valid", good.key, &policy);
+    try std.testing.expectEqualStrings(".nix:hooks/name.cmd", valid.run);
+    policy = .fallback;
+    try std.testing.expectError(error.BadHookInteger, validateHookTable(a, sections, "invalid", "", &policy));
+    try std.testing.expectError(error.MissingHookTable, validateHookTable(a, sections, "absent", "", &policy));
+    try std.testing.expectError(error.BadConfigSyntax, parseSections(a, "[paste\n"));
 }
 
 test "segmented paste lookup drops values and folds ASCII case" {

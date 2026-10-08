@@ -20,6 +20,7 @@ const run_zig = @import("run.zig");
 const compose = @import("compose.zig");
 const actions = @import("actions.zig");
 const jobs = @import("jobs.zig");
+const hook = @import("hook.zig");
 
 // Version baked by build.zig (git describe).
 const build_version = @import("build_options").version;
@@ -188,6 +189,117 @@ fn pathContains(app: *App, dir: []const u8) bool {
         if (same) return true;
     }
     return false;
+}
+
+fn pasteHooks(d: *Doc) !void {
+    const app = d.app;
+    const arena = app.arena;
+    try d.section("Paste hooks  (~/.nix/hooks.toml)");
+    const path = try std.fs.path.join(arena, &.{ app.home, "hooks.toml" });
+    const data = Io.Dir.cwd().readFileAlloc(app.io, path, arena, .unlimited) catch |e| {
+        if (e == error.FileNotFound) {
+            try d.row(.info, "hooks.toml", "none configured");
+        } else try d.row(.fail, "hooks.toml", hook.errorText(e));
+        return;
+    };
+    const sections = hook.parseSections(arena, data) catch |e| {
+        try d.row(.fail, "hooks.toml", hook.errorText(e));
+        return;
+    };
+
+    var seen: std.ArrayList([]const u8) = .empty;
+    var referenced: std.ArrayList([]const u8) = .empty;
+    for (sections) |section| {
+        if (!eql(section.name, "paste")) continue;
+        for (section.pairs.items) |pair| {
+            // The key is registered before its value is checked, so a later
+            // duplicate of an entry with a bad value is still caught.
+            const key = hook.pasteKey(arena, pair) catch |e| {
+                try d.row(.fail, pair.key, hook.errorText(e));
+                continue;
+            };
+            var duplicate = false;
+            for (seen.items) |prior| if (std.ascii.eqlIgnoreCase(prior, key)) {
+                duplicate = true;
+                break;
+            };
+            if (duplicate) {
+                try d.row(.fail, key, hook.errorText(error.DuplicatePasteKey));
+                continue;
+            }
+            try seen.append(arena, key);
+            const entry = hook.validatePasteEntry(arena, pair) catch |e| {
+                try d.row(.fail, key, hook.errorText(e));
+                continue;
+            };
+            const label = try std.fmt.allocPrint(arena, "{s} -> {s}", .{ entry.key, entry.hook_name });
+            if (eql(entry.hook_name, "off")) {
+                try d.row(.ok, label, "");
+                continue;
+            }
+            if (entry.hook_name.len == 0) {
+                try d.row(.fail, label, hook.errorText(error.BadHookName));
+                continue;
+            }
+            try referenced.append(arena, entry.hook_name);
+            const table_name = try std.fmt.allocPrint(arena, "hook.{s}", .{entry.hook_name});
+            var exists = false;
+            for (sections) |candidate| if (eql(candidate.name, table_name)) {
+                exists = true;
+                break;
+            };
+            if (!exists) {
+                try d.row(.fail, label, try std.fmt.allocPrint(arena, "no [hook.{s}]", .{entry.hook_name}));
+                continue;
+            }
+            var policy: hook.OnFailure = .fallback;
+            const mapped_cfg = hook.validateHookTable(arena, sections, entry.hook_name, entry.key, &policy) catch {
+                try d.row(.fail, label, "invalid hook");
+                continue;
+            };
+            const mapped_program = hook.resolveProgram(app, mapped_cfg.run) catch {
+                try d.row(.fail, label, "invalid hook");
+                continue;
+            };
+            _ = provenance.evaluateScript(app, mapped_program.owner, mapped_program.path) catch {
+                try d.row(.fail, label, "invalid hook");
+                continue;
+            };
+            try d.row(.ok, label, "");
+        }
+    }
+
+    for (sections) |section| {
+        if (!std.mem.startsWith(u8, section.name, "hook.")) continue;
+        const name = section.name["hook.".len..];
+        const label = section.name;
+        var policy: hook.OnFailure = .fallback;
+        const cfg = hook.validateHookTable(arena, sections, name, "", &policy) catch |e| {
+            try d.row(.fail, label, hook.errorText(e));
+            try unusedHook(d, label, name, referenced.items);
+            continue;
+        };
+        const program = hook.resolveProgram(app, cfg.run) catch |e| {
+            try d.row(.fail, label, hook.errorText(e));
+            try unusedHook(d, label, name, referenced.items);
+            continue;
+        };
+        const approval = provenance.evaluateScript(app, program.owner, program.path) catch |e| {
+            try d.row(.fail, label, hook.errorText(e));
+            try unusedHook(d, label, name, referenced.items);
+            continue;
+        };
+        switch (approval) {
+            .approved => try d.row(.ok, label, try store.toSlash(arena, program.path)),
+            .unapproved => try d.row(.warn, label, try std.fmt.allocPrint(arena, "needs `nix --trust {s}`", .{program.owner})),
+        }
+        try unusedHook(d, label, name, referenced.items);
+    }
+}
+
+fn unusedHook(d: *Doc, label: []const u8, name: []const u8, referenced: []const []const u8) !void {
+    for (referenced) |ref| if (eql(ref, name)) return;
+    try d.row(.note, label, "unused");
 }
 
 /// cmdDoctor runs read-only environment health checks and reports what the
@@ -600,6 +712,8 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         if (waiting > 0) try d.row(.info, "jobs", try std.fmt.allocPrint(app.arena, "{d} script actions waiting for nix --clean", .{waiting}));
         if (!any and waiting == 0) try d.row(.ok, "jobs", "no script action problems");
     }
+
+    try pasteHooks(&d);
 
     if (json) try renderJson(app, &d) else try renderHuman(app, &d, quiet);
     try app.out.flush();

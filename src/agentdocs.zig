@@ -236,6 +236,7 @@ pub const specs = [_]Spec{
         \\Writes whatever the clipboard holds into the alias dir: text becomes a
         \\.md file, an image becomes a .png, and copied FILES are copied in as
         \\files. An optional name sets the basename.
+        \\A private ~/.nix/hooks.toml hook may name or clean text pastes first; nix --doctor checks it.
         ,
         .agent_use =
         \\Don't run it. It materializes files from state you can't inspect, into

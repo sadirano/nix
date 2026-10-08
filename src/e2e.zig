@@ -150,6 +150,23 @@ fn hasLineFold(hay: []const u8, want: []const u8) bool {
     return false;
 }
 
+fn orderedFragments(hay: []const u8, fragments: []const []const u8) bool {
+    var offset: usize = 0;
+    for (fragments) |fragment| {
+        const pos = std.mem.indexOf(u8, hay[offset..], fragment) orelse return false;
+        offset += pos + fragment.len;
+    }
+    return true;
+}
+
+fn pasteDoctorSection(out: []const u8) []const u8 {
+    const heading = "Paste hooks  (~/.nix/hooks.toml)\n";
+    const start = std.mem.indexOf(u8, out, heading) orelse return "";
+    const body = out[start + heading.len ..];
+    const end = std.mem.indexOf(u8, body, "\nSummary:") orelse body.len;
+    return body[0..end];
+}
+
 /// hasRow reports whether any line's first whitespace-delimited token equals
 /// `name` — i.e. a table row for that entry (not a substring anywhere).
 fn hasRow(hay: []const u8, name: []const u8) bool {
@@ -3032,6 +3049,10 @@ pub fn main(init: std.process.Init) !void {
         const body = "first\r\nsecond\r\n";
         var r = try hookPaste(&c, clip, body, null);
         c.check(hookSavedDefault(&c, r, target, body), "text paste without hooks.toml keeps the timestamped md save", r);
+        r = try c.run(&.{"--doctor"});
+        const none_section = pasteDoctorSection(r.out);
+        c.check(std.mem.count(u8, none_section, "\n") == 1 and
+            std.mem.indexOf(u8, none_section, "none configured") != null, "doctor reports one info row without hooks.toml", r);
 
         const cfg =
             \\[hook.namer]
@@ -3050,6 +3071,8 @@ pub fn main(init: std.process.Init) !void {
         c.check(try hookStageEmpty(&c, hook_temp), "staging is removed after hook success", null);
         r = try hookPaste(&c, clip, body, null);
         c.check(hookSavedAt(&c, r, join(&c, &.{ target, "logs", "app-1.log" }), body), "a repeated hook name uses uniquePath once", r);
+        c.check(std.mem.indexOfScalar(u8, trim(r.out), '/') == null and
+            std.mem.indexOfScalar(u8, trim(readFileOr(&c, clip, "")), '/') == null, "nested hook name prints and copies a host-separator path after suffixing", r);
 
         try writeFile(&c, hook_file,
             \\@echo off
@@ -3108,6 +3131,12 @@ pub fn main(init: std.process.Init) !void {
         r = try hookPaste(&c, clip, body, "typed.md");
         c.check(hookSavedAt(&c, r, join(&c, &.{ target, "typed.md" }), body) and
             proc.pathExists(io, marker), "typed paste name runs the hook", r);
+        r = try hookPaste(&c, clip, body, "drafts/today");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "drafts", "today.md" }), body), "typed nested name saves under its subdirectory", r);
+        r = try hookPaste(&c, clip, body, "drafts/today");
+        c.check(hookSavedAt(&c, r, join(&c, &.{ target, "drafts", "today-1.md" }), body) and
+            std.mem.indexOfScalar(u8, trim(r.out), '/') == null and
+            std.mem.indexOfScalar(u8, trim(readFileOr(&c, clip, "")), '/') == null, "typed nested name prints and copies a host-separator path after suffixing", r);
 
         const request_copy = join(&c, &.{ hook_temp, "hook-request.json" });
         try writeFile(&c, hook_file,
@@ -3503,7 +3532,7 @@ pub fn main(init: std.process.Init) !void {
             "> \"%NIX_HOOK_RESULT%\" echo {\"version\":1,\"status\":\"ok\",\"outputs\":[{\"enforce\":true}]}\r\n");
         r = try hookPasteAlias(&c, "logs@work", clip, body, "typed-fallback.md");
         c.check(hookSavedAt(&c, r, join(&c, &.{ logs_target, "typed-fallback.md" }), body) and
-            std.mem.count(u8, r.err, "paste hook \"chain\" failed: MissingEnforcedName") == 1 and
+            std.mem.count(u8, r.err, "paste hook \"chain\" failed: enforce without a name") == 1 and
             std.mem.count(u8, r.err, "\n") == 1 and !proc.pathExists(io, plain_marker) and !proc.pathExists(io, star_marker), "missing enforced name falls back once without another hook", r);
 
         const abort_chain_hooks = try std.mem.concat(arena, u8, &.{
@@ -3513,7 +3542,7 @@ pub fn main(init: std.process.Init) !void {
         r = try hookPasteAlias(&c, "logs@work", clip, body, "typed-abort.md");
         c.check(r.code == 1 and trim(r.out).len == 0 and
             !proc.pathExists(io, join(&c, &.{ logs_target, "typed-abort.md" })) and
-            std.mem.count(u8, r.err, "paste hook \"chain\" failed: MissingEnforcedName") == 1 and
+            std.mem.count(u8, r.err, "paste hook \"chain\" failed: enforce without a name") == 1 and
             std.mem.count(u8, r.err, "\n") == 1 and !proc.pathExists(io, plain_marker) and !proc.pathExists(io, star_marker), "missing enforced name aborts without a save or another hook", r);
 
         try writeFile(&c, chain_file, chain_start ++
@@ -3542,8 +3571,89 @@ pub fn main(init: std.process.Init) !void {
         r = try hookPasteAlias(&c, "logs@work", clip, body, null);
         c.check(hookSavedDefault(&c, r, logs_target, body) and !proc.pathExists(io, chain_marker) and
             !proc.pathExists(io, plain_marker) and
-            std.mem.count(u8, r.err, "paste hook \"hooks.toml\" failed: BadPasteKey") == 1, "invalid segment key falls back with the hooks.toml label", r);
+            std.mem.count(u8, r.err, "paste hook \"hooks.toml\" failed: bad [paste] key") == 1, "invalid segment key falls back with the hooks.toml label", r);
         c.check(try hookStageEmpty(&c, hook_temp), "M3 hook staging is removed", null);
+
+        try writeFile(&c, hooks_file, "[paste\nph = 'valid'\n");
+        r = try c.run(&.{"--doctor"});
+        const syntax_section = pasteDoctorSection(r.out);
+        c.check(r.code == 1 and std.mem.count(u8, syntax_section, "[fail]") == 1 and
+            std.mem.indexOf(u8, syntax_section, "syntax error") != null and
+            std.mem.indexOf(u8, syntax_section, "[ ok ]") == null, "doctor stops the paste section after one syntax error", r);
+
+        const external = join(&c, &.{ root, "h4-external" });
+        try util.mkdirAll(io, external);
+        const external_registration = try c.run(&.{ "h4external", external });
+        c.check(external_registration.code == 0, "doctor fixture registers an external hook alias", external_registration);
+        const doctor_marker = join(&c, &.{ hook_temp, "h4-doctor-launched.txt" });
+        try writeFile(&c, join(&c, &.{ external, "check.cmd" }), "@echo off\r\n> \"%TEMP%\\h4-doctor-launched.txt\" echo ran\r\n");
+        try writeFile(&c, hooks_file,
+            \\[paste]
+            \\ph = 'valid'
+            \\PH = 'valid'
+            \\"bad@" = 'valid'
+            \\skip = 'off'
+            \\absent = 'missing'
+            \\broken = 'invalid'
+            \\missingfile = 'gone'
+            \\outside = 'unapproved'
+            \\[hook.valid]
+            \\run = '.nix:hooks/namer.cmd'
+            \\[hook.invalid]
+            \\run = '.nix:hooks/namer.cmd'
+            \\sample_lines = 0
+            \\[hook.gone]
+            \\run = '.nix:hooks/absent-h4.cmd'
+            \\[hook.unapproved]
+            \\run = 'h4external:check.cmd'
+            \\[hook.unused]
+            \\run = '.nix:hooks/namer.cmd'
+        );
+        r = try c.run(&.{"--doctor"});
+        const mixed_section = pasteDoctorSection(r.out);
+        c.check(r.code == 1 and orderedFragments(mixed_section, &.{
+            "[ ok ] ph -> valid",
+            "[fail] PH",
+            "[fail] \"bad@\"",
+            "[ ok ] skip -> off",
+            "[fail] absent -> missing",
+            "[fail] broken -> invalid",
+            "[fail] missingfile -> gone",
+            "[ ok ] outside -> unapproved",
+            "[ ok ] hook.valid",
+            "[fail] hook.invalid",
+            "[fail] hook.gone",
+            "[warn] hook.unapproved",
+            "[ ok ] hook.unused",
+            "[note] hook.unused",
+        }) and std.mem.indexOf(u8, mixed_section, "duplicate [paste] key") != null and
+            std.mem.indexOf(u8, mixed_section, "bad [paste] key") != null and
+            std.mem.indexOf(u8, mixed_section, "no [hook.missing]") != null and
+            std.mem.indexOf(u8, mixed_section, "needs `nix --trust h4external`") != null and
+            !proc.pathExists(io, doctor_marker), "doctor reports independent paste mappings and hooks in file order without launching", r);
+        r = try c.run(&.{ "--doctor", "-q" });
+        const quiet_section = pasteDoctorSection(r.out);
+        c.check(r.code == 1 and std.mem.indexOf(u8, quiet_section, "[fail]") != null and
+            std.mem.indexOf(u8, quiet_section, "[warn]") != null and
+            std.mem.indexOf(u8, quiet_section, "[ ok ]") == null and
+            std.mem.indexOf(u8, quiet_section, "[note]") == null, "doctor quiet keeps only paste failures and warnings", r);
+        r = try c.run(&.{ "--doctor", "--json" });
+        const doctor_json: ?std.json.Value = std.json.parseFromSliceLeaky(std.json.Value, arena, r.out, .{}) catch null;
+        const has_paste_section = if (doctor_json) |value| blk: {
+            if (value != .object) break :blk false;
+            const sections = value.object.get("sections") orelse break :blk false;
+            if (sections != .array) break :blk false;
+            for (sections.array.items) |section| {
+                if (section != .object) continue;
+                const name = section.object.get("name") orelse continue;
+                const rows = section.object.get("rows") orelse continue;
+                if (name == .string and std.mem.eql(u8, name.string, "Paste hooks  (~/.nix/hooks.toml)") and
+                    rows == .array and rows.array.items.len == 14) break :blk true;
+            }
+            break :blk false;
+        } else false;
+        c.check(r.code == 1 and has_paste_section, "doctor JSON carries the paste hooks section and rows", r);
+        Io.Dir.cwd().deleteFile(io, hooks_file) catch {};
     }
 
     // --- doctor: full, quiet, json -----------------------------------------------------
