@@ -1227,9 +1227,10 @@ in one reviewable file.
 - The repo commits `.nix/actions.toml` (build/test/serve), `.nix/env.toml`
   (dev defaults, `${secret:...}` references) and `.nix/segments.toml`
   (`docs`, `api`, ...).
-- Each person adds `~/.nix/actions/acme.toml` (their own shortcuts; same names
-  override theirs only), `~/.nix/env/acme.toml` (their DB, their region) and
-  secrets via `nix --secret set`.
+- Each person adds `~/.nix/actions/acme.toml` (their own shortcuts; a name
+  the project also defines keeps the project's command), `~/.nix/env/acme.toml`
+  (their DB, their region; this one does win per key) and secrets via
+  `nix --secret set`.
 - Nobody commits a `.env`, nobody's local tweaks show up in `git status`.
 
 ### Workflow J - Clipboard as an inbox
