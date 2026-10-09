@@ -264,6 +264,49 @@ pub fn parseStringArray(arena: std.mem.Allocator, text: []const u8) ![][]const u
     return out.items;
 }
 
+/// parseCheckedArray keeps malformed elements visible to callers that must
+/// report them, instead of silently dropping them as parseStringArray does.
+pub const CheckedElement = union(enum) { string: []const u8, invalid: []const u8 };
+
+pub fn parseCheckedArray(arena: std.mem.Allocator, text: []const u8) !?[]CheckedElement {
+    const body = std.mem.trim(u8, text, " \t\r\n");
+    if (body.len < 2 or body[0] != '[' or body[body.len - 1] != ']') return null;
+    var out: std.ArrayList(CheckedElement) = .empty;
+    var start: usize = 1;
+    var quote: u8 = 0;
+    var escaped = false;
+    var i: usize = 1;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (quote != 0) {
+            if (escaped) {
+                escaped = false;
+            } else if (quote == '"' and c == '\\') {
+                escaped = true;
+            } else if (c == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            quote = c;
+            continue;
+        }
+        if (c != ',' and i != body.len - 1) continue;
+        const token = std.mem.trim(u8, body[start..i], " \t\r\n");
+        if (token.len > 0) {
+            const value = try unquote(arena, token);
+            if (value != null and token[token.len - 1] == token[0]) {
+                try out.append(arena, .{ .string = value.? });
+            } else {
+                try out.append(arena, .{ .invalid = try arena.dupe(u8, token) });
+            }
+        }
+        start = i + 1;
+    }
+    return out.items;
+}
+
 // ---- writing --------------------------------------------------------------------
 
 /// appendString writes `s` as a value `unquote` reads back exactly: a literal

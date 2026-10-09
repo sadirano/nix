@@ -8,6 +8,8 @@ const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
 const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
+const search_merge = @import("search_merge.zig");
+const search_query = @import("search_query.zig");
 
 const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
@@ -22,12 +24,12 @@ const openSelectionsInEditor = open_zig.openSelectionsInEditor;
 
 pub fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return findIn(app, target, args);
+    return findIn(app, alias, target, args);
 }
 
 /// findIn runs `f` in one alias dir. fd leads (portable); a Windows box without fd uses es; POSIX find is the last resort.
-pub fn findIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
-    return switch (try findPick(app, dir, args)) {
+pub fn findIn(app: *App, alias: []const u8, dir: []const u8, args: [][]const u8) !u8 {
+    return switch (try findPick(app, alias, dir, args)) {
         .selected => |sel| openFindSelections(app, dir, sel),
         .cancelled => 0,
         .failed => 1,
@@ -44,7 +46,7 @@ pub const FindPick = union(enum) { selected: []const u8, cancelled, failed, prin
 /// findPick runs the fuzzy file picker in `dir` and returns the selection
 /// without acting on it — shared by `f` (which opens) and `y <alias> <pat>`
 /// (which copies the files to the clipboard).
-pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
+pub fn findPick(app: *App, alias: []const u8, dir: []const u8, args: [][]const u8) !FindPick {
     // Unattended (--no-prompt, or no console to draw on) the rows go to stdout,
     // so no picker runs and fzf is not required at all —
     // check for it only on the interactive path.
@@ -61,8 +63,24 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
         // Colour is for the picker's --ansi; printed rows must stay clean.
         try prod.appendSlice(app.arena, &.{ "fd", "--type", "f", "--color", if (app_zig.hasConsole(app)) "always" else "never" });
         for (extras) |x| try prod.append(app.arena, x);
-        if (query.len > 0) try prod.append(app.arena, query);
+        if (query.len > 0) {
+            try prod.append(app.arena, "--full-path");
+            try prod.append(app.arena, if (search_query.smartCase(query)) "--case-sensitive" else "--ignore-case");
+            try prod.append(app.arena, try search_query.rewrite(app.arena, dir, query));
+        }
         // Rows stay cwd-relative (no path arg): the producer runs in the alias dir.
+        const folders = try search_merge.extraFolders(app, alias, dir);
+        if (folders.len > 0) {
+            var listers: std.ArrayList([]const []const u8) = .empty;
+            try listers.append(app.arena, prod.items);
+            for (folders) |folder| {
+                var more: std.ArrayList([]const u8) = .empty;
+                try more.appendSlice(app.arena, prod.items);
+                try more.appendSlice(app.arena, &.{ "--hidden", "--no-ignore", "--search-path", try std.fmt.allocPrint(app.arena, "./{s}", .{folder}) });
+                try listers.append(app.arena, more.items);
+            }
+            prod.items = try search_merge.wrap(app, .find, dir, folders, listers.items);
+        }
     } else if (proc.is_windows and proc.findInPath(app.arena, app.io, app.env(), "es") != null) {
         try prod.appendSlice(app.arena, &.{ "es", "-path", "./" });
         if (query.len > 0) try prod.append(app.arena, query);
@@ -79,7 +97,10 @@ pub fn findPick(app: *App, dir: []const u8, args: [][]const u8) !FindPick {
         return .failed;
     }
 
-    if (!app_zig.hasConsole(app)) return .{ .printed = try open_zig.printProducerRows(app, dir, prod.items) };
+    if (!app_zig.hasConsole(app)) return .{ .printed = if (prod.items.len > 1 and std.mem.eql(u8, prod.items[1], "--search-producer"))
+        try search_merge.printRows(app, dir, prod.items)
+    else
+        try open_zig.printProducerRows(app, dir, prod.items) };
 
     const preview = if (proc.is_windows)
         try std.fmt.allocPrint(app.arena, "\"{s}\" --preview \"{{}}\"", .{exePath(app)})

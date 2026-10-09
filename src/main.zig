@@ -356,6 +356,7 @@ fn dispatchSystem(app: *App, flag: []const u8, rest: [][]const u8) !u8 {
         .preview => cmdPreview(app, try std.mem.join(app.arena, " ", rest)),
         .walk => @import("walk.zig").cmdWalk(app, rest),
         .rga_preview => cmdRgaPreview(app, try std.mem.join(app.arena, " ", rest)),
+        .search_producer => @import("search_merge.zig").cmdProducer(app, rest),
     };
 }
 
@@ -658,7 +659,7 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         const exact = if (std.fs.path.isAbsolute(f)) f else try std.fs.path.join(app.arena, &.{ dir, f });
         if (proc.fileExists(app.io, exact)) return exploreTarget(app, exact);
     }
-    return switch (try findPick(app, dir, action_args)) {
+    return switch (try findPick(app, alias, dir, action_args)) {
         .selected => |sel| exploreSelections(app, dir, sel),
         .cancelled => 0,
         .failed => 1,
@@ -704,7 +705,7 @@ fn cmdPaste(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 fn cmdYank(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
     if (!hasPattern(action_args)) return paste.yankPathText(app, alias, target);
-    return switch (try findPick(app, target, action_args)) {
+    return switch (try findPick(app, alias, target, action_args)) {
         .selected => |sel| paste.yankSelectionFiles(app, alias, target, sel),
         .cancelled => 0,
         .failed => 1,
@@ -1084,6 +1085,10 @@ test {
     _ = grammar;
     _ = @import("png.zig"); // not imported by main.zig; reference so its tests run
     _ = @import("toml.zig"); // likewise
+    _ = @import("search_config.zig");
+    _ = @import("search_query.zig");
+    _ = @import("search_merge.zig");
+    _ = @import("job.zig");
 }
 
 test "desugarMultiCall: a wrapper's lone --agent names its own slot" {

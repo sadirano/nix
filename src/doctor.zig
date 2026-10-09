@@ -418,6 +418,15 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
         try d.row(.fail, "=> uses", "...but no search root exists, so the picker will find nothing");
     }
 
+    try d.row(.info, "Search", try std.fmt.allocPrint(app.arena, "include = [{s}]", .{try std.mem.join(app.arena, ", ", cfg.search.include)}));
+    for (cfg.search.rejected) |entry| try d.row(.warn, "Search", entry);
+    var search_aliases: std.ArrayList([]const u8) = .empty;
+    for (cfg.search.aliases) |entry| {
+        if (!entry.valid) continue;
+        try search_aliases.append(app.arena, try std.fmt.allocPrint(app.arena, "{s}=[{s}]", .{ entry.name, try std.mem.join(app.arena, ", ", entry.include) }));
+    }
+    if (search_aliases.items.len > 0) try d.row(.note, "Search", try std.fmt.allocPrint(app.arena, "alias overrides: {s}", .{try std.mem.join(app.arena, "; ", search_aliases.items)}));
+
     try d.section("Search scope  (used only when the picker falls back to fd/find)");
     {
         switch (roots.origin) {

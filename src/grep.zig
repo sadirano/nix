@@ -10,6 +10,7 @@ const proc = @import("proc.zig");
 const config = @import("config.zig");
 const resolve = @import("resolve.zig");
 const open_zig = @import("open.zig");
+const search_merge = @import("search_merge.zig");
 
 const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
@@ -48,7 +49,7 @@ fn relaxNonASCII(arena: std.mem.Allocator, query: []const u8) !?[]const u8 {
 
 pub fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     const target = (try resolveAliasPath(app, alias)) orelse return 1;
-    return grepIn(app, target, args);
+    return grepIn(app, alias, target, args);
 }
 
 /// grepIn runs `g` in one alias dir. `--all`/`-a` (or `[grep] all = true` in config) routes to
@@ -56,7 +57,7 @@ pub fn cmdGrep(app: *App, alias: []const u8, args: [][]const u8) !u8 {
 /// office docs, archives, etc., where line numbers and a bat/editor open make no
 /// sense. So rga gets its own pipeline (grepRga); plain rg keeps grepRg. The
 /// toggle is stripped before the remaining args drive whichever runs.
-pub fn grepIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
+pub fn grepIn(app: *App, alias: []const u8, dir: []const u8, args: [][]const u8) !u8 {
     const cfg = app_zig.loadConfig(app) catch config.Config{};
     var use_all = cfg.grep_all;
     var filtered: std.ArrayList([]const u8) = .empty;
@@ -67,8 +68,8 @@ pub fn grepIn(app: *App, dir: []const u8, args: [][]const u8) !u8 {
         }
         try filtered.append(app.arena, a);
     }
-    if (use_all) return grepRga(app, dir, filtered.items);
-    return grepRg(app, dir, filtered.items);
+    if (use_all) return grepRga(app, alias, dir, filtered.items);
+    return grepRg(app, alias, dir, filtered.items);
 }
 
 /// buildSearchArgv assembles the argv prefix shared by grepRg and grepRga: the
@@ -102,9 +103,47 @@ fn requireFzf(app: *App) !bool {
     return true;
 }
 
+fn mergedArgv(app: *App, dir: []const u8, base: []const []const u8, folders: []const []const u8) ![][]const u8 {
+    var listers: std.ArrayList([]const []const u8) = .empty;
+    try listers.append(app.arena, base);
+    for (folders) |folder| {
+        var more: std.ArrayList([]const u8) = .empty;
+        try more.appendSlice(app.arena, base);
+        try more.appendSlice(app.arena, &.{ "--hidden", "--no-ignore", "--", try std.fmt.allocPrint(app.arena, "./{s}", .{folder}) });
+        try listers.append(app.arena, more.items);
+    }
+    return search_merge.wrap(app, .grep, dir, folders, listers.items);
+}
+
+fn rgaConfigPath(app: *App) !?[]const u8 {
+    if (proc.is_windows) {
+        const roaming = app.getEnv("APPDATA") orelse return null;
+        return try std.fs.path.join(app.arena, &.{ roaming, "ripgrep-all", "config", "config.jsonc" });
+    }
+    if (@import("builtin").os.tag == .macos) {
+        const home = app.getEnv("HOME") orelse return null;
+        return try std.fs.path.join(app.arena, &.{ home, "Library", "Application Support", "ripgrep-all", "config.jsonc" });
+    }
+    const root = app.getEnv("XDG_CONFIG_HOME") orelse blk: {
+        const home = app.getEnv("HOME") orelse return null;
+        break :blk try std.fs.path.join(app.arena, &.{ home, ".config" });
+    };
+    return try std.fs.path.join(app.arena, &.{ root, "ripgrep-all", "config.jsonc" });
+}
+
+fn ensureRgaConfig(app: *App, dir: []const u8) !bool {
+    if (try rgaConfigPath(app)) |path| {
+        if (proc.fileExists(app.io, path)) return true;
+    }
+    // rga generates its config on first use. Two simultaneous first runs race
+    // on Windows, so initialize it once before starting the search listers.
+    const ready = try proc.runCaptured(app.arena, app.io, &.{ "rga", "--rga-list-adapters" }, dir, null);
+    return ready.code == 0;
+}
+
 /// grepRg is the classic `g`: ripgrep → fzf over file:line:text, bat preview,
 /// selections opened in the editor at the matched line.
-fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
+fn grepRg(app: *App, alias: []const u8, dir: []const u8, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env(), "rg") == null) {
         try app.err.writeAll("nix: ripgrep ('rg') not found on PATH\n");
         return 1;
@@ -123,9 +162,12 @@ fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
     // Colour exists for fzf's --ansi; printed rows stay clean so `file:line:text`
     // survives being parsed.
     var rg = try buildSearchArgv(app, "rg", relaxed, extras);
-    if (query.len > 0) try rg.append(app.arena, query);
+    const folders = try search_merge.extraFolders(app, alias, dir);
+    if (folders.len > 0) try rg.append(app.arena, "--line-buffered");
+    if (query.len > 0) try rg.appendSlice(app.arena, &.{ "-e", query });
+    if (folders.len > 0) rg.items = try mergedArgv(app, dir, rg.items, folders);
 
-    if (!app_zig.hasConsole(app)) return open_zig.printProducerRows(app, dir, rg.items);
+    if (!app_zig.hasConsole(app)) return if (folders.len > 0) search_merge.printRows(app, dir, rg.items) else open_zig.printProducerRows(app, dir, rg.items);
 
     // Rows are cwd-relative (`file:line:text`), so fzf's `:`-split fields feed
     // bat directly.
@@ -157,7 +199,7 @@ fn grepRg(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
 /// "line" inside a PDF is really `Page N`, not an editor line — so openRgaSelections
 /// sends default-app files (PDF/docx/…) to the OS handler and only text hits to
 /// the editor at their line.
-fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
+fn grepRga(app: *App, alias: []const u8, dir: []const u8, gargs: [][]const u8) !u8 {
     if (proc.findInPath(app.arena, app.io, app.env(), "rga") == null) {
         try app.err.writeAll("nix: ripgrep-all ('rga') not found on PATH\n");
         return 1;
@@ -177,10 +219,14 @@ fn grepRga(app: *App, dir: []const u8, gargs: [][]const u8) !u8 {
 
     // Colour exists for fzf's --ansi; printed rows stay clean for parsing.
     var rga = try buildSearchArgv(app, "rga", relaxed, extras);
+    const folders = try search_merge.extraFolders(app, alias, dir);
+    if (folders.len > 0 and !try ensureRgaConfig(app, dir)) return 2;
+    if (folders.len > 0) try rga.append(app.arena, "--line-buffered");
     try rga.append(app.arena, "-e");
     try rga.append(app.arena, query);
+    if (folders.len > 0) rga.items = try mergedArgv(app, dir, rga.items, folders);
 
-    if (!app_zig.hasConsole(app)) return open_zig.printProducerRows(app, dir, rga.items);
+    if (!app_zig.hasConsole(app)) return if (folders.len > 0) search_merge.printRows(app, dir, rga.items) else open_zig.printProducerRows(app, dir, rga.items);
 
     // Preview gets the whole highlighted row ({}) and parses file:line itself,
     // via our `--rga-preview` verb. Passing the full row (rather than separate

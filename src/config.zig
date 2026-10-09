@@ -7,6 +7,7 @@ const Io = std.Io;
 const store = @import("store.zig");
 const util = @import("util.zig");
 const toml = @import("toml.zig");
+const search_config = @import("search_config.zig");
 const lower = util.lowerDup;
 
 pub const Shortcut = struct { builtin: []const u8, custom: []const u8 };
@@ -40,6 +41,8 @@ pub const Config = struct {
     /// [grep] all = true makes `g` search with ripgrep-all (rga) by default,
     /// as if `--all` were always passed. The per-search flag still works too.
     grep_all: bool = false,
+    /// Extra folders for f/y/s/g, with optional per-alias replacement lists.
+    search: search_config.Config = .{},
     /// [shells] executable overrides. Empty uses the conventional command name.
     shell_bash: []const u8 = "",
     shell_pwsh: []const u8 = "",
@@ -300,6 +303,10 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         }
         if (std.mem.eql(u8, section, "grep")) {
             if (std.mem.eql(u8, key, "all")) cfg.grep_all = parseBool(toml.unquoteLoose(val_start));
+            continue;
+        }
+        if (std.mem.eql(u8, section, "search") or std.mem.eql(u8, section, "search.alias")) {
+            try search_config.parseValue(arena, &cfg.search, &lines, section, key, val_start);
             continue;
         }
         if (std.mem.eql(u8, section, "bin")) {

@@ -142,6 +142,11 @@ fn hasLine(hay: []const u8, want: []const u8) bool {
     return false;
 }
 
+fn searchExpected(c: *Ctx, path: []const u8) ![]const u8 {
+    if (!proc.is_windows or c.env.get("MSYSTEM") != null) return path;
+    return std.mem.replaceOwned(u8, c.arena, path, "/", "\\");
+}
+
 /// hasLineFold is hasLine with case-insensitive comparison (for lines carrying
 /// Windows paths, which round-trip through the store case-normalized).
 fn hasLineFold(hay: []const u8, want: []const u8) bool {
@@ -281,6 +286,21 @@ extern "kernel32" fn CreateFileW(
     flags: u32,
     template: ?std.os.windows.HANDLE,
 ) callconv(.winapi) std.os.windows.HANDLE;
+extern "kernel32" fn OpenProcess(u32, i32, u32) callconv(.winapi) ?std.os.windows.HANDLE;
+extern "kernel32" fn WaitForSingleObject(std.os.windows.HANDLE, u32) callconv(.winapi) u32;
+
+fn exitsWithin(child: *std.process.Child, ms: u32) bool {
+    if (comptime !proc.is_windows) return false;
+    return WaitForSingleObject(child.id.?, ms) == 0;
+}
+
+fn processAlive(pid_text: []const u8) bool {
+    if (comptime !proc.is_windows) return false;
+    const pid = std.fmt.parseInt(u32, trim(pid_text), 10) catch return false;
+    const handle = OpenProcess(0x100000, 0, pid) orelse return false;
+    defer std.os.windows.CloseHandle(handle);
+    return WaitForSingleObject(handle, 0) == 258;
+}
 
 /// A zero share mode makes a sibling unreadable to the child process while
 /// the harness keeps this handle open.
@@ -2441,6 +2461,134 @@ pub fn main(init: std.process.Init) !void {
         } else {
             c.skip("--no-prompt --grep prints uncoloured file:line:text", "rg");
             c.skip("--no-prompt --grep reports no matches with exit 1", "rg");
+        }
+    }
+
+    // --- configured search folders and path-aware fd patterns --------------------------
+    {
+        const repo = join(&c, &.{ root, "crazy-repo" });
+        try writeFile(&c, join(&c, &.{ repo, ".gitignore" }), "/.nix/shared/\nnode_modules/\n");
+        if (c.has("git")) {
+            const init_git = try c.runCommand(&.{ "git", "init", "--quiet", repo }, null);
+            c.check(init_git.code == 0, "search fixture is a git repository", init_git);
+        } else c.skip("search fixture is a git repository", "git");
+        try writeFile(&c, join(&c, &.{ repo, ".nix", "shared", "x", "hidden-x.txt" }), "needle\n");
+        try writeFile(&c, join(&c, &.{ repo, "node_modules", "ignored-x.txt" }), "needle\n");
+        try writeFile(&c, join(&c, &.{ repo, ".hidden", "secret-x.txt" }), "needle\n");
+        try writeFile(&c, join(&c, &.{ repo, "src", "main.zig" }), "needle\n");
+        try writeFile(&c, join(&c, &.{ repo, "src", "crazy.txt" }), "plain\n");
+        try writeFile(&c, join(&c, &.{ repo, "notes", "crazy", "b.md" }), "plain\n");
+        try writeFile(&c, join(&c, &.{ repo, "Readme.md" }), "plain\n");
+        try writeFile(&c, join(&c, &.{ repo, "Docs", "Readme.md" }), "plain\n");
+        try writeFile(&c, join(&c, &.{ repo, "readme-old", "x.txt" }), "plain\n");
+        try writeFile(&c, join(&c, &.{ repo, "notes.md" }), "plain\n");
+        try writeFile(&c, join(&c, &.{ repo, "docs2", "notes-old.md" }), "plain\n");
+        try writeFile(&c, join(&c, &.{ repo, "--help", "-dash.txt" }), "-needle\n");
+        const registered = try c.run(&.{ "s1", repo });
+        c.check(registered.code == 0, "search fixture alias registered", registered);
+        const cfg_path = join(&c, &.{ home, "config.toml" });
+        const had_config = proc.pathExists(io, cfg_path);
+        const old_config = if (had_config) readFileOr(&c, cfg_path, "") else "";
+        defer {
+            if (had_config) {
+                writeFile(&c, cfg_path, old_config) catch {};
+            } else {
+                Io.Dir.cwd().deleteFile(io, cfg_path) catch {};
+            }
+        }
+        if (c.has("fd") and c.has("git")) {
+            var r = try c.run(&.{ "s1", "--no-prompt", "--find", "x" });
+            c.check(r.code == 0 and hasLine(r.out, try searchExpected(&c, ".nix/shared/x/hidden-x.txt")) and
+                std.mem.indexOf(u8, r.out, "node_modules") == null and std.mem.indexOf(u8, r.out, ".hidden") == null and
+                std.mem.indexOf(u8, r.out, ".git") == null, "f includes configured hidden folder without other ignored trees", r);
+            const Case = struct { pat: []const u8, yes: []const []const u8, no: []const []const u8 = &.{} };
+            const cases = [_]Case{
+                .{ .pat = "crazy", .yes = &.{ "notes/crazy/b.md", "src/crazy.txt" }, .no = &.{ "Readme.md", "src/main.zig" } },
+                .{ .pat = "/readme", .yes = &.{ "Readme.md", "Docs/Readme.md", "readme-old/x.txt" } },
+                .{ .pat = "Readme", .yes = &.{ "Readme.md", "Docs/Readme.md" }, .no = &.{"readme-old/x.txt"} },
+                .{ .pat = "src/main", .yes = &.{"src/main.zig"} },
+                .{ .pat = "^src", .yes = &.{ "src/main.zig", "src/crazy.txt" }, .no = &.{"notes/crazy/b.md"} },
+                .{ .pat = "^notes", .yes = &.{ "notes.md", "notes/crazy/b.md" } },
+                .{ .pat = "b\\.md$", .yes = &.{"notes/crazy/b.md"} },
+                .{ .pat = "/notes", .yes = &.{ "docs2/notes-old.md", "notes.md", "notes/crazy/b.md" } },
+            };
+            for (cases) |case| {
+                r = try c.run(&.{ "s1", "--no-prompt", "--find", case.pat });
+                var ok = r.code == 0;
+                for (case.yes) |path| ok = ok and hasLine(r.out, try searchExpected(&c, path));
+                for (case.no) |path| ok = ok and !hasLine(r.out, try searchExpected(&c, path));
+                c.check(ok, try std.fmt.allocPrint(arena, "fd pattern {s} matches relative names and paths", .{case.pat}), r);
+            }
+            r = try c.run(&.{ "s1", "--no-prompt", "--find", "zzznomatchzzz" });
+            c.check(r.code == 1, "merged f returns 1 with no rows", r);
+            try writeFile(&c, cfg_path, "[search.alias]\ns1 = []\n");
+            r = try c.run(&.{ "s1", "--no-prompt", "--find", "hidden-x" });
+            c.check(r.code == 1 and !hasLine(r.out, try searchExpected(&c, ".nix/shared/x/hidden-x.txt")), "per-alias empty list replaces default", r);
+            try writeFile(&c, cfg_path, "[search]\ninclude = ['missing-folder']\n");
+            r = try c.run(&.{ "s1", "--no-prompt", "--find", "hidden-x" });
+            c.check(r.code == 1 and std.mem.indexOf(u8, r.err, "invalid") == null, "missing extra folder is skipped silently", r);
+            try writeFile(&c, cfg_path, "[search]\ninclude = ['.nix/shared', '../outside', 5]\n");
+            r = try c.run(&.{ "s1", "--no-prompt", "--find", "hidden-x" });
+            c.check(r.code == 0 and hasLine(r.out, try searchExpected(&c, ".nix/shared/x/hidden-x.txt")) and
+                std.mem.indexOf(u8, r.err, "../outside") != null and std.mem.indexOf(u8, r.err, "5") != null, "invalid search entries warn and valid entries remain", r);
+            r = try c.run(&.{"--doctor"});
+            c.check(std.mem.indexOf(u8, r.out, "Search") != null and std.mem.indexOf(u8, r.out, "../outside") != null and
+                std.mem.indexOf(u8, r.out, "5") != null, "doctor reports effective search list and rejected entries", r);
+            try writeFile(&c, cfg_path, "[search]\ninclude = ['src']\n");
+            r = try c.run(&.{ "s1", "--no-prompt", "--find", "main" });
+            c.check(r.code == 0 and std.mem.count(u8, r.out, try searchExpected(&c, "src/main.zig")) == 1, "visible extra folder rows are deduplicated", r);
+            try writeFile(&c, cfg_path, "[search]\ninclude = ['--help']\n");
+            r = try c.run(&.{ "s1", "--no-prompt", "--find", "-dash" });
+            c.check(r.code == 0 and std.mem.count(u8, r.out, try searchExpected(&c, "--help/-dash.txt")) == 1, "dash-leading folder and fd query remain data", r);
+        } else c.skip("configured fd folder and relative path searches", "fd and git");
+        if (c.has("rg") and c.has("git")) {
+            try writeFile(&c, cfg_path, "[search]\ninclude = ['.nix/shared']\n");
+            var r = try c.run(&.{ "s1", "--no-prompt", "--grep", "needle" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, try searchExpected(&c, ".nix/shared/x/hidden-x.txt:1:needle")) != null and
+                std.mem.indexOf(u8, r.out, "node_modules") == null and std.mem.indexOf(u8, r.out, ".hidden") == null, "g includes configured hidden folder without other ignored trees", r);
+            r = try c.run(&.{ "s1", "--no-prompt", "--grep", "-needle" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, try searchExpected(&c, "--help/-dash.txt:1:-needle")) != null, "dash-leading grep query remains a pattern", r);
+            r = try c.run(&.{ "s1", "--no-prompt", "--grep", "zzznomatchzzz" });
+            c.check(r.code == 1, "merged g returns 1 with no rows", r);
+            const bad = try c.run(&.{ "--search-producer", "grep", repo, "1", ".nix/shared", "1", "2", "rg", "--invalid-s1-option" });
+            c.check(bad.code == 2, "merged producer returns 2 for a failing lister", bad);
+        } else c.skip("configured grep folder search", "rg and git");
+        const rga_ready = if (c.has("rga")) try c.runCommand(&.{ "rga", "--rga-list-adapters" }, null) else RunResult{ .code = 1, .out = "", .err = "" };
+        if (rga_ready.code == 0 and c.has("git")) {
+            try writeFile(&c, cfg_path, "[search]\ninclude = ['.nix/shared']\n");
+            const r = try c.run(&.{ "s1", "--no-prompt", "--grep", "needle", "--all" });
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, try searchExpected(&c, ".nix/shared/x/hidden-x.txt:1:needle")) != null, "g --all includes configured hidden folder", r);
+        } else c.skip("configured rga folder search", "working rga and git");
+        if (c.windowsOnly("closing the merged producer kills child and grandchild") and c.has("powershell")) {
+            try writeFile(&c, join(&c, &.{ repo, "grand.ps1" }), "Start-Sleep -Seconds 30\n");
+            try writeFile(&c, join(&c, &.{ repo, "child.ps1" }), "$grand = Start-Process -FilePath powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','grand.ps1' -WindowStyle Hidden -PassThru\n" ++
+                "Set-Content -LiteralPath child.pid -Value $PID\n" ++
+                "Set-Content -LiteralPath grand.pid -Value $grand.Id\n" ++
+                "$i = 0\nwhile ($true) { Write-Output \"src/$i.txt\"; $i++ }\n");
+            const err_file = try Io.Dir.cwd().createFile(io, join(&c, &.{ repo, "producer.err" }), .{});
+            var producer = try std.process.spawn(io, .{
+                .argv = &.{ c.exe, "--search-producer", "find", repo, "1", "src", "1", "6", "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "child.ps1" },
+                .cwd = .{ .path = repo },
+                .stdin = .ignore,
+                .stdout = .pipe,
+                // A file, not a pipe: a Debug build traces the closed-pipe error
+                // to stderr, and an undrained pipe would block the producer.
+                .stderr = .{ .file = err_file },
+            });
+            var row_buf: [256]u8 = undefined;
+            var row_iov = [_][]u8{row_buf[0..]};
+            const first_len = producer.stdout.?.readStreaming(io, &row_iov) catch 0;
+            producer.stdout.?.close(io);
+            producer.stdout = null;
+            err_file.close(io);
+            const exited = exitsWithin(&producer, 5000);
+            if (exited) _ = producer.wait(io) catch {} else producer.kill(io);
+            const producer_err = readFileOr(&c, join(&c, &.{ repo, "producer.err" }), "");
+            const child_pid = readFileOr(&c, join(&c, &.{ repo, "child.pid" }), "");
+            const grand_pid = readFileOr(&c, join(&c, &.{ repo, "grand.pid" }), "");
+            const child_alive = processAlive(child_pid);
+            const grand_alive = processAlive(grand_pid);
+            c.check(first_len > 0 and exited and child_pid.len > 0 and grand_pid.len > 0 and !child_alive and !grand_alive, "closing the merged producer kills child and grandchild", .{ .code = if (exited) 0 else 1, .out = try std.fmt.allocPrint(arena, "first={d}, child_pid={s}, grand_pid={s}, child_alive={}, grand_alive={}", .{ first_len, trim(child_pid), trim(grand_pid), child_alive, grand_alive }), .err = producer_err });
         }
     }
 

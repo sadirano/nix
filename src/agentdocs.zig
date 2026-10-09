@@ -349,6 +349,7 @@ pub const specs = [_]Spec{
         \\Streams ripgrep into fzf over `file:line:text` rows with a bat preview,
         \\and opens the picks in the editor at the matched line. `--all` searches
         \\via ripgrep-all instead, reaching inside PDFs, office docs and archives.
+        \\Configured [search] folders are included even when hidden or ignored.
         \\
         \\Search flags pass through to ripgrep: `nix acme --grep TODO -t zig`.
         ,
@@ -357,10 +358,8 @@ pub const specs = [_]Spec{
         \\the same flags and writes the rows to stdout instead, so you get the
         \\alias resolved and the search run in a single call.
         \\
-        \\It is ordinary ripgrep underneath, with no extra filtering of its own -
-        \\if you'd rather run rg yourself against `nix <alias>`, that is
-        \\equivalent, and it is the better choice when you want flags this form
-        \\doesn't reach.
+        \\Search flags pass through to ripgrep; configured [search] folders are
+        \\listed with hidden and ignore rules disabled inside those folders.
         ,
         .suggest = "Leave follow-ups findable: `${cmd:g} <alias> \"TODO(auth)\"`.",
         .examples = &.{
@@ -382,6 +381,7 @@ pub const specs = [_]Spec{
         \\Lists files under the alias dir (fd, else Everything's es on Windows,
         \\else POSIX find), picks in fzf with a preview, and opens the picks -
         \\default-app types via the OS handler, everything else in the editor.
+        \\With fd, a pattern matches names or relative paths and configured [search] folders are included even when hidden or ignored.
         ,
         .agent_use =
         \\The plain form blocks on fzf. The safe form prints the matching paths

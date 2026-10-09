@@ -56,50 +56,7 @@ pub fn readOutput(app: *App, stage: []const u8, name: []const u8, max_mb: u16) !
     }
 }
 
-const BasicJobLimits = extern struct {
-    per_process_user_time: i64 = 0,
-    per_job_user_time: i64 = 0,
-    flags: u32 = 0,
-    minimum_working_set: usize = 0,
-    maximum_working_set: usize = 0,
-    active_process_limit: u32 = 0,
-    affinity: usize = 0,
-    priority_class: u32 = 0,
-    scheduling_class: u32 = 0,
-};
-const IoCounters = extern struct {
-    read_operations: u64 = 0,
-    write_operations: u64 = 0,
-    other_operations: u64 = 0,
-    read_bytes: u64 = 0,
-    write_bytes: u64 = 0,
-    other_bytes: u64 = 0,
-};
-const BasicAccounting = extern struct {
-    total_user_time: i64 = 0,
-    total_kernel_time: i64 = 0,
-    this_period_user_time: i64 = 0,
-    this_period_kernel_time: i64 = 0,
-    total_page_faults: u32 = 0,
-    total_processes: u32 = 0,
-    active_processes: u32 = 0,
-    total_terminated: u32 = 0,
-};
-const ExtendedJobLimits = extern struct {
-    basic: BasicJobLimits = .{},
-    io: IoCounters = .{},
-    process_memory: usize = 0,
-    job_memory: usize = 0,
-    peak_process_memory: usize = 0,
-    peak_job_memory: usize = 0,
-};
-
-extern "kernel32" fn CreateJobObjectW(?*anyopaque, ?[*:0]const u16) callconv(.winapi) ?std.os.windows.HANDLE;
-extern "kernel32" fn SetInformationJobObject(std.os.windows.HANDLE, u32, *const ExtendedJobLimits, u32) callconv(.winapi) i32;
-extern "kernel32" fn AssignProcessToJobObject(std.os.windows.HANDLE, std.os.windows.HANDLE) callconv(.winapi) i32;
-extern "kernel32" fn TerminateJobObject(std.os.windows.HANDLE, u32) callconv(.winapi) i32;
-extern "kernel32" fn ResumeThread(std.os.windows.HANDLE) callconv(.winapi) u32;
-extern "kernel32" fn QueryInformationJobObject(std.os.windows.HANDLE, u32, *BasicAccounting, u32, ?*u32) callconv(.winapi) i32;
+const Job = @import("job.zig").Job;
 extern "kernel32" fn WaitForSingleObject(std.os.windows.HANDLE, u32) callconv(.winapi) u32;
 
 pub fn launch(
@@ -115,13 +72,8 @@ pub fn launch(
     var stderr_open = true;
     defer if (stderr_open) stderr_file.close(app.io);
     if (comptime proc.is_windows) {
-        const job = CreateJobObjectW(null, null) orelse return error.JobCreationFailed;
-        var job_open = true;
-        defer if (job_open) std.os.windows.CloseHandle(job);
-        var limits = ExtendedJobLimits{};
-        limits.basic.flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        if (SetInformationJobObject(job, 9, &limits, @sizeOf(ExtendedJobLimits)) == 0)
-            return error.JobConfigurationFailed;
+        var job = try Job.create();
+        defer job.close();
         var child = try std.process.spawn(app.io, .{
             .argv = argv,
             .cwd = .{ .path = cwd },
@@ -133,22 +85,14 @@ pub fn launch(
         });
         stderr_file.close(app.io);
         stderr_open = false;
-        if (AssignProcessToJobObject(job, child.id.?) == 0) {
-            child.kill(app.io);
-            return error.JobAssignmentFailed;
-        }
-        if (ResumeThread(child.thread_handle) == std.math.maxInt(u32)) {
-            _ = TerminateJobObject(job, 1);
-            child.kill(app.io);
-            return error.HookResumeFailed;
-        }
+        job.attachResume(&child, app.io) catch |e| return if (e == error.JobResumeFailed) error.HookResumeFailed else e;
         const started = Io.Clock.awake.now(app.io).nanoseconds;
         var timed_out = false;
         while (true) {
             const status = WaitForSingleObject(child.id.?, 25);
             if (status == 0) break; // WAIT_OBJECT_0
             if (status != 258) {
-                _ = TerminateJobObject(job, 1);
+                _ = job.terminate();
                 child.kill(app.io);
                 return error.HookWaitFailed;
             }
@@ -156,7 +100,7 @@ pub fn launch(
                 timed_out = true;
                 // A failed job kill must still not leave child.wait blocking on
                 // a running root.
-                if (TerminateJobObject(job, 1) == 0) child.kill(app.io);
+                if (!job.terminate()) child.kill(app.io);
                 break;
             }
         }
@@ -164,10 +108,9 @@ pub fn launch(
         const term: ?std.process.Child.Term = if (child.id != null) try child.wait(app.io) else null;
         // Stray descendants may hold staging open: end them and wait (bounded)
         // for the job to empty before the result read and the cleanup.
-        _ = TerminateJobObject(job, 1);
-        drainJob(app, job);
-        std.os.windows.CloseHandle(job);
-        job_open = false;
+        _ = job.terminate();
+        job.drain(app.io);
+        job.close();
         tail.* = readStderrTail(app, stderr_path);
         if (timed_out) return error.HookTimedOut;
         return switch (term orelse return 255) {
@@ -210,16 +153,6 @@ pub fn launch(
         }
         tail.* = readStderrTail(app, stderr_path);
         return code;
-    }
-}
-
-/// drainJob waits up to 2s for every process in `job` to be gone.
-fn drainJob(app: *App, job: std.os.windows.HANDLE) void {
-    for (0..80) |_| {
-        var info = BasicAccounting{};
-        if (QueryInformationJobObject(job, 1, &info, @sizeOf(BasicAccounting), null) == 0) return;
-        if (info.active_processes == 0) return;
-        Io.sleep(app.io, .{ .nanoseconds = 25 * std.time.ns_per_ms }, .awake) catch return;
     }
 }
 

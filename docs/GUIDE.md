@@ -177,9 +177,35 @@ s acme invoice            # fzf-pick every file matching "invoice" -> open each
 g acme TODO               # ripgrep -> fzf (live bat preview) -> editor at the line
 g acme "fn\s+resolve"     # it's a regex
 g acme invoice --all      # also search INSIDE PDFs, docx, xlsx, zip, epub (rga)
-f acme config             # fuzzy-find files by name -> open
+f acme config             # find a file by name or relative path -> open
 f acme                    # browse everything
 ```
+
+File and content searches also visit `.nix/shared` under the searched folder,
+including when that folder is hidden or ignored. Configure more folders in
+`~/.nix/config.toml`:
+
+```toml
+[search]
+include = [".nix/shared", "docs/private"]
+
+[search.alias]
+acme = [".nix/shared"]
+big-mono = []
+```
+
+An alias list replaces the global list. Entries are relative to the searched
+folder, including for a segment search such as `f docs@acme`. A missing entry
+is skipped. With no `include` key, the global default is `[".nix/shared"]`;
+an explicit `[]` adds nothing. The es and find fallbacks keep their existing
+listing behavior when fd is unavailable.
+
+With fd, `f`, `y <alias> <pat>`, and `s <alias> <pat>` match the file name or
+path relative to the searched folder. `/` in a query matches either path
+separator: `f acme src/main` finds `src/main.zig`. A leading `/` matches the
+start of any folder or file name (`/readme` finds `Docs/Readme.md`); a leading
+`^` matches the start of the relative path (`^src` finds files under `src`).
+Quote a leading `^` in cmd.exe. A caret elsewhere in a regex is unsupported.
 
 Inside the picker: type to narrow further, **Tab** to mark several, **Enter**
 to open all marked. Text opens in your editor at the matched line; PDFs,

@@ -133,6 +133,17 @@ path = "C:/Users/dev/projects/acme"
 
 You can hand-edit the file (`nix --list` and resolve pick up changes immediately) or use `nix <name> <path>` to register and `nix <name> --remove` to forget. Alias lookups are case-insensitive. Names can't contain `/ \ @ + spaces` (each is reserved syntax) or the TOML metacharacters `[ ] = #` and quotes (they'd corrupt the stores).
 
+`f`, `y` and `s` file searches and `g` content searches also include `.nix/shared` inside the searched folder, even when hidden or ignored. Configure the extra folders in `~/.nix/config.toml`:
+
+```toml
+[search]
+include = [".nix/shared", "docs/private"]
+[search.alias]
+acme = [] # replace the global list for acme
+```
+
+Entries are relative to the searched folder; an explicit empty list adds nothing.
+
 One alias is always there: **`.nix` names nix's own home**, so nix's own files are reachable without an absolute path — `e .nix config.toml`, `g .nix TODO`, `nix .nix --run <cmd>` to run something *at* that directory. It's built in rather than registered (`nix --list` marks it `(built-in)`), so it can't be repointed or lost when the home moves; `nix .nix <path>` is refused. It works anywhere an alias does. `.nix` is the only reserved dotted name — `.nixrc` and friends register normally.
 
 ### Paste hooks

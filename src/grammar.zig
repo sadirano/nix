@@ -39,6 +39,7 @@ pub const SystemVerb = enum {
     preview,
     walk,
     rga_preview,
+    search_producer,
 };
 
 /// Verbs `nix <alias> --<flag>` dispatches to. Their names are also the strings
@@ -121,6 +122,7 @@ pub const system = [_]System{
     .{ .flags = &.{"--preview"}, .verb = .preview, .help = "", .spec = "", .visibility = .internal },
     .{ .flags = &.{"--walk"}, .verb = .walk, .args = "[dir]", .help = "", .spec = "", .visibility = .internal },
     .{ .flags = &.{"--rga-preview"}, .verb = .rga_preview, .help = "", .spec = "", .visibility = .internal },
+    .{ .flags = &.{"--search-producer"}, .verb = .search_producer, .help = "", .spec = "", .visibility = .internal },
 };
 
 pub const actions = [_]Action{
