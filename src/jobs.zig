@@ -548,7 +548,7 @@ test "run log skips malformed events and derives count and last attempt" {
 }
 
 test "run log preserves spaced script identities for every event" {
-    const hash = "a" ** 64;
+    const hash = &@as([64]u8, @splat('a'));
     const start = parseLine("100 pa/two words.cmd start").?;
     const ok = parseLine("101 pa/two words.cmd ok").?;
     const approve = parseLine("102 pa/two words.cmd approve " ++ hash).?;
@@ -566,8 +566,8 @@ test "run log preserves spaced script identities for every event" {
 }
 
 test "run log approval uses the latest hash without resetting uses" {
-    const old = "a" ** 64;
-    const current = "b" ** 64;
+    const old = &@as([64]u8, @splat('a'));
+    const current = &@as([64]u8, @splat('b'));
     const log = "100 _global/fix.cmd approve " ++ old ++ "\n" ++
         "101 _global/fix.cmd ok\n" ++
         "102 _global/fix.cmd approve " ++ current ++ "\n" ++
@@ -613,7 +613,7 @@ test "clean log rewrite removes only deleted identities" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const log = "100 pa/old.cmd start\n101 pa/old.cmd ok\n102 pa/new.cmd ok\nbad line\n103 _global/old.cmd ok\n104 pa/old.cmd approve " ++ "a" ** 64 ++ "\n";
+    const log = "100 pa/old.cmd start\n101 pa/old.cmd ok\n102 pa/new.cmd ok\nbad line\n103 _global/old.cmd ok\n104 pa/old.cmd approve " ++ &@as([64]u8, @splat('a')) ++ "\n";
     const deleted = [_]Job{.{ .scope = "pa", .file = "old.cmd", .path = "", .name = "old", .ext = .cmd }};
     try std.testing.expectEqualStrings("102 pa/new.cmd ok\nbad line\n103 _global/old.cmd ok\n", try pruneLog(a, log, &deleted));
 }

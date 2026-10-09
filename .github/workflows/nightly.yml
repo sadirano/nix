@@ -29,7 +29,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       # rg and fd: the e2e harness shells out to them, and treats a skip as
       # a failure so a runner cannot cover less than the pre-push hook did.

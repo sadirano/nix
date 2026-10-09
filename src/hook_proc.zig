@@ -131,7 +131,7 @@ pub fn launch(
         const started = Io.Clock.awake.now(app.io).nanoseconds;
         var code: u8 = 255;
         while (true) {
-            var status: if (@import("builtin").link_libc) c_int else u32 = 0;
+            var status: if (@import("builtin").link_libc) c_int else i32 = 0;
             const pid = child.id.?;
             const rc = std.posix.system.waitpid(pid, &status, std.posix.W.NOHANG);
             if (std.posix.errno(rc) != .SUCCESS) {

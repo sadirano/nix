@@ -41,7 +41,7 @@ Each tagged release publishes a Windows `.zip` on the [Releases](https://github.
 
 ### Build from source
 
-Requires [Zig 0.16+](https://ziglang.org/download/).
+Requires [Zig 0.17+](https://ziglang.org/download/).
 
 ```powershell
 zig build -Doptimize=ReleaseFast    # -> zig-out\bin\nix.exe

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Contributor guide for working on nix, a directory alias manager (Zig 0.16+,
+Contributor guide for working on nix, a directory alias manager (Zig 0.17+,
 Windows-first). Not the generated `~/.nix/AGENTS.md`, whose template lives in
 `src/agents.zig`. Architecture detail (multicall, the single-source tables,
 config layers, load-bearing modules) is in `docs/agent-notes.md`: read the

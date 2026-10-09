@@ -15,7 +15,7 @@ are the other audience, and nothing here is written only for a machine.
 
 ## What this is
 
-`nix` is a directory alias manager for the command line (Zig 0.16+, Windows-first).
+`nix` is a directory alias manager for the command line (Zig 0.17+, Windows-first).
 One TOML file holds every alias; one binary serves every command. State lives in
 `~/.nix` (override with `$NIX_HOME`).
 

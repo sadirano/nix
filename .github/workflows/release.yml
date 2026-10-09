@@ -33,7 +33,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       # Only a major version (vN.0.0, N >= 1, or one of its pre-releases) runs
       # the manual checklist; minor and patch releases ship on CI alone.

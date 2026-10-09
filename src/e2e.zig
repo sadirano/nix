@@ -330,8 +330,8 @@ fn sameRegistryPath(a: RegistryPath, b: RegistryPath) bool {
 fn registryPath(c: *Ctx) !RegistryPath {
     const r = try c.runCommand(&.{ "reg", "query", "HKCU\\Environment", "/v", "Path" }, null);
     if (r.code != 0) {
-        if (std.ascii.indexOfIgnoreCase(r.err, "unable to find") != null or
-            std.ascii.indexOfIgnoreCase(r.out, "unable to find") != null) return .{};
+        if (std.ascii.findIgnoreCase(r.err, "unable to find") != null or
+            std.ascii.findIgnoreCase(r.out, "unable to find") != null) return .{};
         return error.RegistryPathQueryFailed;
     }
     var lines = std.mem.splitScalar(u8, r.out, '\n');
@@ -349,7 +349,7 @@ fn registryPath(c: *Ctx) !RegistryPath {
 
 const ProfileState = struct {
     exists: bool = false,
-    hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = [_]u8{0} ** std.crypto.hash.sha2.Sha256.digest_length,
+    hash: [std.crypto.hash.sha2.Sha256.digest_length]u8 = @splat(0),
     mtime: i128 = 0,
 };
 
@@ -962,18 +962,18 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, join(&c, &.{ alias_jobs, "permanent.py" }), "# nix: - Permanent helper\nprint('listed')\n");
         // Past the 4096-byte header read: an ordinary comment that long is still
         // a script with no header, and only a declaration that long refuses.
-        const longcomment_body = ":: " ++ "a" ** 4200 ++ "\r\n@echo long-comment-ok\r\n";
-        const longbang_body = "#!x\r\n:: " ++ "a" ** 4200 ++ "\r\n@echo long-bang-ok\r\n";
+        const longcomment_body = ":: " ++ &@as([4200]u8, @splat('a')) ++ "\r\n@echo long-comment-ok\r\n";
+        const longbang_body = "#!x\r\n:: " ++ &@as([4200]u8, @splat('a')) ++ "\r\n@echo long-bang-ok\r\n";
         try writeFile(&c, join(&c, &.{ alias_jobs, "longcomment.cmd" }), longcomment_body);
         try writeFile(&c, join(&c, &.{ alias_jobs, "longbang.cmd" }), longbang_body);
         try approveJob(&c, home, "pa", "longcomment.cmd", longcomment_body);
         try approveJob(&c, home, "pa", "longbang.cmd", longbang_body);
-        try writeFile(&c, join(&c, &.{ alias_jobs, "longdecl.cmd" }), ":: nix: - " ++ "a" ** 4200 ++ "\r\n@echo off\r\necho ran > longdecl-marker.txt\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longdecl.cmd" }), ":: nix: - " ++ &@as([4200]u8, @splat('a')) ++ "\r\n@echo off\r\necho ran > longdecl-marker.txt\r\n");
         // Undecided at the bound: padding before `nix:`, the token cut by the
         // bound, and a shebang that fills the read before line two starts.
-        try writeFile(&c, join(&c, &.{ alias_jobs, "padded.cmd" }), "::" ++ " " ** 4200 ++ "nix: uses=0\r\necho ran > padded-marker.txt\r\n");
-        try writeFile(&c, join(&c, &.{ alias_jobs, "cuttoken.cmd" }), "::" ++ " " ** 4092 ++ "nix: uses=0\r\necho ran > cuttoken-marker.txt\r\n");
-        try writeFile(&c, join(&c, &.{ alias_jobs, "longshebang.cmd" }), "#!" ++ "x" ** 4200 ++ "\r\n:: nix: uses=0\r\necho ran > longshebang-marker.txt\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "padded.cmd" }), "::" ++ &@as([4200]u8, @splat(' ')) ++ "nix: uses=0\r\necho ran > padded-marker.txt\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "cuttoken.cmd" }), "::" ++ &@as([4092]u8, @splat(' ')) ++ "nix: uses=0\r\necho ran > cuttoken-marker.txt\r\n");
+        try writeFile(&c, join(&c, &.{ alias_jobs, "longshebang.cmd" }), "#!" ++ &@as([4200]u8, @splat('x')) ++ "\r\n:: nix: uses=0\r\necho ran > longshebang-marker.txt\r\n");
         var r = try c.run(&.{ "pa", "--run", ":" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "[job] Echo job arguments") != null and
             std.mem.indexOf(u8, r.out, "[once 0/2] Re-seed the ladder") != null and
@@ -1748,11 +1748,11 @@ pub fn main(init: std.process.Init) !void {
         const inst_exe = join(&c, &.{ home, "bin", "tool.exe" });
         const inst_ps = join(&c, &.{ home, "bin", "task.cmd" });
         var r = try c.run(&.{"--sync-bin"});
-        c.check(r.code == 0 and std.ascii.indexOfIgnoreCase(readFileOr(&c, inst_cmd, ""), src_cmd) != null and
+        c.check(r.code == 0 and std.ascii.findIgnoreCase(readFileOr(&c, inst_cmd, ""), src_cmd) != null and
             std.mem.eql(u8, readFileOr(&c, inst_exe, ""), "MZfake-v1"), "--sync-bin installs a script forwarder and an exe copy", r);
         // .ps1 installs as a cmd-launchable trampoline, not a bare .ps1.
         const tramp = readFileOr(&c, inst_ps, "");
-        c.check(std.mem.indexOf(u8, tramp, "-File") != null and std.ascii.indexOfIgnoreCase(tramp, src_ps1) != null and
+        c.check(std.mem.indexOf(u8, tramp, "-File") != null and std.ascii.findIgnoreCase(tramp, src_ps1) != null and
             !proc.pathExists(io, join(&c, &.{ home, "bin", "task.ps1" })), "a .ps1 export installs as a .cmd trampoline", r);
         const man = readFileOr(&c, join(&c, &.{ home, "exports.toml" }), "");
         c.check(std.mem.indexOf(u8, man, "greet.cmd") != null and std.mem.indexOf(u8, man, "tool.exe") != null and
@@ -1966,7 +1966,7 @@ pub fn main(init: std.process.Init) !void {
             c.exe = join(&c, &.{ home, "bin", "whereis.exe" });
             r = try c.run(&.{});
             c.exe = real_exe;
-            c.check(r.code == 0 and std.ascii.indexOfIgnoreCase(r.out, c.work) != null, "a machine-wide export runs in the current directory", r);
+            c.check(r.code == 0 and std.ascii.findIgnoreCase(r.out, c.work) != null, "a machine-wide export runs in the current directory", r);
         }
         try writeFile(&c, def, def_restore);
         _ = try c.run(&.{"--sync-bin"}); // drop the machine-wide export again
@@ -1994,9 +1994,9 @@ pub fn main(init: std.process.Init) !void {
         c.exe = e_exe;
         var r = try c.run(&.{ "pa", ":editjob" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "EDITARGS") != null and
-            std.ascii.indexOfIgnoreCase(r.out, edit_job) != null, "e <alias> :<job> opens the script chosen by run resolution", r);
+            std.ascii.findIgnoreCase(r.out, edit_job) != null, "e <alias> :<job> opens the script chosen by run resolution", r);
         r = try c.run(&.{ "pa", ":editjob", "notes.txt" });
-        c.check(r.code == 0 and std.ascii.indexOfIgnoreCase(r.out, edit_job) != null and std.mem.indexOf(u8, r.out, "notes.txt") != null and
+        c.check(r.code == 0 and std.ascii.findIgnoreCase(r.out, edit_job) != null and std.mem.indexOf(u8, r.out, "notes.txt") != null and
             std.mem.indexOf(u8, r.out, ":editjob") == null, "e <alias> :<job> with more files opens the script and the rest", r);
         r = try c.run(&.{ "pa", ":hello" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "EDITARGS :hello") != null, "e leaves a toml action's name unchanged when it shadows a script", r);
@@ -2823,7 +2823,7 @@ pub fn main(init: std.process.Init) !void {
             \\@echo off
             \\>>"%NIX_CONTEXT_OUT%" echo who={s}
             \\
-        , .{"x" ** 5000}));
+        , .{&@as([5000]u8, @splat('x'))}));
         _ = try c.trust(&.{ "pg", "big" });
         r = try c.run(&.{ "big:1@pg", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "who") != null and

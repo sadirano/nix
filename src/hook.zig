@@ -773,7 +773,7 @@ test "sample keeps complete UTF-8 and line endings" {
     try std.testing.expectEqualStrings("a\r\n", s.value);
     try std.testing.expectEqual(@as(usize, 3), s.lines);
     try std.testing.expect(s.truncated);
-    const clipped = sampleText("x" ** 255 ++ "\xc3\xa9", 10, 256);
+    const clipped = sampleText(&@as([255]u8, @splat('x')) ++ "\xc3\xa9", 10, 256);
     try std.testing.expectEqual(@as(usize, 255), clipped.value.len);
     try std.testing.expect(clipped.truncated);
     const all = sampleText("one\ntwo\n", 10, 256);

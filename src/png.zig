@@ -155,7 +155,7 @@ test "encodeDibToPng: valid 1x1 24-bit produces a PNG" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    var dib = [_]u8{0} ** 44;
+    var dib = @as([44]u8, @splat(0));
     dib[0] = 40; // biSize
     dib[4] = 1; // biWidth = 1
     dib[8] = 1; // biHeight = 1
@@ -175,10 +175,10 @@ test "encodeDibToPng: rejects malformed and hostile headers" {
     const a = arena_state.allocator();
 
     // Truncated header.
-    try std.testing.expect((try encodeDibToPng(a, &[_]u8{0} ** 10)) == null);
+    try std.testing.expect((try encodeDibToPng(a, &@as([10]u8, @splat(0)))) == null);
 
     // Unsupported bit depth (8-bit palettized).
-    var d8 = [_]u8{0} ** 44;
+    var d8 = @as([44]u8, @splat(0));
     d8[0] = 40;
     d8[4] = 1;
     d8[8] = 1;
@@ -188,7 +188,7 @@ test "encodeDibToPng: rejects malformed and hostile headers" {
 
     // clr_used = 0xFFFFFFFF: `clr_used * 4` must not overflow u32; it returns
     // null.
-    var dclr = [_]u8{0} ** 44;
+    var dclr = @as([44]u8, @splat(0));
     dclr[0] = 40;
     dclr[4] = 1;
     dclr[8] = 1;
@@ -202,7 +202,7 @@ test "encodeDibToPng: rejects malformed and hostile headers" {
 
     // Huge 32-bit dimensions: the size math must not let a bad bounds check
     // through to an undersized allocation.
-    var dbig = [_]u8{0} ** 44;
+    var dbig = @as([44]u8, @splat(0));
     dbig[0] = 40;
     dbig[4] = 0xFF;
     dbig[5] = 0xFF;
@@ -218,7 +218,7 @@ test "encodeDibToPng: rejects malformed and hostile headers" {
 
     // biHeight = INT_MIN (0x80000000): @abs must not overflow i32. Returns null
     // (no pixel data present), but must not panic.
-    var dmin = [_]u8{0} ** 44;
+    var dmin = @as([44]u8, @splat(0));
     dmin[0] = 40;
     dmin[4] = 1;
     dmin[8] = 0x00;

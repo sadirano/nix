@@ -473,7 +473,7 @@ test "ellipsize: fits untouched, cuts on a word boundary, marks the cut" {
 
     // One unbroken token has no boundary to find: the hard cut still applies
     // rather than collapsing the column to nothing.
-    const token = "a" ** 80;
+    const token = &@as([80]u8, @splat('a'));
     const hard = ellipsize(a, token);
     try std.testing.expect(hard.len <= max_description_cols);
     try std.testing.expect(hard.len > max_description_cols / 2);

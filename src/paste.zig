@@ -178,7 +178,7 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
 test "checkPasteName accepts relative names and ordinary stems" {
     for ([_][]const u8{
         "",      "note",       "note.md",  "drafts/today", "drafts\\today.png", "a.b.c",
-        "comfy", "console.md", "nullable", " note ",       "x ",                "\u{e9}" ** 130,
+        "comfy", "console.md", "nullable", " note ",       "x ",                &@as([260]u8, @bitCast(@as([130][2]u8, @splat("\u{e9}".*)))),
     }) |name| {
         try std.testing.expect(checkPasteName(name) == null);
     }
@@ -186,10 +186,10 @@ test "checkPasteName accepts relative names and ordinary stems" {
 
 test "checkPasteName refuses escaping and Windows-mangled names" {
     for ([_][]const u8{
-        "..",          "../x",   "..\\x",    "a/../b",  "/x",    "\\x",           "\\\\srv\\s\\x",
-        "C:x",         "C:\\x",  "a//b",     "a/",      "./x",   "x.md:ads",      "a<b",
-        "a?b",         "x.",     "nul",      "NUL.txt", "con",   "com1.md",       "lpt9",
-        "a" ** 256,    "a\x01b", " NUL.txt", "\tcon ",  " ../x", "\u{e9}" ** 256, "x\xc3",
+        "..",                       "../x",   "..\\x",    "a/../b",  "/x",    "\\x",                                                        "\\\\srv\\s\\x",
+        "C:x",                      "C:\\x",  "a//b",     "a/",      "./x",   "x.md:ads",                                                   "a<b",
+        "a?b",                      "x.",     "nul",      "NUL.txt", "con",   "com1.md",                                                    "lpt9",
+        &@as([256]u8, @splat('a')), "a\x01b", " NUL.txt", "\tcon ",  " ../x", &@as([512]u8, @bitCast(@as([256][2]u8, @splat("\u{e9}".*)))), "x\xc3",
         "a\xe2\x82/b",
     }) |name| {
         try std.testing.expect(checkPasteName(name) != null);

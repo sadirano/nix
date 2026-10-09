@@ -24,8 +24,9 @@ pub const Dialect = enum {
     /// parse maps the flag value to a dialect. Case-insensitive; unknown names
     /// are the caller's to report, with `names` for the message.
     pub fn parse(s: []const u8) ?Dialect {
-        inline for (@typeInfo(Dialect).@"enum".fields) |f| {
-            if (std.ascii.eqlIgnoreCase(s, f.name)) return @enumFromInt(f.value);
+        const info = @typeInfo(Dialect).@"enum";
+        inline for (info.field_names, info.field_values) |name, value| {
+            if (std.ascii.eqlIgnoreCase(s, name)) return @fromBackingInt(@intCast(value));
         }
         return null;
     }

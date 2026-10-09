@@ -254,7 +254,7 @@ const dropfiles_header = 20;
 /// real clipboard.
 fn dropfilesBuffer(arena: std.mem.Allocator, paths: []const []const u8) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
-    var hdr = [_]u8{0} ** dropfiles_header;
+    var hdr = @as([dropfiles_header]u8, @splat(0));
     std.mem.writeInt(u32, hdr[0..4], dropfiles_header, .little); // pFiles = offset to list
     std.mem.writeInt(i32, hdr[16..20], 1, .little); // fWide = TRUE
     try buf.appendSlice(arena, &hdr);

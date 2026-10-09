@@ -49,7 +49,7 @@ fn recordImpl(app: *App, argv: []const [:0]const u8, kind: Kind) !void {
 /// ignored: the line contains one of the words, ASCII case-insensitive.
 pub fn ignored(words: []const []const u8, line: []const u8) bool {
     for (words) |w| {
-        if (w.len > 0 and std.ascii.indexOfIgnoreCase(line, w) != null) return true;
+        if (w.len > 0 and std.ascii.findIgnoreCase(line, w) != null) return true;
     }
     return false;
 }
@@ -137,7 +137,7 @@ pub fn cmdHistory(app: *App, args: []const []const u8) !u8 {
     }
     const pat = if (args.len == 1) args[0] else "";
     for (try distinct(app.arena, data)) |r| {
-        if (pat.len > 0 and std.ascii.indexOfIgnoreCase(r.line, pat) == null) continue;
+        if (pat.len > 0 and std.ascii.findIgnoreCase(r.line, pat) == null) continue;
         try app.out.print("{d}\t{s}\n", .{ r.count, r.line });
     }
     return 0;

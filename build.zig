@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
         bool,
         "baked-date",
         "Bake the real build timestamp into --version (default: true for release builds, false for Debug)",
-    ) orelse (optimize != .Debug);
+    ) orelse (optimize != .debug);
     const build_date_str = if (baked_date) buildDate(b) else "dev";
     build_options.addOption([]const u8, "build_date", build_date_str);
     // The e2e harness's console hook (NIX_E2E_TTY, app.e2eConsole) is compiled
@@ -72,9 +72,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // `zig build deploy` redeploys the freshly built binary into ~/.nix/bin.
     // The catch when iterating on nix is that the commands on PATH (nix, plus
@@ -155,7 +153,7 @@ pub fn build(b: *std.Build) void {
     // steps and their order identical to the workflow: when one of them moves,
     // both files have to move together or this stops being a gate.
     const fmt_check = b.addFmt(.{
-        .paths = &.{ "src", "build.zig", "build.zig.zon" },
+        .paths = &.{ b.path("src"), b.path("build.zig"), b.path("build.zig.zon") },
         .check = true,
     });
 
@@ -173,10 +171,10 @@ pub fn build(b: *std.Build) void {
                 .os_tag = .windows,
                 .cpu_model = .baseline,
             }),
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .imports = &.{
                 .{ .name = "build_options", .module = options_mod },
-                .{ .name = "glean", .module = gleanFor(b, b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .cpu_model = .baseline }), .ReleaseFast) },
+                .{ .name = "glean", .module = gleanFor(b, b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .cpu_model = .baseline }), .fast) },
             },
         }),
     });
@@ -189,10 +187,10 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
-            .optimize = .Debug,
+            .optimize = .debug,
             .imports = &.{
                 .{ .name = "build_options", .module = options_mod },
-                .{ .name = "glean", .module = gleanFor(b, b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }), .Debug) },
+                .{ .name = "glean", .module = gleanFor(b, b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }), .debug) },
             },
         }),
     });
@@ -205,7 +203,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/e2e.zig"),
             .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
-            .optimize = .Debug,
+            .optimize = .debug,
         }),
     });
 
@@ -233,7 +231,7 @@ pub fn build(b: *std.Build) void {
     // otherwise runs for the first time during a release, which is the worst
     // moment to find it wrong. Skipped where there is no bash rather than
     // failing the gate over it: the script is release tooling, not the build.
-    if (b.findProgram(&.{"bash"}, &.{})) |bash| {
+    if (b.findProgram(.{ .names = &.{"bash"} })) |bash| {
         const release_selftest = b.addSystemCommand(&.{
             bash, ".github/scripts/release-checklist.sh", "selftest",
         });
@@ -243,7 +241,7 @@ pub fn build(b: *std.Build) void {
             bash, ".github/scripts/release-checklist-test.sh",
         });
         ci_step.dependOn(&release_test.step);
-    } else |_| {}
+    }
     ci_step.dependOn(test_step);
     ci_step.dependOn(e2e_step);
     ci_step.dependOn(&portable.step);
