@@ -15,6 +15,7 @@ const App = app_zig.App;
 const resolveAliasPath = resolve.resolveAliasPath;
 const fzfEnv = app_zig.fzfEnv;
 const glean_pick = @import("glean_pick.zig");
+const picker = @import("picker.zig");
 const exePath = app_zig.exePath;
 const isGlobalFlag = app_zig.isGlobalFlag;
 const stripCmdCarets = open_zig.stripCmdCarets;
@@ -27,7 +28,7 @@ pub fn cmdFind(app: *App, alias: []const u8, args: [][]const u8) !u8 {
     return findIn(app, alias, target, args);
 }
 
-/// findIn runs `f` in one alias dir. fd leads (portable); a Windows box without fd uses es; POSIX find is the last resort.
+/// findIn runs `f` in one alias dir. fd leads (portable); a Windows box without fd uses es if Everything answers; POSIX find is the last resort.
 pub fn findIn(app: *App, alias: []const u8, dir: []const u8, args: [][]const u8) !u8 {
     return switch (try findPick(app, alias, dir, args)) {
         .selected => |sel| openFindSelections(app, dir, sel),
@@ -81,7 +82,7 @@ pub fn findPick(app: *App, alias: []const u8, dir: []const u8, args: [][]const u
             }
             prod.items = try search_merge.wrap(app, .find, dir, folders, listers.items);
         }
-    } else if (proc.is_windows and proc.findInPath(app.arena, app.io, app.env(), "es") != null) {
+    } else if (proc.is_windows and picker.esTool(app).state == .ok) {
         try prod.appendSlice(app.arena, &.{ "es", "-path", "./" });
         if (query.len > 0) try prod.append(app.arena, query);
         for (extras) |x| try prod.append(app.arena, x);
