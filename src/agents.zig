@@ -83,6 +83,8 @@ pub fn render(arena: std.mem.Allocator, cfg: config.Config) ![]const u8 {
         \\   `~/.nix/jobs/<alias>/<name>.<ext>` instead, with
         \\   `# nix: uses=N - <what it does>` first; give them `{[x]s} <alias> :<name>`.
         \\   The first run shows the script and asks. Full spec: `nix --agent jobs`.
+        \\7. How-to questions about nix: if `rune` is on PATH, answer from
+        \\   `rune ask "<question>" --json`, then `rune save` your answer.
         \\
     , .{
         .table = try commandTable(arena, cfg),
@@ -113,6 +115,8 @@ test "render uses default names" {
     // The table carries the safety tier, and the guide points at the specs.
     try std.testing.expect(std.mem.indexOf(u8, out, "| user-surface |") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "`<cmd> --agent`") != null);
+    // How-to questions go to rune when it is installed.
+    try std.testing.expect(std.mem.indexOf(u8, out, "if `rune` is on PATH") != null);
 }
 
 test "render honours [shortcuts] renames" {
