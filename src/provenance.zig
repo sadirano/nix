@@ -290,12 +290,12 @@ pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) 
     }
     try app.err.print("nix: {s} wants to run a project script:\n  {s}\n", .{ alias, script });
     if (!try confirm(app, "Approve this script's current contents and run?", &.{script})) return false;
-    try recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|script", .{alias}));
+    try recordTrust(app, record, try scriptLabel(app.arena, alias, script));
     return true;
 }
 
 /// recordTrust records an approval, REPLACING whatever that label approved
-/// before. The value is a human label (`alias|:action`, `alias|script`,
+/// before. The value is a human label (`alias|:action`, `alias|script:<path>`,
 /// `alias|segment`) so `nix --trust` output and the file itself stay readable;
 /// only the key is ever matched.
 ///
@@ -353,6 +353,15 @@ pub fn actionRecord(arena: std.mem.Allocator, decl: []const u8, name: []const u8
 
 pub fn scriptRecord(arena: std.mem.Allocator, body: []const u8) ![]const u8 {
     return context.sha256Hex(arena, try std.fmt.allocPrint(arena, "script:{s}", .{body}));
+}
+
+/// scriptLabel names one script's approval by its path, because recordTrust
+/// supersedes by label: a label shared across an alias's scripts would let
+/// approving one revoke the others. Forward slashes keep the TOML string free
+/// of escapes. Old `alias|script` rows are left alone - each still approves
+/// its script's bytes by key.
+fn scriptLabel(arena: std.mem.Allocator, alias: []const u8, path: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}|script:{s}", .{ alias, try refs_zig.canonPath(arena, path) });
 }
 
 /// planProject collects what `nix --trust <alias>` would approve out of the
@@ -421,7 +430,7 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
         try plan.wrote(app.arena, "{s}: approved {s}\n", .{ alias, full });
         try plan.add(app.arena, .{
             .record = record,
-            .label = try std.fmt.allocPrint(app.arena, "{s}|script", .{alias}),
+            .label = try scriptLabel(app.arena, alias, full),
             .files = try app.arena.dupe([]const u8, &.{full}),
         });
     }
@@ -842,6 +851,7 @@ test "legacyLabelFor: only per-action labels carry a legacy form" {
     try std.testing.expectEqualStrings("jpmine|actions", (try legacyLabelFor(a, "jpmine|:class")).?);
     // Scripts and context segments were never file-wide: exact label only.
     try std.testing.expect((try legacyLabelFor(a, "jpmine|script")) == null);
+    try std.testing.expect((try legacyLabelFor(a, "jpmine|script:c:/p/.nix/scripts/a.cmd")) == null);
     try std.testing.expect((try legacyLabelFor(a, "acme|ticket")) == null);
     // Malformed labels must not invent a legacy key to delete by.
     try std.testing.expect((try legacyLabelFor(a, "nobar")) == null);

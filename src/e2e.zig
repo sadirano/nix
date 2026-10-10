@@ -1295,9 +1295,14 @@ pub fn main(init: std.process.Init) !void {
         r = try c.run(&.{ "pg", "--run", "hello" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "script-ran") == null and
             std.mem.indexOf(u8, r.err, "not been approved") != null, "a bare-name project script is gated too", r);
+        const script2 = join(&c, &.{ pg, ".nix", "scripts", if (proc.is_windows) "hello2.cmd" else "hello2.sh" });
+        try writeFile(&c, script2, if (proc.is_windows) "@echo script2-ran\n" else "#!/bin/sh\necho script2-ran\n");
         _ = try c.trust(&.{"pg"});
         r = try c.run(&.{ "pg", "--run", "hello" });
         c.check(r.code == 0 and hasLineFold(r.out, "script-ran"), "--trust approves the scripts beside the actions file", r);
+        r = try c.run(&.{ "pg", "--run", "hello2" });
+        c.check(r.code == 0 and hasLineFold(r.out, "script2-ran"), "one --trust keeps every script approved, not only the last", r);
+        Io.Dir.cwd().deleteFile(io, script2) catch {};
 
         // An action that RUNS a project script is only reviewable if the script's
         // bytes are part of the approval. Otherwise `git pull` could rewrite the
