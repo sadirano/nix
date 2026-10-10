@@ -17,6 +17,7 @@ const Io = std.Io;
 const util = @import("util.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
+const actions = @import("actions.zig");
 
 const RunResult = struct { out: []const u8, err: []const u8, code: u8 };
 
@@ -1372,6 +1373,54 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, pg_actions, "[actions]\nbuild = \"echo again\"\n");
         r = try c.run(&.{ "--no-prompt", "pg", "--run", ":build" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "nix --trust pg") != null, "--no-prompt never consents", r);
+    }
+
+    // --- review records for prior approvals -------------------------------------
+    {
+        const project = join(&c, &.{ root, "proj", "pr" });
+        util.mkdirAll(io, project) catch {};
+        _ = try c.run(&.{ "pr", project });
+        const decl = join(&c, &.{ project, ".nix", "actions.toml" });
+        const first = join(&c, &.{ project, "scripts", "first.py" });
+        const second = join(&c, &.{ project, "scripts", "second.py" });
+        const review = join(&c, &.{ home, "trust-review.json" });
+        const ledger = join(&c, &.{ home, "trusted.toml" });
+        try writeFile(&c, first, "print('one')\n");
+        try writeFile(&c, decl, "[actions]\nship = \"echo scripts/first.py\"\n");
+        var r = try c.trust(&.{"pr"});
+        c.check(r.code == 0 and std.mem.indexOf(u8, readFileOr(&c, review, ""), "scripts/first.py") != null, "approval writes a project relative review record", r);
+        try writeFile(&c, first, "print('two')\n");
+        r = try c.runAnswering(&.{ "--trust", "pr" }, "n\n");
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "changed  scripts/first.py") != null, "trust review reports a changed referenced script", r);
+        r = try c.run(&.{ "pr", "--run", ":ship" });
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "not been approved") != null, "declining a changed script keeps the action gated", r);
+        _ = try c.trust(&.{"pr"});
+        const prior_rows = try actions.parseTable(arena, readFileOr(&c, ledger, ""), "trusted");
+        var prior_token: []const u8 = "";
+        for (prior_rows) |row| if (std.mem.eql(u8, row.command, "pr|:ship")) {
+            prior_token = row.name;
+            break;
+        };
+        try writeFile(&c, second, "print('three')\n");
+        try writeFile(&c, decl, "[actions]\nship = \"echo scripts/second.py\"\n");
+        r = try c.runAnswering(&.{ "--trust", "pr" }, "n\n");
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "was      echo scripts/first.py") != null and
+            std.mem.indexOf(u8, r.out, "added    scripts/second.py") != null and
+            std.mem.indexOf(u8, r.out, "removed  scripts/first.py") != null, "trust review reports the prior command and added and removed scripts", r);
+        _ = try c.trust(&.{"pr"});
+        const current_rows = try actions.parseTable(arena, readFileOr(&c, ledger, ""), "trusted");
+        var current_token: []const u8 = "";
+        for (current_rows) |row| if (std.mem.eql(u8, row.command, "pr|:ship")) {
+            current_token = row.name;
+            break;
+        };
+        const sidecar = readFileOr(&c, review, "");
+        c.check(current_token.len > 0 and std.mem.indexOf(u8, sidecar, current_token) != null and
+            (prior_token.len == 0 or std.mem.indexOf(u8, sidecar, prior_token) == null), "review sidecar keeps the current ledger token and prunes its predecessor", r);
+        Io.Dir.cwd().deleteFile(io, review) catch {};
+        try writeFile(&c, second, "print('four')\n");
+        r = try c.runAnswering(&.{ "--trust", "pr" }, "n\n");
+        c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "no record of the previous approval") != null, "trust review explains a missing prior record", r);
     }
 
     // --- standing trust (`[trust] always`) --------------------------------------

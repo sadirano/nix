@@ -23,6 +23,7 @@ const resolve = @import("resolve.zig");
 const run_zig = @import("run.zig");
 const compose = @import("compose.zig");
 const env_zig = @import("env.zig");
+const trust_review = @import("trust_review.zig");
 
 const App = app_zig.App;
 
@@ -225,11 +226,17 @@ pub fn gateAction(
         .confirm_unapproved => {
             try app.err.print("nix: {s}'s :{s} wants to run:\n", .{ alias, name });
             try app.err.print("  {s}\n", .{command});
-            try describeCovered(app, dir, declared, decl, refs);
+            const label = try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, name });
+            const digests = try trust_review.digestFiles(app, dir, refs);
+            if (decl) |p| try app.err.print("  declared in {s}\n", .{p});
+            if (try trust_review.summary(app, label, declared, digests, "  ", true)) |s| {
+                try app.err.writeAll(s);
+                if (try refs_zig.overCap(app, dir, declared, refs)) try app.err.print("  {s}\n", .{over_cap_note});
+            } else try listRefs(app, dir, declared, refs);
             if (!try confirm(app, "Approve these files as they stand, and run?", viewable)) {
                 return false;
             }
-            try recordTrust(app, record, try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, name }));
+            try recordApproval(app, .{ .record = record, .label = label, .command = declared, .digests = digests });
             return true;
         },
     }
@@ -277,7 +284,7 @@ pub fn evaluateScript(app: *App, alias: []const u8, script: []const u8) !ScriptA
     return if (context.isTrusted(app, record)) .approved else .{ .unapproved = record };
 }
 
-pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) !bool {
+pub fn gateScript(app: *App, alias: []const u8, dir: []const u8, script: []const u8, mode: Mode) !bool {
     const approval = try evaluateScript(app, alias, script);
     const record = switch (approval) {
         .approved => return true,
@@ -289,8 +296,11 @@ pub fn gateScript(app: *App, alias: []const u8, script: []const u8, mode: Mode) 
         return false;
     }
     try app.err.print("nix: {s} wants to run a project script:\n  {s}\n", .{ alias, script });
+    const label = try scriptLabel(app.arena, alias, script);
+    const digests = try trust_review.digestFiles(app, dir, &.{script});
+    if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try app.err.writeAll(s);
     if (!try confirm(app, "Approve this script's current contents and run?", &.{script})) return false;
-    try recordTrust(app, record, try scriptLabel(app.arena, alias, script));
+    try recordApproval(app, .{ .record = record, .label = label, .digests = digests });
     return true;
 }
 
@@ -320,6 +330,11 @@ pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
     }
     try buf.print(app.arena, "{s} = \"{s}\"\n", .{ record, label });
     try util.writeFileAtomic(app.arena, app.io, path, buf.items);
+}
+
+fn recordApproval(app: *App, grant: Grant) !void {
+    try recordTrust(app, grant.record, grant.label);
+    trust_review.record(app, .{ .token = grant.record, .label = grant.label, .command = grant.command, .files = grant.digests });
 }
 
 /// legacyLabelFor maps `alias|:action` back to the pre-per-action `alias|actions`
@@ -392,11 +407,17 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 // user chose, the command is what a clone chose for them.
                 try plan.line(app.arena, "    :{s: <9}{s}\n", .{ a.name, command });
                 const refs = try refs_zig.referencedFiles(app, dir, command);
-                for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
+                const label = try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, a.name });
+                const digests = try trust_review.digestFiles(app, dir, refs);
+                if (try trust_review.summary(app, label, command, digests, "      ", true)) |s| {
+                    try plan.show.appendSlice(app.arena, s);
+                } else for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
                 if (try refs_zig.overCap(app, dir, command, refs)) try plan.line(app.arena, "      {s}\n", .{over_cap_note});
                 try plan.add(app.arena, .{
                     .record = record,
-                    .label = try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, a.name }),
+                    .label = label,
+                    .command = command,
+                    .digests = digests,
                     .files = try withDecl(app, path, refs),
                 });
             }
@@ -427,10 +448,14 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
         const record = try scriptRecord(app.arena, body);
         if (context.isTrusted(app, record)) continue;
         try plan.line(app.arena, "  script   {s}\n", .{full});
+        const label = try scriptLabel(app.arena, alias, full);
+        const digests = try trust_review.digestFiles(app, dir, &.{full});
+        if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try plan.show.appendSlice(app.arena, s);
         try plan.wrote(app.arena, "{s}: approved {s}\n", .{ alias, full });
         try plan.add(app.arena, .{
             .record = record,
-            .label = try scriptLabel(app.arena, alias, full),
+            .label = label,
+            .digests = digests,
             .files = try app.arena.dupe([]const u8, &.{full}),
         });
     }
@@ -463,6 +488,8 @@ pub fn unapproved(app: *App, alias: []const u8, dir: []const u8) bool {
 pub const Grant = struct {
     record: []const u8,
     label: []const u8,
+    command: []const u8 = "",
+    digests: []const trust_review.FileDigest = &.{},
     /// Files the `e` answer opens - the bytes this row vouches for.
     files: []const []const u8 = &.{},
 };
@@ -583,10 +610,14 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
             continue;
         }
         try plan.line(app.arena, "  context  {s} -> {s}\n", .{ cd.segment, r.script });
+        const label = try std.fmt.allocPrint(app.arena, "{s}|{s}", .{ alias, cd.segment });
+        const digests = try trust_review.digestFiles(app, dir, &.{ src.origin, r.script });
+        if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try plan.show.appendSlice(app.arena, s);
         try plan.wrote(app.arena, "{s}: approved {s}\n", .{ cd.segment, r.script });
         try plan.add(app.arena, .{
             .record = r.record,
-            .label = try std.fmt.allocPrint(app.arena, "{s}|{s}", .{ alias, cd.segment }),
+            .label = label,
+            .digests = digests,
             .files = try app.arena.dupe([]const u8, &.{r.script}),
         });
     }
@@ -600,7 +631,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
         try app.err.writeAll("nix: nothing was approved\n");
         return 1;
     }
-    for (plan.grants.items) |g| try recordTrust(app, g.record, g.label);
+    for (plan.grants.items) |g| try recordApproval(app, g);
     try app.out.writeAll(plan.done.items);
     return 0;
 }

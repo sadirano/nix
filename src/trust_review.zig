@@ -1,0 +1,203 @@
+//! Advisory review records for approvals in trusted.toml.
+
+const std = @import("std");
+const App = @import("app.zig").App;
+const app_zig = @import("app.zig");
+const actions = @import("actions.zig");
+const context = @import("context.zig");
+const refs = @import("refs.zig");
+const util = @import("util.zig");
+
+pub const FileDigest = struct {
+    root: []const u8,
+    path: []const u8,
+    digest: []const u8,
+};
+pub const Entry = struct {
+    token: []const u8,
+    label: []const u8,
+    command: []const u8,
+    files: []const FileDigest,
+};
+const Sidecar = struct { version: u8 = 1, entries: []const Entry };
+pub const Previous = union(enum) { first, missing, found: Entry };
+pub const Change = enum { changed, added, removed, same };
+pub const Difference = struct { root: []const u8, path: []const u8, change: Change };
+
+fn path(app: *App) ![]const u8 {
+    return std.fs.path.join(app.arena, &.{ app.home, "trust-review.json" });
+}
+
+fn beneath(root: []const u8, file: []const u8) bool {
+    if (root.len == 0 or file.len <= root.len or !util.eqlPathAscii(root, file[0..root.len])) return false;
+    return file[root.len] == '/' or file[root.len] == '\\';
+}
+
+/// digestFiles stores readable bytes under a project or home root without machine paths.
+pub fn digestFiles(app: *App, dir: []const u8, paths: []const []const u8) ![]FileDigest {
+    var out: std.ArrayList(FileDigest) = .empty;
+    for (paths) |file| {
+        const root: []const u8 = if (beneath(dir, file)) "project" else if (beneath(app.home, file)) "home" else continue;
+        const base = if (std.mem.eql(u8, root, "project")) dir else app.home;
+        const body = app_zig.readFileMaybe(app, file) orelse continue;
+        try out.append(app.arena, .{
+            .root = root,
+            .path = try refs.canonPath(app.arena, refs.relativeTo(base, file)),
+            .digest = try context.sha256Hex(app.arena, body),
+        });
+    }
+    return out.items;
+}
+
+fn read(arena: std.mem.Allocator, data: []const u8) []const Entry {
+    const parsed = std.json.parseFromSliceLeaky(Sidecar, arena, data, .{ .ignore_unknown_fields = true }) catch return &.{};
+    return if (parsed.version == 1) parsed.entries else &.{};
+}
+
+fn keep(arena: std.mem.Allocator, entries: []const Entry, ledger: []const actions.Action) ![]const Entry {
+    var out: std.ArrayList(Entry) = .empty;
+    for (entries) |entry| {
+        for (ledger) |row| {
+            if (std.mem.eql(u8, row.name, entry.token)) {
+                try out.append(arena, entry);
+                break;
+            }
+        }
+    }
+    return out.items;
+}
+
+/// record upserts an approval and retains only tokens still present in the ledger.
+pub fn record(app: *App, entry: Entry) void {
+    recordInner(app, entry) catch {};
+}
+
+fn recordInner(app: *App, entry: Entry) !void {
+    const sidecar = try path(app);
+    var list: std.ArrayList(Entry) = .empty;
+    for (read(app.arena, app_zig.readFileMaybe(app, sidecar) orelse "")) |old| {
+        if (!std.mem.eql(u8, old.token, entry.token)) try list.append(app.arena, old);
+    }
+    var saved = entry;
+    if (std.mem.indexOf(u8, entry.label, "|script:")) |at| {
+        if (entry.files.len > 0) {
+            const name = if (std.mem.eql(u8, entry.files[0].root, "home"))
+                try std.fmt.allocPrint(app.arena, "~nix/{s}", .{entry.files[0].path})
+            else
+                entry.files[0].path;
+            saved.label = try std.fmt.allocPrint(app.arena, "{s}|script:{s}", .{ entry.label[0..at], name });
+        }
+    }
+    try list.append(app.arena, saved);
+    const ledger_path = try context.trustPath(app.arena, app.home);
+    const ledger = try actions.parseTable(app.arena, app_zig.readFileMaybe(app, ledger_path) orelse "", "trusted");
+    const json = try std.json.Stringify.valueAlloc(app.arena, Sidecar{ .entries = try keep(app.arena, list.items, ledger) }, .{});
+    try util.writeFileAtomic(app.arena, app.io, sidecar, json);
+}
+
+/// previous distinguishes a first approval from an older approval without a review record.
+pub fn previous(app: *App, label: []const u8) Previous {
+    const ledger_path = context.trustPath(app.arena, app.home) catch return .first;
+    const rows = actions.parseTable(app.arena, app_zig.readFileMaybe(app, ledger_path) orelse "", "trusted") catch return .first;
+    for (rows) |row| {
+        if (!std.mem.eql(u8, row.command, label)) continue;
+        const sidecar = path(app) catch return .missing;
+        for (read(app.arena, app_zig.readFileMaybe(app, sidecar) orelse "")) |entry| {
+            if (std.mem.eql(u8, entry.token, row.name)) return .{ .found = entry };
+        }
+        return .missing;
+    }
+    return .first;
+}
+
+fn sameFile(a: FileDigest, b: FileDigest) bool {
+    return std.mem.eql(u8, a.root, b.root) and std.mem.eql(u8, a.path, b.path);
+}
+
+/// compare reports the union of old and current file digests in stable input order.
+pub fn compare(arena: std.mem.Allocator, old: Entry, current: []const FileDigest) ![]Difference {
+    var out: std.ArrayList(Difference) = .empty;
+    for (old.files) |before| {
+        var status: Change = .removed;
+        for (current) |after| if (sameFile(before, after)) {
+            status = if (std.mem.eql(u8, before.digest, after.digest)) .same else .changed;
+            break;
+        };
+        try out.append(arena, .{ .root = before.root, .path = before.path, .change = status });
+    }
+    for (current) |after| {
+        var found = false;
+        for (old.files) |before| if (sameFile(before, after)) {
+            found = true;
+            break;
+        };
+        if (!found) try out.append(arena, .{ .root = after.root, .path = after.path, .change = .added });
+    }
+    return try out.toOwnedSlice(arena);
+}
+
+/// displayPath uses the saved root to name a file without exposing its machine path.
+pub fn displayPath(arena: std.mem.Allocator, file: Difference) ![]const u8 {
+    return if (std.mem.eql(u8, file.root, "home")) try std.fmt.allocPrint(arena, "~nix/{s}", .{file.path}) else file.path;
+}
+
+/// summary names the prior command and file changes when a label has an approval row.
+pub fn summary(app: *App, label: []const u8, command: []const u8, files: []const FileDigest, indent: []const u8, include_same: bool) !?[]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    switch (previous(app, label)) {
+        .first => return null,
+        .missing => try out.print(app.arena, "{s}(no record of the previous approval - approved before nix kept one)\n", .{indent}),
+        .found => |old| {
+            if (command.len > 0 and !std.mem.eql(u8, old.command, command)) try out.print(app.arena, "{s}was      {s}\n", .{ indent, old.command });
+            for (try compare(app.arena, old, files)) |change| {
+                if (change.change == .same and !include_same) continue;
+                try out.print(app.arena, "{s}{s: <9}{s}\n", .{ indent, @tagName(change.change), try displayPath(app.arena, change) });
+            }
+        },
+    }
+    return out.items;
+}
+
+test "compare covers changed added removed and same files" {
+    const a = std.testing.allocator;
+    const old: Entry = .{ .token = "t", .label = "l", .command = "", .files = &.{
+        .{ .root = "project", .path = "changed", .digest = "a" },
+        .{ .root = "project", .path = "removed", .digest = "a" },
+        .{ .root = "home", .path = "same", .digest = "a" },
+    } };
+    const now: []const FileDigest = &.{
+        .{ .root = "project", .path = "changed", .digest = "b" },
+        .{ .root = "home", .path = "same", .digest = "a" },
+        .{ .root = "project", .path = "added", .digest = "a" },
+    };
+    const changes = try compare(a, old, now);
+    defer a.free(changes);
+    try std.testing.expectEqualSlices(Change, &.{ .changed, .removed, .same, .added }, &.{ changes[0].change, changes[1].change, changes[2].change, changes[3].change });
+    const from_empty = try compare(a, .{ .token = "", .label = "", .command = "", .files = &.{} }, now);
+    defer a.free(from_empty);
+    try std.testing.expectEqual(@as(usize, 3), from_empty.len);
+    const to_empty = try compare(a, old, &.{});
+    defer a.free(to_empty);
+    try std.testing.expectEqual(@as(usize, 3), to_empty.len);
+}
+
+test "JSON review entries round trip and prune by ledger token" {
+    const a = std.testing.allocator;
+    const entries: []const Entry = &.{
+        .{ .token = "keep", .label = "pg|:hi", .command = "echo hi", .files = &.{.{ .root = "project", .path = "scripts/hi.cmd", .digest = "abc" }} },
+        .{ .token = "drop", .label = "pg|:old", .command = "", .files = &.{} },
+    };
+    const json = try std.json.Stringify.valueAlloc(a, Sidecar{ .entries = entries }, .{});
+    defer a.free(json);
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const parsed = read(arena_state.allocator(), json);
+    try std.testing.expectEqualStrings("scripts/hi.cmd", parsed[0].files[0].path);
+    const pruned = try keep(arena_state.allocator(), parsed, &.{.{ .name = "keep", .command = "pg|:hi", .description = "" }});
+    try std.testing.expectEqual(@as(usize, 1), pruned.len);
+    try std.testing.expectEqualStrings("keep", pruned[0].token);
+}
+
+test "malformed review JSON reads as empty" {
+    try std.testing.expectEqual(@as(usize, 0), read(std.testing.allocator, "{broken").len);
+}

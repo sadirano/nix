@@ -96,7 +96,7 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
         // A project script is cloned code reached by bare name - the same
         // provenance question its actions.toml sibling answers. (A script under
         // $home, central or otherwise, is waved through inside the gate.)
-        if (!try provenance.gateScript(app, alias, s, .may_prompt)) return 1;
+        if (!try provenance.gateScript(app, alias, target, s, .may_prompt)) return 1;
         resolved[0] = s;
     } else if (proc.is_windows and std.mem.indexOfAny(u8, exe, "/\\") == null) {
         for ([_][]const u8{ ".cmd", ".bat", ".exe", ".ps1" }) |ext| {
@@ -107,7 +107,7 @@ fn runOnce(app: *App, alias: []const u8, target: []const u8, argv: [][]const u8,
                 // a `.ps1` CreateProcess never would have. Gating the scripts
                 // dir but not the directory beside it would move the unreviewed
                 // code one folder up, so the same gate applies here.
-                if (!try provenance.gateScript(app, alias, cand, .may_prompt)) return 1;
+                if (!try provenance.gateScript(app, alias, target, cand, .may_prompt)) return 1;
                 resolved[0] = cand;
                 break;
             }

@@ -26,6 +26,7 @@ const app_zig = @import("app.zig");
 const actions = @import("actions.zig");
 const context = @import("context.zig");
 const provenance = @import("provenance.zig");
+const trust_review = @import("trust_review.zig");
 const secret = @import("secret.zig");
 const store = @import("store.zig");
 const util = @import("util.zig");
@@ -255,10 +256,14 @@ pub fn planEnv(app: *App, alias: []const u8, dir: []const u8, plan: *provenance.
         return;
     }
     try plan.line(app.arena, "  env      {s}\n", .{path});
+    const label = try std.fmt.allocPrint(app.arena, "{s}|env", .{alias});
+    const digests = try trust_review.digestFiles(app, dir, &.{path});
+    if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try plan.show.appendSlice(app.arena, s);
     try plan.wrote(app.arena, "env: approved {s}\n", .{path});
     try plan.add(app.arena, .{
         .record = record,
-        .label = try std.fmt.allocPrint(app.arena, "{s}|env", .{alias}),
+        .label = label,
+        .digests = digests,
         .files = try app.arena.dupe([]const u8, &.{path}),
     });
 }

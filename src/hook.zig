@@ -333,7 +333,7 @@ pub fn resolveProgram(app: *App, run_line: []const u8) !Program {
 fn invoke(app: *App, cfg: Config, alias: []const u8, target: []const u8, input: []const u8, typed_name: []const u8, stderr_tail: *[]const u8) !Outcome {
     const program_info = try resolveProgram(app, cfg.run);
     const program = program_info.path;
-    if (!try provenance.gateScript(app, program_info.owner, program, .may_prompt)) return error.TrustRefused;
+    if (!try provenance.gateScript(app, program_info.owner, (try resolve.resolveAliasPathQuiet(app, program_info.owner)) orelse "", program, .may_prompt)) return error.TrustRefused;
 
     const stage = try createStage(app);
     defer Io.Dir.cwd().deleteTree(app.io, stage) catch |e| warnCleanup(app, stage, e) catch {};
