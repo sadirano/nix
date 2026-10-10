@@ -231,7 +231,7 @@ const Worker = struct {
             };
             var consumed: usize = 0;
             while (std.mem.indexOfScalarPos(u8, pending.items, consumed, '\n')) |nl| {
-                const line = std.mem.trimEnd(u8, pending.items[consumed..nl], "\r");
+                const line = rowBytes(self.shared.kind, pending.items[consumed..nl]);
                 if (line.len > 0 and !self.shared.emit(line, a)) return;
                 _ = arena_state.reset(.retain_capacity);
                 consumed = nl + 1;
@@ -242,9 +242,14 @@ const Worker = struct {
                 pending.shrinkRetainingCapacity(rest.len);
             }
         }
-        if (pending.items.len > 0) _ = self.shared.emit(std.mem.trimEnd(u8, pending.items, "\r"), a);
+        if (pending.items.len > 0) _ = self.shared.emit(rowBytes(self.shared.kind, pending.items), a);
     }
 };
+
+/// es ends file rows with CR LF; a grep row's CR belongs to the matched line.
+fn rowBytes(kind: Kind, line: []const u8) []const u8 {
+    return if (kind == .grep) line else std.mem.trimEnd(u8, line, "\r");
+}
 
 pub fn cmdProducer(app: *App, rest: [][]const u8) !u8 {
     const p = try parse(app.arena, rest);
@@ -315,6 +320,8 @@ test "canonical rows keep grep tails and limit dedupe scope" {
     const a = arena_state.allocator();
     const g = try canonicalRow(a, .grep, ".\\.nix\\shared\\x.txt:12: needle:more", true);
     try std.testing.expectEqualStrings(".nix/shared/x.txt:12: needle:more", g.row);
+    try std.testing.expectEqualStrings("p:1:text\r\r", rowBytes(.grep, "p:1:text\r\r"));
+    try std.testing.expectEqualStrings("src\\main.zig", rowBytes(.find, "src\\main.zig\r"));
     try std.testing.expect(scoped(g.path, &.{".nix/shared"}));
     try std.testing.expect(!scoped("src/x.txt", &.{".nix/shared"}));
     const native = try canonicalRow(a, .find, "./src/main.zig", false);

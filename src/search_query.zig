@@ -30,7 +30,7 @@ pub fn rewrite(arena: std.mem.Allocator, dir: []const u8, query: []const u8) ![]
     }
     try out.appendSlice(arena, ")");
     const anchored = query.len > 0 and query[0] == '^';
-    try out.appendSlice(arena, if (anchored) "[\\\\/](?:" else ".*?(?:");
+    try out.appendSlice(arena, if (!anchored) ".*?(?:" else if (first) "(?:" else "[\\\\/](?:");
     var class = false;
     var i: usize = if (anchored) 1 else 0;
     while (i < query.len) : (i += 1) {
@@ -56,6 +56,7 @@ test "fd rewrite escapes the root, translates query slashes, and anchors only a 
     const a = arena_state.allocator();
     try std.testing.expectEqualStrings("^(?i:C:[\\\\/]crazy\\.repo[\\\\/]a\\(b\\)).*?(?:src[\\\\/]main)", try rewrite(a, "C:\\crazy.repo\\a(b)", "src/main"));
     try std.testing.expectEqualStrings("^(?i:C:[\\\\/]repo)[\\\\/](?:src)", try rewrite(a, "C:\\repo", "^src"));
+    try std.testing.expectEqualStrings("^(?i:[\\\\/])(?:src)", try rewrite(a, "/", "^src"));
     try std.testing.expectEqualStrings("^(?i:C:[\\\\/]repo).*?(?:[\\\\/]readme)", try rewrite(a, "C:\\repo", "/readme"));
     try std.testing.expectEqualStrings("^(?i:C:[\\\\/]repo).*?(?:a[/]b\\/c)", try rewrite(a, "C:\\repo", "a[/]b\\/c"));
     try std.testing.expect(smartCase("Readme"));
