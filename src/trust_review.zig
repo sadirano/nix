@@ -7,11 +7,13 @@ const actions = @import("actions.zig");
 const context = @import("context.zig");
 const refs = @import("refs.zig");
 const util = @import("util.zig");
+const trust_git = @import("trust_git.zig");
 
 pub const FileDigest = struct {
     root: []const u8,
     path: []const u8,
     digest: []const u8,
+    commit: []const u8 = "",
 };
 pub const Entry = struct {
     token: []const u8,
@@ -23,6 +25,7 @@ const Sidecar = struct { version: u8 = 1, entries: []const Entry };
 pub const Previous = union(enum) { first, missing, found: Entry };
 pub const Change = enum { changed, added, removed, same };
 pub const Difference = struct { root: []const u8, path: []const u8, change: Change };
+pub const Summary = struct { lines: []const u8, diffs: []const trust_git.Diff = &.{}, first: bool = false };
 
 fn path(app: *App) ![]const u8 {
     return std.fs.path.join(app.arena, &.{ app.home, "trust-review.json" });
@@ -40,10 +43,13 @@ pub fn digestFiles(app: *App, dir: []const u8, paths: []const []const u8) ![]Fil
         const root: []const u8 = if (beneath(dir, file)) "project" else if (beneath(app.home, file)) "home" else continue;
         const base = if (std.mem.eql(u8, root, "project")) dir else app.home;
         const body = app_zig.readFileMaybe(app, file) orelse continue;
+        const relative = try refs.canonPath(app.arena, refs.relativeTo(base, file));
+        const digest = try context.sha256Hex(app.arena, body);
         try out.append(app.arena, .{
             .root = root,
-            .path = try refs.canonPath(app.arena, refs.relativeTo(base, file)),
-            .digest = try context.sha256Hex(app.arena, body),
+            .path = relative,
+            .digest = digest,
+            .commit = try trust_git.hint(app, base, relative, digest),
         });
     }
     return out.items;
@@ -141,21 +147,45 @@ pub fn displayPath(arena: std.mem.Allocator, file: Difference) ![]const u8 {
     return if (std.mem.eql(u8, file.root, "home")) try std.fmt.allocPrint(arena, "~nix/{s}", .{file.path}) else file.path;
 }
 
-/// summary names the prior command and file changes when a label has an approval row.
-pub fn summary(app: *App, label: []const u8, command: []const u8, files: []const FileDigest, indent: []const u8, include_same: bool) !?[]const u8 {
+/// summary names changes, verified baselines, and uncommitted files at a pending approval.
+pub fn summary(app: *App, dir: []const u8, label: []const u8, command: []const u8, files: []const FileDigest, indent: []const u8, include_same: bool) !Summary {
     var out: std.ArrayList(u8) = .empty;
+    var diffs: std.ArrayList(trust_git.Diff) = .empty;
+    var first = false;
     switch (previous(app, label)) {
-        .first => return null,
+        .first => first = true,
         .missing => try out.print(app.arena, "{s}(no record of the previous approval - approved before nix kept one)\n", .{indent}),
         .found => |old| {
             if (command.len > 0 and !std.mem.eql(u8, old.command, command)) try out.print(app.arena, "{s}was      {s}\n", .{ indent, old.command });
             for (try compare(app.arena, old, files)) |change| {
                 if (change.change == .same and !include_same) continue;
-                try out.print(app.arena, "{s}{s: <9}{s}\n", .{ indent, @tagName(change.change), try displayPath(app.arena, change) });
+                const display = try displayPath(app.arena, change);
+                try out.print(app.arena, "{s}{s: <9}{s}", .{ indent, @tagName(change.change), display });
+                if (change.change == .changed) {
+                    for (old.files) |before| if (std.mem.eql(u8, before.root, change.root) and std.mem.eql(u8, before.path, change.path)) {
+                        const base = if (std.mem.eql(u8, change.root, "home")) app.home else dir;
+                        const found = try trust_git.baseline(app, base, change.path, before.digest, before.commit);
+                        if (found.commit.len > 0) {
+                            const current = try std.fs.path.join(app.arena, &.{ base, change.path });
+                            const item: trust_git.Diff = .{ .display = display, .commit = found.commit, .bytes = found.bytes, .current = current };
+                            try diffs.append(app.arena, item);
+                            try out.print(app.arena, "   ({s} since {s})", .{ try trust_git.counts(app, item), found.commit[0..@min(7, found.commit.len)] });
+                        } else try out.print(app.arena, "   (no baseline: {s})", .{found.reason});
+                        break;
+                    };
+                }
+                try out.append(app.arena, '\n');
             }
         },
     }
-    return out.items;
+    for (files) |file| {
+        if (file.commit.len > 0) continue;
+        const base = if (std.mem.eql(u8, file.root, "home")) app.home else dir;
+        if (!try trust_git.inWorkTree(app, base)) continue;
+        const display = try displayPath(app.arena, .{ .root = file.root, .path = file.path, .change = .changed });
+        try out.print(app.arena, "{s}note: {s} is not committed - a later change to it can't be shown as a diff\n", .{ indent, display });
+    }
+    return .{ .lines = out.items, .diffs = diffs.items, .first = first };
 }
 
 test "compare covers changed added removed and same files" {

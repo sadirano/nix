@@ -258,7 +258,9 @@ pub fn planEnv(app: *App, alias: []const u8, dir: []const u8, plan: *provenance.
     try plan.line(app.arena, "  env      {s}\n", .{path});
     const label = try std.fmt.allocPrint(app.arena, "{s}|env", .{alias});
     const digests = try trust_review.digestFiles(app, dir, &.{path});
-    if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try plan.show.appendSlice(app.arena, s);
+    const review = try trust_review.summary(app, dir, label, "", digests, "    ", false);
+    try plan.show.appendSlice(app.arena, review.lines);
+    try plan.diffs.appendSlice(app.arena, review.diffs);
     try plan.wrote(app.arena, "env: approved {s}\n", .{path});
     try plan.add(app.arena, .{
         .record = record,

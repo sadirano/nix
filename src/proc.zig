@@ -691,6 +691,17 @@ pub fn runCaptured(arena: std.mem.Allocator, io: Io, argv: []const []const u8, c
     });
 }
 
+/// runCapturedQuiet returns stdout and exit code while discarding child stderr.
+pub fn runCapturedQuiet(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8, env: ?*const std.process.Environ.Map) !FilterResult {
+    return capture(arena, io, .{
+        .argv = argv,
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+        .stderr = .ignore,
+        .env = env,
+    });
+}
+
 /// LineSink is forEachLine's consumer: called once per stdout line (newline
 /// stripped, trailing CR trimmed). The slice is only valid during the call —
 /// dupe anything kept.

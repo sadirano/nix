@@ -31,7 +31,7 @@ pub fn before(app: *App, job: jobs.Job, name: []const u8) !bool {
         try app.err.print("{s}\n", .{job.path});
         try app.err.writeAll(body);
         if (body.len == 0 or body[body.len - 1] != '\n') try app.err.writeByte('\n');
-        if (!try confirm(app, "run it?", &.{})) return false;
+        if (!try confirm(app, "run it?", &.{}, &.{})) return false;
         if (!try record(app, job, .approve, &hash)) return false;
     }
     if (job.header.uses) |uses| {

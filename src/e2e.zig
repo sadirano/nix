@@ -1423,6 +1423,106 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "no record of the previous approval") != null, "trust review explains a missing prior record", r);
     }
 
+    // --- git baselines for trust review -----------------------------------------
+    {
+        const names = [_][]const u8{
+            "git review finds the approved commit",
+            "git review prints the approved and current diff",
+            "git review warns when approved bytes are uncommitted",
+            "git review finds an uncommitted approval in later history",
+            "non-git review has no diff answer or commit warning",
+            "approved action runs with git removed from PATH",
+        };
+        if (!c.has("git")) {
+            for (names) |name| c.skip(name, "git");
+        } else {
+            const project = join(&c, &.{ root, "proj", "git-review" });
+            util.mkdirAll(io, project) catch {};
+            _ = try c.run(&.{ "grv", project });
+            const decl = join(&c, &.{ project, ".nix", "actions.toml" });
+            const script = join(&c, &.{ project, "scripts", "deploy.ps1" });
+            try writeFile(&c, decl, "[actions]\nship = \"echo scripts/deploy.ps1\"\n");
+            try writeFile(&c, script, "Write-Output old\n");
+            _ = try c.runCommand(&.{ "git", "init", "--quiet", project }, null);
+            _ = try c.runCommand(&.{ "git", "-C", project, "config", "user.name", "Nix Test" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", project, "config", "user.email", "nix@example.invalid" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", project, "config", "core.autocrlf", "false" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", project, "add", ".nix/actions.toml", "scripts/deploy.ps1" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", project, "commit", "--quiet", "-m", "approved" }, null);
+            _ = try c.trust(&.{"grv"});
+            try writeFile(&c, script, "Write-Output new\n");
+            _ = try c.runCommand(&.{ "git", "-C", project, "add", "scripts/deploy.ps1" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", project, "commit", "--quiet", "-m", "changed" }, null);
+            var r = try c.runAnswering(&.{ "--trust", "grv" }, "n\n");
+            const since = std.mem.indexOf(u8, r.out, "since ");
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "changed  scripts/deploy.ps1") != null and
+                since != null and since.? + 13 <= r.out.len and std.ascii.isHex(r.out[since.? + 6]), names[0], r);
+            r = try c.runAnswering(&.{ "--trust", "grv" }, "d\nn\n");
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "-Write-Output old") != null and
+                std.mem.indexOf(u8, r.err, "+Write-Output new") != null and
+                std.mem.indexOf(u8, r.err, "(approved, ") != null, names[1], r);
+            _ = try c.trust(&.{"grv"});
+            try writeFile(&c, script, "Write-Output uncommitted\n");
+            r = try c.trust(&.{"grv"});
+            c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "is not committed") != null, names[2], r);
+            _ = try c.runCommand(&.{ "git", "-C", project, "add", "scripts/deploy.ps1" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", project, "commit", "--quiet", "-m", "later" }, null);
+            try writeFile(&c, script, "Write-Output later\n");
+            r = try c.runAnswering(&.{ "--trust", "grv" }, "n\n");
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "since ") != null, names[3], r);
+
+            // autocrlf stores LF and checks out CRLF: the baseline is the
+            // checkout form, so one edited line diffs as one line.
+            const crlf_proj = join(&c, &.{ root, "proj", "crlf-review" });
+            util.mkdirAll(io, crlf_proj) catch {};
+            _ = try c.run(&.{ "crv", crlf_proj });
+            const crlf_script = join(&c, &.{ crlf_proj, "scripts", "deploy.ps1" });
+            try writeFile(&c, join(&c, &.{ crlf_proj, ".nix", "actions.toml" }), "[actions]\nship = \"echo scripts/deploy.ps1\"\n");
+            try writeFile(&c, crlf_script, "one\r\ntwo\r\nthree\r\n");
+            _ = try c.runCommand(&.{ "git", "init", "--quiet", crlf_proj }, null);
+            _ = try c.runCommand(&.{ "git", "-C", crlf_proj, "config", "user.name", "Nix Test" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", crlf_proj, "config", "user.email", "nix@example.invalid" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", crlf_proj, "config", "core.autocrlf", "true" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", crlf_proj, "add", ".nix/actions.toml", "scripts/deploy.ps1" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", crlf_proj, "commit", "--quiet", "-m", "approved" }, null);
+            _ = try c.trust(&.{"crv"});
+            try writeFile(&c, crlf_script, "one\r\nTWO\r\nthree\r\n");
+            r = try c.runAnswering(&.{ "--trust", "crv" }, "d\nn\n");
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "(+1 -1 since ") != null and
+                std.mem.indexOf(u8, r.err, "+TWO") != null and std.mem.indexOf(u8, r.err, "\\x0D") == null, "an autocrlf checkout diffs only the edited line, with no escaped CRs", r);
+
+            const plain = join(&c, &.{ root, "proj", "plain-review" });
+            util.mkdirAll(io, plain) catch {};
+            _ = try c.run(&.{ "plr", plain });
+            const plain_script = join(&c, &.{ plain, "scripts", "plain.ps1" });
+            try writeFile(&c, join(&c, &.{ plain, ".nix", "actions.toml" }), "[actions]\nship = \"echo scripts/plain.ps1\"\n");
+            try writeFile(&c, plain_script, "Write-Output old\n");
+            _ = try c.trust(&.{"plr"});
+            try writeFile(&c, plain_script, "Write-Output new\n");
+            r = try c.runAnswering(&.{ "--trust", "plr" }, "n\n");
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "(no baseline: not a git repo)") != null and
+                std.mem.indexOf(u8, r.err, "d=diff") == null and std.mem.indexOf(u8, r.out, "is not committed") == null, names[4], r);
+
+            _ = try c.trust(&.{"grv"});
+            const old_path = try c.arena.dupe(u8, c.env.get("PATH") orelse "");
+            const git_exe = proc.findInPath(c.arena, c.io, c.env, "git").?;
+            const git_dir = std.fs.path.dirname(git_exe).?;
+            var filtered: std.ArrayList(u8) = .empty;
+            var path_parts = std.mem.splitScalar(u8, old_path, if (proc.is_windows) ';' else ':');
+            while (path_parts.next()) |part| {
+                if (util.eqlPathAscii(part, git_dir) or std.mem.indexOf(u8, part, "\\Git\\") != null or
+                    std.mem.indexOf(u8, part, "/Git/") != null) continue;
+                if (filtered.items.len > 0) try filtered.append(c.arena, if (proc.is_windows) ';' else ':');
+                try filtered.appendSlice(c.arena, part);
+            }
+            try c.env.put("PATH", filtered.items);
+            const no_git = !c.has("git");
+            r = try c.run(&.{ "grv", "--run", ":ship" });
+            try c.env.put("PATH", old_path);
+            c.check(no_git and r.code == 0, names[5], r);
+        }
+    }
+
     // --- standing trust (`[trust] always`) --------------------------------------
     // The opposite trade from everything above: an alias the user OWNS stops
     // being asked about, including for bytes edited after the grant and in a

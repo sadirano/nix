@@ -214,7 +214,7 @@ pub fn gateAction(
             try app.err.print("nix: :{s} will run as ADMINISTRATOR:\n", .{name});
             try app.err.print("  {s}\n", .{command});
             try listRefs(app, dir, declared, refs);
-            return confirm(app, "Run it elevated?", viewable);
+            return confirm(app, "Run it elevated?", viewable, &.{});
         },
         .refuse_unapproved => {
             try app.err.print("nix: {s}'s :{s} has not been approved:\n", .{ alias, name });
@@ -229,11 +229,13 @@ pub fn gateAction(
             const label = try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, name });
             const digests = try trust_review.digestFiles(app, dir, refs);
             if (decl) |p| try app.err.print("  declared in {s}\n", .{p});
-            if (try trust_review.summary(app, label, declared, digests, "  ", true)) |s| {
-                try app.err.writeAll(s);
+            const review = try trust_review.summary(app, dir, label, declared, digests, "  ", true);
+            if (!review.first) {
+                try app.err.writeAll(review.lines);
                 if (try refs_zig.overCap(app, dir, declared, refs)) try app.err.print("  {s}\n", .{over_cap_note});
             } else try listRefs(app, dir, declared, refs);
-            if (!try confirm(app, "Approve these files as they stand, and run?", viewable)) {
+            if (review.first) try app.err.writeAll(review.lines);
+            if (!try confirm(app, "Approve these files as they stand, and run?", viewable, review.diffs)) {
                 return false;
             }
             try recordApproval(app, .{ .record = record, .label = label, .command = declared, .digests = digests });
@@ -298,8 +300,9 @@ pub fn gateScript(app: *App, alias: []const u8, dir: []const u8, script: []const
     try app.err.print("nix: {s} wants to run a project script:\n  {s}\n", .{ alias, script });
     const label = try scriptLabel(app.arena, alias, script);
     const digests = try trust_review.digestFiles(app, dir, &.{script});
-    if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try app.err.writeAll(s);
-    if (!try confirm(app, "Approve this script's current contents and run?", &.{script})) return false;
+    const review = try trust_review.summary(app, dir, label, "", digests, "    ", false);
+    try app.err.writeAll(review.lines);
+    if (!try confirm(app, "Approve this script's current contents and run?", &.{script}, review.diffs)) return false;
     try recordApproval(app, .{ .record = record, .label = label, .digests = digests });
     return true;
 }
@@ -409,9 +412,12 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
                 const refs = try refs_zig.referencedFiles(app, dir, command);
                 const label = try std.fmt.allocPrint(app.arena, "{s}|:{s}", .{ alias, a.name });
                 const digests = try trust_review.digestFiles(app, dir, refs);
-                if (try trust_review.summary(app, label, command, digests, "      ", true)) |s| {
-                    try plan.show.appendSlice(app.arena, s);
+                const review = try trust_review.summary(app, dir, label, command, digests, "      ", true);
+                if (!review.first) {
+                    try plan.show.appendSlice(app.arena, review.lines);
                 } else for (refs) |f| try plan.line(app.arena, "      runs  {s}\n", .{f});
+                if (review.first) try plan.show.appendSlice(app.arena, review.lines);
+                try plan.diffs.appendSlice(app.arena, review.diffs);
                 if (try refs_zig.overCap(app, dir, command, refs)) try plan.line(app.arena, "      {s}\n", .{over_cap_note});
                 try plan.add(app.arena, .{
                     .record = record,
@@ -450,7 +456,9 @@ pub fn planProject(app: *App, alias: []const u8, dir: []const u8, plan: *Plan) !
         try plan.line(app.arena, "  script   {s}\n", .{full});
         const label = try scriptLabel(app.arena, alias, full);
         const digests = try trust_review.digestFiles(app, dir, &.{full});
-        if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try plan.show.appendSlice(app.arena, s);
+        const review = try trust_review.summary(app, dir, label, "", digests, "    ", false);
+        try plan.show.appendSlice(app.arena, review.lines);
+        try plan.diffs.appendSlice(app.arena, review.diffs);
         try plan.wrote(app.arena, "{s}: approved {s}\n", .{ alias, full });
         try plan.add(app.arena, .{
             .record = record,
@@ -500,6 +508,7 @@ pub const Grant = struct {
 /// is something to ask about, and nothing claims to be approved until it is.
 pub const Plan = struct {
     grants: std.ArrayList(Grant) = .empty,
+    diffs: std.ArrayList(@import("trust_git.zig").Diff) = .empty,
     show: std.ArrayList(u8) = .empty,
     done: std.ArrayList(u8) = .empty,
 
@@ -612,7 +621,9 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
         try plan.line(app.arena, "  context  {s} -> {s}\n", .{ cd.segment, r.script });
         const label = try std.fmt.allocPrint(app.arena, "{s}|{s}", .{ alias, cd.segment });
         const digests = try trust_review.digestFiles(app, dir, &.{ src.origin, r.script });
-        if (try trust_review.summary(app, label, "", digests, "    ", false)) |s| try plan.show.appendSlice(app.arena, s);
+        const review = try trust_review.summary(app, dir, label, "", digests, "    ", false);
+        try plan.show.appendSlice(app.arena, review.lines);
+        try plan.diffs.appendSlice(app.arena, review.diffs);
         try plan.wrote(app.arena, "{s}: approved {s}\n", .{ cd.segment, r.script });
         try plan.add(app.arena, .{
             .record = r.record,
@@ -627,7 +638,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
     }
     try app.out.print("{s}: --trust would approve these as they stand now:\n", .{alias});
     try app.out.writeAll(plan.show.items);
-    if (!try confirm(app, "Approve all of it?", try plan.viewFiles(app.arena))) {
+    if (!try confirm(app, "Approve all of it?", try plan.viewFiles(app.arena), plan.diffs.items)) {
         try app.err.writeAll("nix: nothing was approved\n");
         return 1;
     }
@@ -665,7 +676,7 @@ fn grantStanding(app: *App, alias: []const u8, dir: []const u8) !u8 {
     try app.out.writeAll("shell with no console - so an agent that edits a script here can then run it\n");
     try app.out.writeAll("without a person seeing the change. Grant it for repos you write, not clones.\n");
     try app.out.writeAll("An action that elevates (sudo) still confirms every time.\n");
-    if (!try confirm(app, "Grant standing trust?", &.{})) {
+    if (!try confirm(app, "Grant standing trust?", &.{}, &.{})) {
         try app.err.writeAll("nix: nothing was granted\n");
         return 1;
     }
