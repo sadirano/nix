@@ -4,6 +4,7 @@ const std = @import("std");
 const Io = std.Io;
 const App = @import("app.zig").App;
 const proc = @import("proc.zig");
+const spawner = @import("spawn.zig");
 
 const FileTime = extern struct { low: u32, high: u32 };
 const HandleFileInfo = extern struct {
@@ -74,7 +75,7 @@ pub fn launch(
     if (comptime proc.is_windows) {
         var job = try Job.create();
         defer job.close();
-        var child = try std.process.spawn(app.io, .{
+        var child = try spawner.spawn(app.io, .{
             .argv = argv,
             .cwd = .{ .path = cwd },
             .stdin = .ignore,
@@ -118,7 +119,7 @@ pub fn launch(
             else => 255,
         };
     } else {
-        var child = try std.process.spawn(app.io, .{
+        var child = try spawner.spawn(app.io, .{
             .argv = argv,
             .cwd = .{ .path = cwd },
             .stdin = .ignore,

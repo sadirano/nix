@@ -4,6 +4,7 @@ const std = @import("std");
 const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
+const spawner = @import("spawn.zig");
 const open_zig = @import("open.zig");
 const search_config = @import("search_config.zig");
 const Job = @import("job.zig").Job;
@@ -33,7 +34,7 @@ pub fn wrap(app: *App, kind: Kind, dir: []const u8, extras: []const []const u8, 
 }
 
 pub fn printRows(app: *App, dir: []const u8, argv: []const []const u8) !u8 {
-    var child = try std.process.spawn(app.io, .{
+    var child = try spawner.spawn(app.io, .{
         .argv = argv,
         .cwd = .{ .path = dir },
         .stdin = .ignore,
@@ -267,7 +268,7 @@ pub fn cmdProducer(app: *App, rest: [][]const u8) !u8 {
         shared.mutex.lockUncancelable(app.io);
         defer shared.mutex.unlock(app.io);
         if (shared.stopped) break;
-        children[started] = std.process.spawn(app.io, .{
+        children[started] = spawner.spawn(app.io, .{
             .argv = argv,
             .cwd = .{ .path = p.dir },
             .stdin = .ignore,

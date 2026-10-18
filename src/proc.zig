@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const interrupt = @import("interrupt.zig");
+const spawner = @import("spawn.zig");
 const builtin = @import("builtin");
 const Io = std.Io;
 
@@ -112,7 +113,7 @@ pub fn runInherit(io: Io, argv: []const []const u8, cwd: []const u8) !u8 {
 /// runInheritEnv is runInherit with an explicit environment (e.g. a PATH that
 /// includes the alias's `.nix/scripts` dir). A null env inherits the parent's.
 pub fn runInheritEnv(io: Io, argv: []const []const u8, cwd: []const u8, env: ?*const std.process.Environ.Map) !u8 {
-    var child = try std.process.spawn(io, .{
+    var child = try spawner.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .stdin = .inherit,
@@ -133,7 +134,7 @@ pub fn runDetached(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_window
 
 /// runDetachedEnv is runDetached with an explicit environment.
 pub fn runDetachedEnv(io: Io, argv: []const []const u8, cwd: ?[]const u8, no_window: bool, env: ?*const std.process.Environ.Map) !void {
-    var child = try std.process.spawn(io, .{
+    var child = try spawner.spawn(io, .{
         .argv = argv,
         .cwd = if (cwd) |d| .{ .path = d } else .inherit,
         .stdin = .ignore,
@@ -394,69 +395,11 @@ pub fn findInPath(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Ma
     while (dirs.next()) |dir| {
         if (dir.len == 0) continue;
         if (is_windows) {
-            if (findInDirWindows(arena, env, dir, name)) |p| return p;
+            if (spawner.findInDir(arena, env.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD", dir, name)) |p| return p;
             continue;
         }
         const cand = std.fs.path.join(arena, &.{ dir, name }) catch continue;
         if (existsExec(arena, io, env, cand)) |p| return p;
-    }
-    return null;
-}
-
-const WIN32_FIND_DATAW = extern struct {
-    dwFileAttributes: u32,
-    ftCreationTime: u64 align(4),
-    ftLastAccessTime: u64 align(4),
-    ftLastWriteTime: u64 align(4),
-    nFileSizeHigh: u32,
-    nFileSizeLow: u32,
-    dwReserved0: u32,
-    dwReserved1: u32,
-    cFileName: [260]u16,
-    cAlternateFileName: [14]u16,
-};
-extern "kernel32" fn FindFirstFileExW(lpFileName: [*:0]const u16, fInfoLevelId: c_int, lpFindFileData: *WIN32_FIND_DATAW, fSearchOp: c_int, lpSearchFilter: ?*anyopaque, dwAdditionalFlags: u32) callconv(.winapi) isize;
-extern "kernel32" fn FindNextFileW(hFindFile: isize, lpFindFileData: *WIN32_FIND_DATAW) callconv(.winapi) i32;
-extern "kernel32" fn FindClose(hFindFile: isize) callconv(.winapi) i32;
-
-/// findInDirWindows answers existsExec for one PATH directory with a single
-/// `<dir>\<name>.*` listing instead of one open per PATHEXT entry. A miss is
-/// what every lookup pays in every directory before the one that has the tool,
-/// so one listing per directory replaces several opens. The answer is the same: an exact name that already has an
-/// extension first, then the first PATHEXT extension present, directories
-/// never.
-fn findInDirWindows(arena: std.mem.Allocator, env: *std.process.Environ.Map, dir: []const u8, name: []const u8) ?[]const u8 {
-    const pattern = std.fmt.allocPrint(arena, "{s}\\{s}.*", .{ std.mem.trimEnd(u8, dir, "\\/"), name }) catch return null;
-    const pattern_w = std.unicode.wtf8ToWtf16LeAllocZ(arena, pattern) catch return null;
-    var data: WIN32_FIND_DATAW = undefined;
-    const h = FindFirstFileExW(pattern_w, 1, &data, 0, null, 0); // FindExInfoBasic, FindExSearchNameMatch
-    if (h == -1) return null;
-    defer _ = FindClose(h);
-
-    var found: std.ArrayList([]const u8) = .empty;
-    while (true) {
-        if (data.dwFileAttributes & 0x10 == 0) { // not FILE_ATTRIBUTE_DIRECTORY
-            const len = std.mem.indexOfScalar(u16, &data.cFileName, 0) orelse data.cFileName.len;
-            if (std.unicode.wtf16LeToWtf8Alloc(arena, data.cFileName[0..len])) |f| {
-                found.append(arena, f) catch return null;
-            } else |_| {}
-        }
-        if (FindNextFileW(h, &data) == 0) break;
-    }
-
-    const base = std.fs.path.join(arena, &.{ dir, name }) catch return null;
-    if (std.fs.path.extension(name).len > 0) {
-        for (found.items) |f| if (std.ascii.eqlIgnoreCase(f, name)) return base;
-    }
-    const pathext = env.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD";
-    var exts = std.mem.splitScalar(u8, pathext, ';');
-    while (exts.next()) |ext| {
-        if (ext.len == 0) continue;
-        for (found.items) |f| {
-            if (f.len == name.len + ext.len and std.ascii.eqlIgnoreCase(f[0..name.len], name) and std.ascii.eqlIgnoreCase(f[name.len..], ext)) {
-                return std.fmt.allocPrint(arena, "{s}{s}", .{ base, ext }) catch null;
-            }
-        }
     }
     return null;
 }
@@ -531,7 +474,7 @@ fn exitCode(term: std.process.Child.Term) u8 {
 /// output. fzf does (it reads the whole list, then prints one selection); a
 /// filter that echoes as it reads would deadlock both sides here.
 fn capture(arena: std.mem.Allocator, io: Io, s: Spawn) !FilterResult {
-    var child = try std.process.spawn(io, .{
+    var child = try spawner.spawn(io, .{
         .argv = s.argv,
         .cwd = s.cwd,
         .stdin = if (s.input != null) .pipe else s.stdin,
@@ -716,7 +659,7 @@ pub const LineSink = struct {
 /// the full dump in memory. Memory stays bounded by the longest line. stdin and
 /// stderr are inherited, like captureOutput.
 pub fn forEachLine(arena: std.mem.Allocator, io: Io, argv: []const []const u8, cwd: []const u8, sink: LineSink) !void {
-    var child = try std.process.spawn(io, .{
+    var child = try spawner.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
         .stdin = .inherit,
@@ -776,7 +719,7 @@ pub fn runPipeline(
     cwd: []const u8,
     env: ?*const std.process.Environ.Map,
 ) !FilterResult {
-    var fzf = try std.process.spawn(io, .{
+    var fzf = try spawner.spawn(io, .{
         .argv = fzf_argv,
         .cwd = .{ .path = cwd },
         .stdin = .pipe,
@@ -788,7 +731,7 @@ pub fn runPipeline(
     // starting, a pump error) must take it down, or it is left holding the
     // terminal with nobody to answer it. kill is a no-op once fzf was waited.
     errdefer fzf.kill(io);
-    var prod = try std.process.spawn(io, .{
+    var prod = try spawner.spawn(io, .{
         .argv = producer_argv,
         .cwd = .{ .path = cwd },
         .stdin = .inherit,
@@ -846,7 +789,7 @@ pub fn runPipelineFiltered(
     max_lines: usize,
     quiet_producer: bool,
 ) !FilterResult {
-    var fzf = try std.process.spawn(io, .{
+    var fzf = try spawner.spawn(io, .{
         .argv = fzf_argv,
         .cwd = .{ .path = cwd },
         .stdin = .pipe,
@@ -855,7 +798,7 @@ pub fn runPipelineFiltered(
         .environ_map = env,
     });
     errdefer fzf.kill(io); // see runPipeline
-    var prod = try std.process.spawn(io, .{
+    var prod = try spawner.spawn(io, .{
         .argv = producer_argv,
         .cwd = .{ .path = cwd },
         .stdin = .inherit,
@@ -897,8 +840,7 @@ pub fn runPipelineFiltered(
 }
 
 // ---- tests -------------------------------------------------------------------
-// The rest live in proc_test.zig: they spawn real children, and this file is at
-// its size ratchet.
+// The rest live in proc_test.zig: they spawn real children.
 
 test "capture returns the child's output and its exit code" {
     if (!is_windows) return error.SkipZigTest; // cmd fixture

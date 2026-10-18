@@ -1,9 +1,7 @@
 //! Tests for proc.zig's spawn-and-read primitives, which need a REAL child to
 //! mean anything: how a producer's output ends, and whether a consumer that
 //! stops early leaves a process behind. They live beside proc.zig rather than
-//! inside it because that file is at its size ratchet, and because these are
-//! small integration tests - they are the one place in the unit suite that
-//! spawns processes.
+//! inside it because they are small integration tests.
 
 const std = @import("std");
 const proc = @import("proc.zig");
