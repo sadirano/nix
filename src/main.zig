@@ -50,6 +50,16 @@ const build_version = @import("build_options").version;
 // Local wall-clock build date+time ("YYYY-MM-DD HH:MM:SS"), injected by build.zig.
 const build_date = @import("build_options").build_date;
 
+fn withMode(file: Io.File) Io.File {
+    if (builtin.os.tag != .windows) return file;
+    const w = std.os.windows;
+    var iosb: w.IO_STATUS_BLOCK = undefined;
+    var mode: w.FILE.MODE = @bitCast(@as(u32, 0));
+    if (w.ntdll.NtQueryInformationFile(file.handle, &iosb, &mode, @sizeOf(w.FILE.MODE), .Mode) != .SUCCESS)
+        return file;
+    return .{ .handle = file.handle, .flags = .{ .nonblocking = mode.IO == .ASYNCHRONOUS } };
+}
+
 pub fn main(init: std.process.Init.Minimal) !void {
     // The full std.process.Init builds its environment map on smp_allocator,
     // whose 64 KB size-class slabs commit far more than the map needs.
@@ -73,9 +83,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // then write the next header back over the child's output. Appending is the
     // only mode that agrees with a file pointer other processes also move.
     var out_buf: [4096]u8 = undefined;
-    var out_fw: Io.File.Writer = .initStreaming(.stdout(), io, &out_buf);
+    var out_fw: Io.File.Writer = .initStreaming(withMode(.stdout()), io, &out_buf);
     var err_buf: [1024]u8 = undefined;
-    var err_fw: Io.File.Writer = .initStreaming(.stderr(), io, &err_buf);
+    var err_fw: Io.File.Writer = .initStreaming(withMode(.stderr()), io, &err_buf);
     const out = &out_fw.interface;
     const err = &err_fw.interface;
     defer out.flush() catch {};
@@ -104,12 +114,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
         .e2e_hooks = @import("build_options").e2e_hooks,
     };
 
-    const code = run(&app, raw_args) catch |e| blk: {
+    const code: u8 = run(&app, raw_args) catch |e| blk: {
+        if (out_fw.err) |write_err| {
+            if (write_err == error.BrokenPipe) break :blk 0;
+        }
         err.print("nix: {s}\n", .{@errorName(e)}) catch {};
         break :blk 1;
     };
     out.flush() catch {};
     err.flush() catch {};
+    if (out_fw.err) |write_err| {
+        if (write_err == error.BrokenPipe) return;
+    }
     if (code != 0) {
         hold.onFailure(&app);
         std.process.exit(@intCast(code));
