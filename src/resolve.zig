@@ -338,19 +338,9 @@ test "selectedIndex maps a picked row back to its block, and refuses anything el
     try std.testing.expect(selectedIndex("5\trow", 2) == null);
 }
 
-/// evalSegment turns one segment into its path fragment. With a `run` line the
-/// source executes first (context.zig: trust-gated, cached) and its variables
-/// join the lookup for source-template AND accumulate on app.ctx_vars, which
-/// aliasRunEnv exports into whatever `o`/`r` starts next.
-///
-/// Ordering note: the source runs BEFORE the template expands but AFTER the
-/// inline value is known, which is what lets `run = "set_vars ${task}"` receive
-/// the 123 in `task:123@project`.
-///
-/// The command comes from an inline `run` line or, via `uses`, from a shared
-/// `[[producers]]` block — the producer owns the command, this context supplies
-/// the values its `${}` references resolve against, which is what lets one
-/// lookup serve several projects with different path shapes.
+/// A `run` or `uses` source runs after the inline value is known and before the
+/// template expands. Its variables feed the template and app.ctx_vars for
+/// aliasRunEnv. A null `at` checks a wildcard without walking directories.
 fn evalSegment(
     app: *App,
     cd: *const segments.ContextDef,
@@ -358,7 +348,7 @@ fn evalSegment(
     ps: segments.ParsedSegment,
     alias: []const u8,
     dir: []const u8,
-    at: []const u8,
+    at: ?[]const u8,
 ) ![]const u8 {
     const param = if (cd.param.len > 0) cd.param else cd.segment;
     var lk: SegLookup = .{ .app = app, .cd = cd, .ps = ps, .param = param };
@@ -405,6 +395,18 @@ fn evalSegment(
     return "";
 }
 
+fn checkedFragment(app: *App, cd: *const segments.ContextDef, producers: []const segments.ProducerDef, ps: segments.ParsedSegment, alias: []const u8, dir: []const u8, at: ?[]const u8) !?[]const u8 {
+    const fragment = evalSegment(app, cd, producers, ps, alias, dir, at) catch |e| {
+        if (e != error.ContextSourceFailed) try app.err.print("nix: segment \"{s}\": {s}\n", .{ ps.name, @errorName(e) });
+        return null;
+    };
+    if (!segments.guardFragment(fragment)) {
+        try app.err.print("nix: segment \"{s}\": fragment \"{s}\" escaped its alias\n", .{ ps.name, fragment });
+        return null;
+    }
+    return fragment;
+}
+
 /// WildLookup is SegLookup for a wildcard template, with one difference: the
 /// segment's own parameter is a pattern the person typed, so it may carry a
 /// `*`, and when it was not typed at all it matches everything - `o t@tasks`
@@ -421,11 +423,9 @@ const WildLookup = struct {
     }
 };
 
-/// wildFragment resolves a template containing `*` by searching below `at`,
-/// the path the segments to its right already resolved (segwalk.zig has the
-/// rules). The picked directory's captures join app.ctx_vars the way a context
-/// source's variables do, so the shell `o` opens knows the client too.
-fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: []const u8) ![]const u8 {
+/// A wildcard searches below `at` after its pattern is checked. With null
+/// `at`, only the pattern is checked. Captures join app.ctx_vars.
+fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: ?[]const u8) ![]const u8 {
     const tmpl = cd.source_template;
     // A search needs somewhere to start; a suffix template (`_${task}.md`)
     // appends to a NAME, and there is no directory to list for that.
@@ -475,21 +475,22 @@ fn wildFragment(app: *App, cd: *const segments.ContextDef, lk: SegLookup, at: []
         }
         lim.depth = d;
     }
-    const w = try segwalk.walk(app.arena, app.io, at, comps.items, lim);
+    const root = at orelse return "";
+    const w = try segwalk.walk(app.arena, app.io, root, comps.items, lim);
     // A search the budget cut short is not an answer: a "no match" or a menu
     // from part of the tree would be wrong while looking complete.
     if (w.exhausted) {
-        try app.err.print("nix: segment \"{s}\": stopped after opening {d} folders under {s} while matching {s}; narrow the template or lower its `depth`\n", .{ cd.segment, lim.budget, try store.fromSlash(app.arena, at), shown.items });
+        try app.err.print("nix: segment \"{s}\": stopped after opening {d} folders under {s} while matching {s}; narrow the template or lower its `depth`\n", .{ cd.segment, lim.budget, try store.fromSlash(app.arena, root), shown.items });
         return error.ContextSourceFailed;
     }
     // A folder that could not be read does not stop the search - what was
     // found elsewhere is still shown - but the answer says it may be missing
     // entries, rather than passing as the whole tree.
     for (w.unreadable) |rel| {
-        try app.err.print("nix: segment \"{s}\": could not read {s}; matches inside it may be missing\n", .{ cd.segment, try store.fromSlash(app.arena, try std.fmt.allocPrint(app.arena, "{s}{s}", .{ at, rel })) });
+        try app.err.print("nix: segment \"{s}\": could not read {s}; matches inside it may be missing\n", .{ cd.segment, try store.fromSlash(app.arena, try std.fmt.allocPrint(app.arena, "{s}{s}", .{ root, rel })) });
     }
     if (w.matches.len == 0) {
-        try app.err.print("nix: segment \"{s}\": no directory under {s} matches {s}\n", .{ cd.segment, try store.fromSlash(app.arena, at), shown.items });
+        try app.err.print("nix: segment \"{s}\": no directory under {s} matches {s}\n", .{ cd.segment, try store.fromSlash(app.arena, root), shown.items });
         return error.ContextSourceFailed;
     }
     if (w.truncated) try app.err.print("nix: segment \"{s}\": more than {d} directories match {s}; showing the first {d}\n", .{ cd.segment, context.max_candidates, shown.items, w.matches.len });
@@ -565,6 +566,7 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
 
     var target: std.ArrayList(u8) = .empty;
     try target.appendSlice(app.arena, std.mem.trimEnd(u8, base.?, "/"));
+    var target_root = false;
     // Host-separator form of the alias root: the cwd a context source runs in,
     // and the root its `.nix/scripts` lookup starts from.
     const run_dir = try store.fromSlash(app.arena, std.mem.trimEnd(u8, base.?, "/"));
@@ -595,27 +597,26 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
                 return null;
             }
         }
+        var fragment: []const u8 = undefined;
         if (cd.?.target.len > 0) {
+            if (!try segments.checkTarget(app.err, cd.?, ps.name, cpath, i + 1 == parsed.segs.len)) return null;
+            // Check the fragment before expanding a target. A wildcard still
+            // searches after expansion, using that target as its root.
+            fragment = (try checkedFragment(app, cd.?, producers, ps, parsed.alias, run_dir, null)) orelse return null;
             const lk: SegLookup = .{ .app = app, .cd = cd.?, .ps = ps, .param = if (cd.?.param.len > 0) cd.?.param else cd.?.segment };
             const base_path = (try segments.expandTarget(app.arena, app.err, cd.?, ps.name, cpath, i + 1 == parsed.segs.len, lk, SegLookup.get)) orelse return null;
             target.clearRetainingCapacity();
             try target.appendSlice(app.arena, base_path);
+            target_root = std.mem.endsWith(u8, base_path, "/");
+            if (segwalk.isWild(cd.?.source_template)) fragment = (try checkedFragment(app, cd.?, producers, ps, parsed.alias, run_dir, target.items)) orelse return null;
+        } else {
+            fragment = (try checkedFragment(app, cd.?, producers, ps, parsed.alias, run_dir, target.items)) orelse return null;
         }
-        const fragment = evalSegment(app, cd.?, producers, ps, parsed.alias, run_dir, target.items) catch |e| {
-            // A failed context source has already explained itself in detail
-            // (untrusted, missing script, non-zero exit); don't bury that under
-            // a second generic line.
-            if (e != error.ContextSourceFailed) {
-                try app.err.print("nix: segment \"{s}\": {s}\n", .{ ps.name, @errorName(e) });
-            }
-            return null;
-        };
         if (fragment.len == 0) continue;
-        if (!segments.guardFragment(fragment)) {
-            try app.err.print("nix: segment \"{s}\": fragment \"{s}\" escaped its alias\n", .{ ps.name, fragment });
-            return null;
-        }
-        try target.appendSlice(app.arena, fragment);
+        // Only a target root retains its separator through expansion.
+        const suffix = if (target_root and fragment[0] == '/') fragment[1..] else fragment;
+        try target.appendSlice(app.arena, suffix);
+        target_root = false;
     }
     // A root lost its separator to the trim above, and `E:` alone is that
     // drive's current directory, not its root.

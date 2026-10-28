@@ -42,7 +42,7 @@ jobs:
         run: zig build e2e
 
       # Portable build: -Dcpu=baseline avoids baking the runner's CPU extensions
-      # into the binary. Mirrors ci.yml / the :build action in .nix/actions.toml.
+      # into the binary. Mirrors ci.yml and the build in the :deploy action.
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=x86_64-windows -Dcpu=baseline
 

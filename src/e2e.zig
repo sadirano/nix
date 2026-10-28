@@ -2333,6 +2333,11 @@ pub fn main(init: std.process.Init) !void {
         const so = try c.run(&.{ "shared@pa", "--resolve" });
         c.check(so.code == 0 and pathEql(trim(so.out), join(&c, &.{ pa, "handoff" })), "a segments file overrides the built-in shared@", so);
 
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"outer\"\nsource-template = \"/foo/\"\n[[contexts]]\nsegment = \"inner\"\nsource-template = \"/bar\"\n");
+        const adjacent = try c.run(&.{ "inner@outer@pa", "--resolve" });
+        const adjacent_expected = try std.fmt.allocPrint(c.arena, "{s}{c}foo{c}{c}bar", .{ pa, std.fs.path.sep, std.fs.path.sep, std.fs.path.sep });
+        c.check(adjacent.code == 0 and std.mem.eql(u8, trim(adjacent.out), adjacent_expected), "ordinary chained templates retain adjacent separators", adjacent);
+
         // Defining a segment writes config, so an agent's probe must not leave
         // a definition behind for a name nobody authored.
         try c.env.put("NIX_E2E_TTY", "0");
@@ -2359,6 +2364,20 @@ pub fn main(init: std.process.Init) !void {
         c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ home, "appdata", "pa" })), "a private segment target leaves the alias", r);
         const r2 = try c.run(&.{ "logs@data@pa", "--resolve" });
         c.check(r2.code == 0 and pathEql(trim(r2.out), join(&c, &.{ home, "appdata", "pa", "logs" })), "segments left of a target build on it", r2);
+        const target_logs = join(&c, &.{ home, "appdata", "pa", "logs-match" });
+        try util.mkdirAll(io, target_logs);
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"data\"\ntarget = \"${NIX_E2E_DATA}/pa\"\nsource-template = \"/logs-*\"\n");
+        const rw = try c.run(&.{ "data@pa", "--resolve" });
+        c.check(rw.code == 0 and pathEql(trim(rw.out), target_logs), "a target wildcard searches below the expanded target", rw);
+
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"data\"\ntarget = \"relative\"\nsource-template = \"/${NIX_E2E_UNBOUND_192}\"\n");
+        const rc = try c.run(&.{ "data@pa", "--resolve" });
+        c.check(rc.code != 0 and std.mem.indexOf(u8, rc.err, "Unresolved") != null and std.mem.indexOf(u8, rc.err, "not an absolute path") == null, "a static context error decides before target expansion", rc);
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"data\"\ntarget = \"relative\"\nsource-template = \"bad*\"\n");
+        const rwc = try c.run(&.{ "data@pa", "--resolve" });
+        c.check(rwc.code != 0 and std.mem.indexOf(u8, rwc.err, "must start with `/`") != null and std.mem.indexOf(u8, rwc.err, "not an absolute path") == null, "a wildcard context error decides before target expansion", rwc);
+
+        try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"data\"\ntarget = \"${NIX_E2E_DATA}/pa\"\n[[contexts]]\nsegment = \"logs\"\nsource-template = \"/logs\"\n");
         const r3 = try c.run(&.{ "data@logs@pa", "--resolve" });
         c.check(r3.code != 0, "a target must sit next to the alias", r3);
 
@@ -2366,9 +2385,34 @@ pub fn main(init: std.process.Init) !void {
         const r5 = try c.run(&.{ "data@pa", "--resolve" });
         c.check(r5.code != 0 and std.mem.indexOf(u8, r5.err, "cannot be combined") != null, "a target refuses a run source it could not use", r5);
         if (c.windowsOnly("a drive-root target keeps its root")) {
-            try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "[[contexts]]\nsegment = \"root\"\ntarget = \"C:/\"\n");
-            const r6 = try c.run(&.{ "root@pa", "--resolve" });
-            c.check(r6.code == 0 and std.mem.eql(u8, trim(r6.out), "C:\\"), "a drive-root target keeps its root", r6);
+            const drive = home[0..2];
+            const host_root = try std.fmt.allocPrint(c.arena, "{s}\\", .{drive});
+            for ([_]u8{ '/', '\\' }) |sep| {
+                const root_target = try std.fmt.allocPrint(c.arena, "{s}{c}", .{ drive, sep });
+                const root_config = try std.fmt.allocPrint(c.arena, "[[contexts]]\nsegment = \"root\"\ntarget = '{s}'\nsource-template = \"/nix-e2e-root-child\"\n", .{root_target});
+                try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), root_config);
+                const r6 = try c.run(&.{ "root@pa", "--resolve" });
+                const expected_root_child = try std.fmt.allocPrint(c.arena, "{s}nix-e2e-root-child", .{host_root});
+                c.check(r6.code == 0 and pathEql(trim(r6.out), expected_root_child), "a drive-root target joins a fragment once", r6);
+                const plain_config = try std.fmt.allocPrint(c.arena, "[[contexts]]\nsegment = \"root\"\ntarget = '{s}'\n", .{root_target});
+                try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), plain_config);
+                const r7 = try c.run(&.{ "root@pa", "--resolve" });
+                c.check(r7.code == 0 and pathEql(trim(r7.out), host_root) and std.fs.path.isAbsolute(trim(r7.out)), "a drive-root target stays absolute", r7);
+                for ([_]struct { source: []const u8, suffix: []const u8, label: []const u8 }{
+                    .{ .source = "", .suffix = "bar", .label = "empty" },
+                    .{ .source = "source-template = \"/\"\n", .suffix = "\\bar", .label = "slash-only" },
+                    .{ .source = "source-template = \"/foo\"\n", .suffix = "foo\\bar", .label = "leading-slash" },
+                    .{ .source = "source-template = \"/foo/\"\n", .suffix = "foo\\\\bar", .label = "trailing-slash" },
+                    .{ .source = "source-template = \"foo\"\n", .suffix = "foo\\bar", .label = "plain" },
+                }) |shape| {
+                    const chain_config = try std.fmt.allocPrint(c.arena, "[[contexts]]\nsegment = \"root\"\ntarget = '{s}'\n{s}[[contexts]]\nsegment = \"leaf\"\nsource-template = \"/bar\"\n", .{ root_target, shape.source });
+                    try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), chain_config);
+                    const chain = try c.run(&.{ "leaf@root@pa", "--resolve" });
+                    const chain_expected = try std.fmt.allocPrint(c.arena, "{s}{s}", .{ host_root, shape.suffix });
+                    const label = try std.fmt.allocPrint(c.arena, "a drive-root target preserves exact chained separators after a {s} fragment", .{shape.label});
+                    c.check(chain.code == 0 and std.mem.eql(u8, trim(chain.out), chain_expected), label, chain);
+                }
+            }
         }
 
         try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), "");

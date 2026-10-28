@@ -291,9 +291,35 @@ pub fn expandTemplate(
     return b.items;
 }
 
+/// checkTarget reports whether the target may replace this alias directory.
+/// Invalid placement or a source is refused before any target expansion.
+pub fn checkTarget(
+    err: *Io.Writer,
+    cd: *const ContextDef,
+    typed: []const u8,
+    central: []const u8,
+    next_to_alias: bool,
+) !bool {
+    if (!std.mem.eql(u8, cd.origin, central)) {
+        try err.print("nix: segment \"{s}\": `target` is honored only in {s}, never in a project's or the global segments file\n", .{ cd.segment, central });
+        return false;
+    }
+    // A source's variables cannot shape a target in the same context.
+    if (cd.run.len > 0 or cd.uses.len > 0) {
+        try err.print("nix: segment \"{s}\": `target` cannot be combined with `run` or `uses`\n", .{cd.segment});
+        return false;
+    }
+    // Every segment to its right already named a place inside the alias, and
+    // a target would silently throw that away.
+    if (!next_to_alias) {
+        try err.print("nix: segment \"{s}\": it sets `target`, so it must sit next to the alias ({s}@<alias>)\n", .{ cd.segment, typed });
+        return false;
+    }
+    return true;
+}
+
 /// expandTarget expands a context's `target` into the absolute, forward-slashed
-/// base it replaces the alias directory with. Null means refused, already
-/// reported on `err`.
+/// base it replaces the alias directory with. Null means refused on `err`.
 pub fn expandTarget(
     arena: std.mem.Allocator,
     err: *Io.Writer,
@@ -304,23 +330,7 @@ pub fn expandTarget(
     ctx: anytype,
     comptime lookup: fn (@TypeOf(ctx), []const u8) ?[]const u8,
 ) !?[]const u8 {
-    if (!std.mem.eql(u8, cd.origin, central)) {
-        try err.print("nix: segment \"{s}\": `target` is honored only in {s}, never in a project's or the global segments file\n", .{ cd.segment, central });
-        return null;
-    }
-    // The target is expanded before a source runs, so a source's variables
-    // could never reach it; refusing says so instead of quietly using an
-    // environment variable of the same name.
-    if (cd.run.len > 0 or cd.uses.len > 0) {
-        try err.print("nix: segment \"{s}\": `target` cannot be combined with `run` or `uses`\n", .{cd.segment});
-        return null;
-    }
-    // Every segment to its right already named a place inside the alias, and
-    // a target would silently throw that away.
-    if (!next_to_alias) {
-        try err.print("nix: segment \"{s}\": it sets `target`, so it must sit next to the alias ({s}@<alias>)\n", .{ cd.segment, typed });
-        return null;
-    }
+    if (!try checkTarget(err, cd, typed, central, next_to_alias)) return null;
     const raw = expandTemplate(arena, cd.target, ctx, lookup) catch |e| {
         try err.print("nix: segment \"{s}\": target \"{s}\": {s}\n", .{ cd.segment, cd.target, @errorName(e) });
         return null;
@@ -331,7 +341,10 @@ pub fn expandTarget(
         try err.print("nix: segment \"{s}\": target \"{s}\" is not an absolute path\n", .{ cd.segment, raw });
         return null;
     }
-    return std.mem.trimEnd(u8, slashed, "/");
+    const trimmed = std.mem.trimEnd(u8, slashed, "/");
+    // Keep one separator when trimming the rest would turn a root into a
+    // relative path (a drive root on Windows, or / on POSIX).
+    return if (std.fs.path.isAbsolute(trimmed)) trimmed else slashed[0 .. trimmed.len + 1];
 }
 
 /// guardFragment rejects a fragment that would escape the alias dir.
