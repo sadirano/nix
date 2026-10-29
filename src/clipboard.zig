@@ -10,7 +10,7 @@ const png = @import("png.zig");
 const is_windows = builtin.os.tag == .windows;
 
 /// sink_env names a file that stands in for the system clipboard: when it is
-/// set, every write lands there instead. The clipboard is the one piece of
+/// set, reads use its text and writes land there. The clipboard is the one piece of
 /// machine state a test run shares with the person running it, and losing what
 /// they had copied is not something a passing test may cost them - so nix's own
 /// e2e harness sets this, the way it sets NIX_HOME to keep --sync off the real
@@ -101,7 +101,8 @@ fn openClipboardRetry(open: OpenClipboardFn, io: Io) bool {
 
 /// readFiles returns absolute paths of files/dirs copied in Explorer (CF_HDROP),
 /// or null when the clipboard holds no file drop. Windows only.
-pub fn readFiles(arena: std.mem.Allocator, io: Io) !?[][]const u8 {
+pub fn readFiles(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map) !?[][]const u8 {
+    if (env.get(sink_env) != null) return null;
     if (!is_windows) return null;
     const user32 = LoadLibraryA("user32.dll") orelse return null;
     const shell32 = LoadLibraryA("shell32.dll") orelse return null;
@@ -134,7 +135,8 @@ pub fn readFiles(arena: std.mem.Allocator, io: Io) !?[][]const u8 {
 
 /// readImage returns the clipboard image (CF_DIB) re-encoded as PNG bytes, or
 /// null if there is no (supported) image. Windows only.
-pub fn readImage(arena: std.mem.Allocator, io: Io) !?[]const u8 {
+pub fn readImage(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map) !?[]const u8 {
+    if (env.get(sink_env) != null) return null;
     if (!is_windows) return null;
     const user32 = LoadLibraryA("user32.dll") orelse return null;
     const avail = try proc(IsClipboardFormatAvailableFn, user32, "IsClipboardFormatAvailable");
@@ -159,13 +161,12 @@ pub fn readImage(arena: std.mem.Allocator, io: Io) !?[]const u8 {
 /// clipboard while the harness is running.
 pub fn readText(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map) !?[]const u8 {
     if (env.get(sink_env)) |path| {
-        if (path.len > 0) {
-            const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |e| switch (e) {
-                error.FileNotFound => return null,
-                else => return e,
-            };
-            return if (data.len == 0) null else data;
-        }
+        if (path.len == 0) return null;
+        const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |e| switch (e) {
+            error.FileNotFound => return null,
+            else => return e,
+        };
+        return if (data.len == 0) null else data;
     }
     if (!is_windows) return null;
     const user32 = LoadLibraryA("user32.dll") orelse return null;
@@ -184,6 +185,19 @@ pub fn readText(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map)
     const len = std.mem.indexOfSentinel(u16, 0, ptr);
     if (len == 0) return null;
     return std.unicode.utf16LeToUtf8Alloc(arena, ptr[0..len]) catch null;
+}
+
+test "clipboard fixture suppresses file and image reads" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put(sink_env, "fixture.txt");
+    try std.testing.expect(try readFiles(std.testing.allocator, undefined, &env) == null);
+    try std.testing.expect(try readImage(std.testing.allocator, undefined, &env) == null);
+
+    try env.put(sink_env, "");
+    try std.testing.expect(try readFiles(std.testing.allocator, undefined, &env) == null);
+    try std.testing.expect(try readImage(std.testing.allocator, undefined, &env) == null);
+    try std.testing.expect(try readText(std.testing.allocator, undefined, &env) == null);
 }
 
 /// localTimestamp formats the current local time as YYYY-MM-DD_HHMMSS (matches

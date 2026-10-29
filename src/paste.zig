@@ -97,10 +97,10 @@ pub fn pasteClipboardInto(app: *App, alias: []const u8, target: []const u8, name
     // Every branch gets the trimmed name the check approved, including the
     // folder copy, which uses the name as given rather than via pasteFilename.
     const safe_name = std.mem.trim(u8, name, " \t");
-    if (try clipboard.readFiles(app.arena, app.io)) |files| {
+    if (try clipboard.readFiles(app.arena, app.io, app.env())) |files| {
         return pasteFiles(app, alias, target, files, safe_name);
     }
-    if (try clipboard.readImage(app.arena, app.io)) |img| {
+    if (try clipboard.readImage(app.arena, app.io, app.env())) |img| {
         return pasteContent(app, alias, target, safe_name, img, ".png");
     }
     if (try clipboard.readText(app.arena, app.io, app.env())) |text| {
