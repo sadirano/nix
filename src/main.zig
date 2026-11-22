@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const store = @import("store.zig");
-const dialects = @import("dialects.zig");
 const cmd_registry = @import("cmd_registry.zig");
 const proc = @import("proc.zig");
 const clipboard = @import("clipboard.zig");
@@ -138,13 +137,6 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
     // argv[0] → multicall action (when invoked under a wrapper name).
     const argv0 = raw_args[0];
     var args = try preprocessArgs(app.arena, raw_args[1..]);
-    // `--as <dialect>` is lifted out of argv before anything else parses it.
-    // Every other global flag is a boolean, so the usual `if (isGlobalFlag(a))
-    // continue` idiom in each sub-parser would skip `--as` and then read its
-    // VALUE as a positional - a path to register, a pattern to grep. Stripping
-    // the pair here means no parser has to learn about it.
-    args = takeDialect(app, args) catch return 1;
-
     // A leading bare `:` means "show me the actions", from ANY command: `r :`,
     // `o :`, `nix :`. It is what the hand types when the question is "what can I
     // run", and it reads as the alias-less form of `r <alias> :` - the same
@@ -244,7 +236,7 @@ fn bareColon(args: [][]const u8) ?[][]const u8 {
 }
 
 /// historyKind classifies the invocation by nix's own grammar, so global flags
-/// in front (`nix --as wsl --which`) cannot hide what it is.
+/// in front (`nix --no-prompt --which`) cannot hide what it is.
 fn historyKind(mc_action: ?[]const u8, args: []const []const u8) history.Kind {
     if (mc_action) |a| return if (eql(a, "quit")) .quit else .normal;
     for (args) |a| {
@@ -527,8 +519,7 @@ fn cmdResolve(app: *App, name: []const u8, must_exist: bool) !u8 {
         return 1;
     };
     if (must_exist and !proc.pathExists(app.io, path)) return notThere(app, path);
-    const shown = (try spell(app, path)) orelse return 1;
-    try app.out.print("{s}\n", .{shown});
+    try app.out.print("{s}\n", .{path});
     try app.out.flush();
     return 0;
 }
@@ -536,25 +527,6 @@ fn cmdResolve(app: *App, name: []const u8, must_exist: bool) !u8 {
 fn notThere(app: *App, path: []const u8) !u8 {
     try app.err.print("nix: {s} does not exist\n", .{path});
     return 1;
-}
-
-/// spell renders a resolved path in the requested `--as` dialect, or unchanged
-/// when none was asked for. null means the refusal has already been reported
-/// and the caller should exit non-zero.
-///
-/// Refusing is deliberate where falling back to the host spelling would be
-/// friendlier: the caller asked for a WSL path because it is about to hand one
-/// to WSL, so a Windows path there fails later and somewhere less obvious.
-fn spell(app: *App, path: []const u8) !?[]const u8 {
-    const d = app.dialect orelse return path;
-    return dialects.translate(app.arena, d, path) catch |e| switch (e) {
-        error.NoSuchForm => {
-            try app.err.print("nix: --as {s} has no spelling for \"{s}\"\n", .{ @tagName(d), path });
-            try app.err.writeAll("  a UNC share reaches WSL/Git Bash through a mount only you can define - try --as uri or --as win\n");
-            return null;
-        },
-        else => return e,
-    };
 }
 
 const resolveEditor = app_zig.resolveEditor;
@@ -690,15 +662,6 @@ fn cmdExplore(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
 /// the target dir. A child can't relocate its parent shell, so nix
 /// stacks a subshell; the user returns by exiting it. Exit code propagates.
 fn navigate(app: *App, alias: []const u8) !u8 {
-    // `o` is the one path that refuses --as. Its output is consumed by the
-    // wrapper to cd, so a translated path would not be a differently-spelled
-    // answer, it would be a broken one. Say what to use instead rather than
-    // silently ignoring the flag.
-    if (app.dialect) |d| {
-        try app.err.print("nix: --as {s} makes no sense for navigation - `o` enters the directory, it does not print a path\n", .{@tagName(d)});
-        try app.err.print("  to get the spelling: nix {s} --as {s}   (or `y {s} --as {s}` to copy it)\n", .{ alias, @tagName(d), alias, @tagName(d) });
-        return 1;
-    }
     if (try refuseGroupToken(app, alias)) return 1;
     const dir = (try resolveAliasPath(app, alias)) orelse return 1;
     return enterDir(app, alias, dir);
@@ -744,39 +707,6 @@ fn eql(a: []const u8, b: []const u8) bool {
 }
 
 const startsWithDash = app_zig.startsWithDash;
-
-/// takeDialect removes a `--as <dialect>` pair from argv, recording it on App.
-///
-/// Errors (unknown or missing dialect) are reported here and signalled to the
-/// caller, which exits 1: a mistyped dialect must never fall through to the
-/// command as if no translation had been asked for, because the caller is
-/// usually a script that would then paste a Windows path into a WSL shell.
-fn takeDialect(app: *App, args: [][]const u8) ![][]const u8 {
-    var out: std.ArrayList([]const u8) = .empty;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        // Everything after `--` is a command's own, including a literal `--as`.
-        if (eql(args[i], "--")) {
-            try out.appendSlice(app.arena, args[i..]);
-            break;
-        }
-        if (!eql(args[i], "--as")) {
-            try out.append(app.arena, args[i]);
-            continue;
-        }
-        if (i + 1 >= args.len) {
-            try app.err.print("nix: --as needs a dialect ({s})\n", .{dialects.Dialect.names});
-            return error.BadDialect;
-        }
-        const val = args[i + 1];
-        app.dialect = dialects.Dialect.parse(val) orelse {
-            try app.err.print("nix: unknown dialect \"{s}\" - expected one of: {s}\n", .{ val, dialects.Dialect.names });
-            return error.BadDialect;
-        };
-        i += 1;
-    }
-    return out.items;
-}
 
 /// preprocessArgs rewrites multi-char short flags into long forms and widens
 /// the [:0]u8 args to plain []const u8 the dispatcher uses.
@@ -1025,7 +955,8 @@ fn printUsage(app: *App) !void {
 
     try w.writeAll(
         \\
-        \\GLOBAL FLAGS  (accepted by every command, before or after the verb)
+        \\GLOBAL FLAGS  (accepted by every command; after an alias, put them before
+        \\              an action flag such as --grep, which takes the rest of the line)
         \\
     );
     try writeGrammarRows(w, grammar.Global, &grammar.globals);

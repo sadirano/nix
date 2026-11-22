@@ -808,7 +808,7 @@ pub fn doctorFindings(app: *App) ![]const Finding {
             if (want == null or have == null or !std.mem.eql(u8, want.?, have.?)) {
                 // Consented version unchanged but the file differs on disk: it
                 // was edited in place. Heals on the next `nix --sync`.
-                if (consented.len > 0 and want_hash.len > 0 and std.mem.eql(u8, consented, want_hash)) {
+                if (consented.len > 0 and want_hash.len > 0 and std.mem.eql(u8, consented, want_hash) and ex.kind != .action) {
                     try out.append(app.arena, .{ .status = .warn, .label = ex.file, .detail = try std.fmt.allocPrint(app.arena, "edited in {s} by hand - run `nix --sync` to restore {s}'s version (do not edit exports directly)", .{ bin, ex.alias }) });
                     break :blk;
                 }

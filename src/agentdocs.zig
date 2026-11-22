@@ -527,48 +527,6 @@ pub const specs = [_]Spec{
         .see_also = &.{ "state", "x" },
     },
     .{
-        .topic = "--as",
-        .args = "<dialect>",
-        .summary = "print/copy the path spelled for another tool",
-        .safety = .safe,
-        .detail =
-        \\`--as <dialect>` changes the SPELLING of the path a command prints or
-        \\copies. The same directory, written the way the tool about to read it
-        \\expects:
-        \\
-        \\  win      C:\acme\src        cmd, PowerShell, native Windows tools
-        \\  slash    C:/acme/src        TOML/JSON config, anything shell-escaping
-        \\  gitbash  /c/acme/src        Git Bash, MSYS
-        \\  wsl      /mnt/c/acme/src    WSL
-        \\  uri      file:///C:/acme/src  browsers, markdown links
-        \\
-        \\Accepted by the resolve form (`nix <alias> --as wsl`) and by `y`.
-        \\`o` REFUSES it: it enters the directory rather than printing one, so a
-        \\translated path there would break navigation instead of respelling it.
-        \\
-        \\Pure string translation - no filesystem check - so a path that does
-        \\not exist yet translates exactly like one that does.
-        \\
-        \\A UNC share (`\\\\server\\share`) has a `uri` form and no wsl/gitbash
-        \\form; those refuse with exit 1 rather than guess a mount point.
-        ,
-        .agent_use =
-        \\Use it when you are about to hand a path to a tool in another world,
-        \\rather than translating one yourself.
-        \\
-        \\An agent running WSL-side gets its native spelling in one call:
-        \\`nix acme --as wsl`. Building a markdown link to a local file wants
-        \\`--as uri`, which percent-encodes the spaces that would otherwise
-        \\truncate the target.
-        ,
-        .examples = &.{
-            "`nix acme --as wsl` - print the WSL spelling",
-            "`nix acme --as uri` - a file:// URL for a markdown link",
-            "`${cmd:y} acme --as gitbash` - copy the Git Bash spelling",
-        },
-        .see_also = &.{ "--list", "y", "o" },
-    },
-    .{
         .topic = "--actions",
         .args = "[pat]",
         .summary = "every alias's actions in one picker; Enter runs the pick",
@@ -583,8 +541,9 @@ pub const specs = [_]Spec{
         \\alias, action name, command, or description text - plain
         \\case-insensitive substring, not fuzzy.
         \\
-        \\A leading bare `:` is the same thing from any command: `nix :`, `r :`,
-        \\`o :`, with anything after it as the pattern (`r : deploy`). It is the
+        \\A leading bare `:` is the same thing from any command (`nix :`, or the
+        \\same colon after a shortcut), with anything after it as the pattern
+        \\(`nix : deploy`). It is the
         \\alias-less form of `nix <alias> --run :` - with an alias the colon lists
         \\that project's actions, without one it lists every project's.
         \\

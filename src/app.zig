@@ -7,7 +7,6 @@ const std = @import("std");
 const Io = std.Io;
 const proc = @import("proc.zig");
 const segments = @import("segments.zig");
-const dialects = @import("dialects.zig");
 const grammar = @import("grammar.zig");
 const editor = @import("editor.zig");
 const config = @import("config.zig");
@@ -54,10 +53,6 @@ pub const App = struct {
     /// prompt. The run still exits non-zero, but there is nothing unread to
     /// hold the window for.
     declined: bool = false,
-    /// `--as <dialect>`: how paths are spelled when printed or copied. Read by
-    /// the resolve and yank paths; navigate refuses it, since `o`'s stdout
-    /// feeds the wrapper's cd.
-    dialect: ?dialects.Dialect = null,
     /// Variables a context source returned, exported to the child by
     /// aliasRunEnv. Empty for every non-segmented target.
     ctx_vars: []const segments.Var = &.{},

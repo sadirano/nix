@@ -666,7 +666,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(std.mem.indexOf(u8, readFileOr(&c, hpath, ""), "from-a-script") == null, "a run with NIX_NO_HISTORY set is not recorded", null);
 
         _ = try c.run(&.{"--which"});
-        _ = try c.run(&.{ "--as", "wsl", "--which" });
+        _ = try c.run(&.{ "--no-prompt", "--which" });
         _ = try c.run(&.{ "--quit", "--dry-run" });
         const after = readFileOr(&c, hpath, "");
         c.check(std.mem.indexOf(u8, after, "--which") == null and std.mem.indexOf(u8, after, "--quit") == null, "--which and q are not recorded, even behind a global flag", null);
@@ -1769,7 +1769,9 @@ pub fn main(init: std.process.Init) !void {
 
         // The prose is the footnote, so it goes last - after the command, which
         // is what the row is actually about.
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "COMMAND").? < std.mem.indexOf(u8, r.out, "DESCRIPTION").?, "DESCRIPTION is the last column", r);
+        const command_col = std.mem.indexOf(u8, r.out, "COMMAND");
+        const desc_col = std.mem.indexOf(u8, r.out, "DESCRIPTION");
+        c.check(r.code == 0 and command_col != null and desc_col != null and command_col.? < desc_col.?, "DESCRIPTION is the last column", r);
         // An undocumented action ends at its command instead of trailing off
         // into the blank padding of a column it has nothing to put in.
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "echo undocumented\n") != null, "an undescribed row ends at its command", r);
@@ -2064,7 +2066,14 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, join(&c, &.{ pa, "tool.cmd" }), "@echo tool %*\r\n");
         try writeActions(&c, "pa", pa, "[actions]\nwrap = \"tool --x\"\n[bin]\ntool = \"tool.cmd\"\nwrapped = \":wrap\"\n");
         r = try c.run(&.{"--sync-bin"});
-        c.check(std.mem.indexOf(u8, r.err, "call itself") == null, "an action export running a file export is not called a loop", r);
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.err, "call itself") == null, "an action export running a file export is not called a loop", r);
+
+        // An action export's bytes are nix itself, so a rebuild changes them
+        // under an unchanged consent: out of date, not tampered.
+        try writeFile(&c, join(&c, &.{ home, "bin", try std.fmt.allocPrint(arena, "wrapped{s}", .{ext}) }), "MZrebuilt-nix");
+        r = try c.run(&.{"--doctor"});
+        c.check(std.mem.indexOf(u8, r.out, "wrapped") != null and std.mem.indexOf(u8, r.out, "by hand") == null and
+            std.mem.indexOf(u8, r.out, "out of date") != null, "--doctor reports a rebuilt action export as out of date, not edited by hand", r);
 
         // Dropping the [bin] table prunes the installed copies.
         try writeActions(&c, "pa", pa, restore);
@@ -2450,8 +2459,11 @@ pub fn main(init: std.process.Init) !void {
         );
         var r = try c.run(&.{ "t:2@pa", "--resolve" });
         c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ wt, "B", "2" })), "a wildcard segment finds the one directory that matches", r);
-        r = try c.run(&.{ "t:2@pa", "--run", "sh", "-c", "echo client=$client" });
-        if (@import("builtin").os.tag != .windows) c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "client=B") != null, "a capture reaches the child environment", r);
+        r = if (proc.is_windows)
+            try c.run(&.{ "t:2@pa", "--run", "cmd", "/c", "echo", "client=%client%" })
+        else
+            try c.run(&.{ "t:2@pa", "--run", "sh", "-c", "echo client=$client" });
+        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "client=B") != null, "a capture reaches the child environment", r);
         // Unattended, so a menu shows its rows instead of opening fzf.
         try c.env.put("NIX_E2E_TTY", "0");
         r = try c.run(&.{ "t:3*@pa", "--resolve" });
@@ -3138,8 +3150,9 @@ pub fn main(init: std.process.Init) !void {
             std.mem.indexOf(u8, cache_body, "PROJ-140") != null and
             std.mem.indexOf(u8, cache_body, "~1]") != null, "a candidate list is cached as one section per block", null);
         r = try c.run(&.{ "--no-prompt", "ticket@pm", "--resolve" });
-        c.check(std.mem.indexOf(u8, r.out, "PROJ-123  Fix login flow") != null and
-            std.mem.indexOf(u8, r.out, "PROJ-140  Rate limiter") != null, "the cached list replays in the source's order", r);
+        const first = std.mem.indexOf(u8, r.out, "PROJ-123  Fix login flow");
+        const second = std.mem.indexOf(u8, r.out, "PROJ-140  Rate limiter");
+        c.check(first != null and second != null and first.? < second.?, "the cached list replays in the source's order", r);
 
         // One block resolves directly - the format is a superset.
         try writeFile(&c, join(&c, &.{ scripts, "tickets.cmd" }),
@@ -3168,76 +3181,6 @@ pub fn main(init: std.process.Init) !void {
         const after = readFileOr(&c, join(&c, &.{ home, "contexts-cache.toml" }), "");
         c.check(std.mem.indexOf(u8, after, "s.menu") == null and
             std.mem.indexOf(u8, after, "VAULT_TOKEN") == null, "a menu carrying a secret is not cached at all", r);
-    }
-
-    // --- path dialects (--as, issue #24) -----------------------------------------------
-    // The translation itself is a pure function with its own exhaustive unit
-    // tests in dialects.zig; what these check is the WIRING - that the flag is
-    // lifted out of argv before a parser can mistake its value for a
-    // positional, that it reaches the two surfaces that take it, and that the
-    // one surface which must refuse it does.
-    {
-        var r = try c.run(&.{ "pa", "--as", "slash", "--resolve" });
-        const slashed = trim(r.out);
-        c.check(r.code == 0 and std.mem.indexOfScalar(u8, slashed, '\\') == null and
-            std.mem.indexOf(u8, slashed, "/proj/pa") != null, "--as slash respells the resolved path", r);
-
-        // The flag may lead, trail, or sit mid-line: it is lifted from argv
-        // before anything parses positions.
-        r = try c.run(&.{ "--as", "slash", "pa", "--resolve" });
-        c.check(r.code == 0 and pathEql(trim(r.out), slashed), "--as may lead the command", r);
-        r = try c.run(&.{ "pa", "--resolve", "--as", "slash" });
-        c.check(r.code == 0 and pathEql(trim(r.out), slashed), "--as may trail the command", r);
-
-        // The bare resolve form (no action flag at all) is the scripting one.
-        r = try c.run(&.{ "pa", "--as", "slash" });
-        c.check(r.code == 0 and pathEql(trim(r.out), slashed), "--as works on the bare resolve form", r);
-        // ...and its VALUE is never taken for a path to register, which is what
-        // the ordinary global-flag skip would have done.
-        r = try c.run(&.{ "pa", "--resolve" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, trim(r.out), "slash") == null, "--as does not register its value as a path", r);
-
-        // Windows spellings only mean something with a drive letter.
-        if (proc.is_windows) {
-            r = try c.run(&.{ "pa", "--as", "wsl" });
-            c.check(r.code == 0 and std.mem.startsWith(u8, trim(r.out), "/mnt/"), "--as wsl produces a /mnt path", r);
-            r = try c.run(&.{ "pa", "--as", "gitbash" });
-            const gb = trim(r.out);
-            c.check(r.code == 0 and gb.len > 2 and gb[0] == '/' and gb[2] == '/', "--as gitbash produces a /c/ path", r);
-            r = try c.run(&.{ "pa", "--as", "uri" });
-            c.check(r.code == 0 and std.mem.startsWith(u8, trim(r.out), "file:///"), "--as uri produces a file URL", r);
-        } else {
-            _ = c.windowsOnly("--as wsl produces a /mnt path");
-            _ = c.windowsOnly("--as gitbash produces a /c/ path");
-            _ = c.windowsOnly("--as uri produces a file URL");
-        }
-
-        // A mistyped dialect must never fall through as if no translation had
-        // been asked for: the caller is usually a script about to paste the
-        // result into a shell that cannot read the host spelling.
-        r = try c.run(&.{ "pa", "--as", "psoix" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "unknown dialect") != null and
-            std.mem.indexOf(u8, r.out, "proj") == null, "an unknown dialect fails instead of falling back", r);
-        r = try c.run(&.{ "pa", "--as" });
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "needs a dialect") != null, "--as with no value is refused", r);
-
-        // `o` refuses: its stdout feeds the wrapper's cd, so a respelled path
-        // there breaks navigation rather than producing another spelling.
-        const canonical = c.exe;
-        const o_exe = join(&c, &.{ root, "o.exe" });
-        try writeFile(&c, o_exe, try Io.Dir.cwd().readFileAlloc(io, canonical, arena, .unlimited));
-        c.exe = o_exe;
-        r = try c.run(&.{ "pa", "--as", "wsl" });
-        c.exe = canonical;
-        c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "makes no sense for navigation") != null, "`o` refuses --as", r);
-
-        // Everything after `--` belongs to the command, including a literal
-        // `--as` a user is passing through to something else.
-        r = if (proc.is_windows)
-            try c.run(&.{ "pa", "--run", "--", "cmd", "/c", "echo", "--as", "wsl" })
-        else
-            try c.run(&.{ "pa", "--run", "--", "echo", "--as", "wsl" });
-        c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "--as") != null, "`--` protects a literal --as from nix", r);
     }
 
     // --- crossings (issue #38) ---------------------------------------------------------

@@ -91,7 +91,7 @@ pub fn cmdActions(app: *App, rest: [][]const u8) !u8 {
         return 0;
     }
 
-    return pickAndRun(app, entries, true, "nix: install fzf to pick from the palette (or run `nix --no-prompt --actions` to just list them)\n");
+    return pickAndRun(app, entries, true);
 }
 
 /// cmdAliasActions is the palette scoped to one alias - what `<cmd> <alias> :`
@@ -140,7 +140,7 @@ pub fn cmdAliasActions(app: *App, alias: []const u8, dir: []const u8, seed: bool
         return 0;
     }
     std.mem.sort(Entry, entries.items, {}, lessThan);
-    return pickAndRun(app, entries.items, false, "");
+    return pickAndRun(app, entries.items, false);
 }
 
 /// seedAndEdit writes the project actions template and opens it, for an `e
@@ -170,18 +170,13 @@ fn seedAndEdit(app: *App, dir: []const u8, path: []const u8) !u8 {
 /// same test the failure hold and the provenance gate use. Without that check a
 /// scripted `x <alias> :` would hang on an fzf nobody can see.
 ///
-/// `missing_fzf` decides what "no fzf, but somebody is there" means: the global
-/// palette has nothing to show instead of picking, so it says so; an alias
-/// listing just prints.
-fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool, missing_fzf: []const u8) !u8 {
+/// No fzf (and no native picker) prints the table, like a caller nobody can
+/// answer gets.
+fn pickAndRun(app: *App, entries: []Entry, comptime with_alias: bool) !u8 {
     const can_ask = app_zig.hasConsole(app);
     const native = glean_pick.enabled(app);
     const have_fzf = can_ask and (native or proc.findInPath(app.arena, app.io, app.env(), "fzf") != null);
     if (!can_ask or !have_fzf) {
-        if (can_ask and !have_fzf and missing_fzf.len > 0) {
-            try app.err.writeAll(missing_fzf);
-            return 1;
-        }
         try app.out.writeAll(try render(app.arena, entries, .{ .alias_column = with_alias }));
         return 0;
     }

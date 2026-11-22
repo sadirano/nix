@@ -24,7 +24,7 @@ const starter_config =
     \\# After editing, run: nix --sync  (then restart your shell)
     \\#
     \\# [shortcuts] renames the built-in command functions
-    \\# (o, e, s, y, p, x, g, f). An array gives a slot several names -
+    \\# (o, e, s, y, p, w, x, g, f, q). An array gives a slot several names -
     \\# every listed one answers, the first is the primary (e.g. keep `x`
     \\# and add back `r`, the spelling the run command used to have):
     \\#
@@ -237,7 +237,7 @@ pub fn cmdInit(app: *App) !u8 {
     // 4. Shell rc / $PROFILE: never touched. On Windows the wrappers on PATH
     // are the whole integration; on POSIX users add the snippet line themselves.
     if (proc.is_windows) {
-        try app.err.writeAll("restart your shell to activate o/e/s/y/p/x, g/f\n");
+        try app.err.writeAll("restart your shell to activate o/e/s/y/p/w/x, g/f, q\n");
         // PowerShell resolves aliases before PATH exes, and `r` is a built-in
         // alias (Invoke-History). The run slot is `x` for exactly that reason,
         // so the warning only applies when [shortcuts] brings `r` back.
@@ -250,4 +250,15 @@ pub fn cmdInit(app: *App) !u8 {
         try app.err.print("add to your shell rc:  [ -f '{s}' ] && . '{s}'\n", .{ sh, sh });
     }
     return 0;
+}
+
+test "starter config names every built-in shortcut slot" {
+    const start = std.mem.indexOf(u8, starter_config, "(o, ").?;
+    const list = starter_config[start..std.mem.indexOfScalarPos(u8, starter_config, start, ')').?];
+    for (config.builtinShortcuts()) |s| {
+        var it = std.mem.tokenizeAny(u8, list, "(), ");
+        var found = false;
+        while (it.next()) |w| found = found or std.mem.eql(u8, w, s.builtin);
+        try std.testing.expect(found);
+    }
 }

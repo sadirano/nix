@@ -191,7 +191,7 @@ cmdVerify() {
 }
 
 # cmdStatus is the terminal view: what is left on the checklist in flight.
-# Wired up as `r nix :checklist`.
+# Wired up as `x nix :checklist`.
 cmdStatus() {
     local num title body sha left
     num="$(gh issue list --label "$LABEL" --state open --limit 100 --json number --jq 'first | .number // empty')"

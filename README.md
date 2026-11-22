@@ -159,27 +159,13 @@ run = '.nix:hooks/json.ps1'
 
 See [Paste hooks in the guide](docs/GUIDE.md#16a-paste-hooks) for selection, trust, limits, and the result format.
 
-### Path dialects
-
-`--as <dialect>` changes the *spelling* of the path a command prints or copies - the same directory, written the way whichever tool is about to read it expects:
-
-| dialect | example |
-|---|---|
-| `win` | `C:\acme\src` |
-| `slash` | `C:/acme/src` |
-| `gitbash` | `/c/acme/src` |
-| `wsl` | `/mnt/c/acme/src` |
-| `uri` | `file:///C:/acme/src` |
-
-Accepted by the resolve form (`nix acme --as wsl`) and by `y` (`y acme --as gitbash` copies the translation). `o` refuses it - it enters the directory rather than printing one, so a respelled path there would break navigation instead of respelling it. A patterned `y` with `--as` copies text rather than a file drop, since Explorer has no use for `/mnt/c/...`.
-
-Pure string translation, no filesystem check, so a path that does not exist yet translates exactly like one that does. A UNC share has a `uri` form and no wsl/gitbash form; those refuse rather than guess a mount point.
+### `config.toml`
 
 Editor is taken from `$EDITOR`, then `$VISUAL`, then the first of `nvim`, `vim`, `code`, `nano`, or `notepad` found on PATH. Override the home location with `$NIX_HOME`.
 
 `~/.nix/config.toml` holds the optional sections.
 
-`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`, `q`); the value is the name you'd rather type:
+`[shortcuts]` renames the built-in command functions. The keys are the built-in names (`o`, `e`, `s`, `y`, `p`, `w`, `x`, `g`, `f`, `q`); the value is the name you'd rather type:
 
 ```toml
 [shortcuts]
@@ -207,6 +193,7 @@ e  = "edit"       # open the dir/file in your editor
 s  = "show"       # open the dir in the file manager
 y  = "yank"       # copy the path (or picked files)
 p  = "paste"      # save the clipboard into the dir
+w  = "write"      # capture a script action from the clipboard
 x  = "run"        # run a command / saved action
 g  = "search"     # ripgrep search under the dir
 f  = "findfile"   # fuzzy-find files under the dir

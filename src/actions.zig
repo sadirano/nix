@@ -317,7 +317,7 @@ test "parse: the comment run above an action becomes its description" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const data =
-        \\# nix project actions - run with `r <alias> :<name>`.
+        \\# nix project actions - run with `x <alias> :<name>`.
         \\
         \\[actions]
         \\# Portable release build: -Dcpu=baseline keeps the binary

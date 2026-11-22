@@ -265,6 +265,10 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
         error.FileNotFound => return .{},
         else => return e,
     };
+    return parseConfig(arena, data);
+}
+
+fn parseConfig(arena: std.mem.Allocator, data: []const u8) !Config {
     var cfg: Config = .{};
     var section: []const u8 = "";
     var lines = toml.Lines.init(data);
@@ -278,7 +282,7 @@ pub fn loadConfig(arena: std.mem.Allocator, io: Io, home: []const u8) !Config {
             else => continue,
         };
         const key = kv.key;
-        const val_start = kv.raw;
+        const val_start = toml.stripComment(kv.raw);
         if (std.mem.eql(u8, section, "shortcuts")) {
             // value is a (possibly quoted) command name, or an array of names
             // - `x = ["x", "r"]` gives a slot several spellings, the first
@@ -454,6 +458,25 @@ test "loadConfig shortcuts: unusable custom names are ignored" {
     for (cases) |c| try std.testing.expectEqual(c.ok, usableShortcutName(c.name));
 }
 
+test "config values ignore a trailing comment outside quotes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseConfig(arena.allocator(),
+        \\[grep]
+        \\all = true # include archives
+        \\[notify]
+        \\on_finish = 'hoot send "#{message}"' # quiet
+        \\
+    );
+    try std.testing.expect(cfg.grep_all);
+    try std.testing.expectEqualStrings("hoot send \"#{message}\"", cfg.notify_on_finish);
+    try std.testing.expect(!(try parseConfig(arena.allocator(), "[grep]\nall = false # true\n")).grep_all);
+    const escaped = try parseConfig(arena.allocator(), "[notify]\non_finish = \"say \\\"#1\\\" now\" # quiet\n");
+    try std.testing.expectEqualStrings("say \\\"#1\\\" now", escaped.notify_on_finish);
+    const multi = try parseConfig(arena.allocator(), "[search]\ninclude = [\".nix/shared\", # mine\n  \"docs/private\"\n]\n");
+    try std.testing.expectEqual(@as(usize, 2), multi.search.include.len);
+}
+
 test "notify template survives quotes, '=' and spaces in the value" {
     // Exercise the [notify] branch's parsing rules directly: first '=' splits,
     // one pair of surrounding quotes is stripped, inner quotes survive.
@@ -556,7 +579,7 @@ test "shortcutSlotOverrides counts slots, not entries" {
     // The retired two-letter names are the likeliest wrong keys, so make sure
     // none of them silently passes as a slot.
     for ([_][]const u8{ "r", "sg", "ff" }) |retired| try std.testing.expect(!isBuiltinSlot(retired));
-    for ([_][]const u8{ "o", "e", "s", "y", "p", "x", "g", "f", "q" }) |slot| try std.testing.expect(isBuiltinSlot(slot));
+    for ([_][]const u8{ "o", "e", "s", "y", "p", "w", "x", "g", "f", "q" }) |slot| try std.testing.expect(isBuiltinSlot(slot));
 }
 
 // ---- writing `[trust] always` ------------------------------------------------

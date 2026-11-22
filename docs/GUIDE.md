@@ -55,9 +55,8 @@ under `[shortcuts]` (see [1.9](#19-rename-the-commands)), substitute yours.
   - [6.1 Completion notifications](#61-completion-notifications)
   - [6.2 Pinned shortcuts that don't lie](#62-pinned-shortcuts-that-dont-lie)
   - [6.3 Scripting nix: `--no-prompt`, `--list-names`, `--which`](#63-scripting-nix---no-prompt---list-names---which)
-  - [6.4 Path dialects: `--as`](#64-path-dialects---as)
-  - [6.5 Your prompt knows where you are](#65-your-prompt-knows-where-you-are)
-  - [6.6 AI coding agents](#66-ai-coding-agents)
+  - [6.4 Your prompt knows where you are](#64-your-prompt-knows-where-you-are)
+  - [6.5 AI coding agents](#65-ai-coding-agents)
 - [Level 7 - Complete workflows](#level-7---complete-workflows)
 - [The trust model, in one page](#the-trust-model-in-one-page)
 - [Maintenance and troubleshooting](#maintenance-and-troubleshooting)
@@ -88,7 +87,7 @@ nix has exactly three ideas:
    Anything in the *project* column arrived from someone else's repo, so it
    must be approved before it runs (see [the trust model](#the-trust-model-in-one-page)).
 
-One binary serves every command: `o`, `e`, `s`, `y`, `p`, `x`, `g`, `f`, `q` are
+One binary serves every command: `o`, `e`, `s`, `y`, `p`, `w`, `x`, `g`, `f`, `q` are
 all copies of `nix.exe` in `~/.nix/bin` that know their name. `nix` itself is
 the long form and the system-command entry point (`nix --list`, `nix --doctor`).
 
@@ -224,7 +223,6 @@ Make document search the default with `[grep] all = true` in
 ```powershell
 y acme                    # copy acme's path (and print it)
 y acme invoice            # pick files -> copy the FILES (paste them in Explorer, Slack, email)
-y acme --as wsl           # copy /mnt/c/code/acme
 
 p acme                    # save the clipboard into acme; copy the saved path back
 p acme shot               # ...as shot.png (image) or shot.md (text)
@@ -1023,21 +1021,7 @@ nix --doctor && echo healthy              # non-zero exit on a core problem
 
 `--json` / `-j` asks for machine-readable output where a command has it.
 
-### 6.4 Path dialects: `--as`
-
-The same directory, spelled for whichever tool is about to read it:
-
-```powershell
-nix acme --as wsl         # /mnt/c/code/acme
-nix acme --as gitbash     # /c/code/acme
-nix acme --as slash       # C:/code/acme
-nix acme --as uri         # file:///C:/code/acme
-y acme --as wsl           # ...and copy it
-
-wsl -e bash -c "cd $(nix acme --as wsl) && make"
-```
-
-### 6.5 Your prompt knows where you are
+### 6.4 Your prompt knows where you are
 
 Every shell and command nix starts has `NIX_ALIAS` and `NIX_ALIAS_PATH`. For
 shells nix *didn't* start, `nix --which` answers from the current directory
@@ -1055,7 +1039,7 @@ function prompt {
 The same works for Starship custom modules, oh-my-posh segments or a tmux
 status line.
 
-### 6.6 AI coding agents
+### 6.5 AI coding agents
 
 `nix --init` writes `~/.nix/AGENTS.md`, teaching agents your command surface
 (with your renamed shortcuts). Wire it up yourself, e.g. for Claude Code in
@@ -1305,7 +1289,7 @@ Files under `~/.nix` you might edit by hand: `aliases.toml`, `config.toml`,
 REGISTER / INSPECT
   nix acme C:\path          register            nix --list / --list-names
   o acme C:\path            register + jump     nix --which [path]
-  nix acme --remove         forget              nix acme [--as wsl|gitbash|slash|uri|win]
+  nix acme --remove         forget              nix acme
 
 DAILY                                           ACTIONS
   o acme        jump (shell with env+scripts)     x acme :test           run saved action
@@ -1328,7 +1312,7 @@ SEGMENTS                                        ENV & SECRETS
 SYSTEM
   nix --init | --sync | --sync-bin | --doctor | --actions [pat] | --contexts
   nix --trust <alias> [env|segment] [--always]  | --agent [topic] | --edit | --version
-  global flags: --no-prompt  --json/-j  --as <dialect>
+  global flags: --no-prompt  --json/-j
 
 FILES (~/.nix)
   aliases.toml  config.toml  actions/_default.toml  actions/<alias>.toml

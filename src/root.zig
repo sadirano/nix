@@ -3,7 +3,6 @@
 
 pub const store = @import("store.zig");
 pub const toml = @import("toml.zig");
-pub const dialects = @import("dialects.zig");
 pub const cmd_registry = @import("cmd_registry.zig");
 pub const segments = @import("segments.zig");
 pub const segwalk = @import("segwalk.zig");

@@ -193,7 +193,9 @@ pub fn stripComment(line: []const u8) []const u8 {
     while (i < line.len) : (i += 1) {
         const c = line[i];
         if (quote != 0) {
-            if (c == quote) quote = 0;
+            if (quote == '"' and c == '\\') {
+                i += 1;
+            } else if (c == quote) quote = 0;
             continue;
         }
         if (c == '"' or c == '\'') quote = c;
