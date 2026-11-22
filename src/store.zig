@@ -175,11 +175,9 @@ pub fn saveAliases(arena: std.mem.Allocator, io: Io, home: []const u8, aliases: 
 /// as the same `acme` every other path reports.
 pub fn listNames(arena: std.mem.Allocator, data: []const u8) !std.ArrayList([]const u8) {
     var names: std.ArrayList([]const u8) = .empty;
-    var lines = toml_zig.Lines.init(data);
-    while (lines.next()) |item| switch (item) {
-        .header => |h| if (h.name.len > 0) try names.append(arena, try util.lowerDup(arena, h.name)),
-        else => {},
-    };
+    for ((try loadAliases(arena, data)).items) |alias| {
+        if (alias.name.len > 0) try names.append(arena, alias.name);
+    }
     std.mem.sort([]const u8, names.items, {}, util.lessThanStr);
     return names;
 }
@@ -541,6 +539,16 @@ test "listNames: sorted, skips non-section lines and empty brackets" {
     try std.testing.expectEqualStrings("acme", names.items[0]);
     // Hand-edited mixed-case headers list lowercase, like every other path.
     try std.testing.expectEqualStrings("zeta", names.items[1]);
+}
+
+test "SW3 listNames only lists resolvable sections" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const data = "[empty]\n[bad]\npath = 5\n[other]\npaths = ['x']\n[Good]\npath = 'project'\n";
+    const names = try listNames(a, data);
+    try std.testing.expectEqualDeep(@as([]const []const u8, &.{"good"}), names.items);
+    for (names.items) |name| try std.testing.expect((try lookupAlias(a, data, name, "scratch")) != null);
 }
 
 test "eqlFoldAscii: case-insensitive equality and length mismatch" {

@@ -200,7 +200,10 @@ fn run(app: *App, raw_args: []const [:0]const u8) !u8 {
 
     if (mc_action) |action| {
         const d = desugarMultiCall(app.arena, action, args) catch |e| return e;
-        if (d.is_nav) return navigate(app, d.nav_alias);
+        if (d.is_nav) {
+            setGlobalFlags(app, d.args);
+            return navigate(app, d.nav_alias);
+        }
         if (d.nav_after) {
             // `o <alias> <path>`: register first, then navigate into the alias
             // dir exactly like bare `o <alias>` (the wrapper exe can't cd its
@@ -761,6 +764,17 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
         }
         return .{ .args = &.{}, .nav_alias = "", .is_nav = false };
     }
+    if (eql(action, "navigate") and isGlobalFlag(args[0])) {
+        var at: usize = 0;
+        while (at < args.len and isGlobalFlag(args[at])) : (at += 1) {}
+        if (at < args.len and !startsWithDash(args[at])) {
+            const reordered = try arena.alloc([]const u8, args.len);
+            reordered[0] = args[at];
+            @memcpy(reordered[1 .. at + 1], args[0..at]);
+            @memcpy(reordered[at + 1 ..], args[at + 1 ..]);
+            return desugarMultiCall(arena, action, reordered);
+        }
+    }
     if (startsWithDash(args[0])) {
         // `y --agent` renders y's OWN spec: the wrapper knows which slot it is,
         // and that identity is lost the moment the flag reaches the canonical
@@ -784,7 +798,10 @@ fn desugarMultiCall(arena: std.mem.Allocator, action: []const u8, args: [][]cons
         // that path (relative paths included) via the canonical add form, then
         // navigates into it (nav_after) so registering also lands you there.
         if (rest.len == 0) return .{ .args = &.{}, .nav_alias = alias, .is_nav = true };
-        return .{ .args = args, .nav_alias = alias, .is_nav = false, .nav_after = true };
+        for (rest) |r| {
+            if (!isGlobalFlag(r)) return .{ .args = args, .nav_alias = alias, .is_nav = false, .nav_after = true };
+        }
+        return .{ .args = rest, .nav_alias = alias, .is_nav = true };
     }
     const flag = actionFlag(action) orelse return .{ .args = args, .nav_alias = "", .is_nav = false };
     var out = try arena.alloc([]const u8, rest.len + 2);
@@ -1089,6 +1106,18 @@ test "desugarMultiCall navigate: bare alias navigates" {
     const d = try desugarMultiCall(a, "navigate", &argv);
     try std.testing.expect(d.is_nav);
     try std.testing.expectEqualStrings("test", d.nav_alias);
+}
+
+test "SW3 navigate accepts a leading global flag" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var argv = [_][]const u8{ "--no-prompt", "acme" };
+    const d = try desugarMultiCall(arena.allocator(), "navigate", &argv);
+    try std.testing.expect(d.is_nav and !d.nav_after);
+    try std.testing.expectEqualStrings("acme", d.nav_alias);
+    var trailing = [_][]const u8{ "acme", "--no-prompt" };
+    const expected = try desugarMultiCall(arena.allocator(), "navigate", &trailing);
+    try std.testing.expectEqualDeep(expected, d);
 }
 
 test "desugarMultiCall navigate: alias + path registers then navigates (relative)" {

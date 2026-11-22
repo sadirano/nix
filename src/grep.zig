@@ -69,14 +69,17 @@ pub fn grepIn(app: *App, alias: []const u8, dir: []const u8, args: [][]const u8)
         try filtered.append(app.arena, a);
     }
     if (use_all) return grepRga(app, alias, dir, filtered.items);
+    if (filtered.items.len == 0 or filtered.items[0].len == 0) {
+        try app.err.writeAll("nix: g needs a pattern (usage: g <alias> <pat>)\n");
+        return 1;
+    }
     return grepRg(app, alias, dir, filtered.items);
 }
 
 /// buildSearchArgv assembles the argv prefix shared by grepRg and grepRga: the
 /// binary name, ripgrep's shared flags, the --no-unicode toggle for a relaxed
 /// query, the interactive-only --colors table, and any passed-through extra
-/// flags. The caller appends its own trailing query argument(s) - a plain rg
-/// query is optional, rga's is always `-e <query>`.
+/// flags. The caller appends its own trailing query argument(s).
 fn buildSearchArgv(app: *App, bin: []const u8, relaxed: bool, extras: [][]const u8) !std.ArrayList([]const u8) {
     // Colour is for the picker's --ansi; printed rows stay clean for parsing.
     const colour = app_zig.hasConsole(app);
@@ -265,7 +268,8 @@ fn openRgaSelections(app: *App, target: []const u8, selection: []const u8) !u8 {
     var editor_lines: std.ArrayList(u8) = .empty; // text hits, kept as file:line:text
     var launched: std.ArrayList([]const u8) = .empty; // abs paths already OS-opened
     var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
-    while (lines.next()) |line| {
+    while (lines.next()) |row| {
+        const line = std.mem.trimEnd(u8, row, "\r");
         if (line.len == 0) continue;
         const file = splitGrepRow(line).file;
         const abs = try absUnder(app, target, file);

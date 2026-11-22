@@ -253,14 +253,16 @@ pub fn trustPath(arena: std.mem.Allocator, home: []const u8) ![]const u8 {
 /// forward slashes, a joined path carries the OS separator, and `$NIX_HOME` is
 /// whatever the user typed. Separators are folded so the exemption does not
 /// depend on spelling.
-pub fn underHome(home: []const u8, path: []const u8) bool {
+pub fn underHome(raw_home: []const u8, path: []const u8) bool {
+    const trimmed = std.mem.trimEnd(u8, raw_home, "/\\");
+    const home = if (std.fs.path.isAbsolute(raw_home) and !std.fs.path.isAbsolute(trimmed)) raw_home[0 .. trimmed.len + 1] else trimmed;
     if (path.len < home.len) return false;
     const head = path[0..home.len];
     const same = if (proc.is_windows) util.eqlPathAscii(head, home) else std.mem.eql(u8, head, home);
     if (!same) return false;
     if (path.len == home.len) return true;
     const c = path[home.len];
-    return c == '/' or c == '\\';
+    return (home.len > 0 and (home[home.len - 1] == '/' or home[home.len - 1] == '\\')) or c == '/' or c == '\\';
 }
 
 /// trustRecord is the approval token: the declaring file's content hash and the
@@ -467,9 +469,9 @@ pub fn run(
 
     // The script writes KEY=VALUE here. stdout stays free for its own logging
     // (forwarded to stderr below) so echo noise can never become a variable.
-    const out_file = try std.fmt.allocPrint(app.arena, "{s}{c}nix-ctx-{s}.env", .{
+    const out_file = try util.uniqueTmpName(app.arena, app.io, try std.fmt.allocPrint(app.arena, "{s}{c}nix-ctx-{s}.env", .{
         try tmpDir(app), std.fs.path.sep, key[0..16],
-    });
+    }));
     Io.Dir.cwd().writeFile(app.io, .{ .sub_path = out_file, .data = "" }) catch |e| {
         try app.err.print("nix: {s}: create {s}: {s}\n", .{ src.label, out_file, @errorName(e) });
         return null;
@@ -782,6 +784,9 @@ test "trustRecord: covers declaration AND script bytes" {
 }
 
 test "underHome: inside, outside, boundary, prefix trap" {
+    try std.testing.expect(underHome("scratch/", "scratch/lib"));
+    try std.testing.expect(underHome("scratch/", "scratch"));
+    try std.testing.expect(!underHome("scratch/", "scratch-other/lib"));
     try std.testing.expect(underHome("C:/Users/x/.nix", "C:/Users/x/.nix/segments.toml"));
     try std.testing.expect(underHome("C:/Users/x/.nix", "C:/Users/x/.nix"));
     try std.testing.expect(!underHome("C:/Users/x/.nix", "C:/work/proj/.nix/segments.toml"));

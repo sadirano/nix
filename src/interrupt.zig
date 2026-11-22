@@ -29,6 +29,7 @@ extern "kernel32" fn WaitForMultipleObjects(count: u32, handles: [*]const *anyop
 extern "kernel32" fn SetConsoleCtrlHandler(handler: ?*const fn (u32) callconv(.winapi) i32, add: i32) callconv(.winapi) i32;
 extern "kernel32" fn CreateEventW(attrs: ?*anyopaque, manual_reset: i32, initial: i32, name: ?[*:0]const u16) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn SetEvent(h: *anyopaque) callconv(.winapi) i32;
+extern "kernel32" fn ResetEvent(h: *anyopaque) callconv(.winapi) i32;
 extern "kernel32" fn CloseHandle(h: *anyopaque) callconv(.winapi) i32;
 
 /// Signalled by the handler thread; waited on by the main thread. Manual-reset,
@@ -62,6 +63,7 @@ pub fn arm() void {
     seen = false;
     if (event == null) event = CreateEventW(null, TRUE, FALSE, null);
     if (event == null) return; // no event, no interception: default behaviour
+    if (ResetEvent(event.?) == FALSE) return;
     _ = SetConsoleCtrlHandler(&onConsoleEvent, TRUE);
     armed = true;
 }
@@ -115,4 +117,26 @@ pub fn waitFor(child: *anyopaque) ?u8 {
     if (r != 1) return null; // child won the race (or the wait failed)
     _ = WaitForSingleObject(child, 0xFFFFFFFF); // its own Ctrl-C is already ending it
     return code;
+}
+
+test "SW3 a later wait does not inherit an interrupt" {
+    if (!proc.is_windows) return error.SkipZigTest;
+    arm();
+    try std.testing.expectEqual(TRUE, onConsoleEvent(CTRL_C_EVENT));
+    disarm();
+    arm();
+    defer disarm();
+    try std.testing.expectEqual(@as(u32, 258), WaitForSingleObject(handle().?, 0));
+    const child = CreateEventW(null, TRUE, FALSE, null) orelse return error.Unexpected;
+    defer _ = CloseHandle(child);
+    const signal = struct {
+        fn run(h: *anyopaque) void {
+            std.Io.sleep(std.testing.io, .{ .nanoseconds = 20 * std.time.ns_per_ms }, .awake) catch {};
+            _ = SetEvent(h);
+        }
+    };
+    const thread = try std.Thread.spawn(.{}, signal.run, .{child});
+    defer thread.join();
+    try std.testing.expectEqual(@as(?u8, null), waitFor(child));
+    try std.testing.expect(!fired());
 }

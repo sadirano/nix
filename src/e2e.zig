@@ -75,6 +75,10 @@ const Ctx = struct {
             child.stdin.?.close(c.io);
             child.stdin = null;
         }
+        return c.collect(&child);
+    }
+
+    fn collect(c: *Ctx, child: *std.process.Child) !RunResult {
         var ob: [4096]u8 = undefined;
         var or_ = child.stdout.?.reader(c.io, &ob);
         const out = or_.interface.allocRemaining(c.arena, .unlimited) catch "";
@@ -373,10 +377,134 @@ fn writeActions(c: *Ctx, alias: []const u8, dir: []const u8, body: []const u8) !
     _ = try c.trust(&.{alias});
 }
 
+fn sw3Wait(io: Io, path: []const u8) !void {
+    for (0..1000) |_| {
+        if (proc.fileExists(io, path)) return;
+        try Io.sleep(io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .awake);
+    }
+    return error.SW3BarrierTimedOut;
+}
+
+fn sw3Fixture(init: std.process.Init, args: []const []const u8) !bool {
+    if (args.len == 0) return false;
+    const name = std.fs.path.basename(args[0]);
+    const io = init.io;
+    const arena = init.arena.allocator();
+    if (util.eqlFoldAscii(name, "sw3-editor.exe")) {
+        const json = try std.json.Stringify.valueAlloc(arena, args[1..], .{});
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = "sw3-editor-args.json", .data = json });
+        return true;
+    }
+    if (util.eqlFoldAscii(name, "sw3-context.exe")) {
+        const out = init.environ_map.get("NIX_CONTEXT_OUT") orelse return error.MissingContextOut;
+        const role = init.environ_map.get("NIX_SW3_ROLE") orelse return error.MissingRole;
+        const record = try std.fmt.allocPrint(arena, "{s}.out-path", .{role});
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = record, .data = out });
+        if (std.mem.eql(u8, role, "a")) {
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = out, .data = "who=a\n" });
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = "a-written", .data = "" });
+            try sw3Wait(io, "b-started");
+        } else {
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = "b-started", .data = "" });
+            try sw3Wait(io, "a-read");
+            try Io.Dir.cwd().writeFile(io, .{ .sub_path = out, .data = "who=b\n" });
+        }
+        return true;
+    }
+    if (util.eqlFoldAscii(name, "sw3-root.exe")) {
+        const expected = init.environ_map.get("NIX_SW3_DRIVE_ROOT") orelse return error.MissingRoot;
+        const alias_path = init.environ_map.get("NIX_ALIAS_PATH") orelse return error.MissingAliasPath;
+        var cwd: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try std.process.currentPath(io, &cwd);
+        if (!util.eqlPathAscii(expected, cwd[0..n]) or !util.eqlPathAscii(expected, alias_path)) return error.WrongRoot;
+        const out = init.environ_map.get("NIX_CONTEXT_OUT") orelse return error.MissingContextOut;
+        try Io.Dir.cwd().writeFile(io, .{ .sub_path = out, .data = "who=root\n" });
+        return true;
+    }
+    return false;
+}
+
+fn sw3Regressions(c: *Ctx, home: []const u8, harness: []const u8) !void {
+    const cfg_path = join(c, &.{ home, "config.toml" });
+    const saved_cfg = readFileOr(c, cfg_path, "");
+    defer writeFile(c, cfg_path, saved_cfg) catch {};
+    const project = join(c, &.{ c.work, "sw3-project" });
+    try util.mkdirAll(c.io, project);
+    _ = try c.run(&.{ "sw3", project });
+    for ([_][]const u8{ "", "[search]\ninclude = ['.nix/shared']\n" }, 0..) |cfg, i| {
+        try writeFile(c, cfg_path, cfg);
+        try util.mkdirAll(c.io, join(c, &.{ project, ".nix", "shared" }));
+        const r = try c.run(&.{ "sw3", "--no-prompt", "--grep" });
+        c.check(r.code == 1 and r.out.len == 0 and std.mem.eql(u8, r.err, "nix: g needs a pattern (usage: g <alias> <pat>)\n"), if (i == 0) "SW3 g requires a pattern without extra folders" else "SW3 g requires a pattern with extra folders", r);
+    }
+    try writeFile(c, cfg_path, saved_cfg);
+    if (!c.windowsOnly("SW3 concurrent contexts, drive roots and CRLF editor selections")) return;
+    const bytes = try Io.Dir.cwd().readFileAlloc(c.io, harness, c.arena, .unlimited);
+    for ([_][]const u8{ "sw3-context.exe", "sw3-root.exe", "sw3-editor.exe" }) |name| try writeFile(c, join(c, &.{ home, "scripts", name }), bytes);
+    const race = join(c, &.{ project, "race" });
+    try util.mkdirAll(c.io, race);
+    _ = try c.run(&.{ "sw3race", race });
+    try writeFile(c, join(c, &.{ home, "segments", "sw3race.toml" }), "[[contexts]]\nsegment='race'\nrun='sw3-context'\nsource-template='/${who}'\ncache='0'\n");
+    try c.env.put("NIX_SW3_ROLE", "a");
+    defer _ = c.env.orderedRemove("NIX_SW3_ROLE");
+    var a = try std.process.spawn(c.io, .{ .argv = &.{ c.exe, "race@sw3race", "--resolve" }, .cwd = .{ .path = c.work }, .stdin = .ignore, .stdout = .pipe, .stderr = .pipe, .environ_map = c.env });
+    defer if (a.id != null) a.kill(c.io);
+    try sw3Wait(c.io, join(c, &.{ race, "a-written" }));
+    try c.env.put("NIX_SW3_ROLE", "b");
+    var b = try std.process.spawn(c.io, .{ .argv = &.{ c.exe, "race@sw3race", "--resolve" }, .cwd = .{ .path = c.work }, .stdin = .ignore, .stdout = .pipe, .stderr = .pipe, .environ_map = c.env });
+    defer if (b.id != null) b.kill(c.io);
+    const ar = try c.collect(&a);
+    try writeFile(c, join(c, &.{ race, "a-read" }), "");
+    const br = try c.collect(&b);
+    const a_path = readFileOr(c, join(c, &.{ race, "a.out-path" }), "");
+    const b_path = readFileOr(c, join(c, &.{ race, "b.out-path" }), "");
+    c.check(ar.code == 0 and hasLineFold(ar.out, join(c, &.{ race, "a" })), "SW3 concurrent uncached context A keeps its variables", ar);
+    c.check(br.code == 0 and hasLineFold(br.out, join(c, &.{ race, "b" })), "SW3 concurrent uncached context B keeps its variables", br);
+    c.check(a_path.len > 0 and b_path.len > 0 and !std.mem.eql(u8, a_path, b_path) and !proc.fileExists(c.io, a_path) and !proc.fileExists(c.io, b_path), "SW3 concurrent context output files are distinct and removed", null);
+
+    const slash_work = try std.mem.replaceOwned(u8, c.arena, c.work, "\\", "/");
+    const drive_root = c.work[0..3];
+    const relative = slash_work[3..];
+    const first_end = std.mem.indexOfScalar(u8, relative, '/') orelse return error.MissingDriveSubdirectory;
+    const match_dir = join(c, &.{ c.work, "sw3-wild-match" });
+    try util.mkdirAll(c.io, match_dir);
+    _ = try c.run(&.{ "sw3drive", drive_root });
+    const decl = try std.fmt.allocPrint(c.arena, "[[contexts]]\nsegment='wild'\nsource-template='/{s}*{s}/sw3-wild-match'\n[[contexts]]\nsegment='ctx'\nrun='sw3-root'\nsource-template='/${{who}}'\ncache='0'\n[[contexts]]\nsegment='plain'\nsource-template='/leaf'\n", .{ relative[0..first_end], relative[first_end..] });
+    try writeFile(c, join(c, &.{ home, "segments", "sw3drive.toml" }), decl);
+    var r = try c.run(&.{ "wild@sw3drive", "--no-prompt", "--resolve" });
+    c.check(r.code == 0 and hasLineFold(r.out, match_dir), "SW3 drive-root wildcard walks the root below cwd", r);
+    try c.env.put("NIX_SW3_DRIVE_ROOT", drive_root);
+    defer _ = c.env.orderedRemove("NIX_SW3_DRIVE_ROOT");
+    r = try c.run(&.{ "ctx@sw3drive", "--no-prompt", "--resolve" });
+    c.check(r.code == 0 and hasLineFold(r.out, join(c, &.{ drive_root, "root" })), "SW3 drive-root context receives the absolute root", r);
+    r = try c.run(&.{ "plain@sw3drive", "--resolve" });
+    c.check(r.code == 0 and hasLineFold(r.out, join(c, &.{ drive_root, "leaf" })), "SW3 drive-root fragments use one separator", r);
+
+    const old_editor = if (c.env.get("EDITOR")) |ed| try c.arena.dupe(u8, ed) else null;
+    defer {
+        if (old_editor) |ed| c.env.put("EDITOR", ed) catch {} else {
+            _ = c.env.orderedRemove("EDITOR");
+        }
+    }
+    try c.env.put("EDITOR", join(c, &.{ home, "scripts", "sw3-editor.exe" }));
+    var buffer: [4096]u8 = undefined;
+    var writer: Io.Writer = .fixed(&buffer);
+    var app: @import("app.zig").App = .{ .arena = c.arena, .io = c.io, .out = &writer, .err = &writer, .environ = .empty, .env_map = c.env, .home = home, .argv0 = c.exe, .json = false, .no_prompt = true };
+    const code = try @import("open.zig").openSelectionsInEditor(&app, project, "first.txt\r\nsecond.txt\r\n", false);
+    const capture = readFileOr(c, join(c, &.{ project, "sw3-editor-args.json" }), "[]");
+    const captured = try std.json.parseFromSlice([][]const u8, c.arena, capture, .{});
+    defer captured.deinit();
+    c.check(code == 0 and captured.value.len == 2 and pathEql(captured.value[0], join(c, &.{ project, "first.txt" })) and pathEql(captured.value[1], join(c, &.{ project, "second.txt" })), "SW3 CRLF selections pass clean editor arguments", .{ .code = code, .out = capture, .err = "" });
+    _ = try c.run(&.{ "sw3", "--remove" });
+    _ = try c.run(&.{ "sw3race", "--remove" });
+    _ = try c.run(&.{ "sw3drive", "--remove" });
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
+    if (try sw3Fixture(init, args)) return;
     if (args.len < 2) {
         std.debug.print("usage: e2e <path-to-nix-exe>\n", .{});
         std.process.exit(2);
@@ -4025,6 +4153,8 @@ pub fn main(init: std.process.Init) !void {
         c.check((r.code == 0 or r.code == 1) and shaped, "--doctor --json emits valid JSON with sections", r);
     }
 
+    const harness = try std.fs.path.resolve(arena, &.{ cwd_buf[0..cwd_len], args[0] });
+    try sw3Regressions(&c, home, harness);
     std.debug.print("\ne2e: {d} checks, {d} failure(s), {d} skipped, {d} Windows-only\n", .{ c.checks, c.fails, c.skips, c.platform_skips });
     if (c.fails > 0) {
         std.debug.print("scratch kept for inspection: {s}\n", .{root});

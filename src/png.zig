@@ -20,6 +20,25 @@ fn i32le(b: []const u8, o: usize) i32 {
     return @bitCast(u32le(b, o));
 }
 
+const Channel = struct {
+    mask: u32,
+    shift: u5,
+    max: u32,
+
+    fn init(mask: u32, depth: u16) ?Channel {
+        if (mask == 0 or (depth < 32 and mask >> @as(u5, @intCast(depth)) != 0)) return null;
+        const shift: u5 = @intCast(@ctz(mask));
+        const max = mask >> shift;
+        if (max & (max +% 1) != 0) return null;
+        return .{ .mask = mask, .shift = shift, .max = max };
+    }
+
+    fn sample(self: Channel, pixel: u32) u8 {
+        const value = (pixel & self.mask) >> self.shift;
+        return @intCast((@as(u64, value) * 255 + self.max / 2) / self.max);
+    }
+};
+
 /// encodeDibToPng converts a CF_DIB payload to PNG (RGB). Returns null for
 /// unsupported/malformed DIBs so the caller can fall through to text.
 pub fn encodeDibToPng(arena: std.mem.Allocator, dib: []const u8) !?[]u8 {
@@ -30,6 +49,8 @@ pub fn encodeDibToPng(arena: std.mem.Allocator, dib: []const u8) !?[]u8 {
     const bit_count = u16le(dib, 14);
     const compression = u32le(dib, 16);
     const clr_used = u32le(dib, 32);
+    if (bi_size < 40 or bi_size > dib.len) return null;
+    if (compression != 0 and compression != 3) return null;
     if (bit_count != 24 and bit_count != 32) return null;
     if (bi_width <= 0 or bi_height == 0) return null;
 
@@ -52,6 +73,15 @@ pub fn encodeDibToPng(arena: std.mem.Allocator, dib: []const u8) !?[]u8 {
     const pix_end = std.math.add(usize, pix_off, pixels) catch return null;
     if (pix_end > dib.len) return null;
 
+    var masks = [3]u32{ 0xff0000, 0xff00, 0xff };
+    if (compression == 3) {
+        if (bi_size != 40 and bi_size < 52) return null;
+        for (&masks, 0..) |*mask, i| mask.* = u32le(dib, 40 + i * 4);
+    }
+    if (masks[0] & masks[1] != 0 or masks[0] & masks[2] != 0 or masks[1] & masks[2] != 0) return null;
+    var channels: [3]Channel = undefined;
+    for (masks, &channels) |mask, *channel| channel.* = Channel.init(mask, bit_count) orelse return null;
+
     // Build PNG scanlines: each row = filter byte 0x00 + width*3 (RGB) bytes.
     const row_len = 1 + width * 3;
     const raw = try arena.alloc(u8, std.math.mul(usize, row_len, height) catch return null);
@@ -63,11 +93,11 @@ pub fn encodeDibToPng(arena: std.mem.Allocator, dib: []const u8) !?[]u8 {
         out[0] = 0;
         var x: usize = 0;
         while (x < width) : (x += 1) {
-            const p = base + x * bpp; // DIB pixels are BGR(A)
+            const p = base + x * bpp;
             const o = 1 + x * 3;
-            out[o] = dib[p + 2]; // R
-            out[o + 1] = dib[p + 1]; // G
-            out[o + 2] = dib[p]; // B
+            var pixel = @as(u32, dib[p]) | (@as(u32, dib[p + 1]) << 8) | (@as(u32, dib[p + 2]) << 16);
+            if (bpp == 4) pixel |= @as(u32, dib[p + 3]) << 24;
+            for (channels, 0..) |channel, c| out[o + c] = channel.sample(pixel);
         }
     }
 
@@ -150,6 +180,105 @@ fn zlibStored(arena: std.mem.Allocator, data: []const u8) ![]u8 {
 // ---- tests ------------------------------------------------------------------
 
 const png_sig = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+
+test "SW3 DIB rejects short header sizes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var dib = @as([64]u8, @splat(0));
+    dib[4] = 1;
+    dib[8] = 1;
+    dib[12] = 1;
+    dib[14] = 24;
+    for ([_]u8{ 0, 12, 39 }) |size| {
+        dib[0] = size;
+        try std.testing.expect((try encodeDibToPng(arena.allocator(), &dib)) == null);
+    }
+}
+
+test "SW3 DIB rejects unsupported compression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var dib = @as([64]u8, @splat(0));
+    dib[0] = 40;
+    dib[4] = 1;
+    dib[8] = 1;
+    dib[12] = 1;
+    dib[14] = 24;
+    for ([_]u8{ 1, 2, 4, 5, 6 }) |compression| {
+        dib[16] = compression;
+        try std.testing.expect((try encodeDibToPng(arena.allocator(), &dib)) == null);
+    }
+}
+
+test "SW3 DIB bitfields masks determine RGB channels" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var rgb = @as([44]u8, @splat(0));
+    rgb[0] = 40;
+    rgb[4] = 1;
+    rgb[8] = 1;
+    rgb[12] = 1;
+    rgb[14] = 32;
+    rgb[40..43].* = .{ 0x11, 0x22, 0x33 };
+    const expected = (try encodeDibToPng(a, &rgb)).?;
+    for ([_]u8{ 40, 108, 124 }) |size| {
+        var dib = @as([128]u8, @splat(0));
+        @memcpy(dib[0..40], rgb[0..40]);
+        dib[0] = size;
+        dib[16] = 3;
+        dib[40] = 0xff;
+        dib[45] = 0xff;
+        dib[50] = 0xff;
+        const offset: usize = if (size == 40) 52 else size;
+        dib[offset..][0..3].* = .{ 0x33, 0x22, 0x11 };
+        const actual = (try encodeDibToPng(a, &dib)).?;
+        try std.testing.expectEqualSlices(u8, expected, actual);
+    }
+}
+
+test "SW3 DIB bitfields scale channels to eight bits" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var rgb = @as([44]u8, @splat(0));
+    rgb[0] = 40;
+    rgb[4] = 1;
+    rgb[8] = 1;
+    rgb[12] = 1;
+    rgb[14] = 32;
+    rgb[40..43].* = .{ 255, 85, 170 };
+    const expected = (try encodeDibToPng(a, &rgb)).?;
+    var dib = @as([56]u8, @splat(0));
+    @memcpy(dib[0..40], rgb[0..40]);
+    dib[16] = 3;
+    std.mem.writeInt(u32, dib[40..44], 0x3ff00000, .little);
+    std.mem.writeInt(u32, dib[44..48], 0x000ffc00, .little);
+    std.mem.writeInt(u32, dib[48..52], 0x000003ff, .little);
+    std.mem.writeInt(u32, dib[52..56], (682 << 20) | (341 << 10) | 1023, .little);
+    const actual = (try encodeDibToPng(a, &dib)).?;
+    try std.testing.expectEqualSlices(u8, expected, actual);
+}
+
+test "SW3 DIB rejects malformed bitfields masks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var dib = @as([56]u8, @splat(0));
+    dib[0] = 40;
+    dib[4] = 1;
+    dib[8] = 1;
+    dib[12] = 1;
+    dib[14] = 32;
+    dib[16] = 3;
+    for ([_][3]u32{
+        .{ 0, 0xff00, 0xff },
+        .{ 0xff00, 0xff00, 0xff },
+        .{ 0xf000f0, 0xff00, 0xf },
+    }) |masks| {
+        for (masks, 0..) |mask, i| std.mem.writeInt(u32, dib[40 + i * 4 ..][0..4], mask, .little);
+        try std.testing.expect((try encodeDibToPng(arena.allocator(), &dib)) == null);
+    }
+}
 
 test "encodeDibToPng: valid 1x1 24-bit produces a PNG" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

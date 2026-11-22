@@ -564,12 +564,14 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
     // project may shadow a central lookup without editing it.
     var producers = try mergeProducers(app, sf_local, sf_central, sf_global);
 
+    const trimmed = std.mem.trimEnd(u8, base.?, "/");
+    const alias_root = if (std.fs.path.isAbsolute(base.?) and !std.fs.path.isAbsolute(trimmed)) base.?[0 .. trimmed.len + 1] else trimmed;
     var target: std.ArrayList(u8) = .empty;
-    try target.appendSlice(app.arena, std.mem.trimEnd(u8, base.?, "/"));
-    var target_root = false;
+    try target.appendSlice(app.arena, alias_root);
+    var target_root = std.mem.endsWith(u8, alias_root, "/");
     // Host-separator form of the alias root: the cwd a context source runs in,
     // and the root its `.nix/scripts` lookup starts from.
-    const run_dir = try store.fromSlash(app.arena, std.mem.trimEnd(u8, base.?, "/"));
+    const run_dir = try store.fromSlash(app.arena, alias_root);
 
     var i = parsed.segs.len;
     while (i > 0) {
@@ -613,13 +615,11 @@ pub fn resolveSegmented(app: *App, input: []const u8) !?[]const u8 {
             fragment = (try checkedFragment(app, cd.?, producers, ps, parsed.alias, run_dir, target.items)) orelse return null;
         }
         if (fragment.len == 0) continue;
-        // Only a target root retains its separator through expansion.
+        // A root retains its separator through expansion.
         const suffix = if (target_root and fragment[0] == '/') fragment[1..] else fragment;
         try target.appendSlice(app.arena, suffix);
         target_root = false;
     }
-    // A root lost its separator to the trim above, and `E:` alone is that
-    // drive's current directory, not its root.
     if (target.items.len == 0 or (target.items.len == 2 and target.items[1] == ':')) try target.append(app.arena, '/');
     return try store.fromSlash(app.arena, target.items);
 }

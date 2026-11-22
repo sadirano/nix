@@ -179,7 +179,8 @@ pub fn openSelectionsInEditor(app: *App, target: []const u8, selection: []const 
     };
     var targets: std.ArrayList(editor.Target) = .empty;
     var lines = std.mem.splitScalar(u8, std.mem.trim(u8, selection, " \t\r\n"), '\n');
-    while (lines.next()) |line| {
+    while (lines.next()) |row| {
+        const line = std.mem.trimEnd(u8, row, "\r");
         if (line.len == 0) continue;
         if (has_lines) {
             // split into at most 3 parts on ':', drive-letter aware

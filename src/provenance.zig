@@ -327,12 +327,18 @@ pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(app.arena, "[trusted]\n");
     for (try actions.parseTable(app.arena, prior, "trusted")) |row| {
-        if (std.mem.eql(u8, row.command, label)) continue; // superseded
-        if (legacy) |l| if (std.mem.eql(u8, row.command, l)) continue; // migrated
+        if (sameLabel(row.command, label)) continue; // superseded
+        if (legacy) |l| if (sameLabel(row.command, l)) continue; // migrated
         try buf.print(app.arena, "{s} = \"{s}\"\n", .{ row.name, row.command });
     }
     try buf.print(app.arena, "{s} = \"{s}\"\n", .{ record, label });
     try util.writeFileAtomic(app.arena, app.io, path, buf.items);
+}
+
+fn sameLabel(a: []const u8, b: []const u8) bool {
+    const a_sep = std.mem.indexOfScalar(u8, a, '|') orelse return std.mem.eql(u8, a, b);
+    const b_sep = std.mem.indexOfScalar(u8, b, '|') orelse return false;
+    return std.ascii.eqlIgnoreCase(a[0..a_sep], b[0..b_sep]) and std.mem.eql(u8, a[a_sep..], b[b_sep..]);
 }
 
 fn recordApproval(app: *App, grant: Grant) !void {
@@ -716,6 +722,26 @@ pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.
 }
 
 // ---- tests -------------------------------------------------------------------
+
+test "SW3 trust supersedes alias case variants" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "trusted.toml", .data = "[trusted]\nold = 'MyProj|:build'\nlegacy = 'MYPROJ|actions'\nother = 'MyProj|:Build'\n" });
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    var env: std.process.Environ.Map = .init(a);
+    var buffer: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    var app: App = .{ .arena = a, .io = io, .out = &writer, .err = &writer, .environ = .empty, .env_map = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
+    try recordTrust(&app, "new", "myproj|:build");
+    try std.testing.expect(!context.isTrusted(&app, "old"));
+    try std.testing.expect(!context.isTrusted(&app, "legacy"));
+    try std.testing.expect(context.isTrusted(&app, "other"));
+    try std.testing.expect(context.isTrusted(&app, "new"));
+}
 
 test "Plan.viewFiles: one editor invocation, no file twice" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

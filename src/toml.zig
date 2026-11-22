@@ -277,6 +277,7 @@ pub fn parseCheckedArray(arena: std.mem.Allocator, text: []const u8) !?[]Checked
     var start: usize = 1;
     var quote: u8 = 0;
     var escaped = false;
+    var first_close: ?usize = null;
     var i: usize = 1;
     while (i < body.len) : (i += 1) {
         const c = body[i];
@@ -287,6 +288,7 @@ pub fn parseCheckedArray(arena: std.mem.Allocator, text: []const u8) !?[]Checked
                 escaped = true;
             } else if (c == quote) {
                 quote = 0;
+                if (first_close == null) first_close = i + 1;
             }
             continue;
         }
@@ -297,7 +299,8 @@ pub fn parseCheckedArray(arena: std.mem.Allocator, text: []const u8) !?[]Checked
         if (c != ',' and i != body.len - 1) continue;
         const token = std.mem.trim(u8, body[start..i], " \t\r\n");
         if (token.len > 0) {
-            const value = try unquote(arena, token);
+            const clean_tail = if (first_close) |end| std.mem.trim(u8, body[end..i], " \t\r\n").len == 0 else false;
+            const value = if (clean_tail) try unquote(arena, token) else null;
             if (value != null and token[token.len - 1] == token[0]) {
                 try out.append(arena, .{ .string = value.? });
             } else {
@@ -305,11 +308,22 @@ pub fn parseCheckedArray(arena: std.mem.Allocator, text: []const u8) !?[]Checked
             }
         }
         start = i + 1;
+        first_close = null;
     }
     return out.items;
 }
 
 // ---- writing --------------------------------------------------------------------
+
+test "SW3 checked array rejects junk after a string" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "[\"a\" \"b\"]", "['a' 'b']", "[\"a\"junk\"b\"]" }) |text| {
+        const parsed = (try parseCheckedArray(arena.allocator(), text)).?;
+        try std.testing.expectEqual(@as(usize, 1), parsed.len);
+        try std.testing.expect(parsed[0] == .invalid);
+    }
+}
 
 /// appendString writes `s` as a value `unquote` reads back exactly: a literal
 /// single-quoted string when the bytes allow one (no `'`, no control

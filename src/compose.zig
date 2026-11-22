@@ -15,6 +15,7 @@ const proc = @import("proc.zig");
 const app_zig = @import("app.zig");
 const run = @import("run.zig");
 const jobs = @import("jobs.zig");
+const util = @import("util.zig");
 
 const App = app_zig.App;
 
@@ -152,8 +153,9 @@ fn scriptForm(app: *App, alias: []const u8, dir: []const u8, command: []const u8
     } else {
         const path = run.resolveScript(app, alias, dir, word) orelse return command;
         if (!std.ascii.eqlIgnoreCase(std.fs.path.extension(path), ".ps1")) return command;
-        rel = if (dir.len > 0 and path.len > dir.len + 1 and std.mem.startsWith(u8, path, dir) and (path[dir.len] == '\\' or path[dir.len] == '/'))
-            path[dir.len + 1 ..]
+        const base = std.mem.trimEnd(u8, dir, "/\\");
+        rel = if (dir.len > 0 and path.len > base.len + 1 and util.eqlPathAscii(path[0..base.len], base) and (path[base.len] == '\\' or path[base.len] == '/'))
+            path[base.len + 1 ..]
         else
             path;
     }
@@ -439,6 +441,28 @@ test "sharedStart: longest whole sibling at a word boundary" {
     try std.testing.expect(sharedStart("test", "zig build test", &sib) == null);
     try std.testing.expect(sharedStart("x", "python tools/klass.pyc", &sib) == null);
     try std.testing.expect(sharedStart("x", "python play.py --resume && python report.py", &sib) == null);
+}
+
+test "SW3 project ps1 stays relative with a trailing separator" {
+    if (!proc.is_windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, ".nix/scripts");
+    try tmp.dir.writeFile(io, .{ .sub_path = ".nix/scripts/sw3.ps1", .data = "exit 0\n" });
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    var env: std.process.Environ.Map = .init(a);
+    var buffer: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    var app: App = .{ .arena = a, .io = io, .out = &writer, .err = &writer, .environ = .empty, .env_map = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
+    for ([_][]const u8{ "/", "\\" }) |sep| {
+        const dir = try std.mem.concat(a, u8, &.{ home, sep });
+        const command = try scriptForm(&app, "acme", dir, "sw3 --arg", .default);
+        try std.testing.expect(std.mem.endsWith(u8, command, " -File .nix\\scripts\\sw3.ps1 --arg"));
+    }
 }
 
 test "resolving and linting a toml action leaves the job log unloaded" {
