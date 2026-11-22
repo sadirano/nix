@@ -6,13 +6,10 @@ const Io = std.Io;
 const app_zig = @import("app.zig");
 const proc = @import("proc.zig");
 const config = @import("config.zig");
-const resolve = @import("resolve.zig");
 const run_zig = @import("run.zig");
 
 const App = app_zig.App;
 const fzfEnv = app_zig.fzfEnv;
-const rowPath = resolve.rowPath;
-const rowName = resolve.rowName;
 const aliasRunEnv = run_zig.aliasRunEnv;
 
 /// enterDir stacks an interactive shell rooted at dir in the current shell — the

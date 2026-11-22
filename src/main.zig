@@ -38,13 +38,14 @@ const secret = @import("secret.zig");
 const context = @import("context.zig");
 const env_zig = @import("env.zig");
 const grammar = @import("grammar.zig");
+const toml = @import("toml.zig");
 
 const App = app_zig.App;
 const exePath = app_zig.exePath;
 const fzfEnv = app_zig.fzfEnv;
 const fzf_tokyonight_theme = app_zig.fzf_tokyonight_theme;
 
-// Version is injected by build.zig (git describe → build.zig.zon .version → "dev").
+// Version is injected by build.zig: git describe, or build.zig.zon .version ("0.0.0").
 const build_version = @import("build_options").version;
 // Local wall-clock build date+time ("YYYY-MM-DD HH:MM:SS"), injected by build.zig.
 const build_date = @import("build_options").build_date;
@@ -591,7 +592,15 @@ fn cmdEditAction(app: *App, argv: [][]const u8) !u8 {
         if (body.len > 0 and body[body.len - 1] != '\n') try b.append(app.arena, '\n');
         // A file with no [actions] table yet (or none at all) needs the header
         // before the first key, or the line parses as nothing.
-        if (std.mem.indexOf(u8, body, "[actions]") == null) {
+        var has_actions = false;
+        var lines = toml.Lines.init(body);
+        while (lines.next()) |item| {
+            if (item == .header and !item.header.array and std.mem.eql(u8, item.header.name, "actions")) {
+                has_actions = true;
+                break;
+            }
+        }
+        if (!has_actions) {
             if (body.len > 0) try b.append(app.arena, '\n');
             try b.appendSlice(app.arena, "[actions]\n");
         }

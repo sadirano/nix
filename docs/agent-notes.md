@@ -110,7 +110,8 @@ drift. Adding a command means touching them, not just the dispatcher:
 `app.zig` holds `App`, the process-wide context handed to every command
 (arena, `Io`, writers, env, home, `--json`/`--no-prompt`, plus the
 lazily-populated PATH and injected-variable bookkeeping). **Command modules take
-`*App` and import `app.zig`, never `main.zig` and never each other.** `main.zig`
+`*App` and import `app.zig`, never `main.zig`. They may import shared helpers
+from other command modules.** `main.zig`
 is the dispatcher; `root.zig` is the library surface (`refAllDecls` compile-checks
 it in `zig build test`) and the exe does not import it.
 

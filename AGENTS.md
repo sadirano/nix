@@ -26,8 +26,9 @@ relevant section before changing a subsystem.
 - Adding a command means touching `grammar.zig` (every flag), `agentdocs.zig`
   (the spec per topic) and, for the machine guide, `agents.zig`, not just the
   dispatcher.
-- Command modules take `*App` and import `app.zig`, never `main.zig` and never
-  each other. `grammar.zig` imports only `std`.
+- Command modules take `*App` and import `app.zig`, never `main.zig`. They may
+  import shared helpers from other command modules. `grammar.zig` imports only
+  `std`.
 - Anything arriving with a clone passes `provenance.zig`, and without a
   console it refuses. `--trust` is the user's, never yours.
 - `run.aliasRunEnv` is the one env-injection choke point. Each injection is

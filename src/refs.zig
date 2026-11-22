@@ -141,9 +141,11 @@ pub fn escapes(rel: []const u8) bool {
 /// names the file's place in the project rather than its place on this machine.
 /// Falls back to the basename when the path is not under dir.
 pub fn relativeTo(dir: []const u8, path: []const u8) []const u8 {
-    if (path.len > dir.len and util.eqlPathAscii(path[0..dir.len], dir)) {
-        var r = path[dir.len..];
-        if (r.len > 0 and (r[0] == '/' or r[0] == '\\')) r = r[1..];
+    const base = std.mem.trimEnd(u8, dir, "/\\");
+    if (path.len > base.len and util.eqlPathAscii(path[0..base.len], base) and
+        (path[base.len] == '/' or path[base.len] == '\\'))
+    {
+        const r = path[base.len + 1 ..];
         if (r.len > 0) return r;
     }
     return std.fs.path.basename(path);
@@ -213,6 +215,9 @@ test "QuotedTokens: a quoted path with a space stays one token" {
 }
 
 test "relativeTo: a referenced file is named by its place in the project" {
+    try std.testing.expectEqualStrings("x", relativeTo("a", "ab/x"));
+    try std.testing.expectEqualStrings("b/x", relativeTo("a/", "a/b/x"));
+    try std.testing.expectEqualStrings("b\\x", relativeTo("a\\", "a\\b\\x"));
     // Same basename, same bytes, two projects: the record has to tell them
     // apart, or approving one approves the other.
     try std.testing.expectEqualStrings("scripts/deploy.py", relativeTo("C:/a", "C:/a/scripts/deploy.py"));

@@ -140,12 +140,15 @@ pub fn escaped(arena: std.mem.Allocator, input: []const u8) ![]const u8 {
 pub fn rewriteHeaders(arena: std.mem.Allocator, raw: []const u8, display: []const u8, short: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     var lines = std.mem.splitScalar(u8, raw, '\n');
+    var in_header = false;
     while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "@@")) in_header = false;
         if (std.mem.startsWith(u8, line, "diff --git ")) {
+            in_header = true;
             try out.print(arena, "diff --git a/{s} (approved, {s}) b/{s} (now)", .{ display, short, display });
-        } else if (std.mem.startsWith(u8, line, "--- ")) {
+        } else if (in_header and std.mem.startsWith(u8, line, "--- ")) {
             try out.print(arena, "--- a/{s} (approved, {s})", .{ display, short });
-        } else if (std.mem.startsWith(u8, line, "+++ ")) {
+        } else if (in_header and std.mem.startsWith(u8, line, "+++ ")) {
             try out.print(arena, "+++ b/{s} (now)", .{display});
         } else try out.appendSlice(arena, line);
         if (lines.index != null) try out.append(arena, '\n');
@@ -197,6 +200,18 @@ test "diff output escapes bytes and rewrites headers" {
     const h = try rewriteHeaders(a, "diff --git a/C:/old b/C:/new\n--- a/C:/old\n+++ b/C:/new\n", "scripts/x", "abcdef0");
     try std.testing.expect(std.mem.indexOf(u8, h, "a/scripts/x (approved, abcdef0)") != null);
     try std.testing.expect(std.mem.indexOf(u8, h, "C:/") == null);
+}
+
+test "diff headers stop at hunks and restart for each file" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const raw = "diff --git a/old b/new\n--- a/old\n+++ b/new\n@@ -1 +1 @@\n--- comment\n+++ x\n" ++
+        "diff --git a/other b/other\n--- a/other\n+++ b/other\n@@ -1 +1 @@\n--- second\n+++ second\n";
+    const out = try rewriteHeaders(arena.allocator(), raw, "scripts/x", "abcdef0");
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "--- a/scripts/x (approved, abcdef0)"));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out, "+++ b/scripts/x (now)"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "@@ -1 +1 @@\n--- comment\n+++ x\n") != null);
+    try std.testing.expect(std.mem.endsWith(u8, out, "@@ -1 +1 @@\n--- second\n+++ second\n"));
 }
 
 test "diff output stops after 400 lines" {

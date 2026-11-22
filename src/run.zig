@@ -44,8 +44,9 @@ pub fn cmdRun(app: *App, alias: []const u8, action_args: [][]const u8) !u8 {
         outside = true;
         argv = argv[1..];
     }
-    if (argv.len > 0 and eql(argv[0], "--")) argv = argv[1..];
-    if (takeHoldMarker(argv)) |rest| {
+    if (argv.len > 0 and eql(argv[0], "--")) {
+        argv = argv[1..];
+    } else if (takeHoldMarker(argv)) |rest| {
         app.hold_requested = true;
         argv = rest;
     }

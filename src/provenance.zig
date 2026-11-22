@@ -629,7 +629,7 @@ pub fn cmdTrust(app: *App, rest: [][]const u8) !u8 {
             .record = r.record,
             .label = label,
             .digests = digests,
-            .files = try app.arena.dupe([]const u8, &.{r.script}),
+            .files = try app.arena.dupe([]const u8, &.{ src.origin, r.script }),
         });
     }
     if (plan.grants.items.len == 0) {

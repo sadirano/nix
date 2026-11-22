@@ -19,7 +19,7 @@ pub const sink_env = "NIX_CLIPBOARD_FILE";
 
 fn sink(io: Io, env: *std.process.Environ.Map, data: []const u8) !bool {
     const path = env.get(sink_env) orelse return false;
-    if (path.len == 0) return false;
+    if (path.len == 0) return true;
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
     return true;
 }
@@ -185,6 +185,17 @@ pub fn readText(arena: std.mem.Allocator, io: Io, env: *std.process.Environ.Map)
     const len = std.mem.indexOfSentinel(u16, 0, ptr);
     if (len == 0) return null;
     return std.unicode.utf16LeToUtf8Alloc(arena, ptr[0..len]) catch null;
+}
+
+test "empty clipboard sink consumes writes without IO" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try env.put(sink_env, "");
+    try std.testing.expect(try sink(undefined, &env, "isolated"));
+    try writeText(arena.allocator(), undefined, &env, "isolated");
+    try writeFiles(arena.allocator(), undefined, &env, &.{"isolated.txt"});
 }
 
 test "clipboard fixture suppresses file and image reads" {

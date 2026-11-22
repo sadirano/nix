@@ -905,6 +905,14 @@ pub fn main(init: std.process.Init) !void {
         try writeActions(&c, "pa", pa, "[actions]\nhello = \"echo from-project\"\n");
     }
 
+    if (c.windowsOnly("literal bang command after --")) {
+        const script_dir = join(&c, &.{ home, "scripts", "pa" });
+        try writeFile(&c, join(&c, &.{ script_dir, "!sw2literal.cmd" }), "@echo sw2-bang\r\n");
+        try writeFile(&c, join(&c, &.{ script_dir, "sw2literal.cmd" }), "@echo sw2-plain\r\n");
+        const r = try c.run(&.{ "pa", "--run", "--", "!sw2literal" });
+        c.check(r.code == 0 and hasLine(r.out, "sw2-bang") and !hasLine(r.out, "sw2-plain"), "-- preserves a command's leading bang", r);
+    }
+
     // --- private script actions ------------------------------------------------
     {
         const alias_jobs = join(&c, &.{ home, "jobs", "pa" });
@@ -1160,6 +1168,12 @@ pub fn main(init: std.process.Init) !void {
             c.check(r.code == 0 and hasLineFold(r.out, "spaced-home-job"), "a script job runs from a NIX_HOME containing a space", r);
             try c.env.put("NIX_HOME", home);
         }
+        const self_job = join(&c, &.{ home, "jobs", ".nix", "sw2keep.cmd" });
+        try writeFile(&c, self_job, ":: nix: uses=1 - Self keep\r\n@echo off\r\n");
+        const kept = try c.run(&.{ "--keep", ".NIX", ":sw2keep" });
+        c.check(kept.code == 0 and std.mem.indexOf(u8, readFileOr(&c, self_job, ""), "uses=1") == null and
+            std.mem.indexOf(u8, kept.out, "sw2keep.cmd") != null, "--keep accepts the self alias case-insensitively", kept);
+        try Io.Dir.cwd().deleteTree(io, join(&c, &.{ home, "jobs", ".nix" }));
         // Later palette and editor checks start from an empty action store.
         try Io.Dir.cwd().deleteTree(io, alias_jobs);
         try Io.Dir.cwd().deleteTree(io, join(&c, &.{ home, "jobs", "_global" }));
@@ -1490,6 +1504,38 @@ pub fn main(init: std.process.Init) !void {
             r = try c.runAnswering(&.{ "--trust", "crv" }, "d\nn\n");
             c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "(+1 -1 since ") != null and
                 std.mem.indexOf(u8, r.err, "+TWO") != null and std.mem.indexOf(u8, r.err, "\\x0D") == null, "an autocrlf checkout diffs only the edited line, with no escaped CRs", r);
+
+            const mixed = join(&c, &.{ root, "proj", "mixed-review" });
+            try util.mkdirAll(io, mixed);
+            _ = try c.run(&.{ "mrv", mixed });
+            const mixed_script = join(&c, &.{ mixed, "Scripts", "Deploy.ps1" });
+            try writeFile(&c, join(&c, &.{ mixed, ".nix", "actions.toml" }), if (proc.is_windows)
+                "[actions]\nship = 'pwsh scripts/deploy.ps1'\n"
+            else
+                "[actions]\nship = 'pwsh Scripts/Deploy.ps1'\n");
+            try writeFile(&c, mixed_script, "Write-Output mixed-old\n");
+            _ = try c.runCommand(&.{ "git", "init", "--quiet", mixed }, null);
+            _ = try c.runCommand(&.{ "git", "-C", mixed, "config", "user.name", "Nix Test" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", mixed, "config", "user.email", "nix@example.invalid" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", mixed, "config", "core.autocrlf", "false" }, null);
+            _ = try c.runCommand(&.{ "git", "-C", mixed, "add", "." }, null);
+            _ = try c.runCommand(&.{ "git", "-C", mixed, "commit", "--quiet", "-m", "mixed" }, null);
+            r = try c.trust(&.{"mrv"});
+            const review_json = readFileOr(&c, join(&c, &.{ home, "trust-review.json" }), "");
+            const sidecar = try std.json.parseFromSliceLeaky(struct { entries: []const struct { label: []const u8, files: []const struct { path: []const u8, commit: []const u8 } } }, arena, review_json, .{ .ignore_unknown_fields = true });
+            var mixed_hint = false;
+            for (sidecar.entries) |entry| {
+                if (!std.mem.eql(u8, entry.label, "mrv|:ship")) continue;
+                for (entry.files) |file| {
+                    if (std.mem.eql(u8, file.path, if (proc.is_windows) "scripts/deploy.ps1" else "Scripts/Deploy.ps1")) mixed_hint = file.commit.len == 40;
+                }
+            }
+            c.check(r.code == 0 and mixed_hint and std.mem.indexOf(u8, r.out, "is not committed") == null, "git uses on-disk casing for the HEAD hint and keeps a canonical record", r);
+            try writeFile(&c, mixed_script, "Write-Output mixed-new\n");
+            r = try c.runAnswering(&.{ "--trust", "mrv" }, "d\nn\n");
+            c.check(r.code != 0 and std.mem.indexOf(u8, r.out, "since ") != null and
+                std.mem.indexOf(u8, r.err, "-Write-Output mixed-old") != null and
+                std.mem.indexOf(u8, r.err, "+Write-Output mixed-new") != null, "git uses on-disk casing for the approved baseline", r);
 
             const plain = join(&c, &.{ root, "proj", "plain-review" });
             util.mkdirAll(io, plain) catch {};
@@ -2196,6 +2242,14 @@ pub fn main(init: std.process.Init) !void {
         // in that does not require already knowing an action inside it. Every
         // other command's bare `:` still opens the palette.
         const def_before = readFileOr(&c, def_actions, "");
+        for ([_][]const u8{ "# [actions]\n[other]\n", "[other]\ntext = '[actions]'\n" }) |body| {
+            try writeFile(&c, def_actions, body);
+            r = try c.run(&.{":sw2header"});
+            const seeded = readFileOr(&c, def_actions, "");
+            c.check(r.code == 0 and actions.hasKey(seeded, "actions", "sw2header") and
+                std.mem.startsWith(u8, seeded, body), "e :name requires a real actions header", r);
+        }
+        try writeFile(&c, def_actions, def_before);
         c.exe = e_exe;
         r = try c.run(&.{":"});
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "ACTION") == null and
@@ -2519,6 +2573,16 @@ pub fn main(init: std.process.Init) !void {
         var r = try c.run(&.{ "task:123@pa", "--resolve" });
         c.check(r.code != 0 and std.mem.indexOf(u8, r.err, "--trust") != null, "an unapproved context source refuses and says how to approve", r);
 
+        const context_editor = join(&c, &.{ root, "context-editor.cmd" });
+        try writeFile(&c, context_editor, "@echo off\r\n>\"%NIX_HOME%\\sw2-context-edit.txt\" echo %*\r\n>\"%NIX_HOME%\\sw2-context-edit.done\" echo done\r\n");
+        try c.env.put("EDITOR", context_editor);
+        r = try c.runAnswering(&.{ "--trust", "pa", "task" }, "e\nn\n");
+        _ = try c.runCommand(&.{ "pwsh", "-NoProfile", "-Command", "$limit = [DateTime]::UtcNow.AddSeconds(5); while (-not (Test-Path -LiteralPath (Join-Path $env:NIX_HOME 'sw2-context-edit.done')) -and [DateTime]::UtcNow -lt $limit) { Start-Sleep -Milliseconds 20 }" }, null);
+        const edited = try std.mem.replaceOwned(u8, arena, readFileOr(&c, join(&c, &.{ home, "sw2-context-edit.txt" }), ""), "/", "\\");
+        c.check(r.code != 0 and std.ascii.findIgnoreCase(edited, join(&c, &.{ pa, ".nix", "segments.toml" })) != null and
+            std.ascii.findIgnoreCase(edited, join(&c, &.{ scripts, "lookup.cmd" })) != null and
+            std.mem.count(u8, r.err, "opening 2 file(s)") == 1, "context trust opens both declaration and script in one editor", r);
+        try c.env.put("EDITOR", "notepad");
         r = try c.trust(&.{ "pa", "task" });
         c.check(r.code == 0 and std.mem.indexOf(u8, r.out, "approved") != null, "--trust approves the context source", r);
 

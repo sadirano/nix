@@ -136,8 +136,12 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
     }
     var outs: std.ArrayList([]const u8) = .empty;
     for (files) |src| {
-        const dir = isDir(app, src);
         var base = std.fs.path.basename(src);
+        if (base.len == 0) {
+            try app.err.print("nix: cannot paste a root directory: {s}\n", .{src});
+            continue;
+        }
+        const dir = isDir(app, src);
         if (name.len > 0) {
             base = if (dir) name else try pasteFilename(app, name, std.fs.path.extension(src));
         }
@@ -156,6 +160,7 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
         }
         try outs.append(app.arena, dest);
     }
+    if (outs.items.len == 0) return 1;
     for (outs.items) |o| try app.out.print("{s}\n", .{o});
     try app.out.flush();
     // Clipboard gets host-separator paths: / is not always a valid separator
@@ -172,6 +177,42 @@ fn pasteFiles(app: *App, alias: []const u8, target: []const u8, files: [][]const
         try std.fmt.allocPrint(app.arena, "pasted {d} files into {s}", .{ outs.items.len, target });
     notifyEvent(app, .paste, alias, target, msg);
     return 0;
+}
+
+test "pasteFiles refuses drive roots and continues the drop" {
+    if (!proc.is_windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const target = try std.fs.path.join(a, &.{ home, "target" });
+    try store.mkdirAll(io, target);
+    const source = try std.fs.path.join(a, &.{ home, "source.txt" });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = source, .data = "copied" });
+    var env: std.process.Environ.Map = .init(a);
+    try env.put(clipboard.sink_env, try std.fs.path.join(a, &.{ home, "clipboard.txt" }));
+    var output: [4096]u8 = undefined;
+    var writer: Io.Writer = .fixed(&output);
+    var app: App = .{ .arena = a, .io = io, .out = &writer, .err = &writer, .environ = .empty, .env_map = &env, .home = home, .argv0 = "nix", .json = false, .no_prompt = true, .config = .{} };
+    // An absent drive prevents the regression from copying a real drive's tree.
+    var root = [_]u8{ 'Z', ':', '\\' };
+    while (root[0] >= 'A') : (root[0] -= 1) {
+        if (!proc.pathExists(io, &root)) break;
+    }
+    if (root[0] < 'A') return error.SkipZigTest;
+    var files = [_][]const u8{ &root, source };
+    try std.testing.expectEqual(@as(u8, 0), try pasteFiles(&app, "target", target, &files, ""));
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "cannot paste a root directory") != null);
+    const copied = try Io.Dir.cwd().readFileAlloc(io, try std.fs.path.join(a, &.{ target, "source.txt" }), a, .unlimited);
+    try std.testing.expectEqualStrings("copied", copied);
+    try std.testing.expect(!proc.pathExists(io, try std.fmt.allocPrint(a, "{s}-1", .{target})));
+    var roots = [_][]const u8{&root};
+    try std.testing.expectEqual(@as(u8, 1), try pasteFiles(&app, "target", target, &roots, ""));
+    try std.testing.expectEqual(@as(u8, 1), try pasteFiles(&app, "target", target, &roots, "renamed"));
+    try std.testing.expect(!proc.pathExists(io, try std.fs.path.join(a, &.{ target, "renamed" })));
 }
 
 test "checkPasteName accepts relative names and ordinary stems" {

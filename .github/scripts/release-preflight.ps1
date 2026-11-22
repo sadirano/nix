@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$cleanupProblem = $null
 
 $items = @(
     @{ Id = '1.1'; Name = 'Backup snapshot'; Checks = @(); Next = '' }
@@ -241,7 +242,7 @@ try {
 } finally {
     if (Test-Path -LiteralPath $scratch) {
         try { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction Stop }
-        catch { Set-Check 'download' $false 'scratch cleanup failed' }
+        catch { $cleanupProblem = 'scratch cleanup failed' }
     }
 }
 
@@ -267,4 +268,5 @@ foreach ($item in $items) {
     }
 }
 Write-Output "preflight: $ready ready, $failed failed, $manual manual"
+if ($cleanupProblem) { Write-Output "WARN   $cleanupProblem" }
 if ($failed -gt 0) { exit 1 }

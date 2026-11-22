@@ -14,6 +14,17 @@ pub const FileDigest = struct {
     path: []const u8,
     digest: []const u8,
     commit: []const u8 = "",
+    git_path: []const u8 = "",
+
+    // Git needs the working-tree spelling; saved records use the canonical path.
+    pub fn jsonStringify(self: FileDigest, out: anytype) !void {
+        try out.beginObject();
+        inline for (.{ "root", "path", "digest", "commit" }) |field| {
+            try out.objectField(field);
+            try out.write(@field(self, field));
+        }
+        try out.endObject();
+    }
 };
 pub const Entry = struct {
     token: []const u8,
@@ -36,6 +47,37 @@ fn beneath(root: []const u8, file: []const u8) bool {
     return file[root.len] == '/' or file[root.len] == '\\';
 }
 
+fn onDiskRelative(app: *App, base: []const u8, relative: []const u8) ![]const u8 {
+    if (comptime @import("builtin").os.tag != .windows) return relative;
+    // Preserve symlink locations in the git tree while correcting each component's case.
+    var dir = std.Io.Dir.cwd().openDir(app.io, base, .{ .iterate = true }) catch return relative;
+    defer dir.close(app.io);
+    var out: std.ArrayList(u8) = .empty;
+    var parts = std.mem.tokenizeScalar(u8, relative, '/');
+    while (parts.next()) |part| {
+        var spelling: ?[]const u8 = null;
+        var it = dir.iterate();
+        while (it.next(app.io) catch return relative) |entry| {
+            if (std.mem.eql(u8, entry.name, part)) {
+                spelling = try app.arena.dupe(u8, entry.name);
+                break;
+            }
+            if (spelling == null and std.os.windows.eqlIgnoreCaseWtf8(entry.name, part)) {
+                spelling = try app.arena.dupe(u8, entry.name);
+            }
+        }
+        const name = spelling orelse return relative;
+        if (out.items.len > 0) try out.append(app.arena, '/');
+        try out.appendSlice(app.arena, name);
+        if (parts.peek() != null) {
+            const child = dir.openDir(app.io, name, .{ .iterate = true }) catch return relative;
+            dir.close(app.io);
+            dir = child;
+        }
+    }
+    return out.items;
+}
+
 /// digestFiles stores readable bytes under a project or home root without machine paths.
 pub fn digestFiles(app: *App, dir: []const u8, paths: []const []const u8) ![]FileDigest {
     var out: std.ArrayList(FileDigest) = .empty;
@@ -43,13 +85,15 @@ pub fn digestFiles(app: *App, dir: []const u8, paths: []const []const u8) ![]Fil
         const root: []const u8 = if (beneath(dir, file)) "project" else if (beneath(app.home, file)) "home" else continue;
         const base = if (std.mem.eql(u8, root, "project")) dir else app.home;
         const body = app_zig.readFileMaybe(app, file) orelse continue;
-        const relative = try refs.canonPath(app.arena, refs.relativeTo(base, file));
+        const relative = try std.mem.replaceOwned(u8, app.arena, refs.relativeTo(base, file), "\\", "/");
+        const git_path = try onDiskRelative(app, base, relative);
         const digest = try context.sha256Hex(app.arena, body);
         try out.append(app.arena, .{
             .root = root,
-            .path = relative,
+            .path = try refs.canonPath(app.arena, relative),
             .digest = digest,
-            .commit = try trust_git.hint(app, base, relative, digest),
+            .commit = try trust_git.hint(app, base, git_path, digest),
+            .git_path = git_path,
         });
     }
     return out.items;
@@ -164,9 +208,14 @@ pub fn summary(app: *App, dir: []const u8, label: []const u8, command: []const u
                 if (change.change == .changed) {
                     for (old.files) |before| if (std.mem.eql(u8, before.root, change.root) and std.mem.eql(u8, before.path, change.path)) {
                         const base = if (std.mem.eql(u8, change.root, "home")) app.home else dir;
-                        const found = try trust_git.baseline(app, base, change.path, before.digest, before.commit);
+                        var git_path = change.path;
+                        for (files) |current| if (sameFile(before, current)) {
+                            if (current.git_path.len > 0) git_path = current.git_path;
+                            break;
+                        };
+                        const found = try trust_git.baseline(app, base, git_path, before.digest, before.commit);
                         if (found.commit.len > 0) {
-                            const current = try std.fs.path.join(app.arena, &.{ base, change.path });
+                            const current = try std.fs.path.join(app.arena, &.{ base, git_path });
                             const item: trust_git.Diff = .{ .display = display, .commit = found.commit, .bytes = found.bytes, .current = current };
                             try diffs.append(app.arena, item);
                             try out.print(app.arena, "   ({s} since {s})", .{ try trust_git.counts(app, item), found.commit[0..@min(7, found.commit.len)] });
@@ -214,11 +263,13 @@ test "compare covers changed added removed and same files" {
 test "JSON review entries round trip and prune by ledger token" {
     const a = std.testing.allocator;
     const entries: []const Entry = &.{
-        .{ .token = "keep", .label = "pg|:hi", .command = "echo hi", .files = &.{.{ .root = "project", .path = "scripts/hi.cmd", .digest = "abc" }} },
+        .{ .token = "keep", .label = "pg|:hi", .command = "echo hi", .files = &.{.{ .root = "project", .path = "scripts/hi.cmd", .digest = "abc", .git_path = "Scripts/Hi.cmd" }} },
         .{ .token = "drop", .label = "pg|:old", .command = "", .files = &.{} },
     };
     const json = try std.json.Stringify.valueAlloc(a, Sidecar{ .entries = entries }, .{});
     defer a.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "git_path") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Scripts/Hi.cmd") == null);
     var arena_state = std.heap.ArenaAllocator.init(a);
     defer arena_state.deinit();
     const parsed = read(arena_state.allocator(), json);

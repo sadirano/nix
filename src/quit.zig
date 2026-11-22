@@ -108,7 +108,7 @@ fn parentPid() ?u32 {
 }
 
 /// imageName returns a process's executable basename without its extension,
-/// lowercased into `buf`.
+/// written into `buf` with its original case.
 fn imageName(h: windows.HANDLE, buf: []u8) ?[]const u8 {
     var wide: [windows.PATH_MAX_WIDE]u16 = undefined;
     var len: u32 = wide.len;

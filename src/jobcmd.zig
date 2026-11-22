@@ -170,7 +170,7 @@ pub fn cmdKeep(app: *App, args: [][]const u8) !u8 {
         try app.err.writeAll("nix: usage: nix --keep <alias> :<name>\n");
         return 1;
     }
-    if (!std.mem.eql(u8, pos.items[0], ".nix")) {
+    if (!store.isSelfAlias(pos.items[0])) {
         store.validateAliasName(pos.items[0]) catch {
             try app.err.writeAll("nix: usage: nix --keep <alias> :<name>\n");
             return 1;

@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 
     // Version string: prefer `git describe` (so a tagged build reports e.g.
     // "v0.7.1", an untagged one "v0.7.1-3-gabc123-dirty"), falling back to the
-    // .version in build.zig.zon, then "dev". Computed at configure time and
+    // .version in build.zig.zon ("0.0.0"). Computed at configure time and
     // baked in via a build-options module imported as `build_options`.
     const version = gitDescribe(b) orelse @import("build.zig.zon").version;
     const build_options = b.addOptions();
@@ -430,6 +430,65 @@ test "parseVersionQuad: the shapes git describe actually produces" {
     try eq(@as(u16, 0), q.major);
     q = parseVersionQuad("not-a-version");
     try eq(@as(u16, 0), q.major);
+}
+
+fn releaseFixture(files: []const struct { name: []const u8, data: []const u8 }, argv: []const []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    for (files) |file| try tmp.dir.writeFile(io, .{ .sub_path = file.name, .data = file.data });
+    const cwd = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    var child = try std.process.spawn(io, .{ .argv = argv, .cwd = .{ .path = cwd }, .stdin = .ignore });
+    const term = try child.wait(io);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
+}
+
+test "preflight cleanup failure preserves the download verdict" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    try releaseFixture(&.{
+        .{ .name = "preflight.ps1", .data = @embedFile(".github/scripts/release-preflight.ps1") },
+        .{ .name = "test.ps1", .data =
+        \\$ErrorActionPreference = 'Stop'
+        \\$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'preflight.ps1'), [ref] $null, [ref] $null)
+        \\$setCheck = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Set-Check' }, $true)
+        \\Invoke-Expression $setCheck.Extent.Text
+        \\$outerTry = @($ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })[0]
+        \\$cleanupText = $outerTry.Finally.Extent.Text
+        \\$cleanup = [scriptblock]::Create($cleanupText.Substring(1, $cleanupText.Length - 2))
+        \\function Test-Path { return $true }
+        \\function Remove-Item { throw 'fixture cleanup failure' }
+        \\foreach ($ok in @($true, $false)) {
+        \\    $checks = @{ download = @{ Ok = $ok; Why = 'download verdict' } }
+        \\    $scratch = 'scratch-fixture'
+        \\    $cleanupProblem = $null
+        \\    . $cleanup
+        \\    if ($checks.download.Ok -ne $ok -or $checks.download.Why -ne 'download verdict') { throw 'cleanup replaced the download verdict' }
+        \\    if ($cleanupProblem -ne 'scratch cleanup failed') { throw 'cleanup failure was not recorded separately' }
+        \\}
+        },
+    }, &.{ "pwsh", "-NoProfile", "-File", "test.ps1" });
+}
+
+test "release checklist exit trap removes both temporary files" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    const script = @embedFile(".github/scripts/release-checklist.sh");
+    var lines = std.mem.splitScalar(u8, script, '\n');
+    var trap: ?[]const u8 = null;
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "trap ")) trap = std.mem.trimEnd(u8, line, "\r");
+    }
+    const fixture = try std.fmt.allocPrint(std.testing.allocator, "tmp=cleanup-fixture\ntouch \"$tmp\" \"$tmp.old\"\n{s}\nexit 7\n", .{trap orelse return error.MissingTrap});
+    defer std.testing.allocator.free(fixture);
+    try releaseFixture(&.{
+        .{ .name = "cleanup.sh", .data = fixture },
+        .{ .name = "test.ps1", .data =
+        \\bash cleanup.sh
+        \\if ($LASTEXITCODE -ne 7) { throw 'trap changed the exit code' }
+        \\if ((Test-Path -LiteralPath 'cleanup-fixture') -or (Test-Path -LiteralPath 'cleanup-fixture.old')) { throw 'temporary files survived EXIT' }
+        \\exit 0
+        },
+    }, &.{ "pwsh", "-NoProfile", "-File", "test.ps1" });
 }
 
 /// gleanFor builds glean for one compile's target: its module pins a target,

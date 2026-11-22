@@ -309,7 +309,7 @@ cmdSelftest() {
 # ---- entry point ------------------------------------------------------------
 
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+trap 'rm -f "$tmp" "$tmp.old"' EXIT
 
 case "${1:-}" in
     paths)    printf '%s\n' "${WATCHED[@]}" ;;

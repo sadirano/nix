@@ -175,10 +175,12 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
                     cur_prod = producers.items.len - 1;
                     cur = null;
                     in_vars = false;
+                } else if (!h.array and std.mem.eql(u8, h.name, "contexts.vars")) {
+                    in_vars = true;
                 } else {
-                    // `[contexts.vars]` opens the static defaults of the block
-                    // above it; any other header only closes them.
-                    in_vars = !h.array and std.mem.eql(u8, h.name, "contexts.vars");
+                    cur = null;
+                    cur_prod = null;
+                    in_vars = false;
                 }
                 continue;
             },
@@ -478,6 +480,21 @@ test "parse: [contexts.vars] binds to the PRECEDING block, run/cache read" {
     try std.testing.expectEqual(@as(usize, 1), ctxs[0].vars.items.len);
     try std.testing.expectEqualStrings("eu-west", ctxs[0].vars.items[0].value);
     try std.testing.expectEqual(@as(usize, 0), ctxs[1].vars.items.len);
+}
+
+test "parse: unrelated headers close context and producer blocks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "[other]", "[[other]]", "[contexts]", "[producers]", "[[contexts.vars]]" }) |header| {
+        const data = try std.fmt.allocPrint(arena.allocator(), "[[contexts]]\nsegment = 'task'\nrun = 'context-run'\n[contexts.vars]\nregion = 'local'\n{s}\nsegment = 'wrong'\nrun = 'wrong'\n[contexts.vars]\nregion = 'wrong'\n" ++
+            "[[producers]]\nname = 'lookup'\nrun = 'producer-run'\n{s}\nname = 'wrong'\nrun = 'wrong'\n", .{ header, header });
+        const sf = try parseInto(arena.allocator(), data, "segments.toml");
+        try std.testing.expectEqualStrings("task", sf.contexts[0].segment);
+        try std.testing.expectEqualStrings("context-run", sf.contexts[0].run);
+        try std.testing.expectEqual(@as(usize, 1), sf.contexts[0].vars.items.len);
+        try std.testing.expectEqualStrings("lookup", sf.producers[0].name);
+        try std.testing.expectEqualStrings("producer-run", sf.producers[0].run);
+    }
 }
 
 test "parse: [[producers]] alongside contexts, uses reference, no bleed" {

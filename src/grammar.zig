@@ -172,6 +172,7 @@ pub const Scoped = struct {
 };
 pub const scoped = [_]Scoped{
     .{ .flag = "--outside", .form = "x <alias> --outside <cmd>", .implies = .run },
+    .{ .flag = "-o", .form = "x <alias> -o <cmd>", .implies = .run },
     .{ .flag = "--all", .form = "g <alias> <pat> --all", .implies = .grep },
 };
 
@@ -343,7 +344,7 @@ test "public rows carry help text, internal ones are excluded from it" {
 
 test "impliedAction resolves a scoped flag to its owner, and nothing else" {
     try std.testing.expectEqual(ActionVerb.run, impliedAction("--outside").?);
-    try std.testing.expectEqual(ActionVerb.run, impliedAction("--outside").?);
+    try std.testing.expectEqual(@as(?ActionVerb, .run), impliedAction("-o"));
     try std.testing.expectEqual(ActionVerb.grep, impliedAction("--all").?);
     try std.testing.expect(impliedAction("--wtach") == null);
     // An action flag is not "implied" - it names its verb outright, and the
