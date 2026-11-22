@@ -335,11 +335,7 @@ pub fn recordTrust(app: *App, record: []const u8, label: []const u8) !void {
     try util.writeFileAtomic(app.arena, app.io, path, buf.items);
 }
 
-fn sameLabel(a: []const u8, b: []const u8) bool {
-    const a_sep = std.mem.indexOfScalar(u8, a, '|') orelse return std.mem.eql(u8, a, b);
-    const b_sep = std.mem.indexOfScalar(u8, b, '|') orelse return false;
-    return std.ascii.eqlIgnoreCase(a[0..a_sep], b[0..b_sep]) and std.mem.eql(u8, a[a_sep..], b[b_sep..]);
-}
+const sameLabel = trust_review.sameLabel;
 
 fn recordApproval(app: *App, grant: Grant) !void {
     try recordTrust(app, grant.record, grant.label);

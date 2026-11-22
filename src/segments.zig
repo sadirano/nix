@@ -176,7 +176,8 @@ pub fn parseInto(arena: std.mem.Allocator, data: []const u8, path: []const u8) !
                     cur = null;
                     in_vars = false;
                 } else if (!h.array and std.mem.eql(u8, h.name, "contexts.vars")) {
-                    in_vars = true;
+                    in_vars = cur != null;
+                    cur_prod = null;
                 } else {
                     cur = null;
                     cur_prod = null;
@@ -495,6 +496,15 @@ test "parse: unrelated headers close context and producer blocks" {
         try std.testing.expectEqualStrings("lookup", sf.producers[0].name);
         try std.testing.expectEqualStrings("producer-run", sf.producers[0].run);
     }
+}
+
+test "parse: [contexts.vars] after a producer does not write into it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sf = try parseInto(arena.allocator(), "[[contexts]]\nsegment = 'task'\n[[producers]]\nname = 'lookup'\nrun = 'producer-run'\n[contexts.vars]\nname = 'wrong'\nrun = 'wrong'\n", "segments.toml");
+    try std.testing.expectEqualStrings("lookup", sf.producers[0].name);
+    try std.testing.expectEqualStrings("producer-run", sf.producers[0].run);
+    try std.testing.expectEqual(@as(usize, 0), sf.contexts[0].vars.items.len);
 }
 
 test "parse: [[producers]] alongside contexts, uses reference, no bleed" {

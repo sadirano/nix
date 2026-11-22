@@ -42,7 +42,8 @@ fn path(app: *App) ![]const u8 {
     return std.fs.path.join(app.arena, &.{ app.home, "trust-review.json" });
 }
 
-fn beneath(root: []const u8, file: []const u8) bool {
+fn beneath(raw_root: []const u8, file: []const u8) bool {
+    const root = std.mem.trimEnd(u8, raw_root, "/\\");
     if (root.len == 0 or file.len <= root.len or !util.eqlPathAscii(root, file[0..root.len])) return false;
     return file[root.len] == '/' or file[root.len] == '\\';
 }
@@ -145,12 +146,20 @@ fn recordInner(app: *App, entry: Entry) !void {
     try util.writeFileAtomic(app.arena, app.io, sidecar, json);
 }
 
+/// sameLabel compares two `alias|action` trust labels: the alias part folds
+/// case like alias names do, the action part stays exact.
+pub fn sameLabel(a: []const u8, b: []const u8) bool {
+    const a_sep = std.mem.indexOfScalar(u8, a, '|') orelse return std.mem.eql(u8, a, b);
+    const b_sep = std.mem.indexOfScalar(u8, b, '|') orelse return false;
+    return std.ascii.eqlIgnoreCase(a[0..a_sep], b[0..b_sep]) and std.mem.eql(u8, a[a_sep..], b[b_sep..]);
+}
+
 /// previous distinguishes a first approval from an older approval without a review record.
 pub fn previous(app: *App, label: []const u8) Previous {
     const ledger_path = context.trustPath(app.arena, app.home) catch return .first;
     const rows = actions.parseTable(app.arena, app_zig.readFileMaybe(app, ledger_path) orelse "", "trusted") catch return .first;
     for (rows) |row| {
-        if (!std.mem.eql(u8, row.command, label)) continue;
+        if (!sameLabel(row.command, label)) continue;
         const sidecar = path(app) catch return .missing;
         for (read(app.arena, app_zig.readFileMaybe(app, sidecar) orelse "")) |entry| {
             if (std.mem.eql(u8, entry.token, row.name)) return .{ .found = entry };
@@ -277,6 +286,31 @@ test "JSON review entries round trip and prune by ledger token" {
     const pruned = try keep(arena_state.allocator(), parsed, &.{.{ .name = "keep", .command = "pg|:hi", .description = "" }});
     try std.testing.expectEqual(@as(usize, 1), pruned.len);
     try std.testing.expectEqualStrings("keep", pruned[0].token);
+}
+
+test "beneath accepts a root that ends in a separator" {
+    try std.testing.expect(beneath("C:/", "C:\\.nix\\scripts\\run.ps1"));
+    try std.testing.expect(beneath("C:\\proj\\", "C:\\proj\\scripts\\run.ps1"));
+    try std.testing.expect(beneath("C:/proj", "C:/proj/run.ps1"));
+    try std.testing.expect(!beneath("C:/proj/", "C:/project/run.ps1"));
+}
+
+test "previous finds an approval recorded under another alias case" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "trusted.toml", .data = "[trusted]\ntok = 'MyProj|:build'\n" });
+    const entries: []const Entry = &.{.{ .token = "tok", .label = "MyProj|:build", .command = "build", .files = &.{} }};
+    try tmp.dir.writeFile(io, .{ .sub_path = "trust-review.json", .data = try std.json.Stringify.valueAlloc(arena, Sidecar{ .entries = entries }, .{}) });
+    const home = try tmp.dir.realPathFileAlloc(io, ".", arena);
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    var app: App = .{ .arena = arena, .io = io, .out = &w, .err = &w, .environ = .empty, .home = home, .argv0 = "nix", .json = false, .no_prompt = true };
+    try std.testing.expect(previous(&app, "myproj|:build") == .found);
+    try std.testing.expect(previous(&app, "myproj|:Build") == .first);
 }
 
 test "malformed review JSON reads as empty" {
