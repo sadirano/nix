@@ -61,6 +61,19 @@ jobs:
           sudo apt-get install -y -q ripgrep fd-find
           sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
           rg --version && fd --version
+      # The `g --all` check needs rga; Ubuntu does not package it.
+      - name: Install ripgrep-all
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RGA_VERSION: v0.10.9
+        run: |
+          dir="$RUNNER_TEMP/rga"
+          mkdir -p "$dir"
+          gh release download "$RGA_VERSION" -R phiresky/ripgrep-all --pattern '*x86_64-unknown-linux-musl.tar.gz' -D "$dir"
+          tar -xzf "$dir"/*.tar.gz -C "$dir"
+          bin="$(dirname "$(find "$dir" -type f -name rga | head -n 1)")"
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/rga" --version
       - name: Unit tests
         run: zig build test
       - name: End-to-end
