@@ -541,7 +541,7 @@ test "listNames: sorted, skips non-section lines and empty brackets" {
     try std.testing.expectEqualStrings("zeta", names.items[1]);
 }
 
-test "SW3 listNames only lists resolvable sections" {
+test "listNames only lists resolvable sections" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

@@ -1108,7 +1108,7 @@ test "desugarMultiCall navigate: bare alias navigates" {
     try std.testing.expectEqualStrings("test", d.nav_alias);
 }
 
-test "SW3 navigate accepts a leading global flag" {
+test "desugarMultiCall navigate: a leading global flag still navigates" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var argv = [_][]const u8{ "--no-prompt", "acme" };

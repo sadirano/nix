@@ -181,7 +181,7 @@ fn zlibStored(arena: std.mem.Allocator, data: []const u8) ![]u8 {
 
 const png_sig = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
 
-test "SW3 DIB rejects short header sizes" {
+test "DIB rejects short header sizes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var dib = @as([64]u8, @splat(0));
@@ -195,7 +195,7 @@ test "SW3 DIB rejects short header sizes" {
     }
 }
 
-test "SW3 DIB rejects unsupported compression" {
+test "DIB rejects unsupported compression" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var dib = @as([64]u8, @splat(0));
@@ -210,7 +210,7 @@ test "SW3 DIB rejects unsupported compression" {
     }
 }
 
-test "SW3 DIB bitfields masks determine RGB channels" {
+test "DIB bitfields masks determine RGB channels" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -237,7 +237,7 @@ test "SW3 DIB bitfields masks determine RGB channels" {
     }
 }
 
-test "SW3 DIB bitfields scale channels to eight bits" {
+test "DIB bitfields scale channels to eight bits" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -260,7 +260,7 @@ test "SW3 DIB bitfields scale channels to eight bits" {
     try std.testing.expectEqualSlices(u8, expected, actual);
 }
 
-test "SW3 DIB rejects malformed bitfields masks" {
+test "DIB rejects malformed bitfields masks" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var dib = @as([56]u8, @splat(0));
