@@ -400,12 +400,7 @@ fn readResult(app: *App, path: []const u8) ![]const u8 {
 }
 
 fn createStage(app: *App) ![]const u8 {
-    const temp = blk: {
-        if (app.getEnv("TEMP")) |v| if (v.len > 0) break :blk v;
-        if (app.getEnv("TMP")) |v| if (v.len > 0) break :blk v;
-        return error.MissingTemp;
-    };
-    const base = try app_zig.absPath(app, temp);
+    const base = try app_zig.absPath(app, try app_zig.tempBase(app));
     for (0..16) |_| {
         var random: [8]u8 = undefined;
         app.io.random(&random);
@@ -493,7 +488,7 @@ pub fn errorText(e: anyerror) []const u8 {
         error.MissingHookFile => "the program does not exist",
         error.BadHookExtension => "the program must be .exe, .cmd, .bat or .ps1",
         error.TrustRefused => "the program is not approved (nix --trust <alias>)",
-        error.MissingTemp => "neither TEMP nor TMP is set",
+        error.MissingTemp => "none of TEMP, TMP or TMPDIR is set",
         error.HookTimedOut => "timed out",
         error.HookExitedNonzero => "exited non-zero",
         error.ResultUnreadable => "no readable result.json",

@@ -328,6 +328,16 @@ pub fn readFileMaybe(app: *App, path: []const u8) ?[]const u8 {
     return Io.Dir.cwd().readFileAlloc(app.io, path, app.arena, .unlimited) catch null;
 }
 
+/// tempBase is the directory staging folders go under: TEMP, TMP, then
+/// TMPDIR, the POSIX name. A POSIX host that sets none of them still has
+/// /tmp; Windows has no such fallback and refuses.
+pub fn tempBase(app: *App) error{MissingTemp}![]const u8 {
+    for ([_][]const u8{ "TEMP", "TMP", "TMPDIR" }) |name| {
+        if (app.getEnv(name)) |v| if (v.len > 0) return v;
+    }
+    return if (proc.is_windows) error.MissingTemp else "/tmp";
+}
+
 pub fn absPath(app: *App, p: []const u8) ![]const u8 {
     // resolve (not join) so "." / ".." segments collapse — `o test .` must store
     // the cwd, not "<cwd>/.". For an already-absolute path resolve still

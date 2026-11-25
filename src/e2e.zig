@@ -1679,13 +1679,14 @@ pub fn main(init: std.process.Init) !void {
 
             _ = try c.trust(&.{"grv"});
             const old_path = try c.arena.dupe(u8, c.env.get("PATH") orelse "");
-            const git_exe = proc.findInPath(c.arena, c.io, c.env, "git").?;
-            const git_dir = std.fs.path.dirname(git_exe).?;
+            // Every PATH entry holding a git goes, not just the first: a
+            // merged-/usr host lists the same git under /usr/bin and /bin.
             var filtered: std.ArrayList(u8) = .empty;
             var path_parts = std.mem.splitScalar(u8, old_path, if (proc.is_windows) ';' else ':');
             while (path_parts.next()) |part| {
-                if (util.eqlPathAscii(part, git_dir) or std.mem.indexOf(u8, part, "\\Git\\") != null or
-                    std.mem.indexOf(u8, part, "/Git/") != null) continue;
+                if (std.mem.indexOf(u8, part, "\\Git\\") != null or std.mem.indexOf(u8, part, "/Git/") != null) continue;
+                const git_here = try std.fs.path.join(c.arena, &.{ part, if (proc.is_windows) "git.exe" else "git" });
+                if (part.len > 0 and proc.fileExists(c.io, git_here)) continue;
                 if (filtered.items.len > 0) try filtered.append(c.arena, if (proc.is_windows) ';' else ':');
                 try filtered.appendSlice(c.arena, part);
             }
