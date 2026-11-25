@@ -443,7 +443,7 @@ test "sharedStart: longest whole sibling at a word boundary" {
     try std.testing.expect(sharedStart("x", "python play.py --resume && python report.py", &sib) == null);
 }
 
-test "SW3 project ps1 stays relative with a trailing separator" {
+test "project ps1 stays relative with a trailing separator" {
     if (!proc.is_windows) return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

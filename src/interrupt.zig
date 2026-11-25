@@ -119,7 +119,7 @@ pub fn waitFor(child: *anyopaque) ?u8 {
     return code;
 }
 
-test "SW3 a later wait does not inherit an interrupt" {
+test "a later wait does not inherit an interrupt" {
     if (!proc.is_windows) return error.SkipZigTest;
     arm();
     try std.testing.expectEqual(TRUE, onConsoleEvent(CTRL_C_EVENT));

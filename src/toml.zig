@@ -315,7 +315,7 @@ pub fn parseCheckedArray(arena: std.mem.Allocator, text: []const u8) !?[]Checked
 
 // ---- writing --------------------------------------------------------------------
 
-test "SW3 checked array rejects junk after a string" {
+test "checked array rejects junk after a string" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     for ([_][]const u8{ "[\"a\" \"b\"]", "['a' 'b']", "[\"a\"junk\"b\"]" }) |text| {

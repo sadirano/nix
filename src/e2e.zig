@@ -435,10 +435,10 @@ fn sw3Regressions(c: *Ctx, home: []const u8, harness: []const u8) !void {
         try writeFile(c, cfg_path, cfg);
         try util.mkdirAll(c.io, join(c, &.{ project, ".nix", "shared" }));
         const r = try c.run(&.{ "sw3", "--no-prompt", "--grep" });
-        c.check(r.code == 1 and r.out.len == 0 and std.mem.eql(u8, r.err, "nix: g needs a pattern (usage: g <alias> <pat>)\n"), if (i == 0) "SW3 g requires a pattern without extra folders" else "SW3 g requires a pattern with extra folders", r);
+        c.check(r.code == 1 and r.out.len == 0 and std.mem.eql(u8, r.err, "nix: g needs a pattern (usage: g <alias> <pat>)\n"), if (i == 0) "g requires a pattern without extra folders" else "g requires a pattern with extra folders", r);
     }
     try writeFile(c, cfg_path, saved_cfg);
-    if (!c.windowsOnly("SW3 concurrent contexts, drive roots and CRLF editor selections")) return;
+    if (!c.windowsOnly("concurrent contexts, drive roots and CRLF editor selections")) return;
     const bytes = try Io.Dir.cwd().readFileAlloc(c.io, harness, c.arena, .unlimited);
     for ([_][]const u8{ "sw3-context.exe", "sw3-root.exe", "sw3-editor.exe" }) |name| try writeFile(c, join(c, &.{ home, "scripts", name }), bytes);
     const race = join(c, &.{ project, "race" });
@@ -458,9 +458,9 @@ fn sw3Regressions(c: *Ctx, home: []const u8, harness: []const u8) !void {
     const br = try c.collect(&b);
     const a_path = readFileOr(c, join(c, &.{ race, "a.out-path" }), "");
     const b_path = readFileOr(c, join(c, &.{ race, "b.out-path" }), "");
-    c.check(ar.code == 0 and hasLineFold(ar.out, join(c, &.{ race, "a" })), "SW3 concurrent uncached context A keeps its variables", ar);
-    c.check(br.code == 0 and hasLineFold(br.out, join(c, &.{ race, "b" })), "SW3 concurrent uncached context B keeps its variables", br);
-    c.check(a_path.len > 0 and b_path.len > 0 and !std.mem.eql(u8, a_path, b_path) and !proc.fileExists(c.io, a_path) and !proc.fileExists(c.io, b_path), "SW3 concurrent context output files are distinct and removed", null);
+    c.check(ar.code == 0 and hasLineFold(ar.out, join(c, &.{ race, "a" })), "concurrent uncached context A keeps its variables", ar);
+    c.check(br.code == 0 and hasLineFold(br.out, join(c, &.{ race, "b" })), "concurrent uncached context B keeps its variables", br);
+    c.check(a_path.len > 0 and b_path.len > 0 and !std.mem.eql(u8, a_path, b_path) and !proc.fileExists(c.io, a_path) and !proc.fileExists(c.io, b_path), "concurrent context output files are distinct and removed", null);
 
     const slash_work = try std.mem.replaceOwned(u8, c.arena, c.work, "\\", "/");
     const drive_root = c.work[0..3];
@@ -472,13 +472,13 @@ fn sw3Regressions(c: *Ctx, home: []const u8, harness: []const u8) !void {
     const decl = try std.fmt.allocPrint(c.arena, "[[contexts]]\nsegment='wild'\nsource-template='/{s}*{s}/sw3-wild-match'\n[[contexts]]\nsegment='ctx'\nrun='sw3-root'\nsource-template='/${{who}}'\ncache='0'\n[[contexts]]\nsegment='plain'\nsource-template='/leaf'\n", .{ relative[0..first_end], relative[first_end..] });
     try writeFile(c, join(c, &.{ home, "segments", "sw3drive.toml" }), decl);
     var r = try c.run(&.{ "wild@sw3drive", "--no-prompt", "--resolve" });
-    c.check(r.code == 0 and hasLineFold(r.out, match_dir), "SW3 drive-root wildcard walks the root below cwd", r);
+    c.check(r.code == 0 and hasLineFold(r.out, match_dir), "a drive-root wildcard walks the root below cwd", r);
     try c.env.put("NIX_SW3_DRIVE_ROOT", drive_root);
     defer _ = c.env.orderedRemove("NIX_SW3_DRIVE_ROOT");
     r = try c.run(&.{ "ctx@sw3drive", "--no-prompt", "--resolve" });
-    c.check(r.code == 0 and hasLineFold(r.out, join(c, &.{ drive_root, "root" })), "SW3 drive-root context receives the absolute root", r);
+    c.check(r.code == 0 and hasLineFold(r.out, join(c, &.{ drive_root, "root" })), "a drive-root context receives the absolute root", r);
     r = try c.run(&.{ "plain@sw3drive", "--resolve" });
-    c.check(r.code == 0 and hasLineFold(r.out, join(c, &.{ drive_root, "leaf" })), "SW3 drive-root fragments use one separator", r);
+    c.check(r.code == 0 and hasLineFold(r.out, join(c, &.{ drive_root, "leaf" })), "drive-root fragments use one separator", r);
 
     const old_editor = if (c.env.get("EDITOR")) |ed| try c.arena.dupe(u8, ed) else null;
     defer {
@@ -494,7 +494,7 @@ fn sw3Regressions(c: *Ctx, home: []const u8, harness: []const u8) !void {
     const capture = readFileOr(c, join(c, &.{ project, "sw3-editor-args.json" }), "[]");
     const captured = try std.json.parseFromSlice([][]const u8, c.arena, capture, .{});
     defer captured.deinit();
-    c.check(code == 0 and captured.value.len == 2 and pathEql(captured.value[0], join(c, &.{ project, "first.txt" })) and pathEql(captured.value[1], join(c, &.{ project, "second.txt" })), "SW3 CRLF selections pass clean editor arguments", .{ .code = code, .out = capture, .err = "" });
+    c.check(code == 0 and captured.value.len == 2 and pathEql(captured.value[0], join(c, &.{ project, "first.txt" })) and pathEql(captured.value[1], join(c, &.{ project, "second.txt" })), "CRLF selections pass clean editor arguments", .{ .code = code, .out = capture, .err = "" });
     _ = try c.run(&.{ "sw3", "--remove" });
     _ = try c.run(&.{ "sw3race", "--remove" });
     _ = try c.run(&.{ "sw3drive", "--remove" });
@@ -1316,7 +1316,7 @@ pub fn main(init: std.process.Init) !void {
         try writeFile(&c, join(&c, &.{ home, "jobs", "runs.log" }), "100 linked/foreign.cmd ok\n");
         if (c.windowsOnly("a junction scope is not followed by --clean")) {
             const mk = try c.runCommand(&.{ "cmd", "/c", "mklink", "/J", linked, foreign }, null);
-            c.check(mk.code == 0, "scratch junction fixture is created", mk);
+            c.check(mk.code == 0, "the --clean junction fixture is created", mk);
             if (mk.code == 0) {
                 try c.env.put("NIX_E2E_TTY", "0");
                 const r = try c.run(&.{"--clean"});
@@ -1875,7 +1875,7 @@ pub fn main(init: std.process.Init) !void {
         const via_run = r.out;
         for ([_][]const u8{ "--edit", "--explore", "--yank", "--grep", "--find" }) |verb| {
             r = try c.run(&.{ "pa", verb, ":" });
-            c.check(r.code == 0 and std.mem.eql(u8, r.out, via_run), "a trailing `:` answers the same through every command", r);
+            c.check(r.code == 0 and std.mem.eql(u8, r.out, via_run), try std.fmt.allocPrint(c.arena, "a trailing `:` answers the same through {s}", .{verb}), r);
         }
         // Bare `nix <alias> :` (no verb at all) must not register ":" as a
         // directory either.
@@ -2371,12 +2371,16 @@ pub fn main(init: std.process.Init) !void {
         // in that does not require already knowing an action inside it. Every
         // other command's bare `:` still opens the palette.
         const def_before = readFileOr(&c, def_actions, "");
-        for ([_][]const u8{ "# [actions]\n[other]\n", "[other]\ntext = '[actions]'\n" }) |body| {
+        for ([_]struct { body: []const u8, label: []const u8 }{
+            .{ .body = "# [actions]\n[other]\n", .label = "e :name ignores a commented-out actions header" },
+            .{ .body = "[other]\ntext = '[actions]'\n", .label = "e :name ignores an actions header inside a string" },
+        }) |case| {
+            const body = case.body;
             try writeFile(&c, def_actions, body);
             r = try c.run(&.{":sw2header"});
             const seeded = readFileOr(&c, def_actions, "");
             c.check(r.code == 0 and actions.hasKey(seeded, "actions", "sw2header") and
-                std.mem.startsWith(u8, seeded, body), "e :name requires a real actions header", r);
+                std.mem.startsWith(u8, seeded, body), case.label, r);
         }
         try writeFile(&c, def_actions, def_before);
         c.exe = e_exe;
@@ -2585,11 +2589,11 @@ pub fn main(init: std.process.Init) !void {
                 try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), root_config);
                 const r6 = try c.run(&.{ "root@pa", "--resolve" });
                 const expected_root_child = try std.fmt.allocPrint(c.arena, "{s}nix-e2e-root-child", .{host_root});
-                c.check(r6.code == 0 and pathEql(trim(r6.out), expected_root_child), "a drive-root target joins a fragment once", r6);
+                c.check(r6.code == 0 and pathEql(trim(r6.out), expected_root_child), try std.fmt.allocPrint(c.arena, "a drive-root target ({c}) joins a fragment once", .{sep}), r6);
                 const plain_config = try std.fmt.allocPrint(c.arena, "[[contexts]]\nsegment = \"root\"\ntarget = '{s}'\n", .{root_target});
                 try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), plain_config);
                 const r7 = try c.run(&.{ "root@pa", "--resolve" });
-                c.check(r7.code == 0 and pathEql(trim(r7.out), host_root) and std.fs.path.isAbsolute(trim(r7.out)), "a drive-root target stays absolute", r7);
+                c.check(r7.code == 0 and pathEql(trim(r7.out), host_root) and std.fs.path.isAbsolute(trim(r7.out)), try std.fmt.allocPrint(c.arena, "a drive-root target ({c}) stays absolute", .{sep}), r7);
                 for ([_]struct { source: []const u8, suffix: []const u8, label: []const u8 }{
                     .{ .source = "", .suffix = "bar", .label = "empty" },
                     .{ .source = "source-template = \"/\"\n", .suffix = "\\bar", .label = "slash-only" },
@@ -2601,7 +2605,7 @@ pub fn main(init: std.process.Init) !void {
                     try writeFile(&c, join(&c, &.{ home, "segments", "pa.toml" }), chain_config);
                     const chain = try c.run(&.{ "leaf@root@pa", "--resolve" });
                     const chain_expected = try std.fmt.allocPrint(c.arena, "{s}{s}", .{ host_root, shape.suffix });
-                    const label = try std.fmt.allocPrint(c.arena, "a drive-root target preserves exact chained separators after a {s} fragment", .{shape.label});
+                    const label = try std.fmt.allocPrint(c.arena, "a drive-root target ({c}) preserves exact chained separators after a {s} fragment", .{ sep, shape.label });
                     c.check(chain.code == 0 and std.mem.eql(u8, trim(chain.out), chain_expected), label, chain);
                 }
             }
@@ -2670,7 +2674,7 @@ pub fn main(init: std.process.Init) !void {
             const share = join(&c, &.{ pa, "..", "pa-share" });
             try util.mkdirAll(io, join(&c, &.{ share, "7" }));
             const mk = try c.runCommand(&.{ "cmd", "/c", "mklink", "/J", join(&c, &.{ wt, "D" }), share }, null);
-            c.check(mk.code == 0, "scratch junction fixture is created", mk);
+            c.check(mk.code == 0, "the wildcard junction fixture is created", mk);
             if (mk.code == 0) {
                 r = try c.run(&.{ "t:7@pa", "--resolve" });
                 c.check(r.code == 0 and pathEql(trim(r.out), join(&c, &.{ wt, "D", "7" })), "a `*` segment lists a junction like a folder", r);
@@ -3913,7 +3917,7 @@ pub fn main(init: std.process.Init) !void {
             c.platform_skips += 1;
             std.debug.print("skip hook output symlink outside staging (mklink refused)\n", .{});
         }
-        c.check(try hookStageEmpty(&c, hook_temp), "M2 hook staging is removed", null);
+        c.check(try hookStageEmpty(&c, hook_temp), "staging is removed after file, abort and typed-name hooks", null);
 
         const work_target = join(&c, &.{ root, "hook-work" });
         const logs_target = join(&c, &.{ work_target, "logs" });
@@ -4054,7 +4058,7 @@ pub fn main(init: std.process.Init) !void {
         c.check(hookSavedDefault(&c, r, logs_target, body) and !proc.pathExists(io, chain_marker) and
             !proc.pathExists(io, plain_marker) and
             std.mem.count(u8, r.err, "paste hook \"hooks.toml\" failed: bad [paste] key") == 1, "invalid segment key falls back with the hooks.toml label", r);
-        c.check(try hookStageEmpty(&c, hook_temp), "M3 hook staging is removed", null);
+        c.check(try hookStageEmpty(&c, hook_temp), "staging is removed after segment-key hooks", null);
 
         try writeFile(&c, hooks_file, "[paste\nph = 'valid'\n");
         r = try c.run(&.{"--doctor"});

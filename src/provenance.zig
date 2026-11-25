@@ -719,7 +719,7 @@ pub fn loadContextsFor(app: *App, alias: []const u8, dir: []const u8) !segments.
 
 // ---- tests -------------------------------------------------------------------
 
-test "SW3 trust supersedes alias case variants" {
+test "trust supersedes alias case variants" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const io = std.testing.io;
