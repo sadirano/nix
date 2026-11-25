@@ -1,7 +1,7 @@
 name: Search tools
 description: >
-  Install the external tools the e2e harness shells out to (ripgrep, fd), so a
-  CI runner covers the same checks a dev machine does.
+  Install the external tools the e2e harness shells out to (ripgrep, fd,
+  ripgrep-all), so a CI runner covers the same checks a dev machine does.
 
 # Defined once and used by every workflow that runs the harness. Without these
 # the grep/find checks SKIP, and a skip is how "green locally" and "green
@@ -55,3 +55,21 @@ runs:
 
         rg --version
         fd --version
+
+    # The `g --all` check needs rga. Chocolatey has no package for it, so it
+    # comes from the upstream release, pinned.
+    - name: Install ripgrep-all
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RGA_VERSION: v0.10.9
+      run: |
+        $dir = Join-Path $env:RUNNER_TEMP 'rga'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        gh release download $env:RGA_VERSION -R phiresky/ripgrep-all --pattern '*x86_64-pc-windows-msvc.zip' -D $dir
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+        Get-ChildItem $dir -Filter *.zip | ForEach-Object { Expand-Archive $_.FullName -DestinationPath $dir -Force }
+        $exe = Get-ChildItem $dir -Recurse -Filter rga.exe | Select-Object -First 1
+        if (-not $exe) { Write-Host "::error::rga.exe not found in the release archive"; exit 1 }
+        Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+        & $exe.FullName --version
