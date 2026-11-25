@@ -87,8 +87,7 @@ pub fn baseline(app: *App, root: []const u8, path: []const u8, digest: []const u
 }
 
 fn stage(app: *App) ![]const u8 {
-    const temp = app.getEnv("TEMP") orelse app.getEnv("TMP") orelse return error.MissingTemp;
-    const base = try app_zig.absPath(app, temp);
+    const base = try app_zig.absPath(app, try app_zig.tempBase(app));
     for (0..16) |_| {
         var random: [8]u8 = undefined;
         app.io.random(&random);

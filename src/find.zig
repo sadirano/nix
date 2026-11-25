@@ -67,7 +67,7 @@ pub fn findPick(app: *App, alias: []const u8, dir: []const u8, args: [][]const u
         if (query.len > 0) {
             try prod.append(app.arena, "--full-path");
             try prod.append(app.arena, if (search_query.smartCase(query)) "--case-sensitive" else "--ignore-case");
-            try prod.append(app.arena, try search_query.rewrite(app.arena, dir, query));
+            try prod.append(app.arena, try search_query.rewriteRoots(app.arena, try search_query.spellings(app.arena, dir), query));
         }
         // Rows stay cwd-relative (no path arg): the producer runs in the alias dir.
         const folders = try search_merge.extraFolders(app, alias, dir);
