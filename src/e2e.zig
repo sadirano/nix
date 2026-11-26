@@ -3087,6 +3087,20 @@ pub fn main(init: std.process.Init) !void {
             const manifest = join(&c, &.{ home, "wrappers.toml" });
             c.check(proc.pathExists(io, join(&c, &.{ home, "bin", "w.exe" })) and
                 std.mem.indexOf(u8, readFileOr(&c, manifest, ""), "w = 'w'") != null, "--sync installs w.exe and records w in wrappers.toml", r);
+            c.check(std.mem.indexOf(u8, readFileOr(&c, manifest, ""), "[stamps]") != null, "--sync records the wrapper stamps in wrappers.toml", r);
+            r = try c.run(&.{"--doctor"});
+            c.check(std.mem.indexOf(u8, r.out, "all current") != null, "--doctor reports freshly synced wrappers as current", r);
+            // Same size, new bytes and mtime: the stamp no longer matches, so
+            // doctor compares bytes and must name the wrapper.
+            const w_exe = join(&c, &.{ home, "bin", "w.exe" });
+            const edited = try arena.dupe(u8, readFileOr(&c, w_exe, ""));
+            if (edited.len > 0) edited[edited.len - 1] +%= 1;
+            try writeFile(&c, w_exe, edited);
+            r = try c.run(&.{"--doctor"});
+            c.check(std.mem.indexOf(u8, r.out, "stale: w") != null, "--doctor names a same-size wrapper edited after --sync", r);
+            r = try c.run(&.{"--sync"});
+            r = try c.run(&.{"--doctor"});
+            c.check(std.mem.indexOf(u8, r.out, "all current") != null, "--sync restores an edited wrapper and doctor reports it current", r);
         }
     }
 

@@ -169,6 +169,10 @@ fn firstLine(s: []const u8) []const u8 {
 
 const readFileMaybe = app_zig.readFileMaybe;
 
+fn stampIs(recorded: ?[]const u8, now: []const u8) bool {
+    return if (recorded) |r| std.mem.eql(u8, r, now) else false;
+}
+
 /// sameBytes reports whether the file at `path` holds exactly `want`, or null
 /// when it cannot be opened. A wrapper is a full copy of nix, so the size is
 /// compared first and the content is streamed in chunks that stop at the first
@@ -351,18 +355,25 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     // Wrappers: o/e/s/... are copies of nix.exe in ~/.nix/bin. installExeWrappers
     // skips any wrapper that's running (can't replace an open exe on Windows), so
     // one can drift stale relative to the canonical nix.exe after a --sync.
+    // A wrapper is current without being read when its stamp and bin/nix's
+    // both match what --sync recorded; otherwise its bytes are compared.
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
     const ext = if (proc.is_windows) ".exe" else "";
     const canonical = try std.fmt.allocPrint(app.arena, "{s}{c}nix{s}", .{ bin, std.fs.path.sep, ext });
-    if (readFileMaybe(app, canonical)) |canon| {
+    if (snippet.stampOf(app.arena, app.io, canonical)) |canon_stamp| {
         const names = try config.resolvedShortcutNames(app.arena, cfg);
+        const stamps = snippet.loadWrapperStamps(app.arena, app.io, app.home);
+        const canon_unchanged = stampIs(snippet.stampFor(stamps, snippet.canonical_stamp), canon_stamp);
+        var canon: ?[]const u8 = null;
         var total: usize = 0;
         var stale: std.ArrayList([]const u8) = .empty;
         for (names) |n| {
             const w = try std.fmt.allocPrint(app.arena, "{s}{c}{s}{s}", .{ bin, std.fs.path.sep, n, ext });
-            const current = sameBytes(app.io, Io.Dir.cwd(), w, canon) orelse continue;
+            const w_stamp = snippet.stampOf(app.arena, app.io, w) orelse continue;
             total += 1;
-            if (!current) try stale.append(app.arena, n);
+            if (canon_unchanged and stampIs(snippet.stampFor(stamps, n), w_stamp)) continue;
+            if (canon == null) canon = readFileMaybe(app, canonical) orelse "";
+            if (!(sameBytes(app.io, Io.Dir.cwd(), w, canon.?) orelse false)) try stale.append(app.arena, n);
         }
         if (stale.items.len == 0) {
             try d.row(.ok, "wrappers", try std.fmt.allocPrint(app.arena, "{d} in {s}, all current", .{ total, bin }));
