@@ -169,6 +169,30 @@ fn firstLine(s: []const u8) []const u8 {
 
 const readFileMaybe = app_zig.readFileMaybe;
 
+fn stampIs(recorded: ?[]const u8, now: []const u8) bool {
+    return if (recorded) |r| std.mem.eql(u8, r, now) else false;
+}
+
+/// sameBytes reports whether the file at `path` holds exactly `want`, or null
+/// when it cannot be opened. A wrapper is a full copy of nix, so the size is
+/// compared first and the content is streamed in chunks that stop at the first
+/// difference: a stale wrapper costs a stat, and a current one never needs a
+/// second whole-binary allocation.
+fn sameBytes(io: Io, dir: Io.Dir, path: []const u8, want: []const u8) ?bool {
+    const file = dir.openFile(io, path, .{}) catch return null;
+    defer file.close(io);
+    const stat = file.stat(io) catch return false;
+    if (stat.size != want.len) return false;
+    var chunk: [64 * 1024]u8 = undefined;
+    var off: usize = 0;
+    while (off < want.len) {
+        const n = file.readPositional(io, &.{chunk[0..@min(chunk.len, want.len - off)]}, off) catch return false;
+        if (n == 0 or !std.mem.eql(u8, chunk[0..n], want[off..][0..n])) return false;
+        off += n;
+    }
+    return true;
+}
+
 /// normDir strips trailing path separators so PATH-membership comparisons treat
 /// "C:\x" and "C:\x\" as equal.
 fn normDir(s: []const u8) []const u8 {
@@ -331,18 +355,25 @@ pub fn cmdDoctor(app: *App, rest: [][]const u8) !u8 {
     // Wrappers: o/e/s/... are copies of nix.exe in ~/.nix/bin. installExeWrappers
     // skips any wrapper that's running (can't replace an open exe on Windows), so
     // one can drift stale relative to the canonical nix.exe after a --sync.
+    // A wrapper is current without being read when its stamp and bin/nix's
+    // both match what --sync recorded; otherwise its bytes are compared.
     const bin = try std.fs.path.join(app.arena, &.{ app.home, "bin" });
     const ext = if (proc.is_windows) ".exe" else "";
     const canonical = try std.fmt.allocPrint(app.arena, "{s}{c}nix{s}", .{ bin, std.fs.path.sep, ext });
-    if (readFileMaybe(app, canonical)) |canon| {
+    if (snippet.stampOf(app.arena, app.io, canonical)) |canon_stamp| {
         const names = try config.resolvedShortcutNames(app.arena, cfg);
+        const stamps = snippet.loadWrapperStamps(app.arena, app.io, app.home);
+        const canon_unchanged = stampIs(snippet.stampFor(stamps, snippet.canonical_stamp), canon_stamp);
+        var canon: ?[]const u8 = null;
         var total: usize = 0;
         var stale: std.ArrayList([]const u8) = .empty;
         for (names) |n| {
             const w = try std.fmt.allocPrint(app.arena, "{s}{c}{s}{s}", .{ bin, std.fs.path.sep, n, ext });
-            const wb = readFileMaybe(app, w) orelse continue;
+            const w_stamp = snippet.stampOf(app.arena, app.io, w) orelse continue;
             total += 1;
-            if (!std.mem.eql(u8, wb, canon)) try stale.append(app.arena, n);
+            if (canon_unchanged and stampIs(snippet.stampFor(stamps, n), w_stamp)) continue;
+            if (canon == null) canon = readFileMaybe(app, canonical) orelse "";
+            if (!(sameBytes(app.io, Io.Dir.cwd(), w, canon.?) orelse false)) try stale.append(app.arena, n);
         }
         if (stale.items.len == 0) {
             try d.row(.ok, "wrappers", try std.fmt.allocPrint(app.arena, "{d} in {s}, all current", .{ total, bin }));
@@ -742,4 +773,21 @@ test "firstLine: up to first newline, else whole string" {
     try std.testing.expectEqualStrings("fd 10.4.2", firstLine("fd 10.4.2\nextra"));
     try std.testing.expectEqualStrings("fd 10.4.2", firstLine("fd 10.4.2"));
     try std.testing.expectEqualStrings("", firstLine("\nx"));
+}
+
+test "sameBytes: equal copy, same-size edit, size mismatch, missing file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    // Longer than one chunk, so the difference lands past the first read.
+    const want: [64 * 1024 + 7]u8 = @splat('w');
+    var edited = want;
+    edited[edited.len - 1] = 'x';
+    try tmp.dir.writeFile(io, .{ .sub_path = "same", .data = &want });
+    try tmp.dir.writeFile(io, .{ .sub_path = "edited", .data = &edited });
+    try tmp.dir.writeFile(io, .{ .sub_path = "short", .data = "w" });
+    try std.testing.expectEqual(@as(?bool, true), sameBytes(io, tmp.dir, "same", &want));
+    try std.testing.expectEqual(@as(?bool, false), sameBytes(io, tmp.dir, "edited", &want));
+    try std.testing.expectEqual(@as(?bool, false), sameBytes(io, tmp.dir, "short", &want));
+    try std.testing.expectEqual(@as(?bool, null), sameBytes(io, tmp.dir, "missing", &want));
 }
